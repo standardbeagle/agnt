@@ -1,8 +1,12 @@
 package proxy
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestTrafficLogger_LogHTTP(t *testing.T) {
@@ -511,18 +515,30 @@ func TestTrafficLogger_ConcurrentWrites(t *testing.T) {
 
 func TestTrafficLogger_OnLogEntry(t *testing.T) {
 	logger := NewTrafficLogger(10)
+	t.Cleanup(logger.Close)
 
+	// Delivery is asynchronous (decoupled onto a worker), so guard the shared
+	// slice and drain with Eventually rather than reading immediately.
+	var mu sync.Mutex
 	var received []LogEntry
 	logger.SetOnLogEntry(func(entry LogEntry) {
+		mu.Lock()
 		received = append(received, entry)
+		mu.Unlock()
 	})
 
 	logger.LogHTTP(HTTPLogEntry{ID: "req-1", Method: "GET", URL: "/test", StatusCode: 200})
 	logger.LogError(FrontendError{Message: "oops"})
 
-	if len(received) != 2 {
-		t.Fatalf("Expected 2 callback invocations, got %d", len(received))
-	}
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(received) == 2
+	}, time.Second, 2*time.Millisecond, "expected 2 async callback invocations")
+
+	mu.Lock()
+	defer mu.Unlock()
+	// FIFO order is preserved by the single-worker channel drain.
 	if received[0].Type != LogTypeHTTP {
 		t.Errorf("First callback: expected HTTP type, got %s", received[0].Type)
 	}
@@ -540,27 +556,24 @@ func TestTrafficLogger_OnLogEntry_Nil(t *testing.T) {
 
 func TestTrafficLogger_SetOnLogEntry_Replaces(t *testing.T) {
 	logger := NewTrafficLogger(10)
+	t.Cleanup(logger.Close)
 
-	count1 := 0
-	count2 := 0
+	var count1, count2 atomic.Int64
 
-	logger.SetOnLogEntry(func(entry LogEntry) {
-		count1++
-	})
-
+	logger.SetOnLogEntry(func(entry LogEntry) { count1.Add(1) })
 	logger.LogHTTP(HTTPLogEntry{ID: "req-1", Method: "GET", URL: "/test", StatusCode: 200})
+	// Drain the first entry before swapping so the replacement is guaranteed to
+	// be the callback the second entry sees (the swap itself races the worker).
+	require.Eventually(t, func() bool { return count1.Load() == 1 }, time.Second, 2*time.Millisecond,
+		"first callback should receive the pre-swap entry")
 
-	logger.SetOnLogEntry(func(entry LogEntry) {
-		count2++
-	})
-
+	logger.SetOnLogEntry(func(entry LogEntry) { count2.Add(1) })
 	logger.LogError(FrontendError{Message: "oops"})
 
-	if count1 != 1 {
-		t.Errorf("First callback: expected 1 call, got %d", count1)
-	}
-	if count2 != 1 {
-		t.Errorf("Second callback: expected 1 call, got %d", count2)
+	require.Eventually(t, func() bool { return count2.Load() == 1 }, time.Second, 2*time.Millisecond,
+		"replacement callback should receive the post-swap entry")
+	if got := count1.Load(); got != 1 {
+		t.Errorf("First callback: expected 1 call, got %d", got)
 	}
 }
 

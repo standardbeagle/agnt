@@ -22,13 +22,14 @@ package proxy
 //     the lock is released so slow/panicking callbacks cannot stall
 //     producers or other readers.
 //
-//   * onLogEntry is an atomic.Pointer[func(LogEntry)] — a nil pointer
-//     means "no callback." Load() returns nil safely and the dispatch
-//     site short-circuits. The callback fires AFTER the slice write and
-//     AFTER count is bumped; the logger documents that the callback
-//     must not block, but we also prove the logger survives callbacks
-//     that panic, block for milliseconds, or outright disappear mid-
-//     stream (SetOnLogEntry can be called concurrently).
+//   * The onLogEntry callback is delivered ASYNCHRONOUSLY via a
+//     logCallbackDispatcher (a bounded buffered channel drained by one
+//     worker goroutine, created lazily on the first SetOnLogEntry). log()
+//     does a non-blocking hand-off after the slice write + count bump, so
+//     a slow/blocking/panicking sink can never stall producers — the
+//     "must not block" contract is now structurally enforced, not trusted.
+//     Delivery is FIFO; overflow drops the newest and counts it. Tests
+//     call Close() for deterministic worker teardown (goleak).
 //
 //   * Drop accounting: Stats.Dropped = max(0, total - maxSize). The
 //     ring never explicitly decrements; overwrites are implicit by
@@ -153,19 +154,16 @@ func TestTrafficLogger_HighThroughput(t *testing.T) {
 // still forcing the callback onto the critical path of every log()
 // call.
 //
-// Contract under test:
+// Contract under test (delivery is async):
 //
-//  1. Every log() call invokes the callback exactly once. Receive count
-//     equals entry count.
-//  2. Callbacks observe entries in add order (log() writes the slice
-//     slot, then bumps count, then fires the callback; callbacks can
-//     race across goroutines but a single producer's callbacks see
-//     that producer's entries in order).
-//  3. Even with a slow callback, Stats accounting matches the number
-//     of LogHTTP calls that returned — the callback is synchronous but
-//     does not corrupt counts.
-//  4. After SetOnLogEntry(nil-replacement), stale callbacks still
-//     drain cleanly — no hang at shutdown.
+//  1. Producers do NOT block on the slow callback — delivery is decoupled
+//     onto the worker, so the log() loop returns near-instantly.
+//  2. Every entry is eventually delivered exactly once (buffer 4096 >> 200,
+//     so nothing is dropped), in per-producer FIFO order.
+//  3. Ring-buffer Stats accounting matches the LogHTTP calls that returned,
+//     independent of callback latency.
+//  4. Swapping in a replacement callback takes effect for later entries and
+//     the logger never hangs.
 func TestTrafficLogger_SlowCallback(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
@@ -178,6 +176,7 @@ func TestTrafficLogger_SlowCallback(t *testing.T) {
 	total := producers * entriesPerTask
 
 	tl := NewTrafficLogger(maxSize)
+	defer tl.Close() // deterministic worker teardown for goleak
 
 	var cbCount atomic.Int64
 	var mu sync.Mutex
@@ -221,9 +220,26 @@ func TestTrafficLogger_SlowCallback(t *testing.T) {
 
 	elapsed := time.Since(start)
 
-	// (1) Callback fired exactly once per entry.
-	assert.Equal(t, int64(total), cbCount.Load(),
-		"callback fires exactly once per log() call")
+	// The whole point of the async dispatcher: producers do NOT block on the
+	// slow (5ms) callback. Serialized, 200 entries × 5ms ≈ 1s; the producers
+	// return near-instantly because delivery is decoupled onto the worker.
+	assert.Less(t, elapsed, 500*time.Millisecond,
+		"producers must not block on the slow callback (async delivery)")
+
+	// (1) Every entry is eventually recorded (buffer 4096 > 200, no drops).
+	// Gate on the recorded map, not cbCount, because cbCount increments before
+	// the callback's sleep+append finishes.
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		n := 0
+		for _, v := range perWorker {
+			n += len(v)
+		}
+		return n == total
+	}, 5*time.Second, 5*time.Millisecond, "every callback recorded")
+	assert.Equal(t, int64(total), cbCount.Load(), "callback fires once per log() call")
+	assert.Zero(t, tl.droppedCallbacks(), "no drops with buffer >> entry count")
 
 	// (3) Stats match the number of returned calls.
 	stats := tl.Stats()
@@ -231,33 +247,28 @@ func TestTrafficLogger_SlowCallback(t *testing.T) {
 	assert.Equal(t, int64(total), stats.AvailableEntries,
 		"with maxSize=%d and %d entries, all are retained", maxSize, total)
 
-	// (2) Per-worker ordering: each worker's observed indices must be
-	// strictly ascending. Callbacks from different workers interleave,
-	// but a single worker's callbacks see its own entries in order.
-	mu.Lock()
-	defer mu.Unlock()
-	assert.Len(t, perWorker, producers,
-		"every worker produced at least one callback entry")
-	for key, indices := range perWorker {
-		require.Len(t, indices, entriesPerTask,
-			"worker %s produced %d callbacks, expected %d",
-			key, len(indices), entriesPerTask)
-		for j := 1; j < len(indices); j++ {
-			require.Greater(t, indices[j], indices[j-1],
-				"worker %s callback ordering broken at j=%d: %d !> %d",
-				key, j, indices[j], indices[j-1])
+	// (2) Per-worker ordering: each worker's observed indices must be strictly
+	// ascending. The single-worker FIFO drain preserves each producer's order.
+	// defer Unlock so a failing require never wedges the worker on mu.
+	func() {
+		mu.Lock()
+		defer mu.Unlock()
+		assert.Len(t, perWorker, producers,
+			"every worker produced at least one callback entry")
+		for key, indices := range perWorker {
+			require.Len(t, indices, entriesPerTask,
+				"worker %s produced %d callbacks, expected %d",
+				key, len(indices), entriesPerTask)
+			for j := 1; j < len(indices); j++ {
+				require.Greater(t, indices[j], indices[j-1],
+					"worker %s callback ordering broken at j=%d: %d !> %d",
+					key, j, indices[j], indices[j-1])
+			}
 		}
-	}
+	}()
 
-	// Sanity: with 200 total entries × 5ms callback serialized per
-	// producer, a single-threaded baseline would be ~1s. We run 4
-	// producers in parallel, so elapsed should be in [250ms, 1s].
-	// Mostly we just want it to finish without hanging.
-	assert.Less(t, elapsed, 2*time.Second,
-		"slow-callback test completed without hanging")
-
-	// (4) Swap in a no-op callback and log more — the logger must not
-	// hang, and the new callback must take effect.
+	// (4) Swap in a no-op callback and log more — the logger must not hang, and
+	// the new callback must take effect.
 	var newCount atomic.Int64
 	tl.SetOnLogEntry(func(e LogEntry) {
 		newCount.Add(1)
@@ -271,8 +282,8 @@ func TestTrafficLogger_SlowCallback(t *testing.T) {
 			StatusCode: 200,
 		})
 	}
-	assert.Equal(t, int64(10), newCount.Load(),
-		"replacement callback receives post-swap entries")
+	require.Eventually(t, func() bool { return newCount.Load() == 10 },
+		5*time.Second, 5*time.Millisecond, "replacement callback receives post-swap entries")
 }
 
 // ---- Test 3: PanickingCallback ------------------------------------------
@@ -312,13 +323,15 @@ func TestTrafficLogger_PanickingCallback(t *testing.T) {
 	total := producers * entriesPerTask
 
 	tl := NewTrafficLogger(maxSize)
+	defer tl.Close() // deterministic worker teardown for goleak
 
 	var seen atomic.Int64
 	var recovered atomic.Int64
 
-	// Wrap the panicking body in recover so we can keep producing.
-	// This mirrors what a real consumer would do; we prove the logger
-	// itself stays correct when the handler recovers externally.
+	// The callback recovers its own panic (as a real consumer would). The
+	// dispatcher worker ALSO recovers as defence in depth, so even an
+	// un-recovered panic could not take the worker down — proven by the fact
+	// that every subsequent entry is still delivered.
 	tl.SetOnLogEntry(func(e LogEntry) {
 		defer func() {
 			if r := recover(); r != nil {
@@ -349,12 +362,13 @@ func TestTrafficLogger_PanickingCallback(t *testing.T) {
 	}
 	wg.Wait()
 
-	// (1) Callback fired for every entry.
-	assert.Equal(t, int64(total), seen.Load(),
+	// (1) Callback eventually fires for every entry (delivery is async now).
+	require.Eventually(t, func() bool { return seen.Load() == int64(total) },
+		5*time.Second, 5*time.Millisecond,
 		"callback invoked for every log() — panics do not skip entries")
 
-	// (4) Panic rate matches 1-in-10 (exact because seen is atomic
-	// incremented inside the callback before the panic check).
+	// (4) Panic rate matches 1-in-10 (exact because seen is atomic incremented
+	// inside the callback before the panic check).
 	expectedPanics := int64(total / 10)
 	assert.Equal(t, expectedPanics, recovered.Load(),
 		"recovered panic count == floor(total/10)")
@@ -913,4 +927,49 @@ func TestTrafficLogger_AllLogTypes(t *testing.T) {
 
 	nonHook := tl.Query(LogFilter{Types: []LogEntryType{LogTypeHook}})
 	assert.Empty(t, nonHook, "Types=[hook] returns empty — never logged via helper")
+}
+
+// TestTrafficLogger_SlowSinkDoesNotBlockProducer asserts finding 3: the
+// onLogEntry callback is delivered asynchronously, so a deliberately-slow (or
+// wedged) sink cannot stall the producing goroutine. Before the fix the
+// callback fired synchronously in log() after unlock, so N entries × a blocking
+// sink serialized onto the request/telemetry hot path.
+func TestTrafficLogger_SlowSinkDoesNotBlockProducer(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+
+	tl := NewTrafficLogger(1000)
+	defer tl.Close()
+
+	release := make(chan struct{})
+	var entered atomic.Int64
+	// A sink that blocks hard on its first invocation until released.
+	tl.SetOnLogEntry(func(e LogEntry) {
+		if entered.Add(1) == 1 {
+			<-release // wedge the worker on the very first entry
+		}
+	})
+
+	const n = 200
+	start := time.Now()
+	for i := 0; i < n; i++ {
+		tl.LogHTTP(HTTPLogEntry{ID: fmt.Sprintf("r-%d", i), Timestamp: time.Now(), Method: "GET", URL: "/x", StatusCode: 200})
+	}
+	elapsed := time.Since(start)
+
+	// The producer returned promptly even though the worker is wedged on the
+	// first entry — proving delivery is decoupled. A synchronous callback would
+	// have blocked here forever on <-release.
+	if elapsed > 250*time.Millisecond {
+		t.Fatalf("producer blocked on the slow sink: %v for %d entries", elapsed, n)
+	}
+
+	// The ring buffer retained every entry regardless of the wedged sink.
+	if got := tl.Stats().TotalEntries; got != int64(n) {
+		t.Fatalf("ring buffer lost entries: got %d want %d", got, n)
+	}
+
+	// Unwedge so the worker can exit cleanly under Close (goleak).
+	close(release)
+	require.Eventually(t, func() bool { return entered.Load() >= 1 }, time.Second, 5*time.Millisecond,
+		"worker should have entered the sink at least once")
 }

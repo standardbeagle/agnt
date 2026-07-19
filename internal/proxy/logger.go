@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/json"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -608,12 +609,84 @@ type LogEntry struct {
 
 // TrafficLogger stores proxy traffic logs with bounded memory.
 type TrafficLogger struct {
-	entries    []LogEntry
-	maxSize    int
-	head       atomic.Int64                   // Next write position
-	count      atomic.Int64                   // Total entries written (for ID generation)
-	mu         sync.RWMutex                   // Protects entries slice
-	onLogEntry atomic.Pointer[func(LogEntry)] // Optional callback fired after each entry
+	entries []LogEntry
+	maxSize int
+	head    atomic.Int64 // Next write position
+	count   atomic.Int64 // Total entries written (for ID generation)
+	mu      sync.RWMutex // Protects entries slice
+	// disp is the async fan-out boundary for the onLogEntry callback. It is
+	// created lazily on the first SetOnLogEntry so a logger with no consumer
+	// spawns no goroutine. nil until then. See logCallbackDispatcher.
+	disp atomic.Pointer[logCallbackDispatcher]
+}
+
+// logCallbackDispatcher decouples the onLogEntry callback from the producer
+// goroutine so a slow (or briefly-blocking) consumer can never stall the
+// request/telemetry hot path — the "callback must not block" contract is now
+// STRUCTURALLY enforced instead of trusted. log() does a non-blocking send onto
+// a bounded buffered channel (drop-newest on overflow, matching the daemon's
+// own BroadcastLogEntry and the incident bus); a single worker goroutine drains
+// it and invokes the current callback in FIFO order.
+//
+// It is a separate object (not fields on TrafficLogger) so the worker closure
+// holds only the dispatcher, never the TrafficLogger — that lets a finalizer on
+// the TrafficLogger reclaim the goroutine when a proxy's logger becomes
+// unreachable, since the logger's lifecycle owner (ProxyServer) is out of this
+// file's reach. Tests call Close() for deterministic teardown.
+type logCallbackDispatcher struct {
+	ch        chan LogEntry
+	done      chan struct{}
+	cb        atomic.Pointer[func(LogEntry)]
+	dropped   atomic.Int64
+	closeOnce sync.Once
+}
+
+func newLogCallbackDispatcher() *logCallbackDispatcher {
+	d := &logCallbackDispatcher{
+		// 4096 mirrors the incident bus cap; deep enough to absorb bursts,
+		// bounded so a wedged consumer costs memory, not the producer.
+		ch:   make(chan LogEntry, 4096),
+		done: make(chan struct{}),
+	}
+	go d.run()
+	return d
+}
+
+func (d *logCallbackDispatcher) run() {
+	for {
+		select {
+		case <-d.done:
+			return
+		case entry := <-d.ch:
+			cb := d.cb.Load()
+			if cb == nil || *cb == nil {
+				continue
+			}
+			// A panicking sink must not take down the worker (and with it every
+			// subsequent entry). The callback is documented "must not block";
+			// panics are contained here as defence in depth.
+			func() {
+				defer func() { _ = recover() }()
+				(*cb)(entry)
+			}()
+		}
+	}
+}
+
+// dispatch is the producer-side, non-blocking hand-off. It never blocks: on a
+// full buffer it drops the newest entry and counts it. The ring buffer already
+// retains the entry (log() writes it before dispatch), so `proxylog query`
+// still surfaces it — only the live stream fan-out drops.
+func (d *logCallbackDispatcher) dispatch(entry LogEntry) {
+	select {
+	case d.ch <- entry:
+	default:
+		d.dropped.Add(1)
+	}
+}
+
+func (d *logCallbackDispatcher) close() {
+	d.closeOnce.Do(func() { close(d.done) })
 }
 
 // NewTrafficLogger creates a new logger with specified max entries.
@@ -835,16 +908,58 @@ func (tl *TrafficLogger) log(entry LogEntry) {
 	tl.count.Add(1)
 	tl.mu.Unlock()
 
-	// Fire callback if set (non-blocking, used for streaming events).
-	if cb := tl.onLogEntry.Load(); cb != nil {
-		(*cb)(entry)
+	// Hand the entry to the async dispatcher (non-blocking). Nil until a
+	// consumer registers a callback, so a callback-less logger does no work.
+	if d := tl.disp.Load(); d != nil {
+		d.dispatch(entry)
 	}
 }
 
-// SetOnLogEntry sets a callback fired after each log entry.
-// The callback must not block — use a buffered channel if forwarding.
+// SetOnLogEntry sets the callback fired (asynchronously, in FIFO order) after
+// each log entry. Delivery is decoupled onto a bounded worker: a slow or
+// blocking callback cannot stall producers, and the newest entry is dropped if
+// the buffer overflows. The callback may be replaced at any time; the worker
+// picks up the new one for subsequent entries. Call Close to stop the worker.
 func (tl *TrafficLogger) SetOnLogEntry(fn func(LogEntry)) {
-	tl.onLogEntry.Store(&fn)
+	d := tl.disp.Load()
+	if d == nil {
+		nd := newLogCallbackDispatcher()
+		if tl.disp.CompareAndSwap(nil, nd) {
+			d = nd
+			// Safety net: reclaim the worker goroutine when the logger becomes
+			// unreachable, since ProxyServer (the lifecycle owner) is out of
+			// scope for an explicit Close in production. The finalizer captures
+			// only the dispatcher, so it does not itself keep tl alive.
+			disp := nd
+			runtime.SetFinalizer(tl, func(*TrafficLogger) { disp.close() })
+		} else {
+			nd.close() // lost the create race; adopt the winner
+			d = tl.disp.Load()
+		}
+	}
+	if fn == nil {
+		d.cb.Store(nil)
+		return
+	}
+	d.cb.Store(&fn)
+}
+
+// Close stops the async onLogEntry worker goroutine. Idempotent and safe on a
+// logger that never had a callback. Tests must call it for deterministic
+// goroutine teardown; production relies on the finalizer safety net.
+func (tl *TrafficLogger) Close() {
+	if d := tl.disp.Load(); d != nil {
+		d.close()
+	}
+}
+
+// droppedCallbacks reports how many entries the async dispatcher dropped due to
+// buffer overflow. Used by tests to assert overflow behaviour.
+func (tl *TrafficLogger) droppedCallbacks() int64 {
+	if d := tl.disp.Load(); d != nil {
+		return d.dropped.Load()
+	}
+	return 0
 }
 
 // Query retrieves log entries matching the filter in chronological order.
