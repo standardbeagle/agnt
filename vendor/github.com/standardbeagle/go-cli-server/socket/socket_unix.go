@@ -417,7 +417,7 @@ func (sm *Manager) cleanupStale() error {
 		return ErrDaemonRunning
 	}
 
-	if err := os.Remove(sm.config.Path); err != nil {
+	if err := os.Remove(sm.config.Path); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("failed to remove stale socket: %w", err)
 	}
 
