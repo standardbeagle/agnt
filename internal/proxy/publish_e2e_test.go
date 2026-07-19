@@ -191,8 +191,9 @@ func TestE2EPublishGate(t *testing.T) {
 	t.Run("artifact_serves_public_bundle_and_INV12_CSP", func(t *testing.T) {
 		code, body, hdr := p.get(t, "/s/"+token)
 		require.Equal(t, http.StatusOK, code)
-		// The shell loads ONLY the RolePublic bundle, and the title round-trips.
-		assert.Contains(t, body, `<script src="`+assetPath+`">`)
+		// The shell loads ONLY the RolePublic bundle, SRI-pinned to its hash so
+		// the CSP hash-source authorises it without 'self'.
+		assert.Contains(t, body, `<script src="`+assetPath+`" integrity="`+assetHash+`" crossorigin="anonymous">`)
 		assert.Contains(t, body, "E2E Walkthrough")
 		// INV-12: the served CSP pins the exact bundle hash and NEVER carries
 		// 'unsafe-inline' — the public plane sets its CSP wholesale, so no hostile
@@ -200,6 +201,8 @@ func TestE2EPublishGate(t *testing.T) {
 		csp := hdr.Get("Content-Security-Policy")
 		require.NotEmpty(t, csp)
 		assert.Contains(t, csp, assetHash, "CSP must pin the RolePublic bundle hash")
+		// The hash pin is real only without 'self' in script-src (finding 4).
+		assert.NotContains(t, csp, "script-src 'self'", "public script-src must drop 'self' so the hash gates")
 		assert.NotContains(t, csp, "unsafe-inline", "public CSP must never allow unsafe-inline")
 		assert.NotContains(t, csp, "unsafe-eval")
 		assert.Equal(t, "DENY", hdr.Get("X-Frame-Options"))

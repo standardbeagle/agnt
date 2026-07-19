@@ -87,7 +87,7 @@ type PublicHandler struct {
 	maxFeedbackBody int64 // configured feedback POST cap (config.FeedbackConfig.MaxBodyBytes)
 
 	assetPath string // content-addressed RolePublic bundle path
-	cspHash   string // "sha256-<b64>" of the RolePublic bundle, pinned in CSP
+	cspHash   string // "sha256-<b64>" of the RolePublic bundle; CSP script-src hash + <script> SRI integrity
 }
 
 // NewPublicHandler builds the public plane over a token verifier and an optional
@@ -228,7 +228,14 @@ func (h *PublicHandler) serveArtifact(w http.ResponseWriter, r *http.Request, re
 	b.WriteString(html.EscapeString(title))
 	b.WriteString("</title>")
 	b.WriteString("<style nonce=\"" + nonce + "\">html,body{margin:0;height:100%}</style>")
-	b.WriteString("<script src=\"" + h.assetPath + "\"></script>")
+	// Pin the exact bundle bytes with Subresource Integrity. The SRI hash is
+	// what makes the CSP script-src hash-source real for this EXTERNAL script:
+	// a CSP 'sha256-…' source only authorises an external <script src> when the
+	// element carries a matching integrity attribute (CSP L3 external-hash
+	// matching). Together with dropping 'self' from script-src (writeHeaders),
+	// the public plane loads THIS bundle and nothing else. crossorigin makes the
+	// fetch integrity-checkable; same-origin requests are not CORS-blocked.
+	b.WriteString("<script src=\"" + h.assetPath + "\" integrity=\"" + h.cspHash + "\" crossorigin=\"anonymous\"></script>")
 	b.WriteString("</head><body></body></html>")
 	body := b.String()
 
@@ -383,7 +390,13 @@ func (h *PublicHandler) writeHeaders(hdr http.Header, kind responseKind, nonce s
 	}
 	hdr.Set("Content-Security-Policy", strings.Join([]string{
 		"default-src 'self'",
-		"script-src 'self' '" + h.cspHash + "'",
+		// script-src OMITS 'self' deliberately: with 'self' present the hash
+		// source is inert (a hash only gates scripts once 'self'/'unsafe-inline'
+		// are absent), defeating the "pin the exact bundle" intent. The public
+		// plane serves no other same-origin JS, and the one bundle it does load
+		// carries a matching SRI integrity attribute (see the <script> tag in
+		// servePublicArtifact), so the hash source authorises exactly it.
+		"script-src '" + h.cspHash + "'",
 		"style-src " + styleSrc,
 		"img-src 'self' data:",
 		"connect-src 'self'",

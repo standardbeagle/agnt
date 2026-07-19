@@ -216,8 +216,13 @@ func TestTokenGatingAndINV12(t *testing.T) {
 	if strings.Contains(csp, "unsafe-inline") || strings.Contains(csp, "unsafe-eval") {
 		t.Fatalf("INV-12 violated: served CSP still contains unsafe-* : %q", csp)
 	}
-	if !strings.Contains(csp, "script-src 'self'") || !strings.Contains(csp, h.cspHash) {
-		t.Fatalf("served CSP is not agnt's self+hash policy: %q", csp)
+	// script-src must pin the bundle by hash ALONE — 'self' would render the
+	// hash inert (finding 4). default-src keeps 'self'; only script-src drops it.
+	if !strings.Contains(csp, "script-src '"+h.cspHash+"'") {
+		t.Fatalf("served CSP script-src is not the hash-only pin: %q", csp)
+	}
+	if strings.Contains(csp, "script-src 'self'") {
+		t.Fatalf("served CSP script-src must not contain 'self' (inert hash): %q", csp)
 	}
 	if hostile.Get("Content-Security-Policy-Report-Only") != "" {
 		t.Fatalf("INV-12 violated: Content-Security-Policy-Report-Only not deleted wholesale")
@@ -228,7 +233,7 @@ func TestTokenGatingAndINV12(t *testing.T) {
 
 	// The live artifact response must carry the same CSP posture end-to-end.
 	liveCSP := w.Header().Get("Content-Security-Policy")
-	if strings.Contains(liveCSP, "unsafe-inline") || !strings.Contains(liveCSP, "script-src 'self'") {
+	if strings.Contains(liveCSP, "unsafe-inline") || !strings.Contains(liveCSP, "script-src '"+h.cspHash+"'") {
 		t.Fatalf("artifact response CSP wrong: %q", liveCSP)
 	}
 
@@ -266,6 +271,45 @@ func TestPublicHeaderAssertions(t *testing.T) {
 	fb := do(h, http.MethodPost, sharePrefix+validToken+"/feedback", `{"c":"hi"}`, map[string]string{"Content-Type": "application/json"})
 	if got := fb.Header().Get("Cache-Control"); got != "no-store" {
 		t.Fatalf("feedback Cache-Control: got %q, want no-store", got)
+	}
+}
+
+// TestPublicBundleHashPinIsReal asserts finding 4: the public CSP pins the
+// bundle by hash ALONE (no 'self', which would make the hash source inert), and
+// the external <script src> carries a matching SRI integrity attribute — which
+// is what makes a CSP hash-source authorise an external same-origin script, so
+// dropping 'self' does not break the bundle load.
+func TestPublicBundleHashPinIsReal(t *testing.T) {
+	h := newTestHandler(nil)
+
+	art := do(h, http.MethodGet, sharePrefix+validToken, "", nil)
+	if art.Code != http.StatusOK {
+		t.Fatalf("artifact: got %d, want 200", art.Code)
+	}
+
+	csp := art.Header().Get("Content-Security-Policy")
+	scriptSrc := ""
+	for _, d := range strings.Split(csp, ";") {
+		if strings.HasPrefix(strings.TrimSpace(d), "script-src") {
+			scriptSrc = strings.TrimSpace(d)
+		}
+	}
+	if scriptSrc == "" {
+		t.Fatalf("no script-src directive in CSP: %q", csp)
+	}
+	if strings.Contains(scriptSrc, "'self'") {
+		t.Fatalf("script-src must not contain 'self' (inert hash pin): %q", scriptSrc)
+	}
+	if !strings.Contains(scriptSrc, "'"+h.cspHash+"'") {
+		t.Fatalf("script-src must pin the bundle hash %q: %q", h.cspHash, scriptSrc)
+	}
+
+	// The external <script src> must carry integrity matching the CSP hash so
+	// the hash-source actually authorises it.
+	body := art.Body.String()
+	wantTag := "<script src=\"" + h.assetPath + "\" integrity=\"" + h.cspHash + "\" crossorigin=\"anonymous\"></script>"
+	if !strings.Contains(body, wantTag) {
+		t.Fatalf("artifact shell missing SRI-pinned bundle tag.\nwant: %s\nbody: %s", wantTag, body)
 	}
 }
 
