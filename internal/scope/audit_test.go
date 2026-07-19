@@ -22,8 +22,8 @@ var allowedUnscoped = map[string]string{
 	"internal/daemon/doctor.go:doctor: health check across all projects":                                              "doctor run with no project filter audits every proxy",
 	"internal/daemon/daemon_port_kill_report.go:port-kill attribution: find proxies whose backend was just reclaimed": "port conflicts are inherently cross-project; attribution must scan every project's proxies to notify the victim",
 	"internal/daemon/hub_helpers.go:explicit global flag on hub query":                                                "user passed global:true on a gated query (documented C6 override)",
-	"internal/daemon/hub_lifecycle.go:STOP-ALL: count every proxy":                                                    "STOP-ALL is an admin-wide lifecycle command",
-	"internal/daemon/hub_lifecycle.go:RESTART-ALL: restart every proxy":                                               "RESTART-ALL is an admin-wide lifecycle command",
+	"internal/daemon/hub_lifecycle.go:STOP-ALL global: count every proxy":                                             "STOP-ALL with explicit global:true is the deliberate admin-wide daemon-shutdown path (project-scoped is now the default; see daemon-architecture.md §Tool session-scoping)",
+	"internal/daemon/hub_lifecycle.go:RESTART-ALL global: restart every proxy":                                        "RESTART-ALL with explicit global:true is the deliberate admin-wide lifecycle path (project-scoped is now the default)",
 	"internal/daemon/event_hub.go:alert toast fan-out to all browser overlays":                                        "alert toasts are browser-facing, not agent-bound delivery",
 }
 
