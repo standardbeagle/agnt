@@ -15,10 +15,10 @@ import (
 )
 
 const (
-	soakDuration    = 24 * time.Hour
-	soakTickRate    = 10 * time.Second // 1 event per 10s
-	soakMaxMemoryMB = 200              // MB heap upper bound
-	soakGCInterval  = 5 * time.Minute
+	soakDuration     = 24 * time.Hour
+	soakTickRate     = 10 * time.Second // 1 event per 10s
+	soakMaxMemoryMB  = 200              // MB heap upper bound
+	soakHealthPeriod = 5 * time.Minute
 )
 
 // TestSoak_24h_StableMemory runs a low-rate stream for 24 hours and verifies
@@ -49,8 +49,8 @@ func TestSoak_24h_StableMemory(t *testing.T) {
 
 	ticker := time.NewTicker(soakTickRate)
 	defer ticker.Stop()
-	gcTicker := time.NewTicker(soakGCInterval)
-	defer gcTicker.Stop()
+	healthTicker := time.NewTicker(soakHealthPeriod)
+	defer healthTicker.Stop()
 	deadline := time.After(soakDuration)
 
 	severities := []Severity{SeverityCritical, SeverityError, SeverityWarning, SeverityInfo}
@@ -100,44 +100,8 @@ func TestSoak_24h_StableMemory(t *testing.T) {
 			bus.Publish(ev)
 			eventCount++
 
-		case <-gcTicker.C:
-			// Periodically GC the inbox to exercise the GC path.
-			pl.inbox.GC()
+		case <-healthTicker.C:
 			checkHealth()
 		}
 	}
-}
-
-// TestSoak_DaemonRestart_CriticalRestoreOnly simulates a daemon restart after
-// a period of activity. After restart, only unread critical events survive.
-//
-// Run with: go test -tags=soak -run TestSoak_DaemonRestart ./internal/incident/ -v
-func TestSoak_DaemonRestart_CriticalRestoreOnly(t *testing.T) {
-	dir := t.TempDir()
-	savePath := dir + "/critical.json"
-
-	// Session 1: populate inbox with mixed severities.
-	inbox1 := NewInbox("soak-restart-1")
-	for i := 0; i < 20; i++ {
-		inbox1.Ingest(makeEntry(fmt.Sprintf("fp-err-%d", i), SeverityError))
-	}
-	for i := 0; i < 5; i++ {
-		inbox1.Ingest(makeEntry(fmt.Sprintf("fp-crit-%d", i), SeverityCritical))
-	}
-	for i := 0; i < 50; i++ {
-		inbox1.Ingest(makeEntry(fmt.Sprintf("fp-warn-%d", i), SeverityWarning))
-	}
-
-	// Persist critical only.
-	require.NoError(t, inbox1.SaveCritical(savePath))
-
-	// Session 2: cold restore.
-	inbox2 := NewInbox("soak-restart-2")
-	require.NoError(t, inbox2.LoadCritical(savePath))
-
-	stats := inbox2.Stats()
-	require.Equal(t, 5, stats.Critical, "only critical entries survive restart")
-	require.Equal(t, 0, stats.Error, "error entries must not survive restart")
-	require.Equal(t, 0, stats.Warning, "warning entries must not survive restart")
-	require.Equal(t, 0, stats.Info, "info entries must not survive restart")
 }

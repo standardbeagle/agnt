@@ -2,7 +2,6 @@ package incident
 
 import (
 	"fmt"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
@@ -267,44 +266,6 @@ func TestInbox_Stats_ReflectsState(t *testing.T) {
 	}
 }
 
-// ── cold restore ──────────────────────────────────────────────────────────────
-
-func TestInbox_ColdRestore_CriticalOnly(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "inbox.json")
-
-	// Session 1: persist.
-	inbox1 := NewInbox("sess1")
-	inbox1.Ingest(makeEntry("fp-crit", SeverityCritical))
-	inbox1.Ingest(makeEntry("fp-err", SeverityError))
-	if err := inbox1.SaveCritical(path); err != nil {
-		t.Fatalf("SaveCritical: %v", err)
-	}
-
-	// Session 2: restore.
-	inbox2 := NewInbox("sess2")
-	if err := inbox2.LoadCritical(path); err != nil {
-		t.Fatalf("LoadCritical: %v", err)
-	}
-	s := inbox2.Stats()
-	if s.Critical != 1 {
-		t.Errorf("critical after restore: got %d, want 1", s.Critical)
-	}
-	if s.Error != 0 {
-		t.Errorf("error band after restore: got %d, want 0 (only critical persisted)", s.Error)
-	}
-}
-
-func TestInbox_ColdRestore_MissingFile(t *testing.T) {
-	t.Parallel()
-	inbox := NewInbox("sess")
-	err := inbox.LoadCritical(filepath.Join(t.TempDir(), "nonexistent.json"))
-	if err != nil {
-		t.Errorf("missing file should not error, got: %v", err)
-	}
-}
-
 // ── subscribe / delta ─────────────────────────────────────────────────────────
 
 func TestInbox_Subscribe_Delta_NewVsMerge(t *testing.T) {
@@ -368,30 +329,31 @@ func TestInbox_ConcurrentIngestQuery(t *testing.T) {
 	}
 }
 
-// ── GC ────────────────────────────────────────────────────────────────────────
+// ── read entries excluded from Stats ────────────────────────────────────────────
 
-func TestInbox_GC_RemovesStaleRead(t *testing.T) {
+// Stats band counts and New reflect UNREAD entries only. Draining the inbox
+// (marking entries read via a get_incidents pull) must drop the counts to zero
+// so the pinger stops shouting error-level after the agent has seen everything.
+func TestInbox_Stats_ExcludesReadEntries(t *testing.T) {
 	t.Parallel()
 	inbox := NewInbox("sess")
-	e := makeEntry("fp-gc", SeverityError)
-	e.LastSeenAt = time.Now().Add(-staleReadAge - time.Second)
-	inbox.Ingest(e)
-	inbox.MarkRead([]string{"fp-gc"}, false)
+	inbox.Ingest(makeEntry("fp-c", SeverityCritical))
+	inbox.Ingest(makeEntry("fp-e", SeverityError))
+	inbox.Ingest(makeEntry("fp-w", SeverityWarning))
 
-	inbox.GC()
-	if inbox.Stats().Error != 0 {
-		t.Error("GC should remove stale read entry")
+	s := inbox.Stats()
+	if s.Critical != 1 || s.Error != 1 || s.Warning != 1 || s.New != 3 {
+		t.Fatalf("before drain: c=%d e=%d w=%d new=%d, want 1 1 1 3", s.Critical, s.Error, s.Warning, s.New)
 	}
-}
 
-func TestInbox_GC_KeepsFreshRead(t *testing.T) {
-	t.Parallel()
-	inbox := NewInbox("sess")
-	inbox.Ingest(makeEntry("fp-fresh", SeverityError))
-	inbox.MarkRead([]string{"fp-fresh"}, false)
+	// Drain: mark every entry read.
+	inbox.MarkRead([]string{"fp-c", "fp-e", "fp-w"}, true)
 
-	inbox.GC()
-	if inbox.Stats().Error != 1 {
-		t.Error("GC should keep recently-read entry")
+	s = inbox.Stats()
+	if s.Critical != 0 || s.Error != 0 || s.Warning != 0 || s.Info != 0 || s.New != 0 {
+		t.Errorf("after drain: c=%d e=%d w=%d i=%d new=%d, want all 0", s.Critical, s.Error, s.Warning, s.Info, s.New)
+	}
+	if !s.OldestUnread.IsZero() {
+		t.Errorf("after drain: OldestUnread should be zero, got %v", s.OldestUnread)
 	}
 }

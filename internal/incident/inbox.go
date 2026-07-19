@@ -2,8 +2,6 @@ package incident
 
 import (
 	"container/list"
-	"encoding/json"
-	"os"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -15,7 +13,6 @@ import (
 const (
 	defaultBandCapacity = 100
 	numBands            = 4
-	staleReadAge        = 5 * time.Minute
 	subChanBuf          = 16
 	maxSampleURLs       = 10  // distinct sample URLs surfaced on a storm entry
 	maxDistinctURLs     = 128 // hard cap so a flood cannot grow the set unbounded
@@ -43,12 +40,16 @@ type InboxDelta struct {
 	Escalated bool // severity moved entry to a higher band
 }
 
-// Stats is a point-in-time snapshot of inbox health.
+// Stats is a point-in-time snapshot of inbox health. The per-band counts and
+// New reflect UNREAD entries only: once an entry is marked read (the agent
+// pulled it via get_incidents), it no longer inflates the counts or the ping's
+// severity level, so pings stop shouting error-level after the inbox is drained.
 type Stats struct {
 	Critical     int       `json:"critical"`
 	Error        int       `json:"error"`
 	Warning      int       `json:"warning"`
 	Info         int       `json:"info"`
+	New          int       `json:"new"` // total unread entries across all bands
 	Dropped      int64     `json:"dropped"`
 	OldestUnread time.Time `json:"oldest_unread,omitempty"`
 	Cursor       time.Time `json:"cursor,omitempty"`
@@ -95,8 +96,8 @@ type Inbox struct {
 	// ingestMu serializes the whole find-then-insert sequence of Ingest. Each
 	// band has its own lock, but a fingerprint's presence is checked band by
 	// band with the lock released between bands, so two concurrent Ingests
-	// (dispatch goroutine + LoadCritical) could both miss an existing entry and
-	// double-insert, or race an escalation move. This inbox-level lock makes the
+	// could both miss an existing entry and double-insert, or race an escalation
+	// move. This inbox-level lock makes the
 	// scan+insert atomic without widening any band lock's scope.
 	ingestMu sync.Mutex
 
@@ -311,26 +312,29 @@ func (inbox *Inbox) Stats() Stats {
 
 	for i, b := range inbox.bands {
 		b.mu.RLock()
-		n := len(b.slots)
+		unread := 0
 		for _, slot := range b.slots {
-			if !slot.entry.Read {
-				t := slot.entry.LastSeenAt
-				if s.OldestUnread.IsZero() || t.Before(s.OldestUnread) {
-					s.OldestUnread = t
-				}
+			if slot.entry.Read {
+				continue
+			}
+			unread++
+			t := slot.entry.LastSeenAt
+			if s.OldestUnread.IsZero() || t.Before(s.OldestUnread) {
+				s.OldestUnread = t
 			}
 		}
 		b.mu.RUnlock()
 		switch i {
 		case 0:
-			s.Critical = n
+			s.Critical = unread
 		case 1:
-			s.Error = n
+			s.Error = unread
 		case 2:
-			s.Warning = n
+			s.Warning = unread
 		case 3:
-			s.Info = n
+			s.Info = unread
 		}
+		s.New += unread
 	}
 	return s
 }
@@ -432,61 +436,6 @@ func (inbox *Inbox) FindByFingerprint(fp string) *InboxEntry {
 			return &e
 		}
 		b.mu.RUnlock()
-	}
-	return nil
-}
-
-// GC removes Read entries older than staleReadAge from all bands.
-func (inbox *Inbox) GC() {
-	cutoff := time.Now().Add(-staleReadAge)
-	for _, b := range inbox.bands {
-		b.mu.Lock()
-		for fp, slot := range b.slots {
-			if slot.entry.Read && slot.entry.LastSeenAt.Before(cutoff) {
-				b.lruList.Remove(slot.elem)
-				delete(b.slots, fp)
-			}
-		}
-		b.mu.Unlock()
-	}
-}
-
-// SaveCritical persists unread critical entries to path as JSON.
-func (inbox *Inbox) SaveCritical(path string) error {
-	b := inbox.bands[0]
-	b.mu.RLock()
-	entries := make([]*InboxEntry, 0, len(b.slots))
-	for _, slot := range b.slots {
-		if !slot.entry.Read {
-			e := *slot.entry
-			entries = append(entries, &e)
-		}
-	}
-	b.mu.RUnlock()
-
-	data, err := json.Marshal(entries)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0600)
-}
-
-// LoadCritical loads previously saved critical entries. Silently ignores
-// missing file (first session).
-func (inbox *Inbox) LoadCritical(path string) error {
-	data, err := os.ReadFile(path)
-	if os.IsNotExist(err) {
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	var entries []*InboxEntry
-	if err := json.Unmarshal(data, &entries); err != nil {
-		return err
-	}
-	for _, e := range entries {
-		inbox.Ingest(e)
 	}
 	return nil
 }
