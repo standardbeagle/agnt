@@ -123,6 +123,12 @@ func cleanupProcessGroup(pgid int) {
 	}
 }
 
+// UPSTREAM: Windows Job Objects retain kernel ownership across Wait, so the
+// recycled POSIX PGID guard has no Windows analogue.
+func cleanupReapedProcessGroup(pgid int, _ string) {
+	cleanupProcessGroup(pgid)
+}
+
 // signalProcessGroup sends a termination signal to the process group, honoring
 // the requested signal so Windows gets the same graceful-then-forceful contract
 // as Unix. Previously it ignored sig and always called TerminateJobObject, so a

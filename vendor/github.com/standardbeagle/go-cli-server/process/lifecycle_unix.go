@@ -36,10 +36,10 @@ func setProcAttr(cmd *exec.Cmd) {
 // and the persistent tracker are consulted here to catch setsid-escaped
 // grandchildren that have since been reparented to init.
 func (pm *ProcessManager) signalProcessGroup(pid int, sig syscall.Signal) error {
-	// Signal the root process group. pgid == pid for Setpgid=true children.
-	// This reaches every process still in the root's group — including the
-	// root itself, its foreground children, and any same-group grandchildren.
-	_ = syscall.Kill(-pid, sig)
+	// UPSTREAM: never assume an arbitrary pid is a group leader. Verify both
+	// leadership and stable identity immediately before the negative-PID signal.
+	signalVerifiedProcessGroup(pid, sig, processIdentity, syscall.Getpgid, syscall.Kill)
+	_ = syscall.Kill(pid, sig)
 
 	// Build the descendant set from every available source:
 	//   1. live PPID walk (best-effort, may be empty if root is already gone)
@@ -54,10 +54,15 @@ func (pm *ProcessManager) signalProcessGroup(pid int, sig syscall.Signal) error 
 			return
 		}
 		seen[childPID] = struct{}{}
+		identity := processIdentity(childPID)
+		if identity == "" {
+			return
+		}
 		_ = syscall.Kill(childPID, sig)
 		// Setsid-escaped descendants have their own pgid — signal that
 		// group so any grandchildren of the escapee die too.
-		if childPgid, err := syscall.Getpgid(childPID); err == nil && childPgid > 0 && childPgid != pid {
+		if childPgid, err := syscall.Getpgid(childPID); err == nil && childPgid == childPID &&
+			processIdentity(childPID) == identity {
 			_ = syscall.Kill(-childPgid, sig)
 		}
 	}
@@ -72,7 +77,7 @@ func (pm *ProcessManager) signalProcessGroup(pid int, sig syscall.Signal) error 
 	}
 	if dt, ok := pm.pidTracker.(VerifiedDescendantTracker); ok {
 		for _, d := range dt.GetVerifiedDescendants(pid) {
-			addDescendant(d)
+			addDescendant(d.PID)
 		}
 	} else if dt, ok := pm.pidTracker.(DescendantTracker); ok {
 		for _, d := range dt.GetDescendants(pid) {
@@ -81,6 +86,23 @@ func (pm *ProcessManager) signalProcessGroup(pid int, sig syscall.Signal) error 
 	}
 
 	return nil
+}
+
+// signalVerifiedProcessGroup emits a negative-PID signal only for a confirmed
+// stable group leader. Arbitrary descendant PIDs are not PGIDs, and identity
+// must be rechecked across the Getpgid syscall reuse window.
+func signalVerifiedProcessGroup(pid int, sig syscall.Signal, identityFn func(int) string,
+	getpgidFn func(int) (int, error), killFn func(int, syscall.Signal) error,
+) {
+	identity := identityFn(pid)
+	if identity == "" {
+		return
+	}
+	pgid, err := getpgidFn(pid)
+	if err != nil || pgid != pid || identityFn(pid) != identity {
+		return
+	}
+	_ = killFn(-pid, sig)
 }
 
 // cleanupProcessTree kills all descendants of a process, including those that
@@ -104,11 +126,23 @@ func cleanupProcessTree(pid int) {
 // killStoredDescendants kills PIDs from the tracker's stored descendant list.
 // This catches processes that were descendants at the last scan but may have
 // been reparented or escaped since then.
-func killStoredDescendants(pids []int) {
+func killStoredDescendants(pids []int, identities map[int]string) {
+	killStoredDescendantsWith(pids, identities, processIdentity, isProcessAlive, func(pid int) {
+		_ = syscall.Kill(pid, syscall.SIGKILL)
+	})
+}
+
+// UPSTREAM: only identity captured during a trusted live-tree walk authorizes
+// a post-Wait kill. Sampling identity after Wait can bless a recycled PID.
+func killStoredDescendantsWith(pids []int, identities map[int]string, identityFn func(int) string,
+	aliveFn func(int) bool, killFn func(int),
+) {
 	for _, pid := range pids {
-		if isProcessAlive(pid) {
-			_ = syscall.Kill(pid, syscall.SIGKILL)
+		expected := identities[pid]
+		if expected == "" || !aliveFn(pid) || identityFn(pid) != expected {
+			continue
 		}
+		killFn(pid)
 	}
 }
 
@@ -233,6 +267,27 @@ func pgrepChildren(pid int) []int {
 // Backward compat alias
 func cleanupProcessGroup(pgid int) {
 	cleanupProcessTree(pgid)
+}
+
+// cleanupReapedProcessGroup handles cleanup after cmd.Wait reaped the leader.
+// Any live occupant of pgid now is recycled and must not authorize a group kill.
+// UPSTREAM: retain the pre-Wait identity and fail closed on a live replacement.
+func cleanupReapedProcessGroup(pgid int, originalIdentity string) {
+	cleanupReapedProcessGroupWith(pgid, originalIdentity, processIdentity, isProcessAlive, func(group int) {
+		_ = syscall.Kill(-group, syscall.SIGKILL)
+	})
+}
+
+func cleanupReapedProcessGroupWith(pgid int, originalIdentity string, identityFn func(int) string,
+	aliveFn func(int) bool, killGroupFn func(int),
+) {
+	if pgid <= 1 || aliveFn(pgid) {
+		return
+	}
+	if current := identityFn(pgid); current != "" && current != originalIdentity {
+		return
+	}
+	killGroupFn(pgid)
 }
 
 // signalKill sends SIGKILL to the process.
