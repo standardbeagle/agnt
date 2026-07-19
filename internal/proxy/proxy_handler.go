@@ -26,6 +26,11 @@ func (ps *ProxyServer) Stop(ctx context.Context) error {
 		// Still release the page-tracker actor: a proxy that failed to start
 		// or was already stopped must not leak its owner goroutine.
 		ps.pageTracker.Stop()
+		// Deterministically reclaim the async onLogEntry worker. A proxy the
+		// daemon registered a callback on (SetOnLogEntry) but that never ran —
+		// or that is being stopped a second time — must not leak the dispatcher
+		// goroutine to the finalizer backstop. Close() is nil-safe/idempotent.
+		ps.logger.Close()
 		return fmt.Errorf("proxy server not running")
 	}
 
@@ -81,6 +86,14 @@ func (ps *ProxyServer) Stop(ctx context.Context) error {
 			"listen_addr": ps.ListenAddr,
 		},
 	})
+
+	// Deterministically reclaim the async onLogEntry worker goroutine now that
+	// the proxy is fully torn down, rather than waiting on the finalizer
+	// backstop (which nothing schedules while the daemon's ProxyManager still
+	// references this server). Closed AFTER the proxy_stopped diagnostic above
+	// so that event is still handed to the dispatcher. Close() is idempotent
+	// and a no-op when no callback was ever registered.
+	ps.logger.Close()
 
 	return err
 }
