@@ -250,13 +250,20 @@ func (s *chordCarryScanner) Feed(data []byte) (forward []byte, detached bool) {
 		s.carry = nil
 		return combined[:idx], true
 	}
-	keep := len(s.chord) - 1
-	if keep < 0 {
-		keep = 0
+	// No full chord match. Carry forward only the longest suffix of combined
+	// that is a proper prefix of chord (it might still extend into the chord
+	// on the next Feed) — every other byte cannot possibly become part of the
+	// chord and must be forwarded immediately, not withheld a full Feed call.
+	maxKeep := len(s.chord) - 1
+	if maxKeep > len(combined) {
+		maxKeep = len(combined)
 	}
-	if len(combined) <= keep {
-		s.carry = combined
-		return nil, false
+	keep := 0
+	for l := maxKeep; l > 0; l-- {
+		if bytes.Equal(combined[len(combined)-l:], s.chord[:l]) {
+			keep = l
+			break
+		}
 	}
 	sendLen := len(combined) - keep
 	s.carry = append([]byte(nil), combined[sendLen:]...)

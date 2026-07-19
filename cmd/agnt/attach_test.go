@@ -136,11 +136,120 @@ func TestChordCarryScanner_FalseStartIsForwarded(t *testing.T) {
 	if detached {
 		t.Fatalf("single Ctrl-\\ must not trigger detach")
 	}
-	// The trailing byte is legitimately withheld as carry (it might start a
-	// new chord on the next read) until Flush; nothing is silently dropped.
-	got := append(append([]byte(nil), forward...), s.Flush()...)
-	if string(got) != "a\x1cb" {
-		t.Fatalf("forward+flush = %q, want %q (no bytes dropped on a false start)", got, "a\x1cb")
+	// The trailing 'b' cannot possibly extend into the chord (chord[0] is
+	// 0x1c, not 'b'), so it must be forwarded immediately in this same Feed
+	// call rather than withheld as carry until the next read/Flush.
+	if string(forward) != "a\x1cb" {
+		t.Fatalf("forward = %q, want %q (non-prefix trailing byte must not be withheld)", forward, "a\x1cb")
+	}
+	if got := s.Flush(); len(got) != 0 {
+		t.Fatalf("Flush() = %q, want empty (nothing left carried)", got)
+	}
+}
+
+// TestChordCarryScanner_NonPrefixByteEmittedImmediately is the direct
+// regression test for the one-keystroke echo lag: with the default 2-byte
+// chord and single-byte raw-mode reads, a byte that cannot possibly start
+// the chord (chord[0] is 0x1c) must be forwarded in the very Feed call it
+// arrives in, not withheld until the next Feed.
+func TestChordCarryScanner_NonPrefixByteEmittedImmediately(t *testing.T) {
+	s := newChordCarryScanner([]byte{0x1c, 0x1c})
+	forward, detached := s.Feed([]byte("x"))
+	if detached {
+		t.Fatalf("single ordinary byte must not trigger detach")
+	}
+	if string(forward) != "x" {
+		t.Fatalf("forward = %q, want %q (byte must be emitted in the same Feed call, not withheld)", forward, "x")
+	}
+	if got := s.Flush(); len(got) != 0 {
+		t.Fatalf("Flush() = %q, want empty (nothing should be carried for a non-prefix byte)", got)
+	}
+}
+
+// TestChordCarryScanner_ChordStillDetectedByteByByte pins that fixing the
+// lag does not regress chord detection itself when fed one byte at a time
+// (the real raw-mode read shape on the unix attach path).
+func TestChordCarryScanner_ChordStillDetectedByteByByte(t *testing.T) {
+	s := newChordCarryScanner([]byte{0x1c, 0x1c})
+
+	forward1, detached1 := s.Feed([]byte{0x1c})
+	if detached1 {
+		t.Fatalf("first chord byte alone must not trigger detach")
+	}
+	if len(forward1) != 0 {
+		t.Fatalf("forward1 = %q, want empty (first chord byte must be held, it may still start the chord)", forward1)
+	}
+
+	forward2, detached2 := s.Feed([]byte{0x1c})
+	if !detached2 {
+		t.Fatalf("expected chord to complete on second byte")
+	}
+	if len(forward2) != 0 {
+		t.Fatalf("forward2 = %q, want empty (chord bytes must never be forwarded)", forward2)
+	}
+}
+
+// TestChordCarryScanner_PrefixByteThenNonCompletingByteForwardsBoth pins the
+// other half of the fix: chord[0] is legitimately held back (it might still
+// complete the chord), but once the next byte proves it won't, both bytes
+// must reach the remote, in order, without waiting for a third Feed.
+func TestChordCarryScanner_PrefixByteThenNonCompletingByteForwardsBoth(t *testing.T) {
+	s := newChordCarryScanner([]byte{0x1c, 0x1c})
+
+	forward1, detached1 := s.Feed([]byte{0x1c})
+	if detached1 || len(forward1) != 0 {
+		t.Fatalf("first chord byte must be held with nothing forwarded, got forward=%q detached=%v", forward1, detached1)
+	}
+
+	forward2, detached2 := s.Feed([]byte("y"))
+	if detached2 {
+		t.Fatalf("Ctrl-\\ followed by 'y' must not trigger detach")
+	}
+	if string(forward2) != "\x1cy" {
+		t.Fatalf("forward2 = %q, want %q (both bytes forwarded, in order, once the chord can no longer complete)", forward2, "\x1cy")
+	}
+}
+
+// TestChordCarryScanner_LongerChordPartialPrefixCarriesAcrossFeeds exercises
+// a 3-byte chord to confirm the longest-proper-prefix carry logic (not just
+// the 2-byte special case) holds across more than one partial-match Feed.
+func TestChordCarryScanner_LongerChordPartialPrefixCarriesAcrossFeeds(t *testing.T) {
+	chord := []byte{0x01, 0x02, 0x03}
+	s := newChordCarryScanner(chord)
+
+	// "z" then the first two chord bytes: "z" is not a prefix of the chord
+	// and must be forwarded immediately; 0x01 0x02 is a proper prefix and
+	// must be held.
+	forward1, detached1 := s.Feed([]byte{'z', 0x01, 0x02})
+	if detached1 {
+		t.Fatalf("partial chord prefix must not trigger detach")
+	}
+	if string(forward1) != "z" {
+		t.Fatalf("forward1 = %q, want %q ('z' forwarded, 0x01 0x02 held as a proper chord prefix)", forward1, "z")
+	}
+
+	// A byte that doesn't complete the chord: the held prefix cannot extend,
+	// so the held bytes plus the new non-completing byte must all forward.
+	forward2, detached2 := s.Feed([]byte{0x09})
+	if detached2 {
+		t.Fatalf("chord must not be considered complete")
+	}
+	if string(forward2) != "\x01\x02\x09" {
+		t.Fatalf("forward2 = %q, want %q (held prefix + non-completing byte forwarded together, in order)", forward2, "\x01\x02\x09")
+	}
+
+	// Now drive an actual split completion: feed the first two bytes again
+	// (held), then the third completes the chord and nothing is forwarded.
+	forward3, detached3 := s.Feed([]byte{0x01, 0x02})
+	if detached3 || len(forward3) != 0 {
+		t.Fatalf("forward3 = %q detached=%v, want empty/false (0x01 0x02 is a proper prefix, held)", forward3, detached3)
+	}
+	forward4, detached4 := s.Feed([]byte{0x03})
+	if !detached4 {
+		t.Fatalf("expected chord to complete across the split feed")
+	}
+	if len(forward4) != 0 {
+		t.Fatalf("forward4 = %q, want empty (chord bytes must never be forwarded)", forward4)
 	}
 }
 
