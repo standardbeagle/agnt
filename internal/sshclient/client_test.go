@@ -99,6 +99,44 @@ func splitAddr(t *testing.T, addr string) (host, port string) {
 	return addr[:idx], addr[idx+1:]
 }
 
+func TestClientClose_TwiceDoesNotPanic(t *testing.T) {
+	fixture := newFixtureServer(t)
+	stop := fixture.serve(t)
+	defer stop()
+
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "id_test")
+	privPEM, _ := generateClientKey(t)
+	os.WriteFile(keyPath, privPEM, 0o600)
+	prompter := Prompter{In: strings.NewReader("yes\n"), Out: &discardWriter{}}
+	hkCallback, err := HostKeyCallback(filepath.Join(dir, "known_hosts"), prompter)
+	if err != nil {
+		t.Fatalf("HostKeyCallback: %v", err)
+	}
+	clientCfg := &ssh.ClientConfig{
+		User:            "tester",
+		Auth:            BuildAuthMethods([]string{keyPath}, prompter),
+		HostKeyCallback: hkCallback,
+	}
+	sshClient, err := ssh.Dial("tcp", fixture.addr, clientCfg)
+	if err != nil {
+		t.Fatalf("dialing fixture: %v", err)
+	}
+
+	c := &Client{SSH: sshClient, stopKeepalive: make(chan struct{}), dead: make(chan struct{})}
+
+	// First Close stops the keepalive channel; a second Close must not panic
+	// on close-of-closed-channel — reconnect teardown closes the same Client
+	// from more than one place.
+	_ = c.Close()
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("second Close panicked: %v", r)
+		}
+	}()
+	_ = c.Close()
+}
+
 func TestKeepalive_DetectsDeadTransportAfterConsecutiveFailures(t *testing.T) {
 	fixture := newFixtureServer(t)
 	stop := fixture.serve(t)

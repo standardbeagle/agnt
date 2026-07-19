@@ -5,6 +5,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"golang.org/x/crypto/ssh"
@@ -21,6 +22,10 @@ type Client struct {
 
 	stopKeepalive chan struct{}
 	dead          chan struct{}
+	// closeOnce guards stopKeepalive so a second Close (reconnect teardown
+	// closes clients in several places) is a no-op instead of a
+	// close-of-closed-channel panic.
+	closeOnce sync.Once
 }
 
 // Dial resolves alias against the ssh_config at configPath (DefaultConfigPath
@@ -172,8 +177,13 @@ func splitHostPort(hostPort string, defaultPort int) (host string, port int) {
 }
 
 // Close closes the underlying ssh.Client and stops the keepalive goroutine.
+// It is safe to call more than once: reconnect teardown closes the same
+// Client from several places, and a bare close(c.stopKeepalive) would panic
+// on the second call.
 func (c *Client) Close() error {
-	close(c.stopKeepalive)
+	c.closeOnce.Do(func() {
+		close(c.stopKeepalive)
+	})
 	return c.SSH.Close()
 }
 
