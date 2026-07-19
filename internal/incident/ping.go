@@ -151,7 +151,14 @@ func (pe *PingEmitter) handleDelta(delta InboxDelta) {
 	}
 
 	if delta.Escalated {
-		// Severity escalation force-flushes the pending timer.
+		// Severity escalation must emit a ping promptly. ForceFlush alone only
+		// fires when a coalesced ping is already pending; with an empty
+		// coalescer it no-ops, the flow token is already consumed, and the
+		// escalation is silently dropped. Schedule the escalated event first so
+		// a session-ping slot always exists, then force-flush it — guaranteeing
+		// exactly one prompt ping whether or not one was already pending.
+		ev := IncidentEvent{Fingerprint: sessionPingFP, Severity: sev}
+		pe.coalesce.Schedule(ev)
 		pe.coalesce.ForceFlush(sessionPingFP)
 		return
 	}
@@ -178,14 +185,8 @@ func (pe *PingEmitter) buildPayload(stats Stats, entries []InboxEntry) PingPaylo
 			Error:    stats.Error,
 			Warning:  stats.Warning,
 			Info:     stats.Info,
+			New:      stats.New, // total unread; band counts are already unread-only
 		},
-	}
-
-	// Count unread as "new".
-	for _, e := range entries {
-		if !e.Read {
-			p.Summary.New++
-		}
 	}
 
 	// Top N fingerprints sorted by severity then count.

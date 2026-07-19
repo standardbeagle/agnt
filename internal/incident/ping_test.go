@@ -283,3 +283,46 @@ func TestPing_EndToEnd_BurstIngestOnePing(t *testing.T) {
 		t.Errorf("burst of 100 same-fp should produce ≤5 pings, got %d", n)
 	}
 }
+
+// ── escalation with an empty coalescer ──────────────────────────────────────────
+
+// TestPing_Escalation_EmptyCoalescer_StillEmits pins the fix for the escalated
+// branch: it previously only called ForceFlush, which no-ops when no coalesced
+// ping is pending. A severity escalation arriving after the coalescer has
+// already drained therefore consumed the flow token but emitted nothing —
+// silently delayed escalation. The escalation must always produce a ping.
+func TestPing_Escalation_EmptyCoalescer_StillEmits(t *testing.T) {
+	t.Parallel()
+	_, inbox, pings, mu := newTestEmitter(t)
+
+	count := func() int { mu.Lock(); defer mu.Unlock(); return len(*pings) }
+	waitFor := func(min int, msg string) {
+		deadline := time.After(2 * time.Second)
+		for count() < min {
+			select {
+			case <-deadline:
+				t.Fatalf("%s: got %d pings, want >= %d", msg, count(), min)
+			case <-time.After(2 * time.Millisecond):
+			}
+		}
+	}
+
+	// First occurrence at warning schedules a coalesced ping; wait for it to
+	// fire, which drains the coalescer slot (leaving the coalescer EMPTY).
+	inbox.Ingest(makeEntry("fp-esc", SeverityWarning))
+	waitFor(1, "initial warning ping")
+	base := count()
+
+	// Escalate the same fingerprint warning→error with the coalescer now empty.
+	// The old ForceFlush-only path emitted nothing here; a ping must still fire.
+	inbox.Ingest(makeEntry("fp-esc", SeverityError))
+	waitFor(base+1, "escalation ping with empty coalescer")
+
+	// The escalation ping must reflect the entry now in the error band.
+	mu.Lock()
+	last := (*pings)[len(*pings)-1]
+	mu.Unlock()
+	if last.payload.Summary.Error < 1 {
+		t.Errorf("escalation ping should report the error entry, got error=%d", last.payload.Summary.Error)
+	}
+}
