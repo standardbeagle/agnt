@@ -40,7 +40,7 @@ package daemon
 // stays cheap. That is the invariant these tests pin down.
 //
 // Every test runs under -race and verifies goroutine cleanup with
-// goleak.VerifyNone(t, goleak.IgnoreCurrent()) so background goroutines
+// verifyNoLeaks(t) (see goleak_leaks_test.go) so background goroutines
 // from other tests in the same package do not produce false positives.
 // Out of scope: the real cmd/agnt/hook_bench_test.go cost contract; this
 // file exercises only the in-memory mechanism, not the socket round trip.
@@ -57,7 +57,6 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/stretchr/testify/assert"
-	"go.uber.org/goleak"
 )
 
 // stubBlockingHookSink implements HookEventSink with an optional sleep and
@@ -165,7 +164,7 @@ func stopStressDrain(t *testing.T, cancel context.CancelFunc, done <-chan struct
 // ring mutex, never a sink lock.
 // =====================================================================
 func TestHookRing_EnqueueP99Latency(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	const (
 		producers = 8
@@ -268,7 +267,7 @@ func TestHookRing_EnqueueP99Latency(t *testing.T) {
 // a lifetime drop counter, not a current-drop counter).
 // =====================================================================
 func TestHookRing_OverflowAccounting(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	// Small capacity so overflow kicks in within a modest number of pushes.
 	const (
@@ -368,7 +367,7 @@ func TestHookRing_OverflowAccounting(t *testing.T) {
 //
 // =====================================================================
 func TestHookRing_SlowSink(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	const events = 50
 
@@ -423,7 +422,7 @@ func TestHookRing_SlowSink(t *testing.T) {
 // eventHub.BroadcastHookEvent, OR wrap in fanOutHookEvent.
 // =====================================================================
 func TestHookRing_PanickingSink(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	const events = 50
 
@@ -473,7 +472,7 @@ func TestHookRing_PanickingSink(t *testing.T) {
 // a per-sink goroutine that outlives the sink.
 // =====================================================================
 func TestHookRing_FanOutToManyTypedSinks(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	const (
 		sinks  = 100
@@ -585,7 +584,7 @@ func TestHookRing_FanOutToManyTypedSinks(t *testing.T) {
 //
 // =====================================================================
 func TestHookRing_NotificationToastFanOut(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	const events = 1000
 
@@ -688,7 +687,7 @@ func TestHookRing_NotificationToastFanOut(t *testing.T) {
 // large backlog.
 // =====================================================================
 func TestHookRing_CloseWithPendingEvents(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	const events = 10000
 
@@ -744,7 +743,7 @@ func TestHookRing_CloseWithPendingEvents(t *testing.T) {
 // drain about to exit.
 // =====================================================================
 func TestHookRing_ConcurrentEnqueueAndShutdown(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	d := hookStressDaemon(hookRingCapacity)
 	d.eventHub.AddHookSink(&stubBlockingHookSink{})

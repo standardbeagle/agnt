@@ -36,8 +36,14 @@ package daemon
 //      direct write.
 //
 // Every test runs under -race and verifies goroutine cleanup with
-// goleak.VerifyNone(t, goleak.IgnoreCurrent()) so background goroutines from
-// other tests in the package do not produce false positives.
+// verifyNoLeaks(t) (see goleak_leaks_test.go). That shared helper pairs
+// goleak.IgnoreCurrent() with IgnoreAnyFunction filters for os/exec's worker
+// goroutines, because IgnoreCurrent alone is NOT sufficient in this
+// mixed-parallel-test package: a suspended t.Parallel() sibling's daemon
+// background loop shells out on a ticker and spawns fresh os/exec goroutines
+// after the snapshot. This test's own real leak (a stuck
+// (*SchedulerStateManager).writeLoop, the panic-kills-goroutine bug this
+// harness exists to catch) carries no os/exec frame and still fails the check.
 
 import (
 	"errors"
@@ -49,7 +55,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/goleak"
 )
 
 // stubPersister is the canonical isolated persister. It counts calls, can
@@ -112,7 +117,7 @@ func synthPath(i int) string {
 // at least once.
 // =====================================================================
 func TestSchedulerWriteBehind_HighThroughput(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	const (
 		producers = 8
@@ -166,7 +171,7 @@ func TestSchedulerWriteBehind_HighThroughput(t *testing.T) {
 // the flusher must drain pending work synchronously inside Close.
 // =====================================================================
 func TestSchedulerWriteBehind_SlowPersister(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	const (
 		paths     = 20
@@ -217,7 +222,7 @@ func TestSchedulerWriteBehind_SlowPersister(t *testing.T) {
 //
 // =====================================================================
 func TestSchedulerWriteBehind_PersisterErrors(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	const paths = 30
 
@@ -263,7 +268,7 @@ func TestSchedulerWriteBehind_PersisterErrors(t *testing.T) {
 // goleak verification catches the leaked writeLoop goroutine.
 // =====================================================================
 func TestSchedulerWriteBehind_PersisterPanic(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	const paths = 20
 
@@ -324,7 +329,7 @@ func TestSchedulerWriteBehind_PersisterPanic(t *testing.T) {
 //
 // =====================================================================
 func TestSchedulerWriteBehind_CloseWithPendingWrites(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	const (
 		writes = 1000
@@ -364,7 +369,7 @@ func TestSchedulerWriteBehind_CloseWithPendingWrites(t *testing.T) {
 // SaveTask raced with cache invalidation, this would deadlock or panic.
 // =====================================================================
 func TestSchedulerWriteBehind_ConcurrentWriteAndClose(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	stub := &stubPersister{}
 	sm := newSchedulerStateManager(1*time.Millisecond, stub.Persist)
@@ -416,7 +421,7 @@ func TestSchedulerWriteBehind_ConcurrentWriteAndClose(t *testing.T) {
 // 7. DoubleClose — Close is idempotent and safe.
 // =====================================================================
 func TestSchedulerWriteBehind_DoubleClose(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	stub := &stubPersister{}
 	sm := newSchedulerStateManager(10*time.Millisecond, stub.Persist)

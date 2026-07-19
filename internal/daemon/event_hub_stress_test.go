@@ -42,7 +42,7 @@ package daemon
 //     pipeline, not here. Hook sinks are out of scope for Deliver.
 //
 // Every test runs under -race and verifies goroutine cleanup with
-// goleak.VerifyNone(t, goleak.IgnoreCurrent()) so background goroutines
+// verifyNoLeaks(t) (see goleak_leaks_test.go) so background goroutines
 // from other tests in the same package do not produce false positives.
 // p95 wall clock per test target: <500ms.
 
@@ -58,7 +58,6 @@ import (
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/goleak"
 )
 
 // stubStreamDrainer wraps a StreamSink's Ch in a drain goroutine that
@@ -180,7 +179,7 @@ func awaitDrainBacklogBelow(t *testing.T, drainers []*stubStreamDrainer, produce
 }
 
 func TestEventHub_FanOutToManySinks(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	// Event count is deliberately moderate: the test exercises fan-out
 	// correctness across many sinks, not raw throughput. The 64-entry
@@ -347,7 +346,7 @@ func TestEventHub_FanOutToManySinks(t *testing.T) {
 // (not a BroadcastLogEntry call). Separately verified in test #8.
 // =====================================================================
 func TestEventHub_SlowStreamSinkDoesntStallOthers(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	const events = 500
 
@@ -438,7 +437,7 @@ func TestEventHub_SlowStreamSinkDoesntStallOthers(t *testing.T) {
 // streamFilter.
 // =====================================================================
 func TestEventHub_FilterCorrectness(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	// 5 distinct types produced in a deterministic mix.
 	types := []proxy.LogEntryType{
@@ -573,7 +572,7 @@ func TestEventHub_FilterCorrectness(t *testing.T) {
 // pointer check.
 // =====================================================================
 func TestEventHub_GrepFilter(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	// Scale chosen so the matching subset comfortably fits multiple buffer
 	// fills but the total wall time stays well under 500ms even under
@@ -654,7 +653,7 @@ func TestEventHub_GrepFilter(t *testing.T) {
 // holds the RLock).
 // =====================================================================
 func TestEventHub_RegisterUnregisterRace(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	hub := NewEventHub()
 
@@ -761,7 +760,7 @@ func TestEventHub_RegisterUnregisterRace(t *testing.T) {
 // redundant keepalives right after a real event).
 // =====================================================================
 func TestEventHub_KeepaliveHeartbeat(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	// Contract: streamKeepaliveInterval must be positive and reasonable.
 	assert.Greater(t, streamKeepaliveInterval, time.Duration(0),
@@ -888,7 +887,7 @@ func TestEventHub_KeepaliveHeartbeat(t *testing.T) {
 // either hanging the test or silently queueing the event.
 // =====================================================================
 func TestEventHub_BroadcastLogEntryNonBlocking(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	hub := NewEventHub()
 	sink := hub.AddStreamSink(streamFilter{})
@@ -944,7 +943,7 @@ func TestEventHub_BroadcastLogEntryNonBlocking(t *testing.T) {
 // drainer goroutine leaks (goleak).
 // =====================================================================
 func TestEventHub_CloseWithRegisteredSinks(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	hub := NewEventHub()
 

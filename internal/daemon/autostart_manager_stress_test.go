@@ -10,7 +10,7 @@ package daemon
 // integration test TestSessionRegister_ProgressSnapshotIncludesHistory.
 //
 // Every test runs under -race and verifies goroutine cleanup with
-// goleak.VerifyNone (per-test, baselined with IgnoreCurrent so we tolerate
+// verifyNoLeaks(t) (per-test, baselined with IgnoreCurrent + os/exec-worker filters so we tolerate
 // any pre-existing daemon background goroutines spawned by other tests in
 // the same package).
 
@@ -26,7 +26,6 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/goleak"
 )
 
 // synthStartFn returns an AutostartStartFunc that emits `events` progress
@@ -87,7 +86,7 @@ func pathN(i int) string {
 // 1. HighThroughput — 100 distinct paths × 1000 events
 // =====================================================================
 func TestAutostartManager_HighThroughput(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	const (
 		paths      = 100
@@ -138,7 +137,7 @@ func TestAutostartManager_HighThroughput(t *testing.T) {
 // 2. ConcurrentGetOrCreate_SameKey — 1000 contenders, exactly 1 wins
 // =====================================================================
 func TestAutostartManager_ConcurrentGetOrCreate_SameKey(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	mgr := NewAutostartManager()
 	const N = 1000
@@ -184,7 +183,7 @@ func TestAutostartManager_ConcurrentGetOrCreate_SameKey(t *testing.T) {
 // 3. SlowDrain — backpressure observable, no producer panic, no event loss
 // =====================================================================
 func TestAutostartManager_SlowDrain(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	const events = 500
 
@@ -245,7 +244,7 @@ func TestAutostartManager_SlowDrain(t *testing.T) {
 // 4. CancelMidFlight — ctx.Done propagation, clean drain
 // =====================================================================
 func TestAutostartManager_CancelMidFlight(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	mgr := NewAutostartManager()
 
@@ -300,7 +299,7 @@ func TestAutostartManager_CancelMidFlight(t *testing.T) {
 // 5. RemoveDuringRun — Remove doesn't cancel; new GetOrCreate creates fresh
 // =====================================================================
 func TestAutostartManager_RemoveDuringRun(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	mgr := NewAutostartManager()
 
@@ -373,7 +372,7 @@ func TestAutostartManager_RemoveDuringRun(t *testing.T) {
 // so observers see PhaseDone and handle.Result() != nil.
 // =====================================================================
 func TestAutostartManager_StartFnPanic(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	mgr := NewAutostartManager()
 	h := mgr.GetOrCreate(pathN(0), panicStartFn())
@@ -403,7 +402,7 @@ func TestAutostartManager_StartFnPanic(t *testing.T) {
 // 7. ProgressBufferOverflow — 10000 events, slow drain, no event loss
 // =====================================================================
 func TestAutostartManager_ProgressBufferOverflow(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	const events = 10000
 
@@ -433,7 +432,7 @@ func TestAutostartManager_ProgressBufferOverflow(t *testing.T) {
 // 8. LateJoinerSeesHistory — full history available after run completes
 // =====================================================================
 func TestAutostartManager_LateJoinerSeesHistory(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	const events = 200
 
@@ -469,7 +468,7 @@ func TestAutostartManager_LateJoinerSeesHistory(t *testing.T) {
 // 9. ManyHandlesShutdown — 50 handles, random-order Cancel, all clean
 // =====================================================================
 func TestAutostartManager_ManyHandlesShutdown(t *testing.T) {
-	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	defer verifyNoLeaks(t)()
 
 	const N = 50
 
