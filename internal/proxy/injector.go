@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"html"
 	"net/http"
 	"regexp"
 	"strconv"
@@ -107,8 +108,9 @@ func publicInstrumentationAssetBytes() []byte {
 
 // PublicInstrumentationAssetCSPHash returns the base64 sha256 of the RolePublic
 // bundle bytes, formatted as a CSP source token ("sha256-<b64>"). The public
-// plane pins its script-src to 'self' plus this hash (spec §4) so the served CSP
-// names the exact bundle content, not just its origin.
+// plane pins its script-src to this hash ALONE (no 'self'), and tags the
+// external <script src> with a matching SRI integrity attribute, so the served
+// CSP names the exact bundle content, not just its origin (spec §4).
 func PublicInstrumentationAssetCSPHash() string {
 	sum := sha256.Sum256(publicInstrumentationAssetBytes())
 	return "sha256-" + base64.StdEncoding.EncodeToString(sum[:])
@@ -344,14 +346,59 @@ func isTopLevelNavigation(r *http.Request) bool {
 // documents are wrapped in the chrome shell; fragments are injected in place so
 // partial-render flows keep working.
 func isFullHTMLDocument(body []byte) bool {
-	head := body
+	// Only a STRUCTURALLY-positioned marker means "full document". The old
+	// bytes.Contains matched "<html"/"<head"/"<!doctype html" ANYWHERE in the
+	// first 1KB, so an htmx/turbo fragment that merely mentions one of those
+	// tokens in text or an attribute (e.g. a code sample, `<p>use &lt;html&gt;
+	// …</p>`, or a raw `<div data-tpl="<html>">`) was wrongly wrapped in the
+	// chrome shell — breaking partial-render swaps. A real document leads with
+	// the doctype or the <html>/<head> element, so anchor the check to the
+	// leading position (after optional BOM/whitespace and one leading comment).
+	head := bytes.TrimLeft(body, " \t\r\n\f\v\ufeff")
+	// Tolerate a single leading HTML comment ("<!-- saved from … -->").
+	if bytes.HasPrefix(head, []byte("<!--")) {
+		if end := bytes.Index(head, []byte("-->")); end != -1 {
+			head = bytes.TrimLeft(head[end+len("-->"):], " \t\r\n\f\v\ufeff")
+		}
+	}
 	if len(head) > 1024 {
 		head = head[:1024]
 	}
 	lower := bytes.ToLower(head)
-	return bytes.Contains(lower, []byte("<!doctype html")) ||
-		bytes.Contains(lower, []byte("<html")) ||
-		bytes.Contains(lower, []byte("<head"))
+	return bytes.HasPrefix(lower, []byte("<!doctype html")) ||
+		bytes.HasPrefix(lower, []byte("<html")) ||
+		bytes.HasPrefix(lower, []byte("<head"))
+}
+
+// neutralizeScriptClose defuses the only sequence that can terminate an inline
+// <script> element early — a case-insensitive "</script" — by rewriting it to
+// "<\/script". Inside valid JavaScript that sequence can only appear within a
+// string or regex literal, where "\/" is identical to "/", so the rewrite is
+// behaviour-preserving while making an HTML-parser break-out impossible.
+//
+// Defense in depth: the sole current producer of authCfgJS
+// (AuthBreakout.clientConfigJS) already json.Marshal-escapes <, >, & to \uXXXX,
+// so a config value containing "</script>" never reaches the injectors
+// unescaped today. This guards a FUTURE caller that hands the injectors a raw
+// JS string, so a break-out cannot silently regress.
+func neutralizeScriptClose(s string) string {
+	const tok = "</script"
+	lower := strings.ToLower(s)
+	if !strings.Contains(lower, tok) {
+		return s
+	}
+	var b strings.Builder
+	b.Grow(len(s) + 8)
+	for i := 0; i < len(s); {
+		if strings.HasPrefix(lower[i:], tok) {
+			b.WriteString("<\\/script")
+			i += len(tok)
+		} else {
+			b.WriteByte(s[i])
+			i++
+		}
+	}
+	return b.String()
 }
 
 // frameIDPattern matches a server-minted frame id: a lowercase-hex path hash
@@ -459,11 +506,15 @@ func BuildShellDocument(proxyID, frameID, contentSrc, authCfgJS string) []byte {
 	frameID = sanitizeFrameID(frameID)
 	var b strings.Builder
 	b.WriteString("<!DOCTYPE html><html><head><meta charset=\"utf-8\">")
-	b.WriteString(fmt.Sprintf("<script>window.__devtool_proxy_id=%s;window.__devtool_role=\"chrome\";window.__devtool_frame_id=%q;%s%s</script>", jsStringLiteral(proxyID), frameID, authCfgJS, authPopupRelayJS))
+	b.WriteString(fmt.Sprintf("<script>window.__devtool_proxy_id=%s;window.__devtool_role=\"chrome\";window.__devtool_frame_id=%q;%s%s</script>", jsStringLiteral(proxyID), frameID, neutralizeScriptClose(authCfgJS), authPopupRelayJS))
 	b.WriteString(fmt.Sprintf("<script src=%q></script>", instrumentationAssetPathForRole(scripts.RoleChrome)))
 	b.WriteString("<style>html,body{margin:0;padding:0;height:100%;width:100%;overflow:hidden}#" + contentFrameID + "{position:fixed;inset:0;border:0;width:100%;height:100%;display:block}</style>")
 	b.WriteString("</head><body>")
-	b.WriteString(fmt.Sprintf("<iframe id=%q src=%q></iframe>", contentFrameID, contentSrc))
+	// contentSrc derives from the requested URI (resp.Request.URL.RequestURI()).
+	// It is attacker-influenced, so HTML-escape it into the attribute value: %q
+	// is Go-string quoting (it leaves a literal double-quote as \" which an HTML
+	// parser reads as a closing quote, permitting `"><script>` break-out).
+	b.WriteString("<iframe id=\"" + contentFrameID + "\" src=\"" + html.EscapeString(contentSrc) + "\"></iframe>")
 	b.WriteString("</body></html>")
 	return []byte(b.String())
 }
@@ -481,7 +532,7 @@ func InjectContentRuntime(body []byte, proxyID, frameID, authCfgJS string) []byt
 	// <script>. A malformed one collapses to "" (no forced frame id).
 	frameID = sanitizeFrameID(frameID)
 	tag := []byte(fmt.Sprintf(`<script>window.__devtool_proxy_id=%s;window.__devtool_role="content";window.__devtool_frame_id=%q;%s</script><script src=%q></script>`,
-		jsStringLiteral(proxyID), frameID, authCfgJS, instrumentationAssetPathForRole(scripts.RoleContent)))
+		jsStringLiteral(proxyID), frameID, neutralizeScriptClose(authCfgJS), instrumentationAssetPathForRole(scripts.RoleContent)))
 	if at, ok := instrumentationInsertOffset(body); ok {
 		return spliceInto(body, at, tag)
 	}

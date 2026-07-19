@@ -510,3 +510,87 @@ func TestBuildShellDocument_InlineAuthPopupRelay(t *testing.T) {
 		})
 	}
 }
+
+// TestBuildShellDocument_ContentSrcNoBreakout asserts finding 1: contentSrc
+// derives from the requested URI (attacker-influenced) and must be HTML-escaped
+// into the iframe src attribute. %q (Go-string quoting) leaves a literal double
+// quote as \" which an HTML parser reads as a closing quote — permitting a
+// `"><script>` break-out. html.EscapeString neutralises it.
+func TestBuildShellDocument_ContentSrcNoBreakout(t *testing.T) {
+	// A request target that closes the src attribute and injects markup.
+	hostile := `/p?x="><script>alert(document.domain)</script>`
+	out := string(BuildShellDocument("proxy-1", shellFrameID(frameIDForPath("/p")), hostile, ""))
+
+	if strings.Contains(out, `"><script>alert`) {
+		t.Fatalf("contentSrc broke out of the iframe src attribute:\n%s", out)
+	}
+	// The dangerous chars must be entity-escaped.
+	if !strings.Contains(out, "&#34;&gt;&lt;script&gt;") {
+		t.Fatalf("contentSrc was not HTML-escaped:\n%s", out)
+	}
+	// The iframe attribute must remain well-formed and reference the content id.
+	if !strings.Contains(out, `<iframe id="`+contentFrameID+`" src="/p?x=`) {
+		t.Fatalf("iframe tag malformed after escaping:\n%s", out)
+	}
+}
+
+// TestIsFullHTMLDocument_StructuralPosition asserts finding 2: a document
+// marker only counts when it leads the body (after BOM/whitespace and one
+// optional comment), so an htmx/turbo fragment that merely mentions <html>/
+// <head> in content is NOT wrapped, while a real document IS.
+func TestIsFullHTMLDocument_StructuralPosition(t *testing.T) {
+	cases := []struct {
+		name string
+		body string
+		want bool
+	}{
+		{"fragment mentions <html> in text", `<div>use the <html> tag like <html></div>`, false},
+		{"fragment mentions <head> in attribute", `<div data-tpl="<head>">x</div>`, false},
+		{"fragment escaped mention", `<p>see &lt;html&gt; and &lt;head&gt;</p>`, false},
+		{"plain fragment", `<span>hello</span>`, false},
+		{"real doctype", `<!DOCTYPE html><html><head></head><body>hi</body></html>`, true},
+		{"real doctype lowercase", `<!doctype html><html></html>`, true},
+		{"leading whitespace then doctype", "\n\n   <!DOCTYPE html><html></html>", true},
+		{"BOM then doctype", "\ufeff<!DOCTYPE html><html></html>", true},
+		{"html element first", `<html lang="en"><head></head></html>`, true},
+		{"head element first", `<head><title>x</title></head>`, true},
+		{"leading comment then doctype", `<!-- saved from url --><!DOCTYPE html><html></html>`, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := isFullHTMLDocument([]byte(tc.body)); got != tc.want {
+				t.Fatalf("isFullHTMLDocument(%q) = %v, want %v", tc.body, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestNeutralizeScriptClose_NoBreakout asserts finding 5: a config value that
+// contains "</script>" cannot terminate the inline <script> the injectors emit.
+// Defense in depth over the (already json-escaped) auth config producer.
+func TestNeutralizeScriptClose_NoBreakout(t *testing.T) {
+	hostileCfg := `window.__devtool_auth_config="</script><script>alert(1)//";`
+
+	for _, tc := range []struct {
+		name string
+		out  string
+	}{
+		{"shell", string(BuildShellDocument("p", shellFrameID(frameIDForPath("/")), "/", hostileCfg))},
+		{"content", string(InjectContentRuntime([]byte("<head></head>"), "p", frameIDForPath("/"), hostileCfg))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if strings.Contains(tc.out, `</script><script>alert(1)`) {
+				t.Fatalf("auth config broke out of the inline <script>:\n%s", tc.out)
+			}
+			// The break-out token is defused to <\/script (identical in a JS string).
+			if !strings.Contains(tc.out, `<\/script>`) {
+				t.Fatalf("</script in config was not neutralized:\n%s", tc.out)
+			}
+		})
+	}
+
+	// Sanity: a config with no </script token passes through unchanged.
+	if got := neutralizeScriptClose(`window.x=1;`); got != `window.x=1;` {
+		t.Fatalf("benign config altered: %q", got)
+	}
+}
