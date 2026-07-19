@@ -17,6 +17,11 @@ import (
 const (
 	dropQuiescence = 500 * time.Millisecond
 	dropPollPeriod = 100 * time.Millisecond
+	// maxUploadAttempts bounds how many times a single settled file is
+	// retried before the watcher gives up on it. Without a bound, a
+	// permanently-failing file resets its retry clock on every failure and
+	// re-attempts (and logs) every dropQuiescence forever.
+	maxUploadAttempts = 5
 )
 
 // DropUpload uploads localPath under remoteName. Implementations must not
@@ -120,6 +125,8 @@ type dropState struct {
 	modTime  time.Time
 	changed  time.Time
 	uploaded bool
+	failures int
+	gaveUp   bool
 }
 
 func (w *DropWatcher) run(ctx context.Context, fw *fsnotify.Watcher) {
@@ -183,16 +190,29 @@ func (w *DropWatcher) uploadSettled(files map[string]dropState, now time.Time) {
 		return
 	}
 	for name, state := range files {
-		if state.uploaded || now.Sub(state.changed) < dropQuiescence {
+		if state.uploaded || state.gaveUp || now.Sub(state.changed) < dropQuiescence {
 			continue
 		}
 		if err := upload(name, filepath.Base(name)); err != nil {
-			state.changed = now
+			state.failures++
+			if state.failures >= maxUploadAttempts {
+				state.gaveUp = true
+				files[name] = state
+				w.report(fmt.Sprintf("agnt ssh: giving up on %s after %d failed attempts: %v", filepath.Base(name), state.failures, err))
+				continue
+			}
+			// Exponential backoff: push the retry clock forward so the next
+			// attempt waits failures×-longer instead of retrying every
+			// dropQuiescence. observe() resets this state (failures included)
+			// if the file actually changes on disk again.
+			backoff := dropQuiescence << state.failures
+			state.changed = now.Add(backoff - dropQuiescence)
 			files[name] = state
 			w.report(fmt.Sprintf("agnt ssh: syncing %s: %v", filepath.Base(name), err))
 			continue
 		}
 		state.uploaded = true
+		state.failures = 0
 		files[name] = state
 		w.report(fmt.Sprintf("agnt ssh: synced %s to %s/", filepath.Base(name), DefaultInboxDir))
 	}

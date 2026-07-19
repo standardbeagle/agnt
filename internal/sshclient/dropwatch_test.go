@@ -1,6 +1,7 @@
 package sshclient
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -140,6 +141,32 @@ func TestDropUpload_CollisionAtActivationRetriesWithoutOverwriting(t *testing.T)
 	got, err := os.ReadFile(filepath.Join(inbox, suffixed))
 	require.NoError(t, err)
 	require.Equal(t, "new bytes", string(got))
+}
+
+func TestUploadSettled_PersistentFailureBacksOffAndGivesUp(t *testing.T) {
+	var calls int
+	w := &DropWatcher{notify: func(string) {}}
+	w.upload = func(string, string) error { calls++; return errors.New("boom") }
+
+	base := time.Unix(0, 0)
+	name := filepath.Join("drop", "stuck.txt")
+	files := map[string]dropState{name: {size: 1, changed: base}}
+
+	// Drive 200s of simulated poll ticks. An unbounded retry (resetting the
+	// clock every dropQuiescence on each failure) would attempt hundreds of
+	// uploads over this span; the backoff+give-up bound must cap it.
+	now := base
+	for i := 0; i < 2000; i++ {
+		now = now.Add(dropPollPeriod)
+		w.uploadSettled(files, now)
+	}
+
+	if calls != maxUploadAttempts {
+		t.Fatalf("upload attempted %d times over 200s, want exactly %d (backoff then give up)", calls, maxUploadAttempts)
+	}
+	if !files[name].gaveUp {
+		t.Fatalf("file was not marked gaveUp after exhausting %d attempts", maxUploadAttempts)
+	}
 }
 
 func TestDropWatcher_CloseWithoutFilesLeaksNoGoroutines(t *testing.T) {
