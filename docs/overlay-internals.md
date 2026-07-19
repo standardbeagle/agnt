@@ -30,7 +30,7 @@ Ports tagged `managed`/`unmanaged`/`conflict`, classified `system` vs dev. **Sys
 
 Data flow = daemon→IPC→overlay (overlay can't import daemon):
 - `config.ListListeningPorts(ctx)` (`internal/config/portdetect_unix.go`, `_windows.go`) — one `/proc/net/tcp{,6}` + `/proc/*/fd` walk for every LISTEN port and owner; macOS via `lsof`; WSL folds in `netstat.exe`/`tasklist.exe` Windows-side listeners for ports with no Linux owner.
-- `PORTS` verb (`protocol.VerbPorts`, handler `internal/daemon/hub_ports.go`): `QUERY` returns ports (classified via `collectManagedPIDs` + declared ports from `.agnt.kdl`) + orphans (`platform.ScanOrphanedPGIDs`); `CLEAN-ORPHANS` reaps via `platform.KillSessionPGID`. Routed through `resolveProjectScope`.
+- `PORTS` verb (`protocol.VerbPorts`, handler `internal/daemon/hub_ports.go`): `QUERY` returns ports (classified via `collectManagedPIDs` + declared ports from `.agnt.kdl`) + orphans (`platform.ScanOrphanedPGIDs`, uid-scoped listing). `CLEAN-ORPHANS` resolves the caller's project via `resolveProjectScope` (fails loud on an unresolved non-global caller), then runs each candidate orphan pgid through `pgidOwnershipCheck` — the same cmdline+cwd ownership-evidence gate the startup orphan scan applies (`daemon_orphan_pgid.go`) — before signaling it via `platform.KillSessionPGID`; a shared uid alone is never sufficient to reap a pgid (`internal/daemon/hub_ports_unix.go`, `reapOrphans`/`reapOrphanCandidates`).
 - `StatusFetcher.fetchPorts` (`internal/overlay/status.go`) → `Status.Ports`/`Status.Orphans` → `drawOverviewContent` (`internal/overlay/render.go`).
 
 ## Startup Splash

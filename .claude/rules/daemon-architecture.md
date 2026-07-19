@@ -163,7 +163,8 @@ Default project-scoped, `global`-overridable, session-less non-global rejected.
 | `SESSION LIST` | `session {action:"list"}` | `sessionRegistry.List(path, global)` | C5 |
 | `SESSION TASKS` | `session {action:"tasks"}` | `scheduler.ListTasks(path, global)` | C5 |
 | `INCIDENTS QUERY` | `get_incidents` | per-session inbox partition | pre-existing model gate converges toward |
-| `PORTS QUERY` | overview ports panel (`fetchPorts`) | `resolveProjectScope` → declared-port set | classifies owners as managed/unmanaged/conflict; orphans uid-scoped, not project-scoped |
+| `PORTS QUERY` | overview ports panel (`fetchPorts`) | `resolveProjectScope` → declared-port set | classifies owners as managed/unmanaged/conflict; orphans listed uid-scoped (`platform.ScanOrphanedPGIDs`), not project-scoped |
+| `PORTS CLEAN-ORPHANS` | overview `kill-orphans` palette command | `resolveProjectScope` (fail loud on unresolved non-global) → per-candidate `pgidOwnershipCheck` | reaps only orphaned pgids carrying cmdline+cwd evidence for the resolved project — same ownership gate as the startup orphan scan (`daemon_orphan_pgid.go`); a shared uid is never sufficient evidence on its own |
 
 ### ID-scoped (single resource addressed by explicit id)
 
