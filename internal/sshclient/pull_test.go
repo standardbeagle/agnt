@@ -78,6 +78,21 @@ func TestRemotePullManagerScreenshotEventDownloadsExactBytesAndPrintsPath(t *tes
 	events.mu.Unlock()
 }
 
+func TestRemotePullManagerDownloadRejectsDotDotTraversal(t *testing.T) {
+	mgr := NewRemotePullManager(nil, nil, "host", t.TempDir(), nil)
+	// Each of these cleans to "..", whose Base is "..": they must be
+	// rejected explicitly, not by an incidental EISDIR further down.
+	for _, bad := range []string{"..", "../..", "a/../.."} {
+		_, err := mgr.download(bad)
+		if err == nil {
+			t.Fatalf("download(%q) = nil error, want explicit rejection", bad)
+		}
+		if !strings.Contains(err.Error(), "invalid remote file path") {
+			t.Fatalf("download(%q) error = %v, want an invalid-remote-file-path rejection", bad, err)
+		}
+	}
+}
+
 func TestRemotePullManagerDownloadFailureIsLoud(t *testing.T) {
 	_, sc := newSFTPFixture(t)
 	events := &pullEventFixture{entries: make(chan proxy.LogEntry, 1)}

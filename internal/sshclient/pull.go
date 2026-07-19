@@ -157,7 +157,11 @@ func pullEventPath(entry proxy.LogEntry) string {
 
 func (m *RemotePullManager) download(remotePath string) (localPath string, err error) {
 	name := filepath.Base(filepath.Clean(remotePath))
-	if name == "." || name == string(filepath.Separator) || name == "" {
+	// Reject ".." explicitly: filepath.Base("..") == "..", and a cleaned
+	// path that reduces to ".." would otherwise be joined onto the local
+	// drop dir and rely only on an incidental EISDIR to fail. This is the
+	// recurrence guard for lesson #12 (.claude/rules/lessons-ssh-transport.md).
+	if name == "." || name == ".." || name == string(filepath.Separator) || name == "" {
 		return "", fmt.Errorf("invalid remote file path %q", remotePath)
 	}
 	m.mu.Lock()
