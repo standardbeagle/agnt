@@ -424,6 +424,41 @@ proxies {
 	}
 }
 
+func TestProxyEvent_HandleURLDetected_PreservesProcessIncidentOwner(t *testing.T) {
+	t.Parallel()
+	daemon, tmpDir := newFallbackTestDaemon(t)
+
+	if err := writeFile(filepath.Join(tmpDir, ".agnt.kdl"), `
+proxies {
+    dev {
+        script "dev"
+    }
+}
+`); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	scriptID := makeProcessID(tmpDir, "dev")
+	daemon.registerIncidentProcessOwner(scriptID, "owned-session")
+	processOwner, _ := daemon.incidentProcessOwner.Load(scriptID)
+
+	daemon.handleURLDetected(ProxyEvent{
+		Type:     URLDetected,
+		ScriptID: scriptID,
+		URL:      "http://localhost:3010",
+		Path:     tmpDir,
+	})
+
+	proxyID := makeProxyIDFromURL(tmpDir, "dev", "http://localhost:3010")
+	proxyOwner, ok := daemon.incidentProxyOwner.Load(proxyID)
+	if !ok {
+		t.Fatalf("expected incident owner for created proxy %q", proxyID)
+	}
+	if proxyOwner != processOwner {
+		t.Fatalf("proxy owner = %p, want exact process owner %p", proxyOwner, processOwner)
+	}
+}
+
 // newFallbackTestDaemon spins up a full daemon with a short temp socket and
 // registers a deferred cleanup. Returns the daemon and the tmp project dir.
 // Shared by the FallbackPortCheck handler tests. Uses the full daemon.Start
@@ -514,6 +549,35 @@ func TestProxyEvent_HandleFallbackPortCheck_CreatesProxy(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("Expected fallback proxy %q to be tracked under script %q, got %v", expectedID, scriptID, tracked)
+	}
+}
+
+func TestProxyEvent_HandleFallbackPortCheck_PreservesProcessIncidentOwner(t *testing.T) {
+	t.Parallel()
+	daemon, tmpDir := newFallbackTestDaemon(t)
+
+	scriptID := makeProcessID(tmpDir, "dev")
+	daemon.registerIncidentProcessOwner(scriptID, "owned-session")
+	processOwner, _ := daemon.incidentProcessOwner.Load(scriptID)
+
+	daemon.handleFallbackPortCheck(ProxyEvent{
+		Type:      FallbackPortCheck,
+		ScriptID:  scriptID,
+		ProxyName: "web",
+		Config: &config.ProxyConfig{
+			Script:       "dev",
+			FallbackPort: 8080,
+		},
+		Path: tmpDir,
+	})
+
+	proxyID := makeProcessID(tmpDir, "web")
+	proxyOwner, ok := daemon.incidentProxyOwner.Load(proxyID)
+	if !ok {
+		t.Fatalf("expected incident owner for created fallback proxy %q", proxyID)
+	}
+	if proxyOwner != processOwner {
+		t.Fatalf("proxy owner = %p, want exact process owner %p", proxyOwner, processOwner)
 	}
 }
 

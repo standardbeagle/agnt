@@ -367,6 +367,8 @@ func (d *Daemon) startScriptWithRetry(
 	if e, ok := d.scriptRegistry.Get(stripProcessPrefix(processID), projectPath); ok {
 		scriptEntry = e
 	}
+	owner, _ := d.incidentProcessOwner.Load(processID)
+	lifetimeOwner := ownerAsIncidentResource(owner)
 	outputCB := func(_ string, line string) {
 		if scriptEntry != nil {
 			scriptEntry.AppendOutput(line)
@@ -379,8 +381,8 @@ func (d *Daemon) startScriptWithRetry(
 				Line:      line,
 				Timestamp: time.Now(),
 			},
-		})
-		d.alertScanner.ProcessLine(line, processID)
+		}, projectPath)
+		d.alertScanner.ProcessLineWithLifetime(line, processID, lifetimeOwner)
 	}
 
 	// Start the process
@@ -450,6 +452,7 @@ func (d *Daemon) startScriptWithRetry(
 	if err := d.hub.ProcessManager().StopProcess(ctx, proc); err != nil {
 		debug.Log("startup-resilience", "stop of EADDRINUSE process %s failed during recovery: %v", processID, err)
 	}
+	d.retireIncidentProcessOwner(proc.ID)
 	d.hub.ProcessManager().RemoveByPath(processID, projectPath)
 
 	// Clean up the port

@@ -468,6 +468,25 @@ func TestDrainHooks_SyntheticLogEntryReachesStreamSink(t *testing.T) {
 	}
 }
 
+func TestFanOutHookEvent_EnforcesProjectScope(t *testing.T) {
+	d := drainFanoutTestDaemon(t)
+	own := d.eventHub.AddStreamSink(streamFilter{projectPath: "/project/a"})
+	other := d.eventHub.AddStreamSink(streamFilter{projectPath: "/project/b"})
+
+	d.fanOutHookEvent(HookEvent{Event: "stop", ProjectPath: "/project/a", ReceivedAt: time.Now()})
+
+	select {
+	case <-own.Ch:
+	default:
+		t.Fatal("owning project's stream did not receive hook event")
+	}
+	select {
+	case <-other.Ch:
+		t.Fatal("hook event leaked to another project's stream")
+	default:
+	}
+}
+
 // TestDrainHooks_SessionHeartbeatBumpsLastSeen asserts that draining a
 // hook event with a known SessionID bumps that session's LastSeen
 // timestamp. This is the heartbeat plumbing that lets the daemon treat
@@ -997,7 +1016,7 @@ func TestToastProjectProxies_EmptyProjectPathDropsToast(t *testing.T) {
 	wsURL := fmt.Sprintf("ws://%s/__devtool_metrics", ps.ListenAddr)
 	var wsConn *websocket.Conn
 	require.Eventually(t, func() bool {
-		conn, _, dialErr := websocket.DefaultDialer.Dial(wsURL, nil)
+		conn, _, dialErr := websocket.DefaultDialer.Dial(wsURL, http.Header{"Origin": {"http://" + ps.ListenAddr}})
 		if dialErr != nil {
 			return false
 		}
@@ -1324,9 +1343,10 @@ func TestDrainHooks_ToolEventReachesBrowser(t *testing.T) {
 	t.Cleanup(func() { _ = d.proxym.Stop(context.Background(), "tool-event-proxy") })
 
 	wsURL := fmt.Sprintf("ws://%s/__devtool_metrics", ps.ListenAddr)
+	wsHeader := http.Header{"Origin": {"http://" + ps.ListenAddr}}
 	var wsConn *websocket.Conn
 	require.Eventually(t, func() bool {
-		conn, _, dialErr := websocket.DefaultDialer.Dial(wsURL, nil)
+		conn, _, dialErr := websocket.DefaultDialer.Dial(wsURL, wsHeader)
 		if dialErr != nil {
 			return false
 		}
@@ -1406,9 +1426,10 @@ func TestBroadcastToolEvent_EmptyProjectPathDrops(t *testing.T) {
 	t.Cleanup(func() { _ = d.proxym.Stop(context.Background(), "tool-event-unrelated") })
 
 	wsURL := fmt.Sprintf("ws://%s/__devtool_metrics", ps.ListenAddr)
+	wsHeader := http.Header{"Origin": {"http://" + ps.ListenAddr}}
 	var wsConn *websocket.Conn
 	require.Eventually(t, func() bool {
-		conn, _, dialErr := websocket.DefaultDialer.Dial(wsURL, nil)
+		conn, _, dialErr := websocket.DefaultDialer.Dial(wsURL, wsHeader)
 		if dialErr != nil {
 			return false
 		}

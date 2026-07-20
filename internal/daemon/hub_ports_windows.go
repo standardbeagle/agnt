@@ -13,5 +13,6 @@ func (d *Daemon) scanOrphans() []platform.OrphanPGID {
 
 // reapOrphans is a no-op on Windows (see scanOrphans).
 func (d *Daemon) reapOrphans(projectPath string) ([]int, []map[string]interface{}) {
+	_ = projectPath
 	return nil, nil
 }

@@ -100,7 +100,7 @@ func TestActivityBroadcast_EndToEnd(t *testing.T) {
 	wsURL := fmt.Sprintf("ws://%s/__devtool_metrics", listenAddr)
 	var wsConn *websocket.Conn
 	require.Eventually(t, func() bool {
-		conn, _, dialErr := websocket.DefaultDialer.Dial(wsURL, nil)
+		conn, _, dialErr := websocket.DefaultDialer.Dial(wsURL, http.Header{"Origin": {"http://" + listenAddr}})
 		if dialErr != nil {
 			return false
 		}
@@ -176,7 +176,7 @@ func TestOutputPreviewBroadcast_EndToEnd(t *testing.T) {
 	wsURL := fmt.Sprintf("ws://%s/__devtool_metrics", listenAddr)
 	var wsConn *websocket.Conn
 	require.Eventually(t, func() bool {
-		conn, _, dialErr := websocket.DefaultDialer.Dial(wsURL, nil)
+		conn, _, dialErr := websocket.DefaultDialer.Dial(wsURL, http.Header{"Origin": {"http://" + listenAddr}})
 		if dialErr != nil {
 			return false
 		}
@@ -284,7 +284,7 @@ func TestActivityBroadcast_MultipleProxies(t *testing.T) {
 		wsURL := fmt.Sprintf("ws://%s/__devtool_metrics", addr)
 		var conn *websocket.Conn
 		require.Eventually(t, func() bool {
-			c, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+			c, _, err := websocket.DefaultDialer.Dial(wsURL, http.Header{"Origin": {"http://" + addr}})
 			if err != nil {
 				return false
 			}
@@ -372,7 +372,7 @@ func TestActivityBroadcast_SpecificProxy(t *testing.T) {
 		wsURL := fmt.Sprintf("ws://%s/__devtool_metrics", addr)
 		var conn *websocket.Conn
 		require.Eventually(t, func() bool {
-			c, _, err := websocket.DefaultDialer.Dial(wsURL, nil)
+			c, _, err := websocket.DefaultDialer.Dial(wsURL, http.Header{"Origin": {"http://" + addr}})
 			if err != nil {
 				return false
 			}
@@ -458,7 +458,7 @@ func TestActivityBroadcast_RapidFire(t *testing.T) {
 	wsURL := fmt.Sprintf("ws://%s/__devtool_metrics", listenAddr)
 	var wsConn *websocket.Conn
 	require.Eventually(t, func() bool {
-		conn, _, dialErr := websocket.DefaultDialer.Dial(wsURL, nil)
+		conn, _, dialErr := websocket.DefaultDialer.Dial(wsURL, http.Header{"Origin": {"http://" + listenAddr}})
 		if dialErr != nil {
 			return false
 		}

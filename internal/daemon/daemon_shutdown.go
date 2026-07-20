@@ -277,10 +277,10 @@ func (d *Daemon) Stop(ctx context.Context) error {
 	}
 
 	// Stop all deferred session-cleanup timers BEFORE tearing down the hub,
-	// ProcessManager, and proxy manager that their doCleanup callbacks touch.
+	// ProcessManager, and proxy manager that their doCleanupExact callbacks touch.
 	// These AfterFunc timers (grace window, default 5s) are not tracked by
 	// d.wg; a connection that dropped seconds before Stop() would otherwise
-	// fire its timer after the managers are gone, running doCleanup against a
+	// fire its timer after the managers are gone, running doCleanupExact against a
 	// stopped hub. The shutdown flag is already set, so any timer that fired in
 	// the gap between that and here also short-circuits (see AfterFunc guard).
 	d.drainPendingCleanups()
@@ -490,6 +490,9 @@ func (d *Daemon) StopAllResources(ctx context.Context) {
 			d.daemonStartupLog("warning", "proxy_stop_failed",
 				fmt.Sprintf("error stopping proxies: %v", err))
 		}
+		for _, id := range stoppedIDs {
+			d.retireIncidentProxyOwner(id)
+		}
 		// Remove stopped proxies from persisted state
 		if d.stateMgr != nil {
 			for _, id := range stoppedIDs {
@@ -507,6 +510,17 @@ func (d *Daemon) StopAllResources(ctx context.Context) {
 			d.daemonStartupLog("warning", "stop_failed",
 				fmt.Sprintf("error stopping processes: %v", err))
 		}
+		d.incidentProcessOwner.Range(func(key, _ any) bool {
+			id, ok := key.(string)
+			if !ok {
+				return true
+			}
+			proc, getErr := d.hub.ProcessManager().Get(id)
+			if getErr != nil || !proc.IsRunning() {
+				d.retireIncidentProcessOwner(id)
+			}
+			return true
+		})
 	}()
 
 	wg.Wait()

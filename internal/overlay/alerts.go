@@ -54,6 +54,9 @@ type AlertMatch struct {
 	Line      string
 	Timestamp time.Time
 	ScriptID  string
+	// LifetimeToken is opaque caller context captured when the line is
+	// produced and carried unchanged through deferred batch delivery.
+	LifetimeToken any
 	// Source tags origin for OnAlert dispatch. Empty = process-output.
 	Source AlertSource
 	// RenderedText, when set, is the pre-formatted PTY-ready text for
@@ -257,6 +260,12 @@ func NewAlertScanner(cfg AlertScannerConfig) *AlertScanner {
 
 // ProcessLine checks a single line of output against all enabled patterns.
 func (s *AlertScanner) ProcessLine(line string, scriptID string) {
+	s.ProcessLineWithLifetime(line, scriptID, nil)
+}
+
+// ProcessLineWithLifetime is ProcessLine with an opaque resource-lifetime
+// token that survives the scanner's deferred batch delivery.
+func (s *AlertScanner) ProcessLineWithLifetime(line string, scriptID string, lifetimeToken any) {
 	if !s.enabled.Load() || s.stopped.Load() {
 		return
 	}
@@ -273,10 +282,11 @@ func (s *AlertScanner) ProcessLine(line string, scriptID string) {
 		}
 		if p.Pattern.MatchString(line) {
 			matched = &AlertMatch{
-				Pattern:   p,
-				Line:      strings.TrimSpace(line),
-				Timestamp: s.clockNow(),
-				ScriptID:  scriptID,
+				Pattern:       p,
+				Line:          strings.TrimSpace(line),
+				Timestamp:     s.clockNow(),
+				ScriptID:      scriptID,
+				LifetimeToken: lifetimeToken,
 			}
 			break // One pattern match per line is sufficient
 		}
@@ -306,10 +316,11 @@ func (s *AlertScanner) ProcessLine(line string, scriptID string) {
 			Description: "structured " + se.Kind + " error",
 		}
 		m := &AlertMatch{
-			Pattern:   sp,
-			Line:      se.Compact(),
-			Timestamp: s.clockNow(),
-			ScriptID:  scriptID,
+			Pattern:       sp,
+			Line:          se.Compact(),
+			Timestamp:     s.clockNow(),
+			ScriptID:      scriptID,
+			LifetimeToken: lifetimeToken,
 		}
 		s.recordMatch(m)
 		s.addMatch(m)
@@ -336,10 +347,11 @@ func (s *AlertScanner) ProcessLine(line string, scriptID string) {
 
 	if !catchAllDisabled && unparsedErrorRe.MatchString(trimmed) {
 		um := &AlertMatch{
-			Pattern:   unparsedPattern,
-			Line:      s.withRecentContext(trimmed),
-			Timestamp: s.clockNow(),
-			ScriptID:  scriptID,
+			Pattern:       unparsedPattern,
+			Line:          s.withRecentContext(trimmed),
+			Timestamp:     s.clockNow(),
+			ScriptID:      scriptID,
+			LifetimeToken: lifetimeToken,
 		}
 		s.recordMatch(um)
 		s.addMatch(um)

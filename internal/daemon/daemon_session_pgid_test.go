@@ -17,7 +17,7 @@ import (
 // guarantee for the task: when a session with a recorded SessionPGID is
 // cleaned up, every process that inherited that pgid — including children
 // the "coding agent" spawned via non-interactive bash — must be reaped
-// before doCleanup returns.
+// before doCleanupExact returns.
 //
 // The fixture starts a real `sh -c 'sleep 30 & sleep 30 & wait'` in its
 // own setsid session (mirroring what creack/pty does for the real PTY
@@ -65,11 +65,11 @@ func TestCleanupSessionResources_KillsSessionPGID(t *testing.T) {
 		LastSeen:    time.Now(),
 	}))
 
-	// Trigger cleanup. doCleanup's first action is killSessionPGID,
+	// Trigger cleanup. doCleanupExact's first action is killSessionPGID,
 	// which should reap everything.
 	d.CleanupSessionResources("test-pgid")
 
-	// Wait for the leader process to be reaped. doCleanup uses a 2s
+	// Wait for the leader process to be reaped. doCleanupExact uses a 2s
 	// graceful timeout; we give a bit more slack here for CI noise.
 	waitDeadline := time.Now().Add(4 * time.Second)
 	for time.Now().Before(waitDeadline) {

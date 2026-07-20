@@ -13,15 +13,16 @@ Active Connections
   TCP    0.0.0.0:443            0.0.0.0:0              LISTENING       5678
   TCP    [::]:80                [::]:0                 LISTENING       1234
   TCP    127.0.0.1:5432         0.0.0.0:0              LISTENING       9999
+  TCP    [::1]:3000             [::]:0                 ABHÖREN         7777
   TCP    10.0.0.5:54321         93.184.216.34:443     ESTABLISHED     2222
   UDP    0.0.0.0:53             *:*                                    3333
 `)
 
 	owners := parseNetstatExeAllListeners(output)
 
-	// Ports 80, 443, 5432 — established/udp rows excluded, :80 deduped across v4/v6.
-	if len(owners) != 3 {
-		t.Fatalf("got %d owners, want 3: %+v", len(owners), owners)
+	// Ports 80, 443, 3000, 5432 — localized state is accepted by stable shape.
+	if len(owners) != 4 {
+		t.Fatalf("got %d owners, want 4: %+v", len(owners), owners)
 	}
 
 	byPort := make(map[int]PortOwner)
@@ -32,7 +33,7 @@ Active Connections
 		}
 	}
 
-	for port, wantPID := range map[int]int{80: 1234, 443: 5678, 5432: 9999} {
+	for port, wantPID := range map[int]int{80: 1234, 443: 5678, 3000: 7777, 5432: 9999} {
 		o, ok := byPort[port]
 		if !ok {
 			t.Errorf("missing port %d", port)

@@ -170,6 +170,60 @@ func TestSessionRegister_EmptyConfigReturnsDone(t *testing.T) {
 	assert.NotNil(t, result["autostart"])
 }
 
+// TestSessionRegister_ReconnectPreservesStartedAt verifies that a reconnect
+// (SESSION REGISTER for an already-registered code) inherits the original
+// session's StartedAt rather than stamping a fresh now. The fresh Session is
+// stamped StartedAt=now at parse time; if the reconnect kept that, the session
+// would masquerade as the newest one and sessionMoreRecent (FindByDirectory's
+// last-started-wins tiebreak) could flip overlay ownership within a project on
+// every reconnect.
+func TestSessionRegister_ReconnectPreservesStartedAt(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
+
+	// No .agnt.kdl — autostart is a no-op so both registrations complete fast.
+	d := New(DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+	require.NoError(t, d.Start())
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		d.Stop(stopCtx)
+	}()
+
+	client := NewClient(WithSocketPath(sockPath))
+	require.NoError(t, client.Connect())
+	defer client.Close()
+
+	const code = "reconnect-startedat"
+	_, err := client.SessionRegister(code, "/tmp/overlay1.sock", tmpDir, "test", nil)
+	require.NoError(t, err)
+
+	original, ok := d.sessionRegistry.Get(code)
+	require.True(t, ok, "session must be registered after first register")
+	startedAt := original.StartedAt
+
+	// Ensure the fresh reconnect's parse-time now is strictly later, so the
+	// assertion proves inheritance rather than coincidental equality.
+	time.Sleep(5 * time.Millisecond)
+
+	// Reconnect: same code, different overlay path. The overlay change proves
+	// the reconnect merge ran (not merely a cancel-pending short-circuit).
+	_, err = client.SessionRegister(code, "/tmp/overlay2.sock", tmpDir, "test", nil)
+	require.NoError(t, err)
+
+	reconnected, ok := d.sessionRegistry.Get(code)
+	require.True(t, ok, "session must still be registered after reconnect")
+	assert.NotSame(t, original, reconnected, "reconnect must swap in a fresh Session identity")
+	assert.Equal(t, "/tmp/overlay2.sock", reconnected.OverlayPath, "reconnect must refresh the overlay path")
+	assert.True(t, reconnected.StartedAt.Equal(startedAt),
+		"reconnect must inherit the original StartedAt (%s), got %s", startedAt, reconnected.StartedAt)
+}
+
 // TestSessionRegister_ProgressSnapshotIncludesHistory verifies that a late
 // joiner calling SESSION REGISTER receives the progress history accumulated
 // so far.
@@ -302,4 +356,228 @@ scripts {
 	// duplicate scans.
 	assert.Less(t, elapsed, 2*time.Second,
 		"back-to-back registrations for distinct projects should not serialize (got %v)", elapsed)
+}
+
+// TestSessionUnregister_IdempotentForUnknownSession verifies that UNREGISTER of
+// a session the registry never held returns OK, not ErrNotFound. This is the
+// normal shutdown race: deferred cleanup wins the connection drop and retires
+// the session, then the client sends an explicit UNREGISTER — the desired end
+// state (session absent) already holds, so it is success.
+func TestSessionUnregister_IdempotentForUnknownSession(t *testing.T) {
+	t.Parallel()
+	_, sockPath := newSessionHostTestDaemon(t)
+
+	c := NewConn(sockPath)
+	defer c.Close()
+
+	require.NoError(t, c.Request("SESSION", "UNREGISTER", "never-registered").OK())
+}
+
+// TestSessionRegister_ReconnectInheritsUnsuppliedFields exercises every arm of
+// the reconnect merge in hubHandleSessionRegister (hub_session.go): a reconnect
+// that leaves a field unset inherits the original registration's value, while a
+// reconnect that supplies a fresh value overrides it. StartedAt inheritance has
+// its own dedicated test (TestSessionRegister_ReconnectPreservesStartedAt); this
+// one covers the remaining five arms — OverlayPath, Command+Args, SessionPGID,
+// SessionJobHandle, and Kind.
+//
+// Two of these arms are load-bearing containment invariants, called out in the
+// per-case asserts below:
+//   - SessionPGID must be inherited: dropping it on reconnect would leave
+//     SessionPGID==0, making killSessionPGID a no-op at cleanup and letting the
+//     session's backgrounded jobs (e.g. `npm run dev &`) escape containment.
+//   - Kind must be inherited: dropping it would flip a session-host session back
+//     to the classic default, defeating doCleanupExact's explicit-kill-only
+//     guard and letting a client disconnect reap a daemon-owned PTY.
+//
+// The first registration is seeded directly into the registry so all six fields
+// (including Kind, which the classic client wire never carries) start non-zero;
+// the reconnect then arrives over the real client, matching the driving shape of
+// TestSessionRegister_ReconnectPreservesStartedAt.
+func TestSessionRegister_ReconnectInheritsUnsuppliedFields(t *testing.T) {
+	t.Parallel()
+
+	const (
+		seedOverlay = "/tmp/seed-overlay.sock"
+		seedCommand = "claude"
+		seedPGID    = 4242
+		seedHandle  = uint64(0xDEAD)
+	)
+	seedArgs := []string{"--model", "opus"}
+
+	cases := []struct {
+		name             string
+		reconnectOverlay string
+		reconnectCommand string
+		reconnectArgs    []string
+		reconnectPGID    int
+		reconnectHandle  uint64
+		wantOverlay      string
+		wantCommand      string
+		wantArgs         []string
+		wantPGID         int
+		wantHandle       uint64
+	}{
+		{
+			name:             "unsupplied fields inherit the seeded lifetime",
+			reconnectOverlay: "",
+			reconnectCommand: "",
+			reconnectArgs:    nil,
+			reconnectPGID:    0,
+			reconnectHandle:  0,
+			wantOverlay:      seedOverlay,
+			wantCommand:      seedCommand,
+			wantArgs:         seedArgs,
+			wantPGID:         seedPGID,
+			wantHandle:       seedHandle,
+		},
+		{
+			name:             "supplied fields override the seeded lifetime",
+			reconnectOverlay: "/tmp/new-overlay.sock",
+			reconnectCommand: "gemini",
+			reconnectArgs:    []string{"--flag"},
+			reconnectPGID:    9999,
+			reconnectHandle:  uint64(0xBEEF),
+			wantOverlay:      "/tmp/new-overlay.sock",
+			wantCommand:      "gemini",
+			wantArgs:         []string{"--flag"},
+			wantPGID:         9999,
+			wantHandle:       uint64(0xBEEF),
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			tmpDir := t.TempDir()
+			sockPath := filepath.Join(tmpDir, "test.sock")
+
+			// No .agnt.kdl — autostart is a no-op so registration completes fast.
+			d := New(DaemonConfig{
+				SocketPath:   sockPath,
+				MaxClients:   10,
+				WriteTimeout: 5 * time.Second,
+			})
+			require.NoError(t, d.Start())
+			defer func() {
+				stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				d.Stop(stopCtx)
+			}()
+
+			const code = "reconnect-inherit"
+
+			// Seed the first lifetime directly so Kind (never carried by the
+			// classic client wire) and the containment handles start non-zero.
+			seed := &Session{
+				Code:             code,
+				OverlayPath:      seedOverlay,
+				ProjectPath:      normalizePath(tmpDir),
+				Command:          seedCommand,
+				Args:             seedArgs,
+				StartedAt:        time.Now().Add(-time.Hour),
+				Status:           SessionStatusActive,
+				LastSeen:         time.Now().Add(-time.Hour),
+				SessionPGID:      seedPGID,
+				SessionJobHandle: seedHandle,
+				Kind:             SessionKindClassic,
+			}
+			require.NoError(t, d.sessionRegistry.Register(seed))
+			seedStartedAt := seed.StartedAt
+
+			// Reconnect over the real client with the case's fields.
+			client := NewClient(WithSocketPath(sockPath))
+			require.NoError(t, client.Connect())
+			defer client.Close()
+
+			_, err := client.SessionRegisterWithContainment(
+				code, tc.reconnectOverlay, tmpDir, tc.reconnectCommand, tc.reconnectArgs,
+				tc.reconnectPGID, tc.reconnectHandle)
+			require.NoError(t, err)
+
+			got, ok := d.sessionRegistry.Get(code)
+			require.True(t, ok, "session must still be registered after reconnect")
+			require.NotSame(t, seed, got, "reconnect must swap in a fresh Session identity")
+
+			require.Equal(t, tc.wantOverlay, got.OverlayPath, "OverlayPath arm")
+			require.Equal(t, tc.wantCommand, got.Command, "Command arm")
+			require.Equal(t, tc.wantArgs, got.Args, "Args arm")
+			require.Equal(t, tc.wantPGID, got.SessionPGID,
+				"SessionPGID arm — dropping this would no-op killSessionPGID and break containment")
+			require.Equal(t, tc.wantHandle, got.SessionJobHandle, "SessionJobHandle arm")
+			// Kind is never supplied by the classic client wire, so it inherits in
+			// both cases — the invariant that keeps a session-host session
+			// explicit-kill-only across reconnects.
+			require.Equal(t, SessionKindClassic, got.Kind,
+				"Kind arm — dropping this would defeat the session-host explicit-kill-only guard")
+			// A reconnect is the same logical session: it keeps the seeded
+			// StartedAt regardless of which fields it re-supplied.
+			require.True(t, got.StartedAt.Equal(seedStartedAt), "reconnect must inherit StartedAt")
+		})
+	}
+}
+
+// TestSessionRegister_RejectsSessionHostOwnedCode verifies the cross-kind
+// guard in hubHandleSessionRegister: a classic SESSION REGISTER against a code
+// already owned by a session-host entry is rejected loudly rather than misread
+// as a reconnect. Session-host ids ("<cfg.Name>-<idCounter>") and classic codes
+// ("<command-base>-<seq>") come from two independent counters over a
+// user-supplied name, so a `--name claude` session-host `claude-9` and a
+// classic `claude-9` can collide. Without the guard, the collision would take
+// the ErrSessionExists reconnect branch and ReplaceExact the session-host
+// entry — breaking its explicit-kill-only invariant (a later conn drop would
+// then run deferred cleanup against a daemon-owned PTY).
+func TestSessionRegister_RejectsSessionHostOwnedCode(t *testing.T) {
+	t.Parallel()
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
+
+	// No .agnt.kdl — the register is rejected before autostart runs anyway.
+	d := New(DaemonConfig{
+		SocketPath:   sockPath,
+		MaxClients:   10,
+		WriteTimeout: 5 * time.Second,
+	})
+	require.NoError(t, d.Start())
+	defer func() {
+		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		d.Stop(stopCtx)
+	}()
+
+	const code = "claude-9"
+
+	// Seed a session-host owned entry directly — Kind is never carried by the
+	// classic client wire, so it must be planted, mirroring the seeding shape of
+	// TestSessionRegister_ReconnectInheritsUnsuppliedFields.
+	seed := &Session{
+		Code:        code,
+		ProjectPath: normalizePath(tmpDir),
+		Command:     "sh",
+		StartedAt:   time.Now().Add(-time.Hour),
+		Status:      SessionStatusActive,
+		LastSeen:    time.Now().Add(-time.Hour),
+		SessionPGID: 4242,
+		Kind:        SessionKindSessionHost,
+	}
+	require.NoError(t, d.sessionRegistry.Register(seed))
+
+	client := NewClient(WithSocketPath(sockPath))
+	require.NoError(t, client.Connect())
+	defer client.Close()
+
+	// A classic SESSION REGISTER on the same code must be rejected, not merged.
+	_, err := client.SessionRegister(code, "/tmp/overlay.sock", tmpDir, "test", nil)
+	require.Error(t, err, "classic register against a session-host owned code must fail loud")
+	require.Contains(t, err.Error(), "session-host",
+		"rejection must name the session-host ownership, got %v", err)
+
+	// The registry entry must be untouched: same pointer, still session-host,
+	// containment handle intact — proving no ReplaceExact ran.
+	got, ok := d.sessionRegistry.Get(code)
+	require.True(t, ok, "session-host entry must survive the rejected register")
+	require.Same(t, seed, got, "rejected register must not swap the session-host identity")
+	require.Equal(t, SessionKindSessionHost, got.Kind, "Kind must remain session-host")
+	require.Equal(t, 4242, got.SessionPGID, "session-host containment handle must be untouched")
 }

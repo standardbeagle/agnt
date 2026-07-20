@@ -41,6 +41,7 @@ type sessionPipeline struct {
 	dedup  *Deduplicator
 	flow   *FlowController
 	pinger *PingEmitter
+	blobs  *BlobStore
 
 	stopCh      chan struct{}
 	ingestCount atomic.Int64 // drives opportunistic dedup Trim
@@ -151,6 +152,7 @@ func (b *MPSCBus) AddSession(sessionID string, mcpNotify MCPNotifyFn, channelNot
 		dedup:  dedup,
 		flow:   flow,
 		pinger: pinger,
+		blobs:  NewBlobStore(0),
 		stopCh: make(chan struct{}),
 	}
 
@@ -180,6 +182,7 @@ func (b *MPSCBus) RemoveSession(sessionID string) {
 	if pl.pinger != nil {
 		pl.pinger.Stop()
 	}
+	pl.blobs.Close()
 }
 
 // Close shuts down the bus and all session pipelines.
@@ -254,6 +257,28 @@ func (b *MPSCBus) ClearSessionBefore(sessionID string, before time.Time) {
 		Ctx:        Context{SessionID: sessionID},
 	}
 	b.Fire(ev)
+}
+
+// QueryAndMarkSession atomically queries a session inbox and marks the exact
+// returned selection chosen from that snapshot before duplicate ingestion can
+// mutate it.
+func (b *MPSCBus) QueryAndMarkSession(sessionID string, filter QueryFilter, selectFingerprints func([]InboxEntry) []string, advanceCursor bool) ([]InboxEntry, Stats) {
+	pl := b.getSessionPipeline(sessionID)
+	if pl == nil {
+		return nil, Stats{}
+	}
+	return pl.inbox.QueryAndMark(filter, selectFingerprints, advanceCursor)
+}
+
+// ReadSessionBlob hydrates a payload only from the caller session's bounded
+// store. Hashes are content-addressed but stores are tenancy boundaries: never
+// search another session when a hash is absent locally.
+func (b *MPSCBus) ReadSessionBlob(sessionID, hash string) ([]byte, string, error) {
+	pl := b.getSessionPipeline(sessionID)
+	if pl == nil || pl.blobs == nil {
+		return nil, "", ErrBlobEvicted
+	}
+	return pl.blobs.Read(hash)
 }
 
 // MarkReadSession marks entries as read in the given session's inbox.
@@ -354,9 +379,9 @@ func (b *MPSCBus) dispatchLoop() {
 	}
 }
 
-// deliver fans out ev to all active session pipelines synchronously.
-// Called on the single dispatch goroutine — each session pipeline's dedup
-// and inbox are concurrent-safe so this is safe without per-session locking.
+// deliver routes session-scoped events only to their originating pipeline.
+// Only positively identified bus-overflow metadata is bus-wide; ambiguous
+// sessionless events always fail closed.
 func (b *MPSCBus) deliver(ev *IncidentEvent) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
@@ -378,6 +403,21 @@ func (b *MPSCBus) deliver(ev *IncidentEvent) {
 				debug.Log("incident-retention", "cleared %d inbox entries (session %s)", n, pl.inbox.SessionID)
 			}
 		}
+		return
+	}
+	if ev.Ctx.SessionID != "" {
+		if pl := b.perSession[ev.Ctx.SessionID]; pl != nil {
+			select {
+			case <-pl.stopCh:
+				return
+			default:
+				b.ingestToSession(pl, ev)
+			}
+		}
+		return
+	}
+	if ev.Fingerprint != metaBusOverflowFP {
+		// A sessionless production event has no trustworthy owner.
 		return
 	}
 	for _, pl := range b.perSession {
@@ -424,10 +464,20 @@ func cloneRemediationArgs(args map[string]any) map[string]any {
 // ingestToSession runs dedup → inbox for one session. Called on the dispatch
 // goroutine; must not block.
 func (b *MPSCBus) ingestToSession(pl *sessionPipeline, ev *IncidentEvent) {
-	evCopy := *ev
-	evCopy.Remediation.PrimaryArgs = cloneRemediationArgs(ev.Remediation.PrimaryArgs)
-	evCopy.Remediation.FallbackArgs = cloneRemediationArgs(ev.Remediation.FallbackArgs)
-	merged, de := pl.dedup.Ingest(pl.inbox.SessionID, evCopy)
+	event := cloneIncidentEvent(*ev)
+	if event.PayloadRef == nil && len(event.payload) > 0 {
+		// Publish the reference only after bytes are committed. Fire remains
+		// non-blocking (the dispatch goroutine owns this work), and query results
+		// can never race an async spill that has not become readable yet.
+		if ref, err := pl.blobs.Write(event.payload, "text/plain"); err == nil {
+			event.PayloadRef = &ref
+		}
+		event.payload = nil
+	}
+	merged, de := pl.dedup.Ingest(pl.inbox.SessionID, event)
+	// DedupEntry is a detached snapshot, but give Inbox explicit ownership of
+	// its sample (including nested remediation maps/slices and PayloadRef).
+	sample := cloneIncidentEvent(de.Last)
 	entry := &InboxEntry{
 		Fingerprint: ev.Fingerprint,
 		FirstSeenAt: de.First.ReceivedAt,
@@ -436,7 +486,7 @@ func (b *MPSCBus) ingestToSession(pl *sessionPipeline, ev *IncidentEvent) {
 		// (existing.Count += entry.Count), so passing the dedup's cumulative
 		// de.Count here would compound into a triangular sum.
 		Count:    1,
-		Sample:   &de.Last,
+		Sample:   &sample,
 		Severity: ev.Severity,
 	}
 	if merged {

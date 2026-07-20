@@ -107,6 +107,7 @@ func (d *Daemon) stopReconcileScript(ctx context.Context, name, projectPath stri
 		debug.Warn("daemon", "reconcile: stop %s: %v", processID, err)
 	}
 	d.hub.ProcessManager().RemoveByPath(processID, projectPath)
+	d.retireIncidentProcessOwner(processID)
 	d.urlTracker.ClearProcess(processID)
 	if d.autoRestarter != nil {
 		d.autoRestarter.Unregister(processID)

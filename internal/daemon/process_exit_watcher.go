@@ -246,6 +246,7 @@ func (d *Daemon) watchProcessExit(proc *goprocess.ManagedProcess) {
 	// Stop's wg.Wait would run against torn-down managers (and its unguarded
 	// wg.Add racing that Wait is a WaitGroup misuse panic).
 	d.goTracked(func() {
+		owner, hadOwner := d.incidentProcessOwner.Load(proc.ID)
 		select {
 		case <-proc.Done():
 			// Process exited normally — capture its metadata.
@@ -267,8 +268,14 @@ func (d *Daemon) watchProcessExit(proc *goprocess.ManagedProcess) {
 		// record, which is what the user wants). If a DIFFERENT instance
 		// is registered, the new instance's start path already ran
 		// Clear() and its own watcher will publish eventually; skip.
-		if current, err := d.hub.ProcessManager().Get(proc.ID); err == nil && current != proc {
-			return
+		if current, err := d.hub.ProcessManager().Get(proc.ID); err == nil {
+			if current != proc {
+				return
+			}
+		} else if hadOwner {
+			// The manager has removed this exact lifetime. CompareAndDelete
+			// prevents a replacement with a different owner from being erased.
+			d.incidentProcessOwner.CompareAndDelete(proc.ID, owner)
 		}
 
 		// Fire on-stop or on-crash lifecycle hook if configured.

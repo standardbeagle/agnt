@@ -6,6 +6,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestSessionRegistry_Register(t *testing.T) {
@@ -83,45 +85,6 @@ func TestSessionRegistry_Register_EmptyCode(t *testing.T) {
 	err := registry.Register(session)
 	if err == nil {
 		t.Error("Register() should return error for empty code")
-	}
-}
-
-func TestSessionRegistry_Unregister(t *testing.T) {
-	t.Parallel()
-	registry := NewSessionRegistry(60 * time.Second)
-
-	session := &Session{
-		Code:      "test-1",
-		Command:   "claude",
-		StartedAt: time.Now(),
-		Status:    SessionStatusActive,
-	}
-
-	err := registry.Register(session)
-	if err != nil {
-		t.Fatalf("Register() error = %v", err)
-	}
-
-	// Unregister
-	err = registry.Unregister("test-1")
-	if err != nil {
-		t.Fatalf("Unregister() error = %v", err)
-	}
-
-	// Verify removal
-	_, found := registry.Get("test-1")
-	if found {
-		t.Error("Get() returned true after Unregister, expected false")
-	}
-}
-
-func TestSessionRegistry_Unregister_NotFound(t *testing.T) {
-	t.Parallel()
-	registry := NewSessionRegistry(60 * time.Second)
-
-	err := registry.Unregister("nonexistent")
-	if err == nil {
-		t.Error("Unregister() should return error for nonexistent code")
 	}
 }
 
@@ -259,7 +222,7 @@ func TestSessionRegistry_ActiveCount(t *testing.T) {
 		t.Errorf("ActiveCount() = %d, want 1", registry.ActiveCount())
 	}
 
-	_ = registry.Unregister("test-1")
+	registry.UnregisterExact("test-1", session)
 
 	if registry.ActiveCount() != 0 {
 		t.Errorf("ActiveCount() = %d, want 0", registry.ActiveCount())
@@ -613,7 +576,7 @@ func TestSessionRegistry_TotalUnregistered(t *testing.T) {
 		Status:    SessionStatusActive,
 	}
 	_ = registry.Register(session)
-	_ = registry.Unregister("test-1")
+	registry.UnregisterExact("test-1", session)
 
 	if registry.TotalUnregistered() != 1 {
 		t.Errorf("TotalUnregistered() = %d, want 1", registry.TotalUnregistered())
@@ -728,4 +691,33 @@ func TestDaemon_AutostartManager_SharedPerProject(t *testing.T) {
 	// Drain handles so goroutines exit.
 	<-h1.Done()
 	<-h3.Done()
+}
+
+func TestSessionRegistry_ExactLifetimeOperations(t *testing.T) {
+	t.Parallel()
+	registry := NewSessionRegistry(time.Minute)
+	old := &Session{Code: "same-code"}
+	fresh := &Session{Code: "same-code"}
+	require.NoError(t, registry.Register(old))
+
+	require.True(t, registry.ReplaceExact("same-code", old, fresh))
+	require.False(t, registry.UnregisterExact("same-code", old), "stale lifetime removed fresh registration")
+
+	// Guard arms: every ReplaceExact/UnregisterExact rejection must leave the
+	// current registration (fresh) untouched rather than partially mutating it.
+	// A replacement whose Code disagrees with the addressed code is refused, so a
+	// caller cannot install a session under the wrong key.
+	require.False(t, registry.ReplaceExact("same-code", fresh, &Session{Code: "code-B"}),
+		"ReplaceExact accepted a replacement whose Code != addressed code")
+	// nil expected and nil replacement are both refused.
+	require.False(t, registry.ReplaceExact("same-code", nil, fresh), "ReplaceExact accepted a nil expected")
+	require.False(t, registry.ReplaceExact("same-code", fresh, nil), "ReplaceExact accepted a nil replacement")
+	// nil expected is refused by UnregisterExact.
+	require.False(t, registry.UnregisterExact("same-code", nil), "UnregisterExact accepted a nil expected")
+
+	// None of the rejected calls mutated the registry: fresh is still installed.
+	got, ok := registry.Get("same-code")
+	require.True(t, ok)
+	require.Same(t, fresh, got)
+	require.True(t, registry.UnregisterExact("same-code", fresh))
 }

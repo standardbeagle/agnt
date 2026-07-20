@@ -56,26 +56,29 @@ func TestBus_ClearSessionBefore_OnlyTargetSession(t *testing.T) {
 	bus.AddSession("sess-a", nil, nil, nil)
 	bus.AddSession("sess-b", nil, nil, nil)
 
-	ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "TypeError", "boom in both", Context{}, nil)
-	bus.Fire(&ev)
+	evA := NewIncidentEvent(SourceBrowserJS, SeverityError, "TypeError", "boom in both", Context{SessionID: "sess-a"}, nil)
+	evB := evA
+	evB.Ctx.SessionID = "sess-b"
+	bus.Fire(&evA)
+	bus.Fire(&evB)
 
 	deadline := time.Now().Add(2 * time.Second)
-	for time.Now().Before(deadline) && bus.FindFingerprintSession("sess-b", ev.Fingerprint) == nil {
+	for time.Now().Before(deadline) && bus.FindFingerprintSession("sess-b", evB.Fingerprint) == nil {
 		time.Sleep(5 * time.Millisecond)
 	}
 
 	bus.ClearSessionBefore("sess-a", time.Now())
 
 	for time.Now().Before(deadline) {
-		if bus.FindFingerprintSession("sess-a", ev.Fingerprint) == nil {
+		if bus.FindFingerprintSession("sess-a", evA.Fingerprint) == nil {
 			break
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
-	if bus.FindFingerprintSession("sess-a", ev.Fingerprint) != nil {
+	if bus.FindFingerprintSession("sess-a", evA.Fingerprint) != nil {
 		t.Error("sess-a inbox should be swept")
 	}
-	if bus.FindFingerprintSession("sess-b", ev.Fingerprint) == nil {
+	if bus.FindFingerprintSession("sess-b", evB.Fingerprint) == nil {
 		t.Error("sess-b inbox must be untouched by sess-a's clear")
 	}
 }
@@ -86,7 +89,7 @@ func TestBus_ClearProcessBefore_FIFOWithEvents(t *testing.T) {
 	defer bus.Close()
 	bus.AddSession("sess", nil, nil, nil)
 
-	before := NewIncidentEvent(SourceProcessAlert, SeverityError, "go", "stale compile error", Context{ProcessID: "web"}, nil)
+	before := NewIncidentEvent(SourceProcessAlert, SeverityError, "go", "stale compile error", Context{SessionID: "sess", ProcessID: "web"}, nil)
 	before.ReceivedAt = time.Now().Add(-time.Minute)
 	bus.Fire(&before)
 
@@ -94,7 +97,7 @@ func TestBus_ClearProcessBefore_FIFOWithEvents(t *testing.T) {
 	// event (clearing it) and BEFORE the fresh event fired next.
 	bus.ClearProcessBefore("web", time.Now())
 
-	after := NewIncidentEvent(SourceProcessAlert, SeverityError, "go", "fresh error after build", Context{ProcessID: "web"}, nil)
+	after := NewIncidentEvent(SourceProcessAlert, SeverityError, "go", "fresh error after build", Context{SessionID: "sess", ProcessID: "web"}, nil)
 	bus.Fire(&after)
 
 	deadline := time.Now().Add(2 * time.Second)

@@ -373,7 +373,7 @@ func (s *ScriptConfig) ResolveShell() (shell string, shellArgs []string) {
 	// signal: a script rooted in /mnt/c/... is almost certainly Windows
 	// software), then the run command itself (catches `C:\tools\foo.cmd`
 	// style absolute invocations even when Cwd is Linux-side).
-	if platform.ShouldUseWindowsShell(s.Cwd) || platform.ShouldUseWindowsShell(s.Run) {
+	if platform.ShouldUseWindowsShell(s.Cwd) || platform.ShouldUseWindowsCommand(s.Run) {
 		return "cmd.exe", []string{"/c", s.Run}
 	}
 
@@ -812,8 +812,8 @@ func (c *AutoForwardConfig) ShouldForwardSource(source string) bool {
 // to the AI client. When no push config is present, all channels are enabled
 // (universal behavior).
 type PushConfig struct {
-	// MCPNotifications controls delivery via MCP session.Log().
-	// Works natively in Claude Desktop; may be dropped by other clients.
+	// MCPNotifications controls the project-scoped incident digest stream
+	// consumed by MCP/agent adapters.
 	// Defaults to true when unset.
 	MCPNotifications *bool `kdl:"mcp-notifications"`
 

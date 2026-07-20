@@ -2,7 +2,6 @@ package sshclient
 
 import (
 	"bufio"
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,6 +19,12 @@ import (
 // socket file before giving up — a stale socket file left behind by a
 // crashed 'agnt ssh' process must not hang callers.
 const controlSocketDialTimeout = 2 * time.Second
+
+const (
+	controlRequestReadTimeout = 5 * time.Second
+	maxControlHeaderBytes     = 64 * 1024
+	maxControlPushBytes       = 256 * 1024 * 1024
+)
 
 // ErrNoActiveSession is wrapped into the error DialControl and the CLI
 // return when no live control socket exists for the requested host — the
@@ -112,15 +117,15 @@ func ServePushQueue(ln net.Listener, queue *PushQueue) {
 }
 
 func servePushQueueConn(conn net.Conn, queue *PushQueue) {
+	servePushQueueConnWithLimits(conn, queue, controlRequestReadTimeout, maxControlPushBytes)
+}
+
+func servePushQueueConnWithLimits(conn net.Conn, queue *PushQueue, readTimeout time.Duration, maxSize int64) {
 	defer conn.Close()
-	reader := bufio.NewReader(conn)
-	line, err := reader.ReadString('\n')
+	reader := bufio.NewReaderSize(conn, maxControlHeaderBytes+1)
+	header, err := readControlRequest(conn, reader, readTimeout)
 	if err != nil {
-		return
-	}
-	var header controlRequestHeader
-	if err := json.Unmarshal([]byte(line), &header); err != nil {
-		writeControlResponse(conn, controlResponse{Error: fmt.Sprintf("sshclient: malformed control request: %v", err)})
+		writeControlResponse(conn, controlResponse{Error: err.Error()})
 		return
 	}
 
@@ -128,16 +133,12 @@ func servePushQueueConn(conn net.Conn, queue *PushQueue) {
 	case "ping":
 		writeControlResponse(conn, controlResponse{OK: true, ProjectRoot: queue.ProjectRoot()})
 	case "push":
-		if header.Size < 0 {
-			writeControlResponse(conn, controlResponse{Error: "sshclient: push size must not be negative"})
+		if err := validateControlPushSize(header.Size, maxSize); err != nil {
+			writeControlResponse(conn, controlResponse{Error: err.Error()})
 			return
 		}
-		body := make([]byte, header.Size)
-		if _, err := io.ReadFull(reader, body); err != nil {
-			writeControlResponse(conn, controlResponse{Error: fmt.Sprintf("sshclient: reading push body: %v", err)})
-			return
-		}
-		remotePath, err := queue.Push(header.FileName, header.DestRelPath, bytes.NewReader(body))
+		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
+		remotePath, err := queue.Push(header.FileName, header.DestRelPath, &exactBodyReader{r: reader, remaining: header.Size})
 		if err != nil {
 			writeControlResponse(conn, controlResponse{Error: err.Error()})
 			return
@@ -149,15 +150,15 @@ func servePushQueueConn(conn net.Conn, queue *PushQueue) {
 }
 
 func serveControlConn(conn net.Conn, projectRoot string, sc *sftp.Client, notify FileArrivalNotifier) {
+	serveControlConnWithLimits(conn, projectRoot, sc, notify, controlRequestReadTimeout, maxControlPushBytes)
+}
+
+func serveControlConnWithLimits(conn net.Conn, projectRoot string, sc *sftp.Client, notify FileArrivalNotifier, readTimeout time.Duration, maxSize int64) {
 	defer conn.Close()
-	reader := bufio.NewReader(conn)
-	line, err := reader.ReadString('\n')
+	reader := bufio.NewReaderSize(conn, maxControlHeaderBytes+1)
+	header, err := readControlRequest(conn, reader, readTimeout)
 	if err != nil {
-		return
-	}
-	var header controlRequestHeader
-	if err := json.Unmarshal([]byte(line), &header); err != nil {
-		writeControlResponse(conn, controlResponse{Error: fmt.Sprintf("sshclient: malformed control request: %v", err)})
+		writeControlResponse(conn, controlResponse{Error: err.Error()})
 		return
 	}
 
@@ -165,7 +166,20 @@ func serveControlConn(conn net.Conn, projectRoot string, sc *sftp.Client, notify
 	case "ping":
 		writeControlResponse(conn, controlResponse{OK: true, ProjectRoot: projectRoot})
 	case "push":
-		body := io.LimitReader(reader, header.Size)
+		if err := validateControlPushSize(header.Size, maxSize); err != nil {
+			writeControlResponse(conn, controlResponse{Error: err.Error()})
+			return
+		}
+		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
+		body, err := spoolControlBody(reader, header.Size)
+		if err != nil {
+			writeControlResponse(conn, controlResponse{Error: fmt.Sprintf("sshclient: reading push body: %v", err)})
+			return
+		}
+		defer func() {
+			body.Close()
+			os.Remove(body.Name())
+		}()
 		remotePath, err := PushToInbox(sc, projectRoot, header.DestRelPath, header.FileName, body)
 		if err != nil {
 			writeControlResponse(conn, controlResponse{Error: err.Error()})
@@ -181,6 +195,72 @@ func serveControlConn(conn net.Conn, projectRoot string, sc *sftp.Client, notify
 	default:
 		writeControlResponse(conn, controlResponse{Error: fmt.Sprintf("sshclient: unknown control request kind %q", header.Kind)})
 	}
+}
+
+func spoolControlBody(src io.Reader, size int64) (*os.File, error) {
+	temp, err := os.CreateTemp("", "agnt-control-push-*")
+	if err != nil {
+		return nil, err
+	}
+	cleanup := func() {
+		temp.Close()
+		os.Remove(temp.Name())
+	}
+	if _, err := io.CopyN(temp, src, size); err != nil {
+		cleanup()
+		return nil, err
+	}
+	if _, err := temp.Seek(0, io.SeekStart); err != nil {
+		cleanup()
+		return nil, err
+	}
+	return temp, nil
+}
+
+func readControlRequest(conn net.Conn, reader *bufio.Reader, timeout time.Duration) (controlRequestHeader, error) {
+	_ = conn.SetReadDeadline(time.Now().Add(timeout))
+	line, err := reader.ReadSlice('\n')
+	if err != nil {
+		if errors.Is(err, bufio.ErrBufferFull) {
+			return controlRequestHeader{}, fmt.Errorf("sshclient: control request header exceeds %d bytes", maxControlHeaderBytes)
+		}
+		return controlRequestHeader{}, fmt.Errorf("sshclient: reading control request header: %w", err)
+	}
+	var header controlRequestHeader
+	if err := json.Unmarshal(line, &header); err != nil {
+		return controlRequestHeader{}, fmt.Errorf("sshclient: malformed control request: %w", err)
+	}
+	return header, nil
+}
+
+func validateControlPushSize(size, maxSize int64) error {
+	if size < 0 {
+		return errors.New("sshclient: push size must not be negative")
+	}
+	if size > maxSize {
+		return fmt.Errorf("sshclient: push size %d exceeds limit %d", size, maxSize)
+	}
+	return nil
+}
+
+type exactBodyReader struct {
+	r         io.Reader
+	remaining int64
+}
+
+func (r *exactBodyReader) Read(p []byte) (int, error) {
+	if r.remaining == 0 {
+		return 0, io.EOF
+	}
+	if int64(len(p)) > r.remaining {
+		p = p[:r.remaining]
+	}
+	n, err := r.r.Read(p)
+	r.remaining -= int64(n)
+	if err == io.EOF && r.remaining > 0 {
+		err = io.ErrUnexpectedEOF
+	}
+	return n, err
 }
 
 func writeControlResponse(conn net.Conn, resp controlResponse) {
@@ -237,11 +317,10 @@ func pingControl(conn net.Conn) (controlResponse, error) {
 
 // DiscoverActiveHosts lists every host with a live control socket: it globs
 // ~/.agnt/ssh/*.ctl and pings each one, keeping only hosts that answer.
-// A socket file that exists but does not answer (the owning 'agnt ssh'
-// process crashed without cleaning up) is treated as stale and removed —
-// mirroring ListenControl's own reclaim-on-register behavior, so a crashed
-// session does not linger in discovery results indefinitely between one
-// process's exit and another's next 'agnt ssh' to the same host.
+// Only a socket whose connect failure conclusively identifies a stale endpoint
+// is atomically quarantined and removed. Busy, timed-out, permission-denied,
+// malformed, or rejected responders are preserved because their ownership is
+// inconclusive; discovery never destroys a possibly-live session endpoint.
 func DiscoverActiveHosts() ([]string, error) {
 	return discoverControlHosts(controlSocketDialTimeout, pingControl)
 }
@@ -251,6 +330,9 @@ func DiscoverActiveHosts() ([]string, error) {
 // and destRelPath, stream size bytes from src, and decode the response.
 // Returns the absolute remote path the file was written to.
 func PushOneFile(host, fileName, destRelPath string, size int64, src io.Reader) (string, error) {
+	if err := validateControlPushSize(size, maxControlPushBytes); err != nil {
+		return "", err
+	}
 	conn, err := DialControl(host)
 	if err != nil {
 		return "", err
@@ -266,8 +348,12 @@ func PushOneFile(host, fileName, destRelPath string, size int64, src io.Reader) 
 	if _, err := conn.Write(enc); err != nil {
 		return "", fmt.Errorf("sshclient: sending push request header: %w", err)
 	}
-	if _, err := io.Copy(conn, io.LimitReader(src, size)); err != nil {
+	written, err := io.Copy(conn, io.LimitReader(src, size))
+	if err != nil {
 		return "", fmt.Errorf("sshclient: streaming %s to %s: %w", fileName, host, err)
+	}
+	if written != size {
+		return "", fmt.Errorf("sshclient: streaming %s to %s: source ended after %d of %d bytes", fileName, host, written, size)
 	}
 
 	reader := bufio.NewReader(conn)

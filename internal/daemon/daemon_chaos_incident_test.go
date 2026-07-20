@@ -32,6 +32,7 @@ func TestChaosInjectedFault_SuppressedFromIncidentInbox(t *testing.T) {
 	d := NewForTest(t, DaemonConfig{})
 	require.NotNil(t, d.incidentBus)
 	d.addIncidentSession("sess-chaos")
+	d.registerIncidentProxyOwner("px-real", "sess-chaos")
 
 	// Control: a genuine backend 500 surfaces.
 	d.fireToIncidentBus(chaosHTTPEntry(500, false, false), "px-real")
@@ -63,6 +64,7 @@ func TestChaosInjectedFault_SuppressedFromIncidentInbox(t *testing.T) {
 func TestSwallowHeuristic_RaisesIncidentWhenAppEatsFault(t *testing.T) {
 	d := NewForTest(t, DaemonConfig{})
 	d.addIncidentSession("sess-swallow")
+	d.registerIncidentProxyOwner("px1", "sess-swallow")
 	// Use a short window so the sweeper raises the incident quickly.
 	d.swallowDetector = incident.NewSwallowDetector(200 * time.Millisecond)
 
@@ -85,6 +87,7 @@ func TestSwallowHeuristic_RaisesIncidentWhenAppEatsFault(t *testing.T) {
 func TestSwallowHeuristic_AppErrorSuppressesIncident(t *testing.T) {
 	d := NewForTest(t, DaemonConfig{})
 	d.addIncidentSession("sess-handled")
+	d.registerIncidentProxyOwner("px1", "sess-handled")
 	d.swallowDetector = incident.NewSwallowDetector(200 * time.Millisecond)
 
 	d.fireToIncidentBus(chaosHTTPEntry(500, true, true), "px1")

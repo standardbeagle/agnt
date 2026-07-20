@@ -753,22 +753,21 @@ func (ps *ProxyServer) runServer(ctx context.Context, listener net.Listener) {
 	}
 }
 
-// checkWSOrigin decides whether to accept a WebSocket upgrade. A missing Origin
-// header (non-browser client, server-side probe, or test) is allowed. A present
-// Origin must match the request Host, or the configured public URL host when the
-// proxy is fronted by a tunnel (where the browser's Origin is the public host
-// but the arriving request Host may be rewritten). Any other origin is refused,
-// so a foreign page cannot open the control channel.
+// checkWSOrigin decides whether to accept a WebSocket upgrade. The control
+// channel is browser-only, so an explicit HTTP(S) Origin is required. Ordinary
+// same-origin requests are trusted only when their authority is loopback; this
+// prevents a hostname rebound to the local listener from authorizing itself.
+// A configured public URL is also trusted because it is an explicit proxy host.
 func (ps *ProxyServer) checkWSOrigin(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
-		return true
-	}
-	u, err := url.Parse(origin)
-	if err != nil || u.Host == "" {
 		return false
 	}
-	if strings.EqualFold(u.Host, r.Host) {
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return false
+	}
+	if strings.EqualFold(u.Host, r.Host) && isLoopbackAuthority(r.Host) {
 		return true
 	}
 	if ps.PublicURL != "" {
@@ -777,6 +776,21 @@ func (ps *ProxyServer) checkWSOrigin(r *http.Request) bool {
 		}
 	}
 	return false
+}
+
+func isLoopbackAuthority(authority string) bool {
+	host := authority
+	if parsedHost, _, err := net.SplitHostPort(authority); err == nil {
+		host = parsedHost
+	} else {
+		host = strings.Trim(authority, "[]")
+	}
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if host == "localhost" {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // shouldRestart checks if we should attempt another restart based on rate limits

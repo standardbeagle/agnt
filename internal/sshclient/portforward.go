@@ -306,7 +306,7 @@ func (m *PortForwardManager) watchEvents(ctx context.Context, dclient *daemon.Cl
 		if ctx.Err() != nil {
 			return
 		}
-		_ = dclient.StreamEvents(ctx, protocol.StreamEventFilter{}, func(_ proxy.LogEntry) error {
+		_ = dclient.StreamEvents(ctx, protocol.StreamEventFilter{Global: true}, func(_ proxy.LogEntry) error {
 			select {
 			case signal <- struct{}{}:
 			default:

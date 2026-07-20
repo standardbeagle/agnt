@@ -76,9 +76,8 @@ proxylog {proxy_id:"dev", action:"query", types:["sketch","interaction"]}
 ```
 
 Expected: entries of type `sketch` carrying the wireframe payload (and any
-`interaction`/panel-message notes the developer left). If the incident pipeline
-is enabled (`alerts { incident-pipeline true }`), the same activity surfaces
-through:
+`interaction`/panel-message notes the developer left). The always-active
+incident pipeline also surfaces the same activity through:
 
 ```
 get_incidents {}
@@ -173,7 +172,7 @@ Control it live with `walkthrough {action:"next"|"prev"|"play"|"pause"|"stop"|"s
   page does not push anything into the agent's turn by itself; the agent must
   query `proxylog {types:["sketch"]}` (or `get_incidents`) to see them. If the
   developer expects the agent to react instantly, make sure the agent is polling
-  or the incident pipeline is enabled.
+  or configure the desired `alerts.push` interrupt channels.
 - **Walkthrough requires daemon mode and a `proxy_id`.** All actions run through
   the proxy exec path against the chrome-frame walkthrough host; omitting
   `proxy_id` (or its `id` alias) returns `proxy_id required`.

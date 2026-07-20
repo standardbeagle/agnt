@@ -161,13 +161,39 @@ func TestReconnectForwarding_RecoveryCallbacksUseNewestDurableDaemonClient(t *te
 
 func TestReconnectForwarding_DefaultPathCollisionUsesResolvedProjectRoot(t *testing.T) {
 	resolved := "/home/fixture/project"
-	owner := newReconnectForwardingOwner("fixture", resolved)
+	owner := initializeReconnectForwarding("fixture", resolved, nil, nil, func(*reconnectForwarding) {})
 	owner.dclient = &daemon.Client{}
 	var got protocol.DeveloperEvent
 	owner.reportEvent = func(_ *daemon.Client, event protocol.DeveloperEvent) error { got = event; return nil }
 	owner.reportPortForward("port 5173 in use locally", []sshclient.Mapping{{ProxyID: "web", RemotePort: 5173, LocalPort: 5174, Remapped: true}})
 	if got.ProjectPath != resolved || got.ProxyID != "web" {
 		t.Fatalf("default-path collision event = %+v, want resolved project %q", got, resolved)
+	}
+}
+
+func TestReconnectForwarding_StartupCallbackSeesStatusAndControl(t *testing.T) {
+	status := sshclient.NewStatusTracker("startup-session")
+	control := &reconnectControl{}
+	started := make(chan struct{})
+	checked := make(chan struct{})
+
+	owner := initializeReconnectForwarding("fixture", "/remote/project", status, control, func(r *reconnectForwarding) {
+		go func() {
+			close(started)
+			if r.status != status {
+				t.Errorf("startup callback status = %p, want %p", r.status, status)
+			}
+			if r.control != control {
+				t.Errorf("startup callback control = %p, want %p", r.control, control)
+			}
+			close(checked)
+		}()
+		<-started
+	})
+
+	<-checked
+	if owner.status != status || owner.control != control {
+		t.Fatalf("returned owner lost startup surfaces: status=%p control=%p", owner.status, owner.control)
 	}
 }
 

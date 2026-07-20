@@ -108,10 +108,8 @@ func runSSH(cmd *cobra.Command, args []string) error {
 	}
 
 	control := startControlSocket(host, client, remotePath, attachName)
-	forwarding := startReconnectForwarding(host, client, control.ProjectRoot())
 	status := sshclient.NewStatusTracker(attachName)
-	forwarding.status = status
-	forwarding.control = control
+	forwarding := startReconnectForwarding(host, client, control.ProjectRoot(), status, control)
 
 	cols, rows := 80, 24
 	if c, r, err := term.GetSize(int(os.Stdin.Fd())); err == nil {
@@ -346,18 +344,24 @@ var newReversePullManager = func(dclient *daemon.Client, sc *sftp.Client, host s
 	return sshclient.NewRemotePullManager(dclient, sc, host, "", notify)
 }
 
-func startReconnectForwarding(host string, client *sshclient.Client, projectRoot ...string) *reconnectForwarding {
-	root := ""
-	if len(projectRoot) > 0 {
-		root = projectRoot[0]
-	}
-	r := newReconnectForwardingOwner(host, root)
-	r.start(client)
-	return r
+func startReconnectForwarding(host string, client *sshclient.Client, projectRoot string, status *sshclient.StatusTracker, control *reconnectControl) *reconnectForwarding {
+	return initializeReconnectForwarding(host, projectRoot, status, control, func(r *reconnectForwarding) {
+		r.start(client)
+	})
 }
 
-func newReconnectForwardingOwner(host, projectRoot string) *reconnectForwarding {
-	return &reconnectForwarding{host: host, project: projectRoot, reportEvent: func(c *daemon.Client, e protocol.DeveloperEvent) error { return c.ReportDeveloperEvent(e) }}
+func initializeReconnectForwarding(host, projectRoot string, status *sshclient.StatusTracker, control *reconnectControl, start func(*reconnectForwarding)) *reconnectForwarding {
+	r := &reconnectForwarding{
+		host:    host,
+		project: projectRoot,
+		status:  status,
+		control: control,
+		reportEvent: func(c *daemon.Client, e protocol.DeveloperEvent) error {
+			return c.ReportDeveloperEvent(e)
+		},
+	}
+	start(r)
+	return r
 }
 
 // start initializes forwarding directly on the durable owner. In particular,

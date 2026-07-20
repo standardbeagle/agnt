@@ -97,6 +97,16 @@ func TestResolveShell_WSL_BackslashRunPicksCmd(t *testing.T) {
 	assert.Equal(t, []string{"/c", "C:\\tools\\installer.cmd"}, args)
 }
 
+func TestResolveShell_WSL_BackslashArgumentStaysOnSh(t *testing.T) {
+	if !platform.IsWSL() {
+		t.Skip("WSL-only")
+	}
+	s := &ScriptConfig{Run: `printf '%s\n' hello`, Cwd: "/home/user"}
+	shell, args := s.ResolveShell()
+	assert.Equal(t, "sh", shell)
+	assert.Equal(t, []string{"-c", s.Run}, args)
+}
+
 // TestResolveShell_WSL_LinuxOnlyStaysOnSh asserts that a script whose
 // cwd and run are both pure Linux still uses sh on WSL. Skipped on
 // non-WSL. Without this guard the helper would over-trigger on every

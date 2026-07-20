@@ -209,7 +209,7 @@ Agent supplies explicit `proxy_id` it already holds; these interactive browser-d
 
 ## Incident Pipeline
 
-Incident pipeline (`internal/incident/`) is opt-in alert path (Phase A, gated by `alerts.incident-pipeline true`) replacing direct `AlertHub` sink dispatch with normalised, deduped, priority-ordered inbox.
+Incident pipeline (`internal/incident/`) is the always-active agent alert path, providing a normalised, deduped, priority-ordered inbox. `alerts.push` selects delivery sinks; the deprecated `alerts.incident-pipeline` key is parse-only compatibility.
 
 ### Source of Truth
 
@@ -222,7 +222,7 @@ Incident pipeline (`internal/incident/`) is opt-in alert path (Phase A, gated by
 
 ### Numbered Contracts
 
-1. **Cross-session isolation.** Each session connecting with pipeline enabled gets own `sessionPipeline` instance. Events from session A never appear in session B's inbox, even for same project.
+1. **Cross-session isolation.** Each connected session gets its own `sessionPipeline` instance. Events from session A never appear in session B's inbox, even for same project.
 
 2. **Drop-newest on bus overflow.** MPSC bus drops incoming event (not oldest) when 4096-slot channel full. Keeps latency bounded at cost of losing most recent event under extreme load. Overflow count surfaced via `bus.OverflowCount()`.
 
@@ -232,11 +232,11 @@ Incident pipeline (`internal/incident/`) is opt-in alert path (Phase A, gated by
 
 5. **Inbox capacity hard-capped per band.** Each of four priority bands (critical / error / warning / info) holds at most 100 entries. Oldest entries evicted to make room for new arrivals. AI agent must poll with returned cursor to drain inbox before it wraps.
 
-6. **Blob store best-effort.** `BlobRef` in envelope may resolve to `nil` if blob evicted before agent pulled incident. Callers must handle absent blobs gracefully; not errors.
+6. **Blob store is per-session and best-effort.** Production adapters retain oversized bytes until `MPSCBus` spills them into the destination session's bounded store; `detail:"full"` hydrates only from that same store. `BlobRef` may resolve to `nil` after eviction or session teardown; callers fall back to `Summary`, never another session's store.
 
 7. **Pinger never blocks delivery.** Pinger sends compact pings to MCP, channel, and PTY sinks using non-blocking channel sends. Slow consumer does not delay other consumers or block Inbox drain loop.
 
-8. **Migration flag all-or-nothing per session.** If `alerts.incident-pipeline` is `false` when session connects, that session uses legacy `AlertHub` path for entire lifetime, even if config file changed mid-session. Pipeline path and legacy path mutually exclusive for given session.
+8. **Push policy is project-isolated and live.** Effective `alerts.push` policy is keyed by normalized project path and resolved from the session on every ping. Updating one project never changes another project's sinks and never replaces its inbox pipeline.
 
 ### File Ownership
 
@@ -277,6 +277,12 @@ Daemon holds this invariant through three primitives:
 | Leaked pgid after daemon crash | yes | startup orphan `/proc` scan |
 | Grandchildren of backgrounded jobs | yes | they inherit pgid transitively |
 
+### Exact-identity retirement & per-code lifecycle gate
+
+Session teardown is not "delete by code" — it is **exact-identity retirement** guarded by a **per-code lifecycle gate** (`sessionLifecycleGates`, refcounted, `daemon_session_cleanup.go`). A reconnect installs a *fresh* `*Session` pointer (`ReplaceExact` CAS, `session.go`) under that same gate; a stale deferred cleanup captured the *old* pointer and, running under the gate, pointer-compares in `doCleanupExact` and no-ops (`UnregisterExact` also CAS-guards the final delete). Net: an old cleanup can never retire a lifetime a reconnect already replaced. The gate **serializes** every register / retire on a given code — classic REGISTER/reconnect and session-host CREATE/KILL registry mutations all pass through it (`hub_session.go`, `hub_sessionhost.go`). Serialization is the gate's actual guarantee (lifecycle mutations on one code never interleave); it does not by itself prevent a reconnect's CAS from being defeated. A cross-kind collision *is* reachable — session-host ids (`<cfg.Name>-<idCounter>`) and classic codes (`<command-base>-<seq>`) come from two independent counters over a user-supplied name, so `--name claude` can produce `claude-3` on both sides. What keeps a classic register from landing under a session-host code is an explicit cross-kind guard in `hubHandleSessionRegister` (`hub_session.go`): before the reconnect merge it checks the existing entry's `Kind` and, if it is `SessionKindSessionHost`, rejects the register with a loud `invalid_args` (SESSION REGISTER is classic-only; a session-host entry never re-registers this way) rather than ReplaceExact'ing it and breaking its explicit-kill-only invariant.
+
+**Accepted trade-off (intentional, not a bug):** a same-code reconnect that arrives *during* an active teardown blocks on the gate for the teardown's full duration — pgid SIGTERM→SIGKILL grace plus process/proxy stop, worst-case ~12s. Releasing the gate early would let a fresh autostart for the project race the old teardown (concurrent port-kill / proxy-stop against the newly-started processes), which is the worse failure. Serialization is the design intent: the reconnect waits, then starts clean.
+
 ### Accepted Escape Hatches
 
 These **intentionally** escape session pgid. Represent conscious "I want to survive session shutdown" decision and daemon must not try to track them:
@@ -316,6 +322,8 @@ Each leaves port or resource held after session shutdown, but that's operator's 
 | `KillSessionPGID`, `MembersOfPGID`, `readPGID` | `internal/platform/sessionpgid_unix.go` |
 | `ScanOrphanPGIDs` (dead-leader scan) | `internal/platform/orphanpgid_unix.go` |
 | `killSessionPGID` wiring + `doCleanup` ordering (incl. the `SessionKindSessionHost` guard) | `internal/daemon/daemon_session_cleanup.go` |
+| `sessionLifecycleGates` (per-code refcounted gate) + `doCleanupExact` exact-identity retirement | `internal/daemon/daemon_session_cleanup.go` |
+| `ReplaceExact` / `UnregisterExact` (CAS reconnect swap + exact delete) | `internal/daemon/session.go` |
 | `startupOrphanPGIDScan` + config gate | `internal/daemon/daemon_orphan_pgid.go` |
 | PTY child PID capture + wire-through (classic) | `cmd/agnt/pty_common.go`, `internal/daemon/client.go` (`SessionRegisterWithPGID`) |
 | Session struct field (`SessionPGID`, `Kind`) | `internal/daemon/session.go` |

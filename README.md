@@ -254,7 +254,7 @@ Instead of dumping 100 lines of nested React errors into the context, agnt conso
 | `proxy` | Reverse proxy: start, stop, exec, status |
 | `proxylog` | Query logs: http, error, screenshot, sketch, panel_message |
 | `currentpage` | View active page sessions with grouped resources |
-| `get_incidents` | Incident inbox pull when incident pipeline enabled |
+| `get_incidents` | Authoritative pull from the always-active incident inbox |
 | `responsive_audit` | Responsive audit across viewport sizes (layout/overflow/a11y) |
 | `api_audit` | API-efficiency audit: waterfall, N+1, duplicate, chatty-load |
 | `loading_audit` | Loading-UX audit: spinner cascade + concurrent fragmentation |

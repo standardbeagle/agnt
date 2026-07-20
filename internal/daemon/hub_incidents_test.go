@@ -65,7 +65,7 @@ func TestHubIncidents_QueryReturnsPublishedEvents(t *testing.T) {
 	}, 2*time.Second, 10*time.Millisecond, "session pipeline not registered")
 
 	// Publish an event to the bus.
-	ev := incident.NewIncidentEvent(incident.SourceBrowserJS, incident.SeverityError, "TypeError", "test incident", incident.Context{}, nil)
+	ev := incident.NewIncidentEvent(incident.SourceBrowserJS, incident.SeverityError, "TypeError", "test incident", incident.Context{SessionID: sessionCode}, nil)
 	d.incidentBus.Publish(ev)
 
 	// Poll until inbox has the event.
@@ -108,8 +108,8 @@ func TestHubIncidents_SeverityFilter(t *testing.T) {
 		return d.incidentBus.HasSession(sessionCode)
 	}, 2*time.Second, 10*time.Millisecond)
 
-	errEv := incident.NewIncidentEvent(incident.SourceBrowserJS, incident.SeverityError, "Err", "error msg", incident.Context{}, nil)
-	warnEv := incident.NewIncidentEvent(incident.SourceHTTP4xx, incident.SeverityWarning, "Warn", "warn msg", incident.Context{}, nil)
+	errEv := incident.NewIncidentEvent(incident.SourceBrowserJS, incident.SeverityError, "Err", "error msg", incident.Context{SessionID: sessionCode}, nil)
+	warnEv := incident.NewIncidentEvent(incident.SourceHTTP4xx, incident.SeverityWarning, "Warn", "warn msg", incident.Context{SessionID: sessionCode}, nil)
 	d.incidentBus.Publish(errEv)
 	d.incidentBus.Publish(warnEv)
 
@@ -155,8 +155,8 @@ func TestHubIncidents_InboxStatsNewReflectsUnread(t *testing.T) {
 		return d.incidentBus.HasSession(sessionCode)
 	}, 2*time.Second, 10*time.Millisecond)
 
-	d.incidentBus.Publish(incident.NewIncidentEvent(incident.SourceBrowserJS, incident.SeverityError, "Err", "e", incident.Context{}, nil))
-	d.incidentBus.Publish(incident.NewIncidentEvent(incident.SourceHTTP4xx, incident.SeverityWarning, "Warn", "w", incident.Context{}, nil))
+	d.incidentBus.Publish(incident.NewIncidentEvent(incident.SourceBrowserJS, incident.SeverityError, "Err", "e", incident.Context{SessionID: sessionCode}, nil))
+	d.incidentBus.Publish(incident.NewIncidentEvent(incident.SourceHTTP4xx, incident.SeverityWarning, "Warn", "w", incident.Context{SessionID: sessionCode}, nil))
 
 	require.Eventually(t, func() bool {
 		entries, _ := d.incidentBus.QuerySession(sessionCode, incident.QueryFilter{})

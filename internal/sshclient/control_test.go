@@ -1,9 +1,12 @@
 package sshclient
 
 import (
+	"bufio"
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -13,6 +16,35 @@ import (
 
 	"github.com/pkg/sftp"
 )
+
+func writeRawControlPush(t *testing.T, conn net.Conn, name string, size int64, body string) {
+	t.Helper()
+	header, err := json.Marshal(controlRequestHeader{Kind: "push", FileName: name, Size: size})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write(append(header, '\n')); err != nil {
+		t.Fatalf("write header: %v", err)
+	}
+	if body != "" {
+		if _, err := io.WriteString(conn, body); err != nil {
+			t.Fatalf("write body: %v", err)
+		}
+	}
+}
+
+func readRawControlResponse(t *testing.T, conn net.Conn) controlResponse {
+	t.Helper()
+	line, err := bufio.NewReader(conn).ReadBytes('\n')
+	if err != nil {
+		t.Fatalf("read response: %v", err)
+	}
+	var response controlResponse
+	if err := json.Unmarshal(line, &response); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	return response
+}
 
 // withSandboxedHome points os.UserHomeDir (via $HOME) at a fresh t.TempDir
 // so control-socket tests never touch the real invoking user's
@@ -172,6 +204,87 @@ func TestPushOneFile_RoundTrip(t *testing.T) {
 	}
 	if !bytes.Equal(got, content) {
 		t.Errorf("content = %q, want %q", got, content)
+	}
+}
+
+func TestServeControl_RejectsOversizedHeaderBeforeBody(t *testing.T) {
+	server, client := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		serveControlConnWithLimits(server, "/unused", nil, nil, time.Second, 4)
+		close(done)
+	}()
+	defer client.Close()
+
+	writeRawControlPush(t, client, "too-large.txt", 5, "")
+	response := readRawControlResponse(t, client)
+	if response.OK || !strings.Contains(response.Error, "exceeds limit") {
+		t.Fatalf("oversized response = %+v", response)
+	}
+	<-done
+}
+
+func TestServeControl_StalledShortBodyTimesOutWithoutActivation(t *testing.T) {
+	root, sc := newSFTPFixture(t)
+	server, client := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		serveControlConnWithLimits(server, root, sc, nil, 20*time.Millisecond, 16)
+		close(done)
+	}()
+	defer client.Close()
+
+	writeRawControlPush(t, client, "stalled.txt", 8, "tiny")
+	response := readRawControlResponse(t, client)
+	if response.OK || response.Error == "" {
+		t.Fatalf("stalled response = %+v", response)
+	}
+	<-done
+	if _, err := os.Stat(filepath.Join(root, DefaultInboxDir, "stalled.txt")); !os.IsNotExist(err) {
+		t.Fatalf("partial file activated after stalled body: %v", err)
+	}
+}
+
+func TestServeControl_TruncatedBodyRejectsWithoutActivation(t *testing.T) {
+	root, sc := newSFTPFixture(t)
+	server, client := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		serveControlConnWithLimits(server, root, sc, nil, time.Second, 16)
+		close(done)
+	}()
+
+	writeRawControlPush(t, client, "truncated.txt", 8, "tiny")
+	client.Close()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("server deadlocked on truncated body")
+	}
+	if _, err := os.Stat(filepath.Join(root, DefaultInboxDir, "truncated.txt")); !os.IsNotExist(err) {
+		t.Fatalf("partial file activated after truncation: %v", err)
+	}
+}
+
+func TestServeControl_AcceptsExactSizeBoundary(t *testing.T) {
+	root, sc := newSFTPFixture(t)
+	server, client := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		serveControlConnWithLimits(server, root, sc, nil, time.Second, 4)
+		close(done)
+	}()
+	defer client.Close()
+
+	writeRawControlPush(t, client, "boundary.txt", 4, "four")
+	response := readRawControlResponse(t, client)
+	if !response.OK {
+		t.Fatalf("boundary response = %+v", response)
+	}
+	<-done
+	content, err := os.ReadFile(filepath.Join(root, DefaultInboxDir, "boundary.txt"))
+	if err != nil || string(content) != "four" {
+		t.Fatalf("boundary content = %q, err %v", content, err)
 	}
 }
 

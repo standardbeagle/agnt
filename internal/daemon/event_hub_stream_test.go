@@ -129,8 +129,8 @@ func TestStreamFilter_ProjectPathFilter(t *testing.T) {
 	assert.True(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "proxy-a", "/project/a"))
 	// Proxy belonging to /project/b is dropped
 	assert.False(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "proxy-b", "/project/b"))
-	// Unregistered proxy (empty proxyPath) passes through to avoid silently dropping hook events
-	assert.True(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "", ""))
+	// Unattributed events cannot enter a project-scoped subscription.
+	assert.False(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "", ""))
 }
 
 func TestEventHub_RegisterProxyPath_ScopesStreamEvents(t *testing.T) {
@@ -565,7 +565,7 @@ func TestEventHub_BroadcastProcessOutput_DeliversToMatchingSink(t *testing.T) {
 		},
 	}
 
-	hub.BroadcastProcessOutput(entry)
+	hub.BroadcastProcessOutput(entry, "/project/a")
 
 	select {
 	case received := <-sink.Ch:
@@ -575,6 +575,26 @@ func TestEventHub_BroadcastProcessOutput_DeliversToMatchingSink(t *testing.T) {
 		assert.Equal(t, "Server started on :3000", received.ProcessOutput.Line)
 	case <-time.After(time.Second):
 		t.Fatal("expected to receive process output event on sink channel")
+	}
+}
+
+func TestEventHub_BroadcastProcessOutput_EnforcesProjectScope(t *testing.T) {
+	hub := NewEventHub()
+	own := hub.AddStreamSink(streamFilter{projectPath: "/project/a"})
+	other := hub.AddStreamSink(streamFilter{projectPath: "/project/b"})
+	entry := proxy.LogEntry{Type: proxy.LogTypeProcessOutput, ProcessOutput: &proxy.ProcessOutputEvent{ProcessID: "dev", Line: "ready"}}
+
+	hub.BroadcastProcessOutput(entry, "/project/a")
+
+	select {
+	case <-own.Ch:
+	default:
+		t.Fatal("owning project's stream did not receive process output")
+	}
+	select {
+	case <-other.Ch:
+		t.Fatal("process output leaked to another project's stream")
+	default:
 	}
 }
 
@@ -595,7 +615,7 @@ func TestEventHub_BroadcastProcessOutput_FiltersNonMatching(t *testing.T) {
 		},
 	}
 
-	hub.BroadcastProcessOutput(entry)
+	hub.BroadcastProcessOutput(entry, "")
 
 	select {
 	case <-sink.Ch:
@@ -620,7 +640,7 @@ func TestEventHub_BroadcastProcessOutput_WithGrepFilter(t *testing.T) {
 			ProcessID: "dev",
 			Line:      "ERROR: connection refused",
 		},
-	})
+	}, "")
 
 	select {
 	case received := <-sink.Ch:
@@ -636,7 +656,7 @@ func TestEventHub_BroadcastProcessOutput_WithGrepFilter(t *testing.T) {
 			ProcessID: "dev",
 			Line:      "Listening on :3000",
 		},
-	})
+	}, "")
 
 	select {
 	case <-sink.Ch:

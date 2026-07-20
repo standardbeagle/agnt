@@ -151,7 +151,7 @@ func (d *Daemon) RunAutostartAsync(
 
 	// Apply alerts subsystem config (hold buffer, transport thresholds).
 	// Safe to run on every autostart; latest values win.
-	d.ApplyAlertsConfig(agntConfig.Alerts)
+	d.ApplyAlertsConfig(projectPath, agntConfig.Alerts)
 
 	// Step 3: Port pre-flight check
 	autostartScripts := agntConfig.GetAutostartScripts()
@@ -693,6 +693,7 @@ func (d *Daemon) StartScriptExplicit(ctx context.Context, name string, scriptCfg
 	if regErr != nil {
 		return fmt.Errorf("script registry: %w", regErr)
 	}
+	d.registerIncidentProcessOwner(processID, entry.Owner())
 
 	// Check ScriptRegistry state: if already running/starting, skip
 	if state := entry.State(); state == script.StateRunning || state == script.StateStarting {

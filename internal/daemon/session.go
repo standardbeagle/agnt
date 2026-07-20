@@ -38,12 +38,12 @@ type SessionKind string
 
 const (
 	// SessionKindClassic is the existing agnt-run-owns-the-PTY flavor.
-	// doCleanup's killSessionPGID/killSessionJobObject calls apply to it
+	// doCleanupExact's killSessionPGID/killSessionJobObject calls apply to it
 	// on client disconnect, same as always.
 	SessionKindClassic SessionKind = "classic"
 	// SessionKindSessionHost is a daemon-owned detachable PTY session
 	// (SESSION-HOST CREATE). Per spec §2.2 invariant 11, it must NOT be
-	// torn down by doCleanup on attach-stream disconnect — only an
+	// torn down by doCleanupExact on attach-stream disconnect — only an
 	// explicit SESSION-HOST KILL (or the PTY child exiting on its own, or
 	// daemon shutdown's orphan-pgid sweep) ends it. See
 	// .claude/rules/daemon-architecture.md § Session Containment.
@@ -192,7 +192,7 @@ type SessionRegistry struct {
 	// stored here — it is derived on demand by ActiveCount() from each
 	// session's authoritative Status. A standalone active counter drifts:
 	// CheckHeartbeats decrements on Active→Disconnected, but Heartbeat
-	// revives Disconnected→Active and Unregister deletes regardless of
+	// revives Disconnected→Active and UnregisterExact deletes regardless of
 	// status, so the increments and decrements never stayed balanced.
 	totalRegistered   atomic.Int64
 	totalUnregistered atomic.Int64
@@ -233,14 +233,23 @@ func (r *SessionRegistry) Register(session *Session) error {
 	return nil
 }
 
-// Unregister removes a session from the registry.
-func (r *SessionRegistry) Unregister(code string) error {
-	if _, loaded := r.sessions.LoadAndDelete(code); !loaded {
-		return fmt.Errorf("session %q not found", code)
+// ReplaceExact replaces the current registration only when it is expected.
+// Reconnects use a fresh *Session identity so cleanup captured for an older
+// registration cannot retire the new lifetime.
+func (r *SessionRegistry) ReplaceExact(code string, expected, replacement *Session) bool {
+	if expected == nil || replacement == nil || replacement.Code != code {
+		return false
 	}
+	return r.sessions.CompareAndSwap(code, expected, replacement)
+}
 
+// UnregisterExact removes the current registration only when it is expected.
+func (r *SessionRegistry) UnregisterExact(code string, expected *Session) bool {
+	if expected == nil || !r.sessions.CompareAndDelete(code, expected) {
+		return false
+	}
 	r.totalUnregistered.Add(1)
-	return nil
+	return true
 }
 
 // Get retrieves a session by code.
@@ -303,7 +312,8 @@ func (r *SessionRegistry) CheckHeartbeats() {
 // ActiveCount returns the number of currently active sessions, derived from
 // each session's authoritative Status. Deriving (rather than maintaining a
 // counter) makes the count impossible to drift across the
-// Active↔Disconnected revive cycle and the delete-on-any-status Unregister.
+// Active↔Disconnected revive cycle and the delete-on-any-status
+// UnregisterExact.
 func (r *SessionRegistry) ActiveCount() int64 {
 	var n int64
 	r.sessions.Range(func(_, value interface{}) bool {

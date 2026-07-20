@@ -144,6 +144,53 @@ func TestSessionHostKill_ReapsAndRemovesFromBothRegistries(t *testing.T) {
 	require.False(t, ok, "shared session registry should no longer have the killed session")
 }
 
+func TestSessionHostKill_RegistryRemovalGatedByLifecycle(t *testing.T) {
+	// No t.Parallel(): spawns a real `sh` PTY child reaped via killpg — see
+	// AGENTS.md prohibition on parallel tests that start real OS processes.
+	d, sockPath := newSessionHostTestDaemon(t)
+
+	c := NewConn(sockPath)
+	defer c.Close()
+
+	var created protocol.SessionHostCreateResult
+	require.NoError(t, c.Request("SESSION-HOST", "CREATE").WithJSON(protocol.SessionHostCreateConfig{
+		ProjectPath: t.TempDir(),
+		Command:     "sh",
+		Args:        []string{"-c", "cat"},
+	}).JSONInto(&created))
+
+	// Hold the per-code lifecycle gate so KILL cannot run its (now-gated)
+	// shared-registry removal. The pgid kill, PTY close, and sessionHosts.Remove
+	// all run BEFORE the gate, so the handler parks at exactly the gated
+	// Unregister this test protects.
+	unlock := d.sessionLifecycle.lock(created.SessionID)
+
+	done := make(chan error, 1)
+	go func() { done <- c.Request("SESSION-HOST", "KILL", created.SessionID).OK() }()
+
+	// The handler progresses through the ungated prefix and then blocks
+	// acquiring the gate. Observing the session-host entry gone while the shared
+	// registry entry remains proves the removal sits behind the gate we hold.
+	require.Eventually(t, func() bool {
+		_, inHosts := d.sessionHosts.Get(created.SessionID)
+		_, inRegistry := d.sessionRegistry.Get(created.SessionID)
+		return !inHosts && inRegistry
+	}, 5*time.Second, 5*time.Millisecond)
+
+	// KILL must still be blocked — the gate has not been released.
+	select {
+	case <-done:
+		t.Fatal("SESSION-HOST KILL returned while the lifecycle gate was held")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	unlock()
+
+	require.NoError(t, <-done)
+	_, ok := d.sessionRegistry.Get(created.SessionID)
+	require.False(t, ok, "shared registry entry must be removed once the gate is released")
+}
+
 func TestSessionHostAttach_ReplaysThenLive_DetachDoesNotKillPTY(t *testing.T) {
 	// No t.Parallel(): these tests spawn real `sh` PTY children and reap them
 	// via SESSION-HOST KILL (killpg). Per AGENTS.md, tests starting real OS

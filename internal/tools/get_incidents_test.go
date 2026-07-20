@@ -53,16 +53,16 @@ func TestGetIncidents_EmptyInbox_ReturnsEmpty(t *testing.T) {
 	}
 }
 
-func TestGetIncidents_PipelineDisabled_DistinctFromEmpty(t *testing.T) {
+func TestGetIncidents_SessionInboxUnavailable_DistinctFromEmpty(t *testing.T) {
 	t.Parallel()
-	// Pipeline off must not read as a clean empty inbox — the agent needs to
-	// know the inbox isn't wired rather than concluding "no problems".
+	// An unavailable session inbox must not read as a clean empty inbox — the
+	// agent needs to know the session isn't wired rather than conclude healthy.
 	out := formatIncidentsCompact(GetIncidentsOutput{PipelineEnabled: false})
 	if strings.Contains(out, "no incidents") {
-		t.Errorf("pipeline-off must not render as 'no incidents', got: %q", out)
+		t.Errorf("unavailable inbox must not render as 'no incidents', got: %q", out)
 	}
-	if !strings.Contains(out, "not enabled") {
-		t.Errorf("expected pipeline-not-enabled note, got: %q", out)
+	if !strings.Contains(out, "inbox unavailable") {
+		t.Errorf("expected inbox-unavailable note, got: %q", out)
 	}
 }
 

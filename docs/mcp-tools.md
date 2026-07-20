@@ -34,7 +34,7 @@ only the summary table + handler pattern; this is the detailed reference.
 
 ## get_incidents Tool
 
-Cursor-based incident inbox pull. When incident pipeline enabled (`alerts.incident-pipeline true`), this = authoritative tool for fetching errors and warnings from all signal sources. Returns incidents in priority order (critical → error → warning → info) with remediation hints and suggested next tools.
+Cursor-based pull from the always-active incident inbox. This is the authoritative tool for fetching errors and warnings from all signal sources. Returns incidents in priority order (critical → error → warning → info) with remediation hints and suggested next tools. `alerts.push` changes interrupts, not inbox population.
 
 **Parameters**:
 | Parameter | Type | Default | Description |
@@ -44,7 +44,7 @@ Cursor-based incident inbox pull. When incident pipeline enabled (`alerts.incide
 | `fingerprints` | string[] | — | Retrieve specific incident fingerprints |
 | `sources` | string[] | all | Filter by source (e.g. `browser_js`, `http_5xx`) |
 | `proxy_id` / `process_id` | string | — | Filter to a specific proxy/process |
-| `detail` | string | `summary` | `full` hydrates the payload from the blob store |
+| `detail` | string | `summary` | `full` hydrates from the caller session's bounded blob store; evicted payloads fall back to summary |
 | `mark_read` | bool | false | Advance cursor and mark returned incidents read |
 | `limit` | int | 20 (max 100) | Max incidents returned |
 | `raw` | bool | false | Return full JSON instead of compact text |
@@ -152,7 +152,7 @@ CSP/SSRF caveats apply. See [public-walkthroughs.md §6](public-walkthroughs.md)
 
 ## get_errors Tool (Legacy)
 
-Superseded by `get_incidents` when `alerts.incident-pipeline true`. Kept for backwards compat and daemon-less (legacy) mode.
+Superseded by `get_incidents`. Kept for backwards compatibility and daemon-less mode.
 
 **Dual Mode**:
 - **Daemon mode**: Full — process alerts via daemon IPC + proxy errors

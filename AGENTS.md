@@ -96,15 +96,13 @@ State transitions 必由 `CompareAndSwapState()` atomic。Child cleanup：proces
 
 ### StreamEvents Hub
 
-**AlertHub** (`internal/daemon/alert_hub.go`) 三 sink：**OverlayAlertSink** (PTY stdin injection), **MCPAlertSink** (MCP `Log()` notifications), **StreamSink** (channel streaming with filtering, for `agnt monitor`)。
-
-Push channel config = `alerts.push` in `.agnt.kdl`；presets `claude-code` = MCP only, `universal` = all；default = all enabled。若 `alerts.incident-pipeline true`，三 sink 皆換 Pinger (`internal/incident/pinger.go`)；`get_incidents` 為 authoritative pull surface，`get_errors` 為 shim。
+Agent-bound alerts always enter the incident pipeline. Push channel config = `alerts.push` in `.agnt.kdl`；presets `claude-code` = project-scoped digest only, `universal` = digest + PTY injection；default = `universal`。Policy is keyed by normalized project path so concurrent projects cannot change each other's sinks；`get_incidents` 為 authoritative pull surface，`get_errors` 為 shim。
 
 **STREAM-EVENTS** (`internal/daemon/hub_stream.go`)：daemon handler 以 type/proxy/process/severity/grep filters 註冊 `StreamSink`；30s keepalive；`BroadcastLogEntry()` / `BroadcastProcessOutput()` 推 filtered events 至 matching sinks。
 
 ### Incident Pipeline (`internal/incident/`)
 
-Opt-in Phase A：`alerts { incident-pipeline true }`，default `false`。九層 pipeline 統一 signal sources 入 priority inbox，推 compact pings 至 AI agent：
+Always-active incident pipeline：九層 pipeline 統一 signal sources 入 priority inbox，推 compact pings 至 AI agent。Legacy `alerts.incident-pipeline` parses for compatibility but does not gate runtime：
 
 ```
 Signal sources → Bus → Dedup/Coalesce/FlowControl → Inbox → Pinger → MCP/channel/PTY

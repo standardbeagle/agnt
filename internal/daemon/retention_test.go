@@ -31,10 +31,13 @@ func alertMatch(patternID, category, sevLine string, sev overlay.AlertSeverity, 
 func TestRetention_BuildSuccessRetiresStaleErrors(t *testing.T) {
 	d := NewForTest(t, DaemonConfig{})
 	d.addIncidentSession("sess-ret")
+	d.registerIncidentProcessOwner("web", "sess-ret")
+	owner, _ := d.incidentProcessOwner.Load("web")
 
 	base := time.Now()
 	stale := alertMatch("go-panic", "go", "panic: stale error", overlay.AlertSeverityError, base.Add(-time.Minute))
 	stale.ScriptID = "web"
+	stale.LifetimeToken = ownerAsIncidentResource(owner)
 	d.ingestProcessAlert(stale, base)
 
 	require.Eventually(t, func() bool {
@@ -45,10 +48,12 @@ func TestRetention_BuildSuccessRetiresStaleErrors(t *testing.T) {
 
 	success := alertMatch("rebuild-build-success", "rebuild", "Build succeeded.", overlay.AlertSeverityInfo, base)
 	success.ScriptID = "web"
+	success.LifetimeToken = ownerAsIncidentResource(owner)
 	d.ingestProcessAlert(success, base)
 
 	fresh := alertMatch("go-panic", "go", "panic: fresh error after build", overlay.AlertSeverityError, base.Add(time.Second))
 	fresh.ScriptID = "web"
+	fresh.LifetimeToken = ownerAsIncidentResource(owner)
 	d.ingestProcessAlert(fresh, base.Add(time.Second))
 
 	// Alert store: the stale panic is gone, the success signal itself and the
@@ -162,7 +167,7 @@ func TestFindErrorByID_IncidentFingerprint(t *testing.T) {
 	d.addIncidentSession("sess-pin")
 
 	ev := incident.NewIncidentEvent(incident.SourceBrowserJS, incident.SeverityError,
-		"TypeError", "cannot read properties of undefined", incident.Context{URL: "http://localhost/x"}, nil)
+		"TypeError", "cannot read properties of undefined", incident.Context{SessionID: "sess-pin", URL: "http://localhost/x"}, nil)
 	d.incidentBus.Fire(&ev)
 
 	require.Eventually(t, func() bool {

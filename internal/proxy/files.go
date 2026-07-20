@@ -121,7 +121,7 @@ func (ps *ProxyServer) saveLargeResult(execID string, result string) (string, er
 	}
 
 	tempDir := os.TempDir()
-	filename := fmt.Sprintf("agnt-result-%s-%s.json", sanitizeFilename(ps.ID), execID)
+	filename := fmt.Sprintf("agnt-result-%s-%s.json", sanitizeFilename(ps.ID), sanitizeFilename(execID))
 	filePath := filepath.Join(tempDir, filename)
 
 	err := os.WriteFile(filePath, []byte(result), 0644)

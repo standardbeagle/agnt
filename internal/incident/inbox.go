@@ -59,8 +59,12 @@ type Stats struct {
 type QueryFilter struct {
 	Severities []Severity // empty = all
 	Since      time.Time  // zero = no lower bound
-	UnreadOnly bool
-	Limit      int // 0 = all
+	// SinceFingerprint completes the stable (LastSeenAt, Fingerprint) cursor
+	// tuple. HasSinceFingerprint=false preserves legacy timestamp-only behavior.
+	SinceFingerprint    string
+	HasSinceFingerprint bool
+	UnreadOnly          bool
+	Limit               int // 0 = all
 }
 
 type inboxSlot struct {
@@ -106,6 +110,8 @@ type Inbox struct {
 
 	subsMu sync.Mutex
 	subs   []chan InboxDelta
+
+	beforeIngestLock func() // test-only synchronization hook
 }
 
 // NewInbox creates a session inbox with default 100-entry band capacities.
@@ -154,11 +160,33 @@ func addSampleURL(entry *InboxEntry, url string) {
 	}
 }
 
+func snapshotInboxEntry(entry *InboxEntry) *InboxEntry {
+	if entry == nil {
+		return nil
+	}
+	snapshot := *entry
+	snapshot.SampleURLs = append([]string(nil), entry.SampleURLs...)
+	if entry.urlSeen != nil {
+		snapshot.urlSeen = make(map[string]struct{}, len(entry.urlSeen))
+		for url := range entry.urlSeen {
+			snapshot.urlSeen[url] = struct{}{}
+		}
+	}
+	if entry.Sample != nil {
+		sample := cloneIncidentEvent(*entry.Sample)
+		snapshot.Sample = &sample
+	}
+	return &snapshot
+}
+
 // Ingest adds or merges an InboxEntry into the appropriate severity band.
 // If the fingerprint already exists in any band, Count is incremented and
 // LastSeenAt updated; severity escalation moves the entry to a higher band.
 // Returns the resulting InboxDelta.
 func (inbox *Inbox) Ingest(entry *InboxEntry) InboxDelta {
+	if inbox.beforeIngestLock != nil {
+		inbox.beforeIngestLock()
+	}
 	inbox.ingestMu.Lock()
 	defer inbox.ingestMu.Unlock()
 
@@ -175,6 +203,9 @@ func (inbox *Inbox) Ingest(entry *InboxEntry) InboxDelta {
 
 		existing := slot.entry
 		existing.Count += entry.Count
+		// A duplicate is a new unread occurrence even when earlier occurrences of
+		// this fingerprint were acknowledged.
+		existing.Read = false
 		if entry.Sample != nil {
 			addSampleURL(existing, entry.Sample.Ctx.URL)
 		}
@@ -184,18 +215,21 @@ func (inbox *Inbox) Ingest(entry *InboxEntry) InboxDelta {
 		}
 
 		escalated := newIdx < i
+		var snapshot *InboxEntry
 		if escalated {
+			existing.Severity = entry.Severity
+			snapshot = snapshotInboxEntry(existing)
 			b.lruList.Remove(slot.elem)
 			delete(b.slots, entry.Fingerprint)
 			b.mu.Unlock()
-			existing.Severity = entry.Severity
 			inbox.insertIntoBand(inbox.bands[newIdx], existing)
 		} else {
 			b.lruList.MoveToFront(slot.elem)
+			snapshot = snapshotInboxEntry(existing)
 			b.mu.Unlock()
 		}
 
-		delta := InboxDelta{Entry: existing, IsNew: false, Escalated: escalated}
+		delta := InboxDelta{Entry: snapshot, IsNew: false, Escalated: escalated}
 		inbox.broadcast(delta)
 		return delta
 	}
@@ -204,8 +238,9 @@ func (inbox *Inbox) Ingest(entry *InboxEntry) InboxDelta {
 	if entry.Sample != nil {
 		addSampleURL(entry, entry.Sample.Ctx.URL)
 	}
+	snapshot := snapshotInboxEntry(entry)
 	inbox.insertIntoBand(inbox.bands[newIdx], entry)
-	delta := InboxDelta{Entry: entry, IsNew: true}
+	delta := InboxDelta{Entry: snapshot, IsNew: true}
 	inbox.broadcast(delta)
 	return delta
 }
@@ -232,6 +267,15 @@ func (inbox *Inbox) insertIntoBand(b *band, entry *InboxEntry) {
 
 // Query returns entries matching filter. Results are sorted newest first.
 func (inbox *Inbox) Query(filter QueryFilter) ([]InboxEntry, Stats) {
+	// Keep a fingerprint's band membership and severity atomic with escalation.
+	// Ingest takes this lock before any band lock, so Query follows the same
+	// order to avoid observing the remove/reinsert transition.
+	inbox.ingestMu.Lock()
+	defer inbox.ingestMu.Unlock()
+	return inbox.queryLocked(filter)
+}
+
+func (inbox *Inbox) queryLocked(filter QueryFilter) ([]InboxEntry, Stats) {
 	var results []InboxEntry
 	for _, b := range inbox.bands {
 		if len(filter.Severities) > 0 && !containsSeverity(filter.Severities, b.severity) {
@@ -243,14 +287,23 @@ func (inbox *Inbox) Query(filter QueryFilter) ([]InboxEntry, Stats) {
 			if filter.UnreadOnly && e.Read {
 				continue
 			}
-			if !filter.Since.IsZero() && !e.LastSeenAt.After(filter.Since) {
-				continue
+			if !filter.Since.IsZero() {
+				after := e.LastSeenAt.After(filter.Since)
+				if filter.HasSinceFingerprint && e.LastSeenAt.Equal(filter.Since) {
+					after = e.Fingerprint > filter.SinceFingerprint
+				}
+				if !after {
+					continue
+				}
 			}
-			results = append(results, *e)
+			results = append(results, *snapshotInboxEntry(e))
 		}
 		b.mu.RUnlock()
 	}
 	sort.Slice(results, func(i, j int) bool {
+		if results[i].LastSeenAt.Equal(results[j].LastSeenAt) {
+			return results[i].Fingerprint > results[j].Fingerprint
+		}
 		return results[i].LastSeenAt.After(results[j].LastSeenAt)
 	})
 	// When truncating, keep the OLDEST `Limit` matched entries (the tail of the
@@ -266,8 +319,25 @@ func (inbox *Inbox) Query(filter QueryFilter) ([]InboxEntry, Stats) {
 	return results, inbox.Stats()
 }
 
+// QueryAndMark atomically snapshots a query, lets the caller select which of
+// those exact snapshots were returned, and marks only that selection read.
+// Ingest cannot merge a duplicate between the query and mark phases.
+func (inbox *Inbox) QueryAndMark(filter QueryFilter, selectFingerprints func([]InboxEntry) []string, advanceCursor bool) ([]InboxEntry, Stats) {
+	inbox.ingestMu.Lock()
+	defer inbox.ingestMu.Unlock()
+	entries, stats := inbox.queryLocked(filter)
+	inbox.markReadLocked(selectFingerprints(entries), advanceCursor)
+	return entries, stats
+}
+
 // MarkRead marks entries as read and optionally advances the cursor.
 func (inbox *Inbox) MarkRead(fingerprints []string, advanceCursor bool) {
+	inbox.ingestMu.Lock()
+	defer inbox.ingestMu.Unlock()
+	inbox.markReadLocked(fingerprints, advanceCursor)
+}
+
+func (inbox *Inbox) markReadLocked(fingerprints []string, advanceCursor bool) {
 	fpSet := make(map[string]bool, len(fingerprints))
 	for _, fp := range fingerprints {
 		fpSet[fp] = true

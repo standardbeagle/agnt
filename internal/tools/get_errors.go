@@ -94,12 +94,13 @@ func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToo
 			return errorResult(validationError("get_errors", fmt.Errorf("unknown action %q: want query, pin, unpin, or clear", input.Action))), GetErrorsOutput{}, nil
 		}
 
-		// Shim over the incident pipeline when it is enabled for this session:
+		// Shim over the always-active incident pipeline when this session inbox
+		// is currently registered:
 		// project the same inbox get_incidents reads (fingerprint IDs) instead
 		// of the legacy alert/proxy stores, so the two tools present one
 		// coherent, non-duplicated view. Cross-project (global) requests and
-		// pipeline-off sessions fall through to the legacy collectors, which is
-		// the only path that can serve them.
+		// sessions without a registered inbox fall through to legacy collectors,
+		// which is the only path that can serve those compatibility cases.
 		effectiveGlobal, err := resolveEffectiveGlobal(input.Global, func() (bool, error) {
 			return dt.client.ResolveQueryScope(sessionScopeFilter(dt, nil))
 		})
@@ -133,11 +134,11 @@ func resolveEffectiveGlobal(explicit *bool, resolveDefault func() (bool, error))
 	return resolveDefault()
 }
 
-// collectIncidentErrors projects the session incident inbox into unified errors
-// when the incident pipeline is active for the caller's session. The second
-// return is false when the pipeline is off (or the session is unattached), in
-// which case the caller must use the legacy collectors. Incident fingerprints
-// become the unified-error ID so get_errors and get_incidents share IDs.
+// collectIncidentErrors projects a registered session inbox into unified
+// errors. The second return is false when that inbox is unavailable (for
+// example the session is unattached or tearing down), in which case the caller
+// uses compatibility collectors. Incident fingerprints become the unified-error
+// ID so get_errors and get_incidents share IDs.
 func (dt *DaemonTools) collectIncidentErrors(input GetErrorsInput, includeWarnings bool) ([]unifiedError, bool) {
 	filter := protocol.IncidentQueryFilter{
 		ProcessID: input.ProcessID,

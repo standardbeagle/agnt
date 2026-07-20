@@ -182,6 +182,9 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 			continue
 		}
 
+		if owner, ok := d.incidentProcessOwner.Load(event.ScriptID); ok {
+			d.registerIncidentProxyResourceOwner(server.ID, ownerAsIncidentResource(owner))
+		}
 		d.wireProxyLogger(server)
 
 		// Bind to the overlay of the session that owns this project. Fail
@@ -272,6 +275,7 @@ func (d *Daemon) handleExplicitStart(event ProxyEvent) {
 	// case. T5 owns the cleanup side of this registration.
 	d.registerExplicitProxyEntry(event.Path, event.ProxyID, server.ListenAddr)
 
+	d.registerIncidentProxyOwner(server.ID, event.OwnerSession)
 	d.wireProxyLogger(server)
 
 	// Bind to the owning session's overlay (fail closed; late-bind on connect).
@@ -415,6 +419,9 @@ func (d *Daemon) handleFallbackPortCheck(event ProxyEvent) {
 		return
 	}
 
+	if owner, ok := d.incidentProcessOwner.Load(event.ScriptID); ok {
+		d.registerIncidentProxyResourceOwner(server.ID, ownerAsIncidentResource(owner))
+	}
 	d.wireProxyLogger(server)
 
 	// Overlay endpoint: bind to the owning session, fail closed otherwise.
@@ -470,6 +477,7 @@ func (d *Daemon) handleScriptStopped(event ProxyEvent) {
 		debug.Log("daemon", "Stopping proxy %s (script: %s)", proxyID, event.ScriptID)
 		err := d.proxym.Stop(d.ctx, proxyID)
 		if err == nil {
+			d.retireIncidentProxyOwner(proxyID)
 			continue
 		}
 		// Already gone is success for a teardown intent, not a failure. The
@@ -479,6 +487,7 @@ func (d *Daemon) handleScriptStopped(event ProxyEvent) {
 		// scriptProxies index. Surfacing "proxy not found" as a warning to the
 		// agent is noise; treat idempotent teardown as done.
 		if errors.Is(err, proxy.ErrProxyNotFound) {
+			d.retireIncidentProxyOwner(proxyID)
 			debug.Log("daemon", "Proxy %s already stopped (script: %s)", proxyID, event.ScriptID)
 			continue
 		}

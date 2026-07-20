@@ -96,6 +96,7 @@ func TestIncidentDigest_EndToEnd_StormToStream(t *testing.T) {
 			proxy.HTTPLogEntry{Method: "GET", URL: fmt.Sprintf("/api/e%d", i), StatusCode: 500},
 			"dev")
 		require.True(t, ok)
+		ev.Ctx.SessionID = "sess-e2e"
 		d.incidentBus.Publish(ev)
 	}
 

@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
@@ -337,6 +338,8 @@ func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
 		return
 	}
 	proxyID := server.ID
+	owner, _ := d.incidentProxyOwner.Load(proxyID)
+	lifetimeOwner, _ := owner.(*incidentResourceOwner)
 	d.eventHub.RegisterProxyPath(proxyID, server.Path)
 	server.Logger().SetOnLogEntry(func(entry proxy.LogEntry) {
 		// Feed transport signals to the tracker before gating so the
@@ -346,7 +349,7 @@ func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
 		decision := d.proxyBroadcastDecision(proxyID, entry)
 		switch decision {
 		case gateAccept:
-			d.fireGatedFanOut(entry, proxyID, 1)
+			d.fireGatedFanOutForOwner(entry, proxyID, 1, lifetimeOwner)
 		case gateHold:
 			hb := d.holdBuffer.Load()
 			if hb == nil {
@@ -354,12 +357,68 @@ func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
 			}
 			fp := FingerprintForEntry(entry)
 			cascade := d.classifyCascade(entry)
-			hb.Hold(entry, proxyID, fp, cascade)
+			hb.HoldForOwner(entry, proxyID, fp, cascade, lifetimeOwner)
 		case gateDrop:
 			// Drop without emission — used for diagnostic suppression
 			// markers we never want to re-emit.
 		}
 	})
+}
+
+// registerIncidentProxyOwner records the exact session captured when a proxy
+// is created. LoadOrStore makes ownership immutable for the resource lifetime.
+type incidentResourceOwner struct {
+	sessionCode string
+}
+
+func (d *Daemon) registerIncidentProxyOwner(proxyID, sessionCode string) {
+	if proxyID == "" || sessionCode == "" {
+		return
+	}
+	d.incidentProxyOwner.LoadOrStore(proxyID, &incidentResourceOwner{sessionCode: sessionCode})
+}
+
+// registerIncidentProxyResourceOwner transfers the process lifetime's exact
+// typed owner to a proxy created on that process's behalf. Keeping the same
+// pointer is required by stampIncidentOwner's lifetime identity check.
+func (d *Daemon) registerIncidentProxyResourceOwner(proxyID string, owner *incidentResourceOwner) {
+	if proxyID == "" || owner == nil || owner.sessionCode == "" {
+		return
+	}
+	d.incidentProxyOwner.LoadOrStore(proxyID, owner)
+}
+
+func (d *Daemon) registerIncidentProcessOwner(processID, sessionCode string) {
+	if processID != "" && sessionCode != "" {
+		d.incidentProcessOwner.LoadOrStore(processID, &incidentResourceOwner{sessionCode: sessionCode})
+	}
+}
+
+// retireIncidentProxyOwner ends the ownership binding with the proxy lifetime.
+// A later proxy reusing the same ID must be able to establish a fresh owner.
+func (d *Daemon) retireIncidentProxyOwner(proxyID string) {
+	d.incidentProxyOwner.Delete(proxyID)
+}
+
+func (d *Daemon) retireIncidentProcessOwner(processID string) {
+	d.incidentProcessOwner.Delete(processID)
+}
+
+// stampIncidentOwner stamps exact resource ownership and fails closed when it
+// was not captured at creation time.
+func (d *Daemon) stampIncidentOwner(ev *incident.IncidentEvent, owners *sync.Map, resourceID string, captured *incidentResourceOwner) bool {
+	if ev == nil {
+		return false
+	}
+	if ev.Ctx.SessionID != "" {
+		return true
+	}
+	owner, ok := owners.Load(resourceID)
+	if !ok || captured == nil || owner != captured {
+		return false
+	}
+	ev.Ctx.SessionID = captured.sessionCode
+	return true
 }
 
 // applyAuthBreakout installs the project's auth-breakout rules (top-level
@@ -443,10 +502,20 @@ func (d *Daemon) classifyCascade(entry proxy.LogEntry) bool {
 // see the original entry — but a future pass can synthesise a count
 // prefix on the summary.
 func (d *Daemon) fireGatedFanOut(entry proxy.LogEntry, proxyID string, _ int) {
+	owner, _ := d.incidentProxyOwner.Load(proxyID)
+	d.fireGatedFanOutForOwner(entry, proxyID, 1, ownerAsIncidentResource(owner))
+}
+
+func ownerAsIncidentResource(owner any) *incidentResourceOwner {
+	result, _ := owner.(*incidentResourceOwner)
+	return result
+}
+
+func (d *Daemon) fireGatedFanOutForOwner(entry proxy.LogEntry, proxyID string, _ int, owner *incidentResourceOwner) {
 	if d.eventHub != nil {
 		d.eventHub.BroadcastLogEntry(entry, proxyID)
 	}
-	d.fireToIncidentBus(entry, proxyID)
+	d.fireToIncidentBusForOwner(entry, proxyID, owner)
 }
 
 // fireHoldEmit is the HoldBuffer emit callback. Same fan-out as direct
@@ -455,12 +524,21 @@ func (d *Daemon) fireHoldEmit(entry proxy.LogEntry, proxyID string, mergedCount 
 	d.fireGatedFanOut(entry, proxyID, mergedCount)
 }
 
+func (d *Daemon) fireHoldEmitForOwner(entry proxy.LogEntry, proxyID string, mergedCount int, owner *incidentResourceOwner) {
+	d.fireGatedFanOutForOwner(entry, proxyID, mergedCount, owner)
+}
+
 // fireToIncidentBus runs the right adapter for entry's type and publishes
 // the result on the daemon's incident bus. This is the first production
 // wire of the incident adapter layer (see Phase A migration in
 // event_hub.go). For sessions without a registered pipeline the bus is a
 // no-op, so this remains safe to call unconditionally.
 func (d *Daemon) fireToIncidentBus(entry proxy.LogEntry, proxyID string) {
+	owner, _ := d.incidentProxyOwner.Load(proxyID)
+	d.fireToIncidentBusForOwner(entry, proxyID, ownerAsIncidentResource(owner))
+}
+
+func (d *Daemon) fireToIncidentBusForOwner(entry proxy.LogEntry, proxyID string, owner *incidentResourceOwner) {
 	if d.incidentBus == nil {
 		return
 	}
@@ -489,7 +567,9 @@ func (d *Daemon) fireToIncidentBus(entry proxy.LogEntry, proxyID string) {
 			return
 		}
 		if ev, ok := incident.FromProxyDiagnostic(*entry.Diagnostic, proxyID); ok {
-			d.incidentBus.Publish(ev)
+			if d.stampIncidentOwner(&ev, &d.incidentProxyOwner, proxyID, owner) {
+				d.incidentBus.Publish(ev)
+			}
 		}
 	case proxy.LogTypeHTTP:
 		if entry.HTTP == nil {
@@ -503,14 +583,18 @@ func (d *Daemon) fireToIncidentBus(entry proxy.LogEntry, proxyID string) {
 			return
 		}
 		if ev, ok := incident.FromHTTPEntry(*entry.HTTP, proxyID); ok {
-			d.incidentBus.Publish(ev)
+			if d.stampIncidentOwner(&ev, &d.incidentProxyOwner, proxyID, owner) {
+				d.incidentBus.Publish(ev)
+			}
 		}
 	case proxy.LogTypeError:
 		if entry.Error == nil {
 			return
 		}
 		ev := incident.FromFrontendError(*entry.Error, proxyID)
-		d.incidentBus.Publish(ev)
+		if d.stampIncidentOwner(&ev, &d.incidentProxyOwner, proxyID, owner) {
+			d.incidentBus.Publish(ev)
+		}
 	}
 }
 

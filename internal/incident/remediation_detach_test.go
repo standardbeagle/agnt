@@ -32,6 +32,7 @@ func TestBus_RemediationStatusCodes_DetachedFromSourceAndDedup(t *testing.T) {
 		Severity:    SeverityError,
 		Category:    "5xx",
 		Summary:     "GET /api/x → 500",
+		Ctx:         Context{SessionID: "sess-detach"},
 		Remediation: Remediation{
 			PrimaryArgs: map[string]any{"status_codes": sourceCodes},
 		},
@@ -94,7 +95,12 @@ func TestBus_RemediationStatusCodes_DetachedAcrossSessions(t *testing.T) {
 			PrimaryArgs: map[string]any{"status_codes": []int{400, 401}},
 		},
 	}
-	bus.Publish(ev)
+	evA := ev
+	evA.Ctx.SessionID = "sess-a"
+	evB := ev
+	evB.Ctx.SessionID = "sess-b"
+	bus.Publish(evA)
+	bus.Publish(evB)
 
 	var codesA, codesB []int
 	require.Eventually(t, func() bool {

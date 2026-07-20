@@ -84,6 +84,9 @@ type IncidentEvent struct {
 	PayloadRef  *BlobRef
 	Ctx         Context
 	Remediation Remediation
+	// payload carries an oversized production message until the owning session
+	// pipeline spills it into its bounded BlobStore. It is never serialized.
+	payload []byte
 }
 
 const maxSummaryBytes = 200
@@ -120,6 +123,10 @@ func NewIncidentEvent(src Source, sev Severity, category, msg string, ctx Contex
 			// log so a failing store is diagnosable.
 			debug.Log("incident-blob", "payload write failed, event carries no blob ref: %v", err)
 		}
+	} else if store == nil && len(msg) > 1024 {
+		// Production adapters do not own session stores. Preserve the full bytes
+		// privately so MPSCBus can spill them into the destination session's store.
+		ev.payload = []byte(msg)
 	}
 
 	return ev

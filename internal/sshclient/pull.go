@@ -92,7 +92,7 @@ func (m *RemotePullManager) Stop() {
 
 func (m *RemotePullManager) run(ctx context.Context) {
 	defer m.wg.Done()
-	filter := protocol.StreamEventFilter{Types: []string{
+	filter := protocol.StreamEventFilter{Global: true, Types: []string{
 		string(proxy.LogTypeScreenshot),
 		string(proxy.LogTypeScreenshotCapture),
 		string(proxy.LogTypeSketchCapture),

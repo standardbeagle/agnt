@@ -98,13 +98,14 @@ const (
 
 // ProxyEvent represents an event that triggers proxy creation or cleanup.
 type ProxyEvent struct {
-	Type      ProxyEventType
-	ScriptID  string // Process/script ID that triggered the event
-	URL       string // Detected URL (for URLDetected events)
-	ProxyID   string // Specific proxy ID (for ExplicitStart events)
-	ProxyName string // Config proxy name (for FallbackPortCheck events)
-	Config    *config.ProxyConfig
-	Path      string // Project path
+	Type         ProxyEventType
+	ScriptID     string // Process/script ID that triggered the event
+	URL          string // Detected URL (for URLDetected events)
+	ProxyID      string // Specific proxy ID (for ExplicitStart events)
+	ProxyName    string // Config proxy name (for FallbackPortCheck events)
+	Config       *config.ProxyConfig
+	Path         string // Project path
+	OwnerSession string // immutable session owner captured at creation request
 }
 
 // DaemonConfig holds configuration for the daemon.
@@ -223,22 +224,24 @@ type Daemon struct {
 	hub *hub.Hub
 
 	// agnt-specific managers
-	proxym            *proxy.ProxyManager
-	tunnelm           *tunnel.Manager
-	browserm          *browser.Manager
-	sessionm          *chromedp.SessionManager // chromedp automation sessions
-	storem            *store.StoreManager
-	automator         *automation.Processor
-	autoRestarter     *ProcessAutoRestarter                  // Process auto-restart manager
-	alertStore        *ProcessAlertStore                     // Ring buffer store for process output alerts
-	pinnedStore       *alert.PinnedStore                     // Agent-pinned errors; survive every retention clear
-	retentionCfg      atomic.Pointer[config.RetentionConfig] // Error-retention trigger gates
-	alertScanner      *overlay.AlertScanner                  // Scans daemon-managed process output for errors
-	processExitInfo   *processExitInfoStore                  // In-memory death records (proc status + get_errors)
-	startupErrorStore *StartupLogStore                       // Ring buffer for startup events
-	eventHub          *EventHub                              // Routes alerts to overlay/MCP/stream sinks
-	incidentBus       *incident.MPSCBus                      // Incident pipeline event bus (L8+)
-	hookRing          *hookRingBuffer                        // Claude Code hook event ring buffer (phase 1 scope)
+	proxym               *proxy.ProxyManager
+	tunnelm              *tunnel.Manager
+	browserm             *browser.Manager
+	sessionm             *chromedp.SessionManager // chromedp automation sessions
+	storem               *store.StoreManager
+	automator            *automation.Processor
+	autoRestarter        *ProcessAutoRestarter                  // Process auto-restart manager
+	alertStore           *ProcessAlertStore                     // Ring buffer store for process output alerts
+	pinnedStore          *alert.PinnedStore                     // Agent-pinned errors; survive every retention clear
+	retentionCfg         atomic.Pointer[config.RetentionConfig] // Error-retention trigger gates
+	alertScanner         *overlay.AlertScanner                  // Scans daemon-managed process output for errors
+	processExitInfo      *processExitInfoStore                  // In-memory death records (proc status + get_errors)
+	startupErrorStore    *StartupLogStore                       // Ring buffer for startup events
+	eventHub             *EventHub                              // Routes alerts to overlay/MCP/stream sinks
+	incidentBus          *incident.MPSCBus                      // Incident pipeline event bus (L8+)
+	incidentProxyOwner   sync.Map                               // proxy ID -> *incidentResourceOwner for one lifetime
+	incidentProcessOwner sync.Map                               // process ID -> *incidentResourceOwner for one lifetime
+	hookRing             *hookRingBuffer                        // Claude Code hook event ring buffer (phase 1 scope)
 
 	// forwardingPaused records per-session "stop pushing to the agent" toggles
 	// set from the overlay (OVERLAY FORWARDING verb). When a session is paused,
@@ -370,6 +373,13 @@ type Daemon struct {
 	// and correct even against a concurrent Swap+Stop.
 	holdBuffer atomic.Pointer[HoldBuffer]
 
+	// alertPushConfigs stores effective alerts.push policy by normalized project
+	// path. Pinger callbacks resolve their session's current project at delivery
+	// time, preventing one project's latest config from leaking into another.
+	alertPushConfigs sync.Map // normalized project path -> *config.PushConfig
+	// incidentPTYInject is a test seam; nil uses sendMessageToOverlay.
+	incidentPTYInject func(socketPath, line string) error
+
 	// Update checker
 	updateChecker *updater.UpdateChecker
 
@@ -390,6 +400,9 @@ type Daemon struct {
 	// Pending session cleanups — deferred to allow reconnection to cancel them.
 	// Key: session code, Value: *time.Timer (Stop cancels, fire runs cleanup).
 	pendingCleanups sync.Map
+	// sessionLifecycle serializes registration and retirement for the same
+	// session code. Different session codes use independent gates.
+	sessionLifecycle sessionLifecycleGates
 
 	// autostartManager coordinates at-most-one autostart run per project path.
 	// Session registration delegates autostart to GetOrCreate so multiple
@@ -555,7 +568,7 @@ func New(config DaemonConfig) *Daemon {
 	// EventHub (legacy stream sinks) and the incident bus (get_incidents).
 	// Construction uses default config until the per-project AgntConfig is
 	// loaded; ApplyAlertsConfig replaces it on session connect.
-	d.holdBuffer.Store(NewHoldBuffer(nil, d.fireHoldEmit))
+	d.holdBuffer.Store(newOwnedHoldBuffer(nil, d.fireHoldEmitForOwner))
 	d.healthTracker.SetTransportConfig(DefaultTransportConfig)
 
 	// Wire transport-recovery callback so HealthTracker exits to the buffer
@@ -946,8 +959,8 @@ func (d *Daemon) AutoRestarter() *ProcessAutoRestarter {
 // ingestProcessAlert routes a single AlertScanner match to every agent-facing
 // surface: the legacy alertStore (get_errors) AND the incident bus
 // (get_incidents). Before this, process alerts reached only alertStore + the
-// browser toast (EventHub.Deliver), so a session running with the incident
-// pipeline enabled saw process errors pop as toasts but never in its inbox.
+// browser toast (EventHub.Deliver), so process errors appeared as toasts but
+// never entered registered session inboxes.
 // fallbackTS is used when the match carries no timestamp.
 func (d *Daemon) ingestProcessAlert(m *overlay.AlertMatch, fallbackTS time.Time) {
 	mts := m.Timestamp
@@ -984,11 +997,19 @@ func (d *Daemon) ingestProcessAlert(m *overlay.AlertMatch, fallbackTS time.Time)
 	// Retention trigger 1: a clean build retires the process's stale errors
 	// (timestamp-bounded at the success line; see retention.go).
 	d.maybeRetireOnBuildSuccess(m.Pattern.ID, m.ScriptID, mts)
-	// Mirror into the incident pipeline. The bus is a no-op when no session has
-	// the pipeline enabled, so this is safe to call unconditionally — it matches
-	// the dual-write pattern fireToIncidentBus already uses for proxy signals.
+	// Mirror into the always-active incident pipeline. The bus is a no-op when no
+	// session inbox is registered, so this is safe to call unconditionally — it
+	// matches the dual-write pattern fireToIncidentBus uses for proxy signals.
 	if d.incidentBus != nil {
-		d.incidentBus.Publish(incident.FromAlertMatch(m, m.ScriptID))
+		d.ingestProcessIncident(m)
+	}
+}
+
+func (d *Daemon) ingestProcessIncident(m *overlay.AlertMatch) {
+	ev := incident.FromAlertMatch(m, m.ScriptID)
+	owner, _ := m.LifetimeToken.(*incidentResourceOwner)
+	if d.stampIncidentOwner(&ev, &d.incidentProcessOwner, m.ScriptID, owner) {
+		d.incidentBus.Publish(ev)
 	}
 }
 
@@ -1012,7 +1033,7 @@ func (d *Daemon) IncidentBus() *incident.MPSCBus {
 // hold window and cascade patterns, and the HealthTracker's transport
 // outage thresholds. Safe to call multiple times — the latest values win.
 // A nil cfg restores defaults.
-func (d *Daemon) ApplyAlertsConfig(cfg *config.AlertsConfig) {
+func (d *Daemon) ApplyAlertsConfig(projectPath string, cfg *config.AlertsConfig) {
 	if d == nil {
 		return
 	}
@@ -1022,13 +1043,22 @@ func (d *Daemon) ApplyAlertsConfig(cfg *config.AlertsConfig) {
 	d.SetRetentionConfig(cfg.GetRetention())
 
 	var holdCfg *config.OutageHoldConfig
+	var pushCfg *config.PushConfig
 	if cfg != nil {
 		holdCfg = cfg.OutageHold
+		pushCfg = cfg.GetPushConfig()
+	}
+	projectPath = normalizePath(projectPath)
+	if projectPath != "" && pushCfg == nil {
+		d.alertPushConfigs.Delete(projectPath)
+	} else if projectPath != "" {
+		mcp, pty := pushCfg.MCPNotificationsEnabled(), pushCfg.PTYInjectionEnabled()
+		d.alertPushConfigs.Store(projectPath, &config.PushConfig{MCPNotifications: &mcp, PTYInjection: &pty})
 	}
 
 	// Swap atomically, then stop the old buffer. Concurrent readers either
 	// see the old buffer (its methods are closed-safe) or the new one.
-	newHB := NewHoldBuffer(holdCfg, d.fireHoldEmit)
+	newHB := newOwnedHoldBuffer(holdCfg, d.fireHoldEmitForOwner)
 	if old := d.holdBuffer.Swap(newHB); old != nil {
 		old.Stop()
 	}
@@ -1053,6 +1083,16 @@ func (d *Daemon) ApplyAlertsConfig(cfg *config.AlertsConfig) {
 	}
 }
 
+func (d *Daemon) alertPushConfigForProject(projectPath string) *config.PushConfig {
+	if d == nil {
+		return nil
+	}
+	if push, ok := d.alertPushConfigs.Load(normalizePath(projectPath)); ok {
+		return push.(*config.PushConfig)
+	}
+	return nil // nil is the documented universal default
+}
+
 // startSwallowSweeperOnce launches the single sweeper goroutine that drains the
 // swallow detector and publishes any swallowed-error incidents. It is started
 // lazily on the first ChaosSwallowWatch fault (so a daemon whose proxies never
@@ -1073,7 +1113,10 @@ func (d *Daemon) startSwallowSweeperOnce() {
 					continue
 				}
 				for _, ev := range d.swallowDetector.Sweep(time.Now()) {
-					d.incidentBus.Publish(ev)
+					owner, _ := d.incidentProxyOwner.Load(ev.Ctx.ProxyID)
+					if d.stampIncidentOwner(&ev, &d.incidentProxyOwner, ev.Ctx.ProxyID, ownerAsIncidentResource(owner)) {
+						d.incidentBus.Publish(ev)
+					}
 				}
 			}
 		}

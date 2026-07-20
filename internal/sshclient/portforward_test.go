@@ -194,7 +194,7 @@ func TestPortForwardManager_EndToEnd(t *testing.T) {
 		require.NoError(t, err)
 		defer conn.Close()
 
-		req := "GET /__devtool_metrics HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+		req := "GET /__devtool_metrics HTTP/1.1\r\nHost: 127.0.0.1\r\nOrigin: http://127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
 		_, err = conn.Write([]byte(req))
 		require.NoError(t, err)
 
@@ -229,7 +229,7 @@ func TestPortForwardManager_EndToEnd(t *testing.T) {
 		}, 3*time.Second, 20*time.Millisecond)
 
 		wsURL := url.URL{Scheme: "ws", Host: fmt.Sprintf("127.0.0.1:%d", localPort), Path: "/__devtool_metrics"}
-		ws, _, err := websocket.DefaultDialer.Dial(wsURL.String(), nil)
+		ws, _, err := websocket.DefaultDialer.Dial(wsURL.String(), http.Header{"Origin": {"http://" + wsURL.Host}})
 		require.NoError(t, err, "screenshot client must connect through the forwarded local port")
 		defer ws.Close()
 
@@ -365,7 +365,7 @@ func TestPortForwardManager_EndToEnd(t *testing.T) {
 		require.NoError(t, httpConn.SetDeadline(time.Time{}))
 
 		wsURL := url.URL{Scheme: "ws", Host: fmt.Sprintf("127.0.0.1:%d", localPort), Path: "/__devtool_metrics"}
-		ws, _, err := websocket.DefaultDialer.Dial(wsURL.String(), nil)
+		ws, _, err := websocket.DefaultDialer.Dial(wsURL.String(), http.Header{"Origin": {"http://" + wsURL.Host}})
 		require.NoError(t, err)
 		defer ws.Close()
 

@@ -18,6 +18,7 @@ func TestBus_HTTPStorm_CollapsesToOneEntry(t *testing.T) {
 		ev, ok := FromHTTPEntry(
 			httpEntry("GET", fmt.Sprintf("/api/e%d", i), 500), "dev")
 		require.True(t, ok)
+		ev.Ctx.SessionID = "sess"
 		bus.Publish(ev)
 	}
 

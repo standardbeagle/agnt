@@ -42,6 +42,14 @@ type asyncWriteReq struct {
 	mime    string
 }
 
+type blobDrainGate struct {
+	release     chan struct{}
+	parked      chan struct{}
+	writeQueued chan struct{}
+	parkOnce    sync.Once
+	writeOnce   sync.Once
+}
+
 // BlobStore is a bytes-bounded content-addressed in-memory store with LRU
 // eviction. Write computes the sha256 hash, deduplicates identical payloads,
 // and evicts the least-recently-used blob when the budget is exceeded.
@@ -65,9 +73,10 @@ type BlobStore struct {
 	closeOnce sync.Once
 	wg        sync.WaitGroup
 
-	// drainGate is used by tests only (via pauseDrain/resumeDrain). When non-nil
-	// the drain goroutine waits on the pointed-to channel before each operation.
-	drainGate atomic.Pointer[chan struct{}]
+	// drainGate/gateWake are test-only. pauseDrain wakes the worker and waits for
+	// an acknowledgement that it is parked before returning.
+	drainGate atomic.Pointer[blobDrainGate]
+	gateWake  chan struct{}
 }
 
 // NewBlobStore creates a BlobStore limited to maxBytes of payload storage.
@@ -93,6 +102,7 @@ func newBlobStoreInternal(maxBytes int64, asyncCap int) *BlobStore {
 		writeCh:  make(chan writeReq, writeQueueCap),
 		asyncCh:  make(chan asyncWriteReq, asyncCap),
 		done:     make(chan struct{}),
+		gateWake: make(chan struct{}, 1),
 	}
 	bs.wg.Add(1)
 	go bs.drain()
@@ -112,6 +122,9 @@ func (bs *BlobStore) Write(content []byte, mime string) (BlobRef, error) {
 	}
 	select {
 	case bs.writeCh <- req:
+		if gate := bs.drainGate.Load(); gate != nil {
+			gate.writeOnce.Do(func() { close(gate.writeQueued) })
+		}
 	case <-bs.done:
 		return BlobRef{}, errors.New("blob store closed")
 	}
@@ -140,15 +153,39 @@ func (bs *BlobStore) WriteAsync(content []byte, mime string) BlobRef {
 // pauseDrain blocks the drain goroutine from processing writes. Used only by
 // tests to control timing of WriteAsync. Must be paired with resumeDrain.
 func (bs *BlobStore) pauseDrain() {
-	ch := make(chan struct{})
-	bs.drainGate.Store(&ch)
+	gate := &blobDrainGate{
+		release:     make(chan struct{}),
+		parked:      make(chan struct{}),
+		writeQueued: make(chan struct{}),
+	}
+	bs.drainGate.Store(gate)
+	select {
+	case bs.gateWake <- struct{}{}:
+	default:
+	}
+	select {
+	case <-gate.parked:
+	case <-bs.done:
+	}
+}
+
+// pausedWriteQueued reports when a synchronous Write has enqueued its request
+// behind the acknowledged drain gate. Used only by tests.
+func (bs *BlobStore) pausedWriteQueued() <-chan struct{} {
+	gate := bs.drainGate.Load()
+	if gate == nil {
+		closed := make(chan struct{})
+		close(closed)
+		return closed
+	}
+	return gate.writeQueued
 }
 
 // resumeDrain unblocks the drain goroutine. Paired with pauseDrain.
 func (bs *BlobStore) resumeDrain() {
 	ptr := bs.drainGate.Swap(nil)
 	if ptr != nil {
-		close(*ptr)
+		close(ptr.release)
 	}
 }
 
@@ -187,8 +224,9 @@ func (bs *BlobStore) drain() {
 	for {
 		// Honor the test-only drain gate.
 		if ptr := bs.drainGate.Load(); ptr != nil {
+			ptr.parkOnce.Do(func() { close(ptr.parked) })
 			select {
-			case <-*ptr:
+			case <-ptr.release:
 			case <-bs.done:
 				bs.drainRemaining()
 				return
@@ -201,6 +239,8 @@ func (bs *BlobStore) drain() {
 			req.result <- writeResult{ref: ref, err: err}
 		case req := <-bs.asyncCh:
 			bs.writeAsyncSync(req)
+		case <-bs.gateWake:
+			continue
 		case <-bs.done:
 			bs.drainRemaining()
 			return

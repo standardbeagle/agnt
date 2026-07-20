@@ -267,7 +267,7 @@ func TestPipeline_EndToEnd_SingleGoroutinePerSession(t *testing.T) {
 	defer cancel()
 
 	// Publish one event via bus.
-	ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "TypeError", "test error", Context{}, nil)
+	ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "TypeError", "test error", Context{SessionID: sessionID}, nil)
 	bus.Publish(ev)
 
 	// Event must flow through dispatch goroutine → dedup → inbox → subscriber.
@@ -298,7 +298,7 @@ func TestPipeline_DuplicateEvent_DedupedInInbox(t *testing.T) {
 	deltaCh, cancel := pl.inbox.Subscribe()
 	defer cancel()
 
-	ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "TypeError", "dup error", Context{}, nil)
+	ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "TypeError", "dup error", Context{SessionID: sessionID}, nil)
 
 	// Publish same event twice.
 	bus.Publish(ev)
@@ -338,7 +338,7 @@ func TestPipeline_SessionTeardown_DrainsWithinTwoSeconds(t *testing.T) {
 
 	// Flood the bus with 500 events.
 	for i := 0; i < 500; i++ {
-		ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "TypeError", "flood", Context{}, nil)
+		ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "TypeError", "flood", Context{SessionID: sessionID}, nil)
 		bus.Fire(&ev)
 	}
 
@@ -377,16 +377,98 @@ func TestPipeline_MultipleSessionsIsolated(t *testing.T) {
 		}
 	}()
 
-	ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "Test", "isolated", Context{}, nil)
+	ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "Test", "isolated", Context{SessionID: "sess-iso-A"}, nil)
 	bus.Publish(ev)
 
-	// All sessions receive the event.
+	// Only the explicitly owning session receives the event.
 	for i, ch := range deltaChs {
+		if i == 0 {
+			select {
+			case <-ch:
+			case <-time.After(500 * time.Millisecond):
+				t.Errorf("session %d: timed out waiting for delta", i)
+			}
+			continue
+		}
 		select {
 		case <-ch:
-		case <-time.After(500 * time.Millisecond):
-			t.Errorf("session %d: timed out waiting for delta", i)
+			t.Errorf("session %d received another session's incident", i)
+		case <-time.After(50 * time.Millisecond):
 		}
+	}
+}
+
+func TestPipeline_SessionlessProductionEventFailsClosed(t *testing.T) {
+	bus := NewMPSCBus(nil)
+	t.Cleanup(bus.Close)
+
+	for _, sessionID := range []string{"session-a", "session-b"} {
+		bus.AddSession(sessionID, nil, nil, nil)
+	}
+
+	bus.Publish(NewIncidentEvent(
+		SourceBrowserJS, SeverityError, "Test", "owner missing", Context{}, nil,
+	))
+	time.Sleep(50 * time.Millisecond)
+
+	for _, sessionID := range []string{"session-a", "session-b"} {
+		entries, _ := bus.QuerySession(sessionID, QueryFilter{})
+		if len(entries) != 0 {
+			t.Fatalf("sessionless production incident leaked into %s", sessionID)
+		}
+	}
+}
+
+func TestPipeline_SessionlessProductionEventFailsClosedWithOneSession(t *testing.T) {
+	bus := NewMPSCBus(nil)
+	t.Cleanup(bus.Close)
+	bus.AddSession("only-session", nil, nil, nil)
+	bus.Publish(NewIncidentEvent(SourceBrowserJS, SeverityError, "Test", "owner missing", Context{}, nil))
+	time.Sleep(30 * time.Millisecond)
+	entries, _ := bus.QuerySession("only-session", QueryFilter{})
+	if len(entries) != 0 {
+		t.Fatalf("sessionless production incident delivered with one active session")
+	}
+}
+
+func TestPipeline_EventDeliveredOnlyToOriginatingSession(t *testing.T) {
+	t.Parallel()
+	bus := NewMPSCBus(nil)
+	defer bus.Close()
+
+	bus.AddSession("session-a", nil, nil, nil)
+	bus.AddSession("session-b", nil, nil, nil)
+
+	a := bus.getSessionPipeline("session-a")
+	b := bus.getSessionPipeline("session-b")
+	require.NotNil(t, a)
+	require.NotNil(t, b)
+
+	aDeltas, cancelA := a.inbox.Subscribe()
+	defer cancelA()
+	bDeltas, cancelB := b.inbox.Subscribe()
+	defer cancelB()
+
+	ev := NewIncidentEvent(
+		SourceBrowserJS,
+		SeverityError,
+		"TypeError",
+		"session A error",
+		Context{SessionID: "session-a"},
+		nil,
+	)
+	bus.Publish(ev)
+
+	select {
+	case <-aDeltas:
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("originating session did not receive its incident")
+	}
+
+	select {
+	case <-bDeltas:
+		t.Fatal("incident leaked into another session inbox")
+	case <-time.After(50 * time.Millisecond):
 	}
 }
 

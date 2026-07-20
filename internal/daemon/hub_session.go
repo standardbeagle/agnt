@@ -193,12 +193,41 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
 	}
 
+	unlockLifecycle := d.sessionLifecycle.lock(session.Code)
+	lifecycleLocked := true
+	defer func() {
+		if lifecycleLocked {
+			unlockLifecycle()
+		}
+	}()
+
 	if err := d.sessionRegistry.Register(session); err != nil {
 		// Only an already-exists collision is a legitimate re-registration
 		// (reconnect). Any other Register failure (e.g. empty code) is a real
 		// error and must not be silently swallowed as a reconnect.
 		if !errors.Is(err, ErrSessionExists) {
 			return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+		}
+		// Cross-kind guard: SESSION REGISTER is classic-only. A session-host
+		// entry never re-registers through this path, so a code collision with
+		// one is a genuine name clash, not a reconnect. The two id spaces are
+		// independent counters over a user-supplied name (classic
+		// "<command-base>-<seq>", session-host "<cfg.Name>-<idCounter>"), so
+		// `--name claude` makes `claude-3` reachable on both sides. Treating that
+		// as a reconnect would ReplaceExact the session-host entry, breaking its
+		// explicit-kill-only invariant (a later conn drop would then run deferred
+		// cleanup against a daemon-owned PTY). Fail loud before any merge. Placed
+		// ahead of cancelPendingCleanup — a session-host has no deferred cleanup
+		// timer to cancel, so nothing to undo on this early return, and the
+		// deferred unlockLifecycle still releases the gate.
+		if existing, ok := d.sessionRegistry.Get(session.Code); ok {
+			existing.mu.RLock()
+			existingKind := existing.Kind
+			existing.mu.RUnlock()
+			if existingKind == SessionKindSessionHost {
+				return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf(
+					"session code %q is owned by a session-host session; choose a different session name", session.Code))
+			}
 		}
 		// Session already exists — this is a re-registration (reconnect).
 		// Cancel any pending cleanup from the old connection and refresh the
@@ -208,27 +237,44 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 		// SEND / scheduled deliveries to a dead socket.
 		d.cancelPendingCleanup(session.Code)
 		if existing, ok := d.sessionRegistry.Get(session.Code); ok {
-			existing.mu.Lock()
-			existing.OverlayPath = session.OverlayPath
+			existing.mu.RLock()
+			if session.Kind == "" {
+				session.Kind = existing.Kind
+			}
+			if session.OverlayPath == "" {
+				session.OverlayPath = existing.OverlayPath
+			}
 			if session.ProjectPath != "" && session.ProjectPath != "." {
-				existing.ProjectPath = session.ProjectPath
+				// Keep the newly supplied project path.
+			} else {
+				session.ProjectPath = existing.ProjectPath
 			}
-			if session.Command != "" {
-				existing.Command = session.Command
-				existing.Args = session.Args
+			if session.Command == "" {
+				session.Command = existing.Command
+				session.Args = existing.Args
 			}
-			if session.SessionPGID > 0 {
-				existing.SessionPGID = session.SessionPGID
+			if session.SessionPGID <= 0 {
+				session.SessionPGID = existing.SessionPGID
 			}
-			if session.OwnerPID > 0 {
-				existing.OwnerPID = session.OwnerPID
+			if session.OwnerPID <= 0 {
+				session.OwnerPID = existing.OwnerPID
 			}
-			if session.SessionJobHandle != 0 {
-				existing.SessionJobHandle = session.SessionJobHandle
+			if session.SessionJobHandle == 0 {
+				session.SessionJobHandle = existing.SessionJobHandle
 			}
-			existing.LastSeen = time.Now()
-			existing.Status = SessionStatusActive
-			existing.mu.Unlock()
+			// A reconnect is the same logical session, so it inherits the
+			// original lifetime's StartedAt unconditionally. The fresh Session
+			// was stamped StartedAt=now at parse time; leaving that in place
+			// would make a reconnect masquerade as the newest session and let
+			// sessionMoreRecent (FindByDirectory's last-started-wins tiebreak)
+			// flip overlay ownership within a project on every reconnect.
+			session.StartedAt = existing.StartedAt
+			existing.mu.RUnlock()
+			session.LastSeen = time.Now()
+			session.Status = SessionStatusActive
+			if !d.sessionRegistry.ReplaceExact(session.Code, existing, session) {
+				return conn.WriteErr(hubproto.ErrInternal, "session registration changed during reconnect")
+			}
 		}
 	}
 
@@ -239,6 +285,8 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 	// Rebind overlay endpoints for existing proxies that may have been
 	// created before this session registered.
 	d.rebindProxyOverlays(session)
+	unlockLifecycle()
+	lifecycleLocked = false
 
 	// Reconcile script states against OS truth before deciding autostart.
 	// Detects processes that died between sessions and transitions them to
@@ -408,13 +456,32 @@ func (d *Daemon) hubHandleSessionUnregister(conn *hubpkg.Connection, cmd *hubpro
 
 	code := cmd.Args[0]
 
-	// Cancel any pending deferred cleanup synchronously (just cancels a timer — safe).
+	// Cancel any pending deferred cleanup synchronously (just cancels a timer —
+	// cheap and safe even when the session is already gone: it prevents a stale
+	// timer from firing after we return).
 	d.cancelPendingCleanup(code)
+
+	session, ok := d.sessionRegistry.Get(code)
+	if !ok {
+		// Idempotent: UNREGISTER of an absent session has already reached the
+		// desired end state (session gone), so it is success, not error. A
+		// normal shutdown race — the deferred cleanup wins the disconnect, then
+		// the client sends an explicit UNREGISTER — must not surface a spurious
+		// ErrNotFound.
+		return conn.WriteOK(fmt.Sprintf("session %s already unregistered", code))
+	}
+
 	// Run cleanup in background; client can disconnect immediately. goTracked
 	// makes shutdown wait for an in-flight cleanup, and declines to start one
 	// once Stop has begun (Stop reaps those resources itself).
+	//
+	// reconnect-wins semantics: this goroutine captured the exact *Session
+	// pointer resolved above. If a reconnect swaps a fresh identity in under the
+	// lifecycle gate before this runs, doCleanupExact pointer-compares and
+	// no-ops while this handler has already returned OK — intended, so a stale
+	// UNREGISTER request cannot disturb the new lifetime.
 	d.goTracked(func() {
-		d.doCleanup(code)
+		d.doCleanupExact(code, session, nil)
 	})
 
 	return conn.WriteOK(fmt.Sprintf("session %s unregistered", code))

@@ -12,7 +12,7 @@ import (
 )
 
 // KillWindowsPID forcibly terminates a Windows-side process identified by pid
-// from a WSL host by shelling to taskkill.exe /F /PID <n>. Returns nil on
+// from a WSL host by shelling to taskkill.exe /T /F /PID <n>. Returns nil on
 // success, an error wrapping taskkill's stderr otherwise.
 //
 // taskkill.exe is the only mechanism that can reach a Windows-side PID from
@@ -49,7 +49,7 @@ func KillWindowsPID(pid int) error {
 	defer cancel()
 
 	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, exe, "/F", "/PID", strconv.Itoa(pid))
+	cmd := exec.CommandContext(ctx, exe, taskkillArgs(pid)...)
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
 		msg := bytes.TrimSpace(stderr.Bytes())
@@ -59,4 +59,8 @@ func KillWindowsPID(pid int) error {
 		return fmt.Errorf("kill windows pid %d: %s: %w", pid, string(msg), err)
 	}
 	return nil
+}
+
+func taskkillArgs(pid int) []string {
+	return []string{"/T", "/F", "/PID", strconv.Itoa(pid)}
 }

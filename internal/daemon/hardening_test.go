@@ -141,7 +141,10 @@ func TestSessionRegistry_ConcurrentRegisterUnregister(t *testing.T) {
 		wg2.Add(1)
 		go func(id int) {
 			defer wg2.Done()
-			_ = reg.Unregister(fmt.Sprintf("session-%d", id))
+			code := fmt.Sprintf("session-%d", id)
+			if s, ok := reg.Get(code); ok {
+				reg.UnregisterExact(code, s)
+			}
 		}(i)
 	}
 
