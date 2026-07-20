@@ -423,10 +423,10 @@ chrome from page content and gives a stable interaction target. Full design:
 - **Roles** (resolved per frame into `window.__devtool_frame_role`): `chrome`
   (outer shell — UI only, no telemetry WS), `content` (the wrapped page — full
   runtime, tagged with a `frame_id`), `passive` (foreign embeds — silent).
-- **Wrap gating**: only genuine top-level navigations are wrapped. A nested
-  browsing context (`Sec-Fetch-Dest: iframe/frame/embed/object`) and any request
-  carrying the `__devtool_frame` marker are served unwrapped, so an app's own
-  iframes are never shell-wrapped.
+- **Wrap gating**: only requests with `Sec-Fetch-Dest: document` are wrapped.
+  Requests from `fetch()` (`Sec-Fetch-Dest: empty`), nested browsing contexts,
+  headerless clients, and requests carrying the `__devtool_frame` marker are
+  served unwrapped.
 - **Frame registry**: the shell tracks live content frames + an active-target
   pointer (the last-interacted frame). `proxy exec` and the visual/audit tools
   (`responsive_audit`, `snapshot`, `screenshot`, `api_audit`, `loading_audit`)

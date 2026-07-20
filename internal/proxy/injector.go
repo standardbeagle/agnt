@@ -323,22 +323,16 @@ func isContentFrameRequest(r *http.Request) bool {
 	return r.URL.Query().Has(frameMarkerParam)
 }
 
-// isTopLevelNavigation reports whether r is a top-level document navigation
-// rather than a nested browsing context (an app-embedded iframe/frame/object).
-// Only top-level navigations are wrapped in the chrome shell; an app's own
-// iframe must render its content, not our shell. Modern browsers send
-// Sec-Fetch-Dest; an empty value (legacy browsers / non-browser clients)
-// defaults to top-level so the wrap still applies.
+// isTopLevelNavigation reports whether r is a top-level document navigation.
+// Only explicit browser document navigations are wrapped in the chrome shell.
+// In particular, fetch() uses Sec-Fetch-Dest: empty and must receive the
+// upstream HTML unchanged rather than a shell document. Headerless requests
+// (legacy browsers and non-browser clients) also remain unwrapped.
 func isTopLevelNavigation(r *http.Request) bool {
 	if r == nil {
 		return false
 	}
-	switch r.Header.Get("Sec-Fetch-Dest") {
-	case "iframe", "frame", "embed", "object":
-		return false
-	default:
-		return true
-	}
+	return r.Header.Get("Sec-Fetch-Dest") == "document"
 }
 
 // isFullHTMLDocument reports whether body looks like a complete HTML document

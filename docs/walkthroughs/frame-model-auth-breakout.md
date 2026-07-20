@@ -194,7 +194,7 @@ and `handleRedirectPromise()` sees the callback with its nonce intact.
   `mode "top"` — the whole shell navigates to the IdP and the return redirect is
   wrapped again, but you lose in-page state. If the browser blocks `window.open`,
   `popup` falls back to `top` automatically rather than failing.
-- **Only genuine top-level navigations are wrapped.** A nested browsing context
-  (`Sec-Fetch-Dest: iframe/frame/embed/object`) or a request carrying the
-  `__devtool_frame` marker is served unwrapped, so your app's own iframes are
-  never shell-wrapped.
+- **Only genuine top-level navigations are wrapped.** Specifically, wrapping
+  requires `Sec-Fetch-Dest: document`. Requests from `fetch()`
+  (`Sec-Fetch-Dest: empty`), nested browsing contexts, headerless clients, and
+  requests carrying the `__devtool_frame` marker are served unwrapped.

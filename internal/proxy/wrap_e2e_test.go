@@ -16,6 +16,7 @@ import (
 //   - top-level navigation  -> chrome shell wrapping a single content iframe
 //   - content-frame request -> unwrapped page + content-role runtime
 //   - foreign nested iframe  -> not wrapped (app owns it)
+//   - fetch-loaded HTML      -> not wrapped (callers receive upstream content)
 //   - page session tracking  -> shell + content coalesce to one clean-URL session
 func TestAlwaysWrap_EndToEnd(t *testing.T) {
 	backend := newWrapBackend(t)
@@ -58,7 +59,13 @@ func TestAlwaysWrap_EndToEnd(t *testing.T) {
 		t.Errorf("foreign iframe must serve its real content")
 	}
 
-	// 4. Page session tracking: the shell's top-level request and the content
+	// 4. Fetch-loaded HTML is not a navigation and must not receive the shell.
+	fetched := getWrap(t, proxyURL+"/demo.html", "empty")
+	if strings.Contains(fetched, "<iframe") || !strings.Contains(fetched, "PAGE-BODY-MARKER") {
+		t.Errorf("fetch-loaded HTML must remain unwrapped upstream content")
+	}
+
+	// 5. Page session tracking: the shell's top-level request and the content
 	// frame's marked request coalesce into one session keyed on the clean URL.
 	var sessions []*PageSession
 	for i := 0; i < 50; i++ {

@@ -38,6 +38,7 @@ const sampleDoc = "<html><head><title>T</title></head><body>Hello World</body></
 func TestModifyResponse_TopLevelWrapsInShell(t *testing.T) {
 	ps := &ProxyServer{ListenAddr: ":8080", ID: "px1"}
 	req := httptest.NewRequest(http.MethodGet, "/dashboard?q=1", nil)
+	req.Header.Set("Sec-Fetch-Dest", "document")
 	resp := htmlResp(sampleDoc, req)
 
 	if err := ps.modifyResponse(resp); err != nil {
@@ -81,6 +82,7 @@ func TestModifyResponse_TopLevelWrapsInShell(t *testing.T) {
 func TestShellAndContentFrameIDsDistinct(t *testing.T) {
 	ps := &ProxyServer{ListenAddr: ":8080", ID: "px1"}
 	req := httptest.NewRequest(http.MethodGet, "/dashboard?q=1", nil)
+	req.Header.Set("Sec-Fetch-Dest", "document")
 	resp := htmlResp(sampleDoc, req)
 	if err := ps.modifyResponse(resp); err != nil {
 		t.Fatalf("modifyResponse: %v", err)
@@ -200,6 +202,27 @@ func TestModifyResponse_DocumentDestWraps(t *testing.T) {
 	}
 }
 
+// TestModifyResponse_FetchHTMLNotWrapped: fetch() identifies its destination
+// as "empty". Even when the response is a full HTML document, callers must get
+// the upstream document rather than the proxy's navigation shell.
+func TestModifyResponse_FetchHTMLNotWrapped(t *testing.T) {
+	ps := &ProxyServer{ListenAddr: ":8080", ID: "px1"}
+	req := httptest.NewRequest(http.MethodGet, "/demo.html", nil)
+	req.Header.Set("Sec-Fetch-Dest", "empty")
+	resp := htmlResp(sampleDoc, req)
+
+	if err := ps.modifyResponse(resp); err != nil {
+		t.Fatalf("modifyResponse: %v", err)
+	}
+	body := readBody(t, resp)
+	if strings.Contains(body, "<iframe") || strings.Contains(body, `window.__devtool_role="chrome"`) {
+		t.Errorf("fetch-loaded HTML must not be wrapped in a chrome shell")
+	}
+	if !strings.Contains(body, "Hello World") {
+		t.Errorf("fetch-loaded HTML content must be preserved")
+	}
+}
+
 func TestIsTopLevelNavigation(t *testing.T) {
 	mk := func(dest string) *http.Request {
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -211,12 +234,12 @@ func TestIsTopLevelNavigation(t *testing.T) {
 	if isTopLevelNavigation(nil) {
 		t.Errorf("nil request is not a navigation")
 	}
-	for _, d := range []string{"iframe", "frame", "embed", "object"} {
+	for _, d := range []string{"", "empty", "iframe", "frame", "embed", "object", "script", "style", "image"} {
 		if isTopLevelNavigation(mk(d)) {
 			t.Errorf("Sec-Fetch-Dest=%q must not be top-level", d)
 		}
 	}
-	for _, d := range []string{"", "document"} {
+	for _, d := range []string{"document"} {
 		if !isTopLevelNavigation(mk(d)) {
 			t.Errorf("Sec-Fetch-Dest=%q must be top-level", d)
 		}
