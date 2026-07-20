@@ -157,7 +157,7 @@ Available tools:
 	if err := licMgr.Load(); err != nil {
 		debug.Log("license", "license load failed, continuing on free tier: %v", err)
 	}
-	tools.RegisterReplaytestTool(server, licMgr)
+	tools.RegisterReplaytestTool(server, licMgr, dt.ReplaytestLogClient)
 
 	// Register channel_reply tool when channel mode is enabled and reply-tool is on.
 	if agntCfg.Channel != nil && agntCfg.Channel.IsEnabled() && agntCfg.Channel.ReplyToolEnabled() {

@@ -187,6 +187,16 @@ func (dt *DaemonTools) RunAutostart(projectDir string) (map[string]interface{}, 
 	return dt.client.Client().AutostartRun(projectDir)
 }
 
+// ReplaytestLogClient lazily resolves a connected daemon client for the
+// replaytest record/stop actions, ensuring the daemon connection is live before
+// returning it. The returned *daemon.Client satisfies replaytestLogClient.
+func (dt *DaemonTools) ReplaytestLogClient() (replaytestLogClient, error) {
+	if err := dt.ensureConnected(); err != nil {
+		return nil, err
+	}
+	return dt.client.Client(), nil
+}
+
 // StartChannelSink starts a goroutine that subscribes to daemon StreamEvents
 // and forwards matching entries as MCP channel notifications. Returns a cancel
 // function to stop the sink. No-op and returns nil if channel is not enabled.
