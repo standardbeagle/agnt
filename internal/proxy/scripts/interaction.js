@@ -544,11 +544,11 @@
     // frame. Under the always-wrap model the chrome shell and passive foreign
     // frames must not capture interactions (the user interacts with the content
     // frame); this keeps exactly one interaction-listener set per page. Role is
-    // resolved by frames.js into window.__devtool_frame_role; absent defaults to
+    // resolved by the frames.js context adapter; standalone defaults to
     // attaching so non-wrapped pages keep full tracking. See
     // docs/responsive-canonical-target.md §5.
     try {
-      var __frameRole = window.__devtool_frame_role;
+      var __frameRole = window.__devtool_context.role;
       if (!__frameRole || __frameRole === 'content') {
         attachListeners();
       }

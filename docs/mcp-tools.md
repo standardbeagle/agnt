@@ -13,7 +13,7 @@ only the summary table + handler pattern; this is the detailed reference.
 | `proxy` | Reverse proxy (start, stop, restart, status, list, exec, navigate, resize, toast, chaos) |
 | `proxylog` | Query proxy logs (query, summary, clear, stats) |
 | `tunnel` | Tunnel management (cloudflare/ngrok/tailscale) |
-| `currentpage` | Page inspection: framework triage (default) + layout diagnostics + list/get/summary/clear |
+| `currentpage` | Inner/content-page inspection: framework triage (default) + layout diagnostics + list/get/summary/clear; responses identify `execution_context` and `frame_id` |
 | `get_errors` | Unified error view across processes and proxies (legacy; superseded by `get_incidents`) |
 | `get_incidents` | Incident inbox pull — cursor-based, priority-ordered, with remediation hints |
 | `responsive_audit` | Responsive design audits across viewport sizes |

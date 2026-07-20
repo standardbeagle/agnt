@@ -69,7 +69,7 @@ func runConPTYChild(ctx context.Context, args []string, socketPath string, sessi
 	defer suppressAutostartDuringSetup(setupPhase)()
 
 	adapter := resolveAgentAdapter(command, projectPath)
-	launch, adapterPrompt := phaseCmdArgsAndPrompt(adapter, command, cmdArgs, setupPhase, socketPath)
+	launch, adapterPrompt, injectInitialPrompt := phaseCmdArgsAndPrompt(adapter, command, cmdArgs, setupPhase, socketPath)
 
 	// Get initial terminal size BEFORE any mode changes — VS Code and
 	// other embedded terminals may not report size correctly on stdin.
@@ -159,7 +159,7 @@ func runConPTYChild(ctx context.Context, args []string, socketPath string, sessi
 		WrapOutput: func(dest io.Writer) io.Writer { return NewBrowserHelper(dest) },
 	}
 
-	rt := runOverlayPipeline(ctx, handle, launch, adapter, adapterPrompt, setupPhase, projectPath, sessionCode)
+	rt := runOverlayPipeline(ctx, handle, launch, adapter, adapterPrompt, injectInitialPrompt, projectPath, sessionCode)
 
 	// Monitor process exit separately — close PTY when the process exits so
 	// io.Copy in the shared pipeline returns even if the PTY stays open.

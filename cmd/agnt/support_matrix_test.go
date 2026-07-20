@@ -1,10 +1,13 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/agentadapter"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -83,6 +86,22 @@ func TestBuildSetupSystemPromptPerAgent(t *testing.T) {
 	unknown := buildSetupSystemPrompt("mystery-cli")
 	assert.Contains(t, unknown, genericAgentSupport.InstallText)
 	assert.NotContains(t, unknown, "%!")
+}
+
+func TestSetupPromptDeliveryPrefersAdapterContextFile(t *testing.T) {
+	dir := t.TempDir()
+	chdir(t, dir)
+
+	kimi := agentadapter.DefaultRegistry().Lookup("kimi")
+	_, prompt, injectStdin := phaseCmdArgsAndPrompt(kimi, "kimi", nil, true, "")
+	assert.False(t, injectStdin, "kimi should consume startup-loaded AGENTS.md")
+	context, err := os.ReadFile(filepath.Join(dir, "AGENTS.md"))
+	assert.NoError(t, err)
+	assert.Contains(t, string(context), prompt)
+
+	aider := agentadapter.DefaultRegistry().Lookup("aider")
+	_, _, injectStdin = phaseCmdArgsAndPrompt(aider, "aider", nil, true, "")
+	assert.True(t, injectStdin, "aider has no automatically loaded context file")
 }
 
 // TestRenudgeAcrossRuns ties the negative-outcome marker to the gate across two

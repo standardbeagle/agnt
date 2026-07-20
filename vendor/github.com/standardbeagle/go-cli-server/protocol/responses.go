@@ -49,8 +49,11 @@ const (
 	ResponseData  ResponseType = "DATA"
 	ResponseJSON  ResponseType = "JSON"
 	ResponseChunk ResponseType = "CHUNK"
-	ResponseEnd   ResponseType = "END"
-	ResponsePong  ResponseType = "PONG"
+	// ResponseStatus is an out-of-band progress/liveness frame. It never
+	// completes a request and never contributes bytes to a chunked payload.
+	ResponseStatus ResponseType = "STATUS"
+	ResponseEnd    ResponseType = "END"
+	ResponsePong   ResponseType = "PONG"
 )
 
 // Response represents a response from the hub.
@@ -179,6 +182,13 @@ func FormatData(data []byte) []byte {
 func FormatChunk(data []byte) []byte {
 	encoded := base64.StdEncoding.EncodeToString(data)
 	return []byte(fmt.Sprintf("CHUNK %s %d\n%s%s", DataMarker, len(encoded), encoded, CommandTerminator))
+}
+
+// FormatStatus formats an out-of-band progress frame with base64-encoded JSON.
+// Format: STATUS -- LENGTH\nBASE64DATA;;
+func FormatStatus(data []byte) []byte {
+	encoded := base64.StdEncoding.EncodeToString(data)
+	return []byte(fmt.Sprintf("STATUS %s %d\n%s%s", DataMarker, len(encoded), encoded, CommandTerminator))
 }
 
 // FormatEnd formats an END response for chunked streams.

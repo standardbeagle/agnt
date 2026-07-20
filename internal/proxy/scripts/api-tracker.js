@@ -6,6 +6,8 @@
 (function() {
   'use strict';
 
+  var frameContext = window.__devtool_context;
+
   var MAX_ENTRIES = 100;
   var callBuffer = [];
   var originalFetch = window.fetch;
@@ -26,11 +28,11 @@
     // empty. Forward each captured call up to the shell (same-origin direct
     // reach; the proxy serves both frames) so its Network tab + badge update.
     // Best-effort; never let a forwarding failure break capture.
-    if (window.__devtool_frame_role === 'content') {
+    if (frameContext.isContent()) {
       try {
-        var shell = window.parent;
-        if (shell && shell !== window && typeof shell.__devtool_api_ingest === 'function') {
-          shell.__devtool_api_ingest(call);
+        var ingest = frameContext.shellExport('__devtool_api_ingest');
+        if (typeof ingest === 'function') {
+          ingest(call);
         }
       } catch (e) { /* cross-origin / shell gone */ }
     }
@@ -94,7 +96,7 @@
             } catch (e) {}
           }).catch(function() {});
         }
-        if (window.__devtool_frame_role !== 'chrome') { addCall(call); }
+        if (!frameContext.isChrome()) { addCall(call); }
         return response;
       })
       .catch(function(error) {
@@ -102,7 +104,7 @@
         call.ok = false;
         call.duration = Date.now() - startTime;
         call.error = error.message || 'Network error';
-        if (window.__devtool_frame_role !== 'chrome') { addCall(call); }
+        if (!frameContext.isChrome()) { addCall(call); }
         throw error;
       });
   };
@@ -150,7 +152,7 @@
           } catch (e) {}
         } catch (e) {}
       }
-      if (window.__devtool_frame_role !== 'chrome') { addCall(call); }
+      if (!frameContext.isChrome()) { addCall(call); }
     };
 
     xhr.addEventListener('loadend', onLoadEnd);

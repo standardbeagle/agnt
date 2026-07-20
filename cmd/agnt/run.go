@@ -74,7 +74,7 @@ func runPTYChild(ctx context.Context, args []string, socketPath string, sessionC
 	defer suppressAutostartDuringSetup(setupPhase)()
 
 	adapter := resolveAgentAdapter(command, projectPath)
-	launch, adapterPrompt := phaseCmdArgsAndPrompt(adapter, command, cmdArgs, setupPhase, socketPath)
+	launch, adapterPrompt, injectInitialPrompt := phaseCmdArgsAndPrompt(adapter, command, cmdArgs, setupPhase, socketPath)
 
 	stopSpinner := spinner(fmt.Sprintf("Starting %s...", command))
 	c := commandWithArgs(command, launch.Args...)
@@ -165,7 +165,7 @@ func runPTYChild(ctx context.Context, args []string, socketPath string, sessionC
 		},
 	}
 
-	rt := runOverlayPipeline(ctx, handle, launch, adapter, adapterPrompt, setupPhase, projectPath, sessionCode)
+	rt := runOverlayPipeline(ctx, handle, launch, adapter, adapterPrompt, injectInitialPrompt, projectPath, sessionCode)
 
 	// Ctrl+Z support — handleSIGCHLD lives in signals_unix.go because
 	// SIGCHLD/SIGSTOP/SIGCONT are fundamentally Unix-only.

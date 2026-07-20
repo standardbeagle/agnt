@@ -12,6 +12,8 @@
 (function() {
   'use strict';
 
+	var frameContext = window.__devtool_context;
+
   var I = window.__devtool_indicator_internal;
 
   // Shared symbols from indicator-styles.js (loads earlier).
@@ -77,17 +79,16 @@
   }
 
   // True when this script runs inside a frame rather than the top window.
-  // Same-origin here (proxy serves both), so window.top is always reachable;
-  // the try/catch is belt-and-braces against a future cross-origin embed.
+  // The frame-context adapter owns the same-origin/cross-origin distinction.
   function isNestedFrame() {
-    try { return window.top !== window.self; } catch (e) { return true; }
+	return !frameContext.isTopLevel();
   }
 
   // Call a method on the top frame's indicator. Same-origin direct call;
   // swallow if the parent is gone or (defensively) cross-origin.
   function callParentIndicator(method) {
     try {
-      var parentIndicator = window.parent && window.parent.__devtool_indicator;
+		var parentIndicator = frameContext.shellExport('__devtool_indicator');
       if (parentIndicator && typeof parentIndicator[method] === 'function') {
         parentIndicator[method]();
       }
@@ -1465,8 +1466,8 @@
   // unwrapped/standalone page there is no separate shell, so we reload self.
   function refreshContent() {
     try {
-      if (typeof window.__devtool_reload_content === 'function') {
-        window.__devtool_reload_content();
+		if (frameContext.isChrome()) {
+			frameContext.reloadContent();
         return;
       }
       var w = targetWindow();
@@ -3512,7 +3513,7 @@
       refreshChaosData();
     });
     // Inspect button active state is event-driven: style-editor.js calls
-    // __devtool_indicator_syncInspect (directly, or via window.parent from
+    // __devtool_indicator_syncInspect (directly, or via the frame adapter from
     // the content frame) on every open()/close() — replaces the old 1s
     // cross-frame isOpen() poll.
     window.__devtool_indicator_syncInspect = updateInspectBtnState;

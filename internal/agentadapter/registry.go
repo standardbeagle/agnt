@@ -73,6 +73,15 @@ func DefaultRegistry() *Registry {
 	r.Register(newStdinAdapter("cursor", []string{"cursor"}))
 	r.Register(newStdinAdapter("opencode", []string{"opencode"}))
 	r.Register(newStdinAdapter("auggie", []string{"auggie"}))
+	// These agents load a project context file at startup. Register them
+	// explicitly so setup delivery can use the correct support-matrix entry
+	// instead of the universal stdin fallback. Kimi's two executable spellings
+	// intentionally share the conservative stdin adapter: no CLI flag is
+	// assumed, while both resolve to the canonical kimi-cli context strategy.
+	r.Register(newStdinAdapter("codex", []string{"codex"}))
+	r.Register(newStdinAdapter("qwen", []string{"qwen", "qwen-code"}))
+	r.Register(newStdinAdapter("crush", []string{"crush"}))
+	r.Register(newStdinAdapter("kimi-cli", []string{"kimi", "kimi-cli"}))
 	return r
 }
 

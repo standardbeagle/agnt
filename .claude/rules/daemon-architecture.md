@@ -40,6 +40,18 @@ Three reconciliation triggers:
 2. **Periodic** — every 30s (configurable), daemon runs health check, emits events for state changes. Never kills processes — only updates state and surfaces issues.
 3. **Doctor command** — developer-initiated full reconciliation via MCP tool and overlay panel. Returns structured report with offered actions.
 
+## Control-Plane Responsiveness
+
+Daemon IPC distinguishes elapsed work from a wedged transport. Registered hub
+handlers emit out-of-band `STATUS` frames every five seconds until their terminal
+response. Clients treat each status as idle-deadline progress, never as a result
+or streamed payload byte. Status delivery uses a non-blocking writer attempt: a
+busy response write drops that tick instead of delaying the handler. Each client
+connection has an independent dispatch goroutine, so a long request may occupy
+its own ordered request/response stream but must never delay `INFO`, `PING`, hooks,
+or commands arriving on other connections. A terminal response closes the status
+window atomically; no status frame may follow it.
+
 ## Cross-Platform Mandate
 
 **Every OS-level operation must go through `internal/platform/` and handle all four targets:**
@@ -251,7 +263,7 @@ PTY child started by `agnt run` gets own POSIX session via `setsid` (creack/pty 
 Daemon holds this invariant through three primitives:
 
 1. **Wire-through at registration.** `agnt run` client captures PTY child PID, passes to daemon as `SessionPGID` during `SessionRegister`. Field survives client → protocol → hub handler → registry round trip.
-2. **Kill on cleanup.** `CleanupSessionResources` → `doCleanup` calls `killSessionPGID` **before** touching managed processes. Sends SIGTERM to group, waits 2s grace window, escalates to SIGKILL on any survivors. Self-exclusion protects daemon's own PID if it ever (defensively) shares group.
+2. **Kill on cleanup.** Explicit unregister/shutdown routes `CleanupSessionResources` → `doCleanup`, which calls `killSessionPGID` **before** touching managed processes. A dropped control connection alone is not cleanup authority: classic-session registration carries the owning `agnt run` PID, and deferred cleanup may reap the process group only after that owner PID is confirmed gone. Unknown ownership fails safe. Once authorized, cleanup sends SIGTERM to the group, waits 2s, then escalates to SIGKILL. Self-exclusion protects the daemon's own PID if it ever shares the group.
 3. **Startup orphan scan.** On `Start()`, daemon walks `/proc` looking for pgids whose leader is dead but members still alive — "daemon crashed mid-session" case — and reaps via same kill primitive. UID-filtered, gated on `session.orphan-pgid-scan` config (default on).
 
 ### What Is Caught

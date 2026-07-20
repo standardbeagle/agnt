@@ -28,27 +28,24 @@ use).
 | claude | flag (`--append-system-prompt`) | `marketplace-install` | `/plugin marketplace add` + `/plugin install`; also `.claude/skills/` | high |
 | gemini | stdin | `skill-file` | `~/.gemini/commands/` or `.gemini/commands/` TOML/`.md` → `/ns:cmd` | high |
 | copilot | stdin | `skill-file` | `.github/agents/*.agent.md` or `~/.copilot/agents/`; `AGENTS.md` | high |
-| codex | stdin* | `skill-file` | `.agents/skills/<name>/SKILL.md` or `~/.agents/skills/` | high |
+| codex | context file + setup stdin fallback | `skill-file` | `.agents/skills/<name>/SKILL.md` or `~/.agents/skills/` | high |
 | opencode | stdin | `skill-file` | `.opencode/commands/*.md` or `~/.config/opencode/commands/` | high |
 | cursor-agent | stdin | `skill-file` | `.cursor/commands/*.md` (+ `AGENTS.md`/`.cursor/rules/` for CLI) | medium |
-| qwen | stdin* | `skill-file` | `~/.qwen/commands/` or `.qwen/commands/` `.md`/frontmatter → `/ns:cmd` | high |
-| crush | stdin* | `skill-file` | `.crush/skills/<name>/SKILL.md` or `~/.config/crush/skills/`; `user-invocable` | high |
-| kimi-cli | stdin* | `skill-file` | `.kimi/skills/<name>/SKILL.md` or `~/.kimi/skills/` → `/skill:<name>` | high |
+| qwen | context file + setup stdin fallback | `skill-file` | `~/.qwen/commands/` or `.qwen/commands/` `.md`/frontmatter → `/ns:cmd` | high |
+| crush | context file + setup stdin fallback | `skill-file` | `.crush/skills/<name>/SKILL.md` or `~/.config/crush/skills/`; `user-invocable` | high |
+| kimi-cli | context file + setup stdin fallback | `skill-file` | `.kimi/skills/<name>/SKILL.md` or `~/.kimi/skills/` → `/skill:<name>` | high |
 | auggie | stdin | `skill-file` | `.augment/commands/*.md` or `~/.augment/commands/` `.md`/frontmatter | high |
 | aider | stdin | `none` | No invocable command/skill; optional read-only `CONVENTIONS.md` context file | medium |
 
-`*` = agent is not yet registered in `internal/agentadapter` as a dedicated
-adapter (codex, qwen, crush, kimi-cli). It resolves via the generic stdin
-adapter, which needs no agent-specific flag knowledge.
-
 Registry today (`internal/agentadapter/registry.go`): claude (flag), gemini,
-copilot, aider, cursor-agent, cursor, opencode, auggie (stdin). codex / qwen /
-crush / kimi-cli are **not** registered and fall back to the stdin adapter.
+copilot, aider, cursor-agent, cursor, opencode, auggie, codex, qwen, crush, and
+kimi-cli (context file with a conservative stdin fallback).
 
-kimi is deliberately unregistered: two unrelated CLIs install as `kimi`
-(MoonshotAI kimi-cli and kimi-code), so a name match cannot tell them apart,
-and the `--agent-file` flag agnt used to append is rejected by kimi-code —
-`agnt run kimi` failed at launch. See `docs/agent-adapters.md`.
+Two unrelated CLIs install as `kimi`, so the shared adapter deliberately adds
+no agent-specific CLI flag. In setup mode agnt writes the task into the
+startup-loaded `AGENTS.md`; stdin remains a fallback if that write is disabled
+or fails. This avoids the rejected `--agent-file` regression and TUI paste
+flows that require a second manual Enter. See `docs/agent-adapters.md`.
 
 ## Per-agent detail
 
@@ -143,8 +140,8 @@ and the `--agent-file` flag agnt used to append is rejected by kimi-code —
    codex) read shared dirs like `.agents/skills/` and `.claude/skills/`. A
    single `SKILL.md` could be portable across multiple agents — Slice C could
    emit one shared skill file plus per-agent install text rather than N copies.
-3. **Three researched agents are not yet registered** in
-   `internal/agentadapter` (codex, qwen, crush). Slice C must decide whether to
-   add adapters or document them as future work.
+3. **All researched context-file agents are registered.** Their named adapters
+   let setup select the correct startup-loaded file while retaining stdin as a
+   write-failure fallback.
 4. **Two medium-confidence rows** (aider, cursor-agent) carry caveats above;
    re-verify before shipping user-facing install text for them.

@@ -28,16 +28,9 @@
   // UNWRAPPED (not as another chrome shell) and frames.js registers it as a
   // distinct content frame. A unique id per open keeps it addressable.
   function responsiveContentSrc() {
-    var param = (window.__devtool && window.__devtool.FRAME_PARAM) || '__devtool_frame';
     var rid = 'resp-' + Date.now();
-    try {
-      var u = new URL(window.location.href);
-      u.searchParams.set(param, rid);
-      return u.toString();
-    } catch (e) {
-      var base = window.location.href.split('#')[0];
-      return base + (base.indexOf('?') >= 0 ? '&' : '?') + param + '=' + rid;
-    }
+		var u = window.__devtool_context.contentURL(window.location.href, rid);
+		return u ? u.toString() : window.location.href;
   }
 
   var PRESETS = [
@@ -97,8 +90,7 @@
   // is opened in the chrome shell (always-wrap model), else null (fallback to a
   // self-hosted preview iframe).
   function getContentFrame() {
-    if (window.__devtool_frame_role !== 'chrome') { return null; }
-    return document.getElementById('__devtool_content_frame') || null;
+		return window.__devtool_context.contentFrame();
   }
 
   function getCore() { return window.__devtool_core; }

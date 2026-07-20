@@ -26,6 +26,9 @@ type Config struct {
 	ReadTimeout time.Duration
 	// WriteTimeout is the timeout for writing to clients.
 	WriteTimeout time.Duration
+	// StatusInterval controls automatic progress frames for handlers that have
+	// not completed. Zero uses the default; a negative duration disables them.
+	StatusInterval time.Duration
 	// EnableProcessMgmt enables the built-in ProcessManager.
 	EnableProcessMgmt bool
 	// EnableProcessCommands registers built-in PROC/RUN/RUN-JSON handlers.
@@ -49,6 +52,7 @@ func DefaultConfig() Config {
 		MaxClients:        0,
 		ReadTimeout:       0,
 		WriteTimeout:      5 * time.Second,
+		StatusInterval:    5 * time.Second,
 		EnableProcessMgmt: true,
 		ProcessConfig:     process.DefaultManagerConfig(),
 		Version:           "1.0.0",
@@ -99,6 +103,9 @@ type Hub struct {
 func New(config Config) *Hub {
 	if config.SocketName == "" {
 		config.SocketName = socket.DefaultSocketName
+	}
+	if config.StatusInterval == 0 {
+		config.StatusInterval = 5 * time.Second
 	}
 
 	sockConfig := socket.Config{

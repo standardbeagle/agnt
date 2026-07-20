@@ -17,8 +17,11 @@ type CurrentPageInput struct {
 type CurrentPageOutput struct {
 	// For list
 	Sessions []PageSessionOutput `json:"sessions,omitempty"`
-	Count    int                 `json:"count"`
-	Hint     string              `json:"hint,omitempty"`
+	// Count is present for list, including an explicit zero, and absent for the
+	// other actions in this union response. A zero beside a populated triage was
+	// being misread by agents as "no active page".
+	Count *int   `json:"count,omitempty"`
+	Hint  string `json:"hint,omitempty"`
 
 	// For get
 	Session *PageSessionOutput `json:"session,omitempty"`
@@ -39,12 +42,14 @@ type CurrentPageOutput struct {
 
 // PageSummaryOutput provides a compact summary of a large page without blowing context.
 type PageSummaryOutput struct {
-	ID           string    `json:"id"`
-	URL          string    `json:"url"`
-	PageTitle    string    `json:"page_title,omitempty"`
-	StartTime    time.Time `json:"start_time"`
-	LastActivity time.Time `json:"last_activity"`
-	Active       bool      `json:"active"`
+	ID               string    `json:"id"`
+	URL              string    `json:"url"`
+	FrameID          string    `json:"frame_id,omitempty"`
+	ExecutionContext string    `json:"execution_context"`
+	PageTitle        string    `json:"page_title,omitempty"`
+	StartTime        time.Time `json:"start_time"`
+	LastActivity     time.Time `json:"last_activity"`
+	Active           bool      `json:"active"`
 
 	// Resource summary
 	ResourceCount    int            `json:"resource_count"`
@@ -88,18 +93,20 @@ type PageSummaryOutput struct {
 
 // PageSessionOutput represents a page session in the output.
 type PageSessionOutput struct {
-	ID             string                   `json:"id"`
-	URL            string                   `json:"url"`
-	PageTitle      string                   `json:"page_title,omitempty"`
-	StartTime      time.Time                `json:"start_time"`
-	LastActivity   time.Time                `json:"last_activity"`
-	Active         bool                     `json:"active"`
-	ResourceCount  int                      `json:"resource_count"`
-	ErrorCount     int                      `json:"error_count"`
-	HasPerformance bool                     `json:"has_performance"`
-	LoadTime       int64                    `json:"load_time_ms,omitempty"`
-	Resources      []string                 `json:"resources,omitempty"` // URLs of resources
-	Errors         []map[string]interface{} `json:"errors,omitempty"`
+	ID               string                   `json:"id"`
+	URL              string                   `json:"url"`
+	FrameID          string                   `json:"frame_id,omitempty"`
+	ExecutionContext string                   `json:"execution_context"`
+	PageTitle        string                   `json:"page_title,omitempty"`
+	StartTime        time.Time                `json:"start_time"`
+	LastActivity     time.Time                `json:"last_activity"`
+	Active           bool                     `json:"active"`
+	ResourceCount    int                      `json:"resource_count"`
+	ErrorCount       int                      `json:"error_count"`
+	HasPerformance   bool                     `json:"has_performance"`
+	LoadTime         int64                    `json:"load_time_ms,omitempty"`
+	Resources        []string                 `json:"resources,omitempty"` // URLs of resources
+	Errors           []map[string]interface{} `json:"errors,omitempty"`
 
 	// Interaction tracking
 	InteractionCount int                      `json:"interaction_count"`

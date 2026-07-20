@@ -1289,6 +1289,7 @@ Pattern: ` + "`proc run`" + ` to start, ` + "`proc output`" + ` to inspect, ` + 
 	sb.WriteString("4. `proxylog {action:\"query\", types:[\"error\"]}` — HTTP/API fail\n")
 	sb.WriteString("5. `proxy {action:\"exec\", id:\"...\", code:\"...\"}` — diagnostic JS\n")
 	sb.WriteString("6. screenshot if visual\n")
+	sb.WriteString("\nBrowser messages include `proxy: <id>` as tool scope. Copy it into `proxy_id` (or `id` for proxy actions). A `proxy_id required` response is an argument-validation error and often lists a running proxy; it is not evidence that the dev server is down. Check `proc` status/output before claiming a process stopped.\n")
 	sb.WriteString("\n## Common Patterns\n\n")
 	sb.WriteString("- page blank → get_errors → proc output\n")
 	sb.WriteString("- API 500 → proxylog query endpoint\n")

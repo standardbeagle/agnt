@@ -36,13 +36,17 @@ Two injection strategies are supported:
 | Adapter name | Strategy | Notes |
 |--------------|----------|-------|
 | `claude` | flag | `--append-system-prompt <prompt>` |
-| `gemini` | context file + setup stdin | 500ms setup delay |
-| `copilot` | context file + setup stdin | 500ms setup delay |
-| `aider` | context file + setup stdin | 500ms setup delay |
-| `cursor` | context file + setup stdin | 500ms setup delay |
-| `cursor-agent` | context file + setup stdin | 500ms setup delay (checked before `cursor` for specificity) |
-| `opencode` | context file + setup stdin | 500ms setup delay |
-| `auggie` | context file + setup stdin | 500ms setup delay |
+| `gemini` | context file + setup stdin fallback | 500ms fallback delay |
+| `copilot` | context file + setup stdin fallback | 500ms fallback delay |
+| `aider` | setup stdin | 500ms setup delay |
+| `cursor` | context file + setup stdin fallback | 500ms fallback delay |
+| `cursor-agent` | context file + setup stdin fallback | 500ms fallback delay (checked before `cursor` for specificity) |
+| `opencode` | context file + setup stdin fallback | 500ms fallback delay |
+| `auggie` | context file + setup stdin fallback | 500ms fallback delay |
+| `codex` | context file + setup stdin fallback | `AGENTS.md` |
+| `qwen` | context file + setup stdin fallback | `QWEN.md` |
+| `crush` | context file + setup stdin fallback | `AGENTS.md` |
+| `kimi-cli` (`kimi`, `kimi-cli`) | context file + setup stdin fallback | `AGENTS.md`; never adds an unverified CLI flag |
 
 All adapters match by **base name** of the command, case-insensitive, with `.exe` stripped on Windows. That covers bare invocations (`claude`), absolute paths (`/usr/bin/claude`, `C:\bin\claude.exe`), and relative paths (`./aider`). When the command is a shell alias or wrapper, the adapter also tries `exec.LookPath` and matches on the resolved path's base name.
 

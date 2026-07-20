@@ -9,10 +9,10 @@
 // lockstep with the one in walkthrough.js.
 (function() {
   'use strict';
+  var frameContext = window.__devtool_context;
   try {
-    var role = window.__devtool_frame_role || '';
-    var isTop;
-    try { isTop = window.top === window.self; } catch (e) { isTop = false; }
+    var role = frameContext.role;
+    var isTop = frameContext.isTopLevel();
     // Host = where the outer proxy UI lives: the chrome shell, or an unwrapped
     // top-level page. A wrapped content frame and any passive embed are not.
     var isHost = (role === 'chrome') || (role !== 'passive' && isTop && role !== 'chrome' && role === 'content') || (!role && isTop);
@@ -29,12 +29,7 @@
   // ---- Non-host: forward calls to the parent host (same-origin) -------------
   function installForwardingProxy() {
     function host() {
-      try {
-        if (window.parent && window.parent !== window && window.parent.__devtool_walkthrough_host) {
-          return window.parent.__devtool_walkthrough_host;
-        }
-      } catch (e) { /* cross-origin parent */ }
-      return null;
+      return frameContext.shellExport('__devtool_walkthrough_host');
     }
     function fwd(method) {
       return function() {

@@ -61,6 +61,7 @@ func TestAlertPatternMatching(t *testing.T) {
 		// Python patterns
 		{"python traceback", "Traceback (most recent call last)", "python-traceback", AlertSeverityError},
 		{"python syntax", "SyntaxError: invalid syntax", "python-syntax", AlertSeverityError},
+		{"react invalid hook call", "Invalid hook call. Hooks can only be called inside of the body of a function component.", "react-invalid-hook-call", AlertSeverityError},
 
 		// Generic patterns
 		{"connection refused", "Error: connect ECONNREFUSED 127.0.0.1:3000", "connection-refused", AlertSeverityWarning},

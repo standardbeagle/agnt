@@ -51,6 +51,7 @@ type sessionRegisterMetadata struct {
 	Args             []string `json:"args"`
 	SessionPGID      int      `json:"session_pgid,omitempty"`
 	SessionJobHandle uint64   `json:"session_job_handle,omitempty"`
+	OwnerPID         int      `json:"owner_pid,omitempty"`
 }
 
 // parseSessionRegisterArgs validates the SESSION REGISTER command and
@@ -90,6 +91,7 @@ func parseSessionRegisterArgs(cmd *hubproto.Command) (*Session, sessionRegisterM
 		LastSeen:         now,
 		SessionPGID:      metadata.SessionPGID,
 		SessionJobHandle: metadata.SessionJobHandle,
+		OwnerPID:         metadata.OwnerPID,
 	}
 	return session, metadata, nil
 }
@@ -217,6 +219,9 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 			}
 			if session.SessionPGID > 0 {
 				existing.SessionPGID = session.SessionPGID
+			}
+			if session.OwnerPID > 0 {
+				existing.OwnerPID = session.OwnerPID
 			}
 			if session.SessionJobHandle != 0 {
 				existing.SessionJobHandle = session.SessionJobHandle

@@ -368,6 +368,17 @@ func DefaultLineRules() []LineRule {
 			Description: "java.lang exception or error class",
 		},
 
+		// React runtime diagnostics. Keep this explicit rather than relying on
+		// the optional unparsed catch-all: users may disable "unparsed" to cut
+		// noisy logs, but an invalid hook call is always actionable.
+		{
+			ID:          "react-invalid-hook-call",
+			Pattern:     regexp.MustCompile(`(?i)\binvalid hook call\b`),
+			Severity:    SeverityError,
+			Category:    "react",
+			Description: "React hook called outside a valid function component context",
+		},
+
 		// Ruby / Rails
 		// Note: RuntimeError: is covered by python-runtime-error (^RuntimeError:) which
 		// matches both Python and Ruby output sharing the same format.

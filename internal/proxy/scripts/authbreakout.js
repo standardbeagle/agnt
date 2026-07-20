@@ -21,10 +21,10 @@
   // parent.__devtool_auth.breakout — that path needs no config here.
 
   var cfg = window.__devtool_auth_config || null;
-  var role = window.__devtool_frame_role;
+	var frameContext = window.__devtool_context;
+	var role = frameContext.role;
   var POPUP_NAME = '__devtool_auth';
   var POPUP_KEY = '__devtool_auth_popup';
-  var FRAME_PARAM = '__devtool_frame';
 
   // Marks the current window as an auth popup. Two independent signals,
   // because neither is universally durable across the proxy→IdP→proxy round
@@ -59,7 +59,7 @@
       // before this async bundle loads. If it already fired, the marker is
       // cleared and the callback already relayed — never relay twice.
       if (window.__devtool_auth_relayed) { return false; }
-      if (window.top !== window.self || !window.opener || window.opener === window) { return false; }
+			if (!frameContext.isTopLevel() || !window.opener || window.opener === window) { return false; }
       if (!window.opener.__devtool_auth) { return false; }
       return hasAuthPopupMark() || window.name === POPUP_NAME;
     } catch (e) { return false; } // opener cross-origin/gone
@@ -120,21 +120,17 @@
       // the fragment and must reach the app intact) so the proxy serves the
       // callback in content role.
       complete: function(callbackUrl) {
-        var f = document.getElementById('__devtool_content_frame');
+				var f = frameContext.contentFrame();
         if (!f) { window.location.href = callbackUrl; return { ok: true, mode: 'top' }; }
         try {
-          var u = new URL(callbackUrl, window.location.href);
-          if (!u.searchParams.has(FRAME_PARAM)) {
-            var reg = window.__devtool_frames;
-            var id = reg && reg.activeId && reg.activeId();
-            if (id) { u.searchParams.set(FRAME_PARAM, id); }
-          }
+					var u = frameContext.contentURL(callbackUrl);
+					if (!u) { throw new Error('invalid callback URL'); }
           f.contentWindow.location.replace(u.pathname + u.search + u.hash);
         } catch (e) {
           try { f.src = callbackUrl; } catch (e2) { return { ok: false, error: String(e2) }; }
         }
         try {
-          if (typeof window.__devtool_sync_url === 'function') { window.__devtool_sync_url(callbackUrl); }
+					frameContext.syncURL(callbackUrl);
         } catch (e3) { /* URL sync best-effort */ }
         return { ok: true, mode: 'iframe' };
       }
@@ -145,13 +141,14 @@
   if (role === 'content' && cfg) {
     function breakout(url) {
       try {
-        if (window.parent && window.parent !== window && window.parent.__devtool_auth) {
-          window.parent.__devtool_auth.breakout(url);
+				var auth = frameContext.shellExport('__devtool_auth');
+				if (auth) {
+					auth.breakout(url);
           return;
         }
       } catch (e) { /* shell unreachable */ }
       // Unwrapped fallback / shell gone: top-level nav is inherently fine.
-      try { window.top.location.href = url; } catch (e2) { window.location.href = url; }
+			frameContext.navigateTop(url);
     }
 
     function shouldIntercept(url) {

@@ -33,9 +33,10 @@ func TestResponsive_NoShellInShell(t *testing.T) {
 			t.Errorf("bundle missing recursion-fix marker %q", want)
 		}
 	}
-	// Both helpers append the content-frame marker via the shared param.
-	if c := strings.Count(bundle, "searchParams.set(param"); c < 2 {
-		t.Errorf("both responsive iframe helpers must append the frame marker, found %d", c)
+	// Both helpers delegate marker construction to the canonical frame-context
+	// adapter instead of reinterpreting the iframe protocol themselves.
+	if c := strings.Count(bundle, ".contentURL(window.location.href, rid)"); c < 2 {
+		t.Errorf("both responsive iframe helpers must use the frame-context adapter, found %d", c)
 	}
 }
 

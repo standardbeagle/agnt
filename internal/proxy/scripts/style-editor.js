@@ -89,9 +89,7 @@
   function notifyInspectState() {
     try {
       var fn = window.__devtool_indicator_syncInspect;
-      if (!fn && window.parent && window.parent !== window) {
-        fn = window.parent.__devtool_indicator_syncInspect;
-      }
+		if (!fn) { fn = window.__devtool_context.shellExport('__devtool_indicator_syncInspect'); }
       if (typeof fn === 'function') fn();
     } catch (e) { /* cross-origin parent — nothing to notify */ }
   }

@@ -55,21 +55,21 @@ func upsertManagedBlock(existing, body string) string {
 // The write is skipped when the file already contains an identical block, so
 // re-running `agnt run` does not churn the file or its mtime. Failures are
 // logged and swallowed: a missing AGENTS.md write must never break launch.
-func writePersistentContext(adapterName, projectDir, prompt string) {
+func writePersistentContext(adapterName, projectDir, prompt string) bool {
 	if adapterName == "claude" || projectDir == "" || prompt == "" {
-		return
+		return false
 	}
 	cfg, err := config.LoadAgntConfig(projectDir)
 	if err != nil {
 		cfg = config.DefaultAgntConfig()
 	}
 	if !cfg.AI.PersistContextEnabled() {
-		return
+		return false
 	}
 
 	file := lookupAgentSupport(adapterName).ContextFile
 	if file == "" {
-		return
+		return false
 	}
 	path := filepath.Join(projectDir, file)
 
@@ -80,7 +80,7 @@ func writePersistentContext(adapterName, projectDir, prompt string) {
 
 	updated := upsertManagedBlock(existing, prompt)
 	if updated == existing {
-		return // already current — no churn.
+		return true // already current — no churn, but delivery is available.
 	}
 
 	// Atomic write: temp file + rename, so a crash mid-write cannot truncate
@@ -88,10 +88,12 @@ func writePersistentContext(adapterName, projectDir, prompt string) {
 	tmp := path + ".agnt.tmp"
 	if err := os.WriteFile(tmp, []byte(updated), 0o644); err != nil {
 		debug.Log("run", "persist context: write temp %s: %v", tmp, err)
-		return
+		return false
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		debug.Log("run", "persist context: rename %s: %v", path, err)
 		_ = os.Remove(tmp)
+		return false
 	}
+	return true
 }

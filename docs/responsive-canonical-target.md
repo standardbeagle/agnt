@@ -125,6 +125,19 @@ Role table:
 | `content` | wrapped content iframe(s) | full runtime: telemetry WS, error/interaction/mutation/perf hooks, exec target, currentpage signal — all tagged with `frameId` |
 | `passive` | foreign nested embed | no UI, no telemetry, no exec |
 
+### Browser frame-context adapter
+
+`internal/proxy/scripts/frames.js` is the sole interpreter of the always-wrap
+topology. It exposes `window.__devtool_context`, which owns role/frame identity,
+shell and active-content lookup, marker-bearing/clean URL construction, URL-bar
+sync, reload, resize, and shell exports. Other first-party browser modules must
+use this adapter rather than reading `window.parent`/`window.top`, frame-role
+globals, the frame registry, marker parameter, or content iframe DOM ID.
+
+This boundary keeps the two execution contexts explicit: `chrome` is the outer
+proxy UI shell; `content` is the inner application page and the canonical
+telemetry/currentpage context.
+
 ### 5.2 Server side (Slices 4–6)
 With multiple live content frames, "only one frame answers" no longer holds, so
 frame addressing becomes real (this was the reserved alternative in the prior

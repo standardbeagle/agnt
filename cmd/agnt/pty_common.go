@@ -1165,13 +1165,24 @@ func injectedArgs(base, built []string) []string {
 	return built[len(base):]
 }
 
-func phaseCmdArgsAndPrompt(adapter agentadapter.Adapter, command string, cmdArgs []string, setupPhase bool, socketPath string) (agentLaunch, string) {
+func phaseCmdArgsAndPrompt(adapter agentadapter.Adapter, command string, cmdArgs []string, setupPhase bool, socketPath string) (agentLaunch, string, bool) {
 	if adapter == nil {
-		return agentLaunch{Command: command, Args: cmdArgs}, ""
+		return agentLaunch{Command: command, Args: cmdArgs}, "", false
 	}
 	var prompt string
+	injectInitialPrompt := false
 	if setupPhase {
 		prompt = buildSetupSystemPrompt(adapter.Name())
+		// Prefer the agent's startup-loaded context file over typing a visible
+		// message into its interactive prompt. This also avoids TUIs (notably
+		// kimi) that accept pasted text but require a second manual Enter.
+		// Agents without an automatically loaded context mechanism (aider), or
+		// a failed/disabled persistence write, retain the stdin fallback.
+		if cwd, err := os.Getwd(); err != nil ||
+			lookupAgentSupport(adapter.Name()).Mechanism == mechNone ||
+			!writePersistentContext(adapter.Name(), cwd, prompt) {
+			injectInitialPrompt = true
+		}
 	} else {
 		prompt = buildAgntSystemPrompt(socketPath)
 		// Persist the steering block into the agent's always-loaded context
@@ -1190,7 +1201,7 @@ func phaseCmdArgsAndPrompt(adapter agentadapter.Adapter, command string, cmdArgs
 		Args:     built,
 		Injected: injectedArgs(cmdArgs, built),
 		Adapter:  adapter.Name(),
-	}, prompt
+	}, prompt, injectInitialPrompt
 }
 
 // suppressAutostartDuringSetup forces skipAutostart on for the setup phase and

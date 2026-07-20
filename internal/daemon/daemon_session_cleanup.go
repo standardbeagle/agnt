@@ -17,11 +17,10 @@ import (
 const defaultCleanupGracePeriod = 5 * time.Second
 
 // sessionPGIDGracePeriod is how long we give the PTY child session pgid
-// to respond to SIGTERM before escalating to SIGKILL. Kept short because
-// this fires AFTER the agnt run process has already exited — anything
-// still in the pgid at this point is an orphaned background job (e.g.
-// a `npm run dev &` the coding agent forgot to stop), not an interactive
-// process that might print a shutdown banner.
+// to respond to SIGTERM before escalating to SIGKILL. On a dropped connection
+// this fires only after the owning agnt wrapper is confirmed gone; explicit
+// unregister/shutdown are independently authoritative. Anything surviving in
+// the pgid is therefore teardown work, commonly a backgrounded process.
 const sessionPGIDGracePeriod = 2 * time.Second
 
 // killSessionPGID reaps every process that inherited the session pgid
@@ -101,6 +100,32 @@ func (d *Daemon) cleanupGracePeriod() time.Duration {
 		return d.config.CleanupGracePeriod
 	}
 	return defaultCleanupGracePeriod
+}
+
+// ownerConfirmedGone is the safety gate for cleanup caused solely by a lost
+// control connection. Unknown ownership fails safe: explicit UNREGISTER and
+// daemon shutdown remain authoritative cleanup paths, but a socket outage may
+// never be treated as evidence that the wrapper exited.
+func ownerConfirmedGone(session *Session) bool {
+	session.mu.RLock()
+	ownerPID := session.OwnerPID
+	session.mu.RUnlock()
+	return ownerPID > 1 && !pidAlive(ownerPID)
+}
+
+// deferAgainWhileOwnerMayLive reschedules the ownership check and reports
+// whether cleanup must stop. Polling is intentionally bounded to one timer per
+// session; CleanupSessionResourcesDeferred replaces any prior timer.
+func (d *Daemon) deferAgainWhileOwnerMayLive(sessionCode string, session *Session) bool {
+	if ownerConfirmedGone(session) {
+		return false
+	}
+	session.mu.RLock()
+	ownerPID := session.OwnerPID
+	session.mu.RUnlock()
+	debug.Log("daemon", "session %s: control connection absent but owner pid %d is alive or unknown; deferring cleanup", sessionCode, ownerPID)
+	d.CleanupSessionResourcesDeferred(sessionCode)
+	return true
 }
 
 // cancelPendingCleanup cancels any deferred cleanup for the given session code.
@@ -198,6 +223,9 @@ func (d *Daemon) CleanupSessionResourcesDeferred(sessionCode string) {
 				debug.Log("daemon", "skipping deferred cleanup for session %s — re-registered during grace period", sessionCode)
 				return
 			}
+			if d.deferAgainWhileOwnerMayLive(sessionCode, s) {
+				return
+			}
 			// Both calls no-op on the wrong platform. Mirrors the
 			// empty-projectPath branch in doCleanup.
 			d.killSessionPGID(s)
@@ -243,6 +271,9 @@ func (d *Daemon) CleanupSessionResourcesDeferred(sessionCode string) {
 		if s, ok := d.sessionRegistry.Get(sessionCode); ok {
 			if time.Since(s.GetLastSeen()) < grace {
 				debug.Log("daemon", "skipping deferred cleanup for session %s — re-registered during grace period", sessionCode)
+				return
+			}
+			if d.deferAgainWhileOwnerMayLive(sessionCode, s) {
 				return
 			}
 		}

@@ -275,6 +275,9 @@ func (c *SubprocessConn) SendCommandStream(ctx context.Context, cmd *protocol.Co
 			}
 			return err
 		}
+		if resp.Type == protocol.ResponseStatus {
+			continue
+		}
 		if resp.Type != protocol.ResponseChunk {
 			return nil
 		}
@@ -598,6 +601,9 @@ func (r *SubprocessRouter) relayResponse(conn *Connection, resp *protocol.Respon
 		return conn.WritePong()
 	case protocol.ResponseChunk:
 		return conn.WriteChunk(resp.Data)
+	case protocol.ResponseStatus:
+		_, err := conn.TryWriteStatus(resp.Data)
+		return err
 	case protocol.ResponseEnd:
 		return conn.WriteEnd()
 	default:

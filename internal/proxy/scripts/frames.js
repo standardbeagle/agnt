@@ -67,6 +67,96 @@
 
   var role = resolveRole();
 
+  // Canonical adapter for the always-wrap execution model. Other modules must
+  // ask this object about frame identity, navigation, and cross-frame hosts
+  // instead of interpreting window.parent/top, marker params, or DOM ids.
+  // Keep this on a stable global: api.js replaces window.__devtool wholesale.
+  var context = {
+    role: role,
+    frameId: frameId,
+    frameParam: FRAME_PARAM,
+    isChrome: function() { return role === 'chrome'; },
+    isContent: function() { return role === 'content'; },
+    isPassive: function() { return role === 'passive'; },
+    isTopLevel: function() {
+      try { return window.top === window.self; } catch (e) { return false; }
+    },
+    shell: function() {
+      if (role === 'chrome') { return window; }
+      if (role !== 'content') { return null; }
+      try {
+        var shell = window.parent;
+        return shell && shell !== window && shell.__devtool_frame_role === 'chrome' ? shell : null;
+      } catch (e) { return null; }
+    },
+    shellExport: function(name) {
+      var shell = context.shell();
+      try { return shell && shell[name] ? shell[name] : null; } catch (e) { return null; }
+    },
+    registry: function() {
+      var shell = context.shell();
+      try { return shell && shell.__devtool_frames ? shell.__devtool_frames : null; } catch (e) { return null; }
+    },
+    contentFrame: function() {
+      var shell = context.shell();
+      if (!shell) { return null; }
+      try { return shell.document.getElementById('__devtool_content_frame'); } catch (e) { return null; }
+    },
+    activeContent: function() {
+      var registry = context.registry();
+      try { return registry && registry.active ? registry.active() : null; } catch (e) { return null; }
+    },
+    cleanURL: function(raw) {
+      try {
+        var u = new URL(raw || window.location.href, window.location.href);
+        u.searchParams.delete(FRAME_PARAM);
+        return u.href;
+      } catch (e) { return String(raw || ''); }
+    },
+    contentURL: function(raw, id) {
+      try {
+        var u = new URL(raw, window.location.href);
+        if (!u.searchParams.has(FRAME_PARAM)) {
+          var fid = id || (context.activeContent() && context.activeContent().frameId) || frameId();
+          if (fid) { u.searchParams.set(FRAME_PARAM, fid); }
+        }
+        return u;
+      } catch (e) { return null; }
+    },
+    syncURL: function(raw) {
+      var shell = context.shell();
+      try {
+        if (shell && typeof shell.__devtool_sync_url === 'function') {
+          shell.__devtool_sync_url(raw);
+          return true;
+        }
+      } catch (e) { /* best effort */ }
+      return false;
+    },
+    navigateTop: function(raw) {
+      var shell = context.shell();
+      try {
+        (shell || window).location.href = raw;
+        return true;
+      } catch (e) {
+        try { window.location.href = raw; return true; } catch (e2) { return false; }
+      }
+    },
+    reloadContent: function() {
+      var shell = context.shell();
+      return shell && typeof shell.__devtool_reload_content === 'function'
+        ? shell.__devtool_reload_content()
+        : { ok: false, error: 'no chrome shell' };
+    },
+    resizeContent: function(w, h) {
+      var shell = context.shell();
+      return shell && typeof shell.__devtool_resize_content === 'function'
+        ? shell.__devtool_resize_content(w, h)
+        : { ok: false, error: 'no chrome shell' };
+    }
+  };
+  window.__devtool_context = context;
+
   // Stable role global. Other modules (core, interaction, ...) gate their
   // telemetry/UI runtime on this. It lives on its own global — NOT on
   // window.__devtool — because api.js / responsive.js reassign window.__devtool
@@ -78,7 +168,7 @@
   // Created defensively; window.__devtool may be reassigned later by api.js.
   window.__devtool = window.__devtool || {};
   window.__devtool.role = function() { return window.__devtool_frame_role; };
-  window.__devtool.frameId = frameId;
+  window.__devtool.frameId = context.frameId;
   window.__devtool.FRAME_PARAM = FRAME_PARAM;
 
   if (role === 'chrome') {

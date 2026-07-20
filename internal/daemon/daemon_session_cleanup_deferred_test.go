@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"syscall"
@@ -53,6 +54,15 @@ func stillRunning(exited <-chan struct{}) bool {
 	}
 }
 
+func exitedOwnerPID(t *testing.T) int {
+	t.Helper()
+	cmd := exec.Command("true")
+	require.NoError(t, cmd.Start())
+	pid := cmd.Process.Pid
+	require.NoError(t, cmd.Wait())
+	return pid
+}
+
 // A dropped connection is not an unregister. A session with no project path used
 // to have its pgid reaped inline in the hub's disconnect callback, with no grace
 // window — so an acp one-shot or cooked REPL that reconnected within the window
@@ -66,6 +76,7 @@ func TestDeferredCleanup_NoProjectPath_HonorsGracePeriod(t *testing.T) {
 		Code:        "no-project",
 		ProjectPath: "", // acp one-shot / cooked REPL
 		SessionPGID: pgid,
+		OwnerPID:    exitedOwnerPID(t),
 		StartedAt:   time.Now(),
 		Status:      SessionStatusActive,
 		LastSeen:    time.Now(),
@@ -87,6 +98,55 @@ func TestDeferredCleanup_NoProjectPath_HonorsGracePeriod(t *testing.T) {
 		_, ok := d.sessionRegistry.Get("no-project")
 		return !ok
 	}, 5*time.Second, 10*time.Millisecond, "session never unregistered")
+}
+
+// A socket/control-plane outage is not evidence that agnt run exited. While
+// the registered wrapper PID is alive, repeated grace periods must never reap
+// the agent process group.
+func TestDeferredCleanup_LiveOwnerPreventsReap(t *testing.T) {
+	d := newDeferredCleanupDaemon(t, 100*time.Millisecond)
+	pgid, exited := startPGIDLeader(t)
+
+	require.NoError(t, d.sessionRegistry.Register(&Session{
+		Code:        "live-owner",
+		ProjectPath: t.TempDir(),
+		SessionPGID: pgid,
+		OwnerPID:    os.Getpid(),
+		StartedAt:   time.Now(),
+		Status:      SessionStatusActive,
+		LastSeen:    time.Now(),
+	}))
+
+	d.CleanupSessionResourcesDeferred("live-owner")
+	time.Sleep(450 * time.Millisecond) // cross several ownership poll windows
+
+	assert.True(t, stillRunning(exited), "live wrapper owner did not prevent agent pgid reap")
+	_, ok := d.sessionRegistry.Get("live-owner")
+	assert.True(t, ok, "live wrapper session was unregistered after control-plane loss")
+}
+
+// Legacy/unknown ownership fails safe. It may leak until explicit cleanup or
+// startup orphan reconciliation, but it must not kill a possibly-live agent.
+func TestDeferredCleanup_UnknownOwnerPreventsReap(t *testing.T) {
+	d := newDeferredCleanupDaemon(t, 100*time.Millisecond)
+	pgid, exited := startPGIDLeader(t)
+
+	require.NoError(t, d.sessionRegistry.Register(&Session{
+		Code:        "unknown-owner",
+		ProjectPath: t.TempDir(),
+		SessionPGID: pgid,
+		OwnerPID:    0,
+		StartedAt:   time.Now(),
+		Status:      SessionStatusActive,
+		LastSeen:    time.Now(),
+	}))
+
+	d.CleanupSessionResourcesDeferred("unknown-owner")
+	time.Sleep(350 * time.Millisecond)
+
+	assert.True(t, stillRunning(exited), "unknown owner was treated as proof of wrapper exit")
+	_, ok := d.sessionRegistry.Get("unknown-owner")
+	assert.True(t, ok)
 }
 
 // Reconnect within the grace window cancels the reap.

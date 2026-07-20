@@ -32,6 +32,7 @@ func appendBounded[T any](slice []T, item T, maxLen int) []T {
 type PageSession struct {
 	ID             string    `json:"id"`
 	URL            string    `json:"url"`                       // Current/most recent URL
+	FrameID        string    `json:"frame_id,omitempty"`        // Active content-frame execution context
 	BrowserSession string    `json:"browser_session,omitempty"` // Browser tab session ID (from cookie)
 	PageTitle      string    `json:"page_title,omitempty"`
 	StartTime      time.Time `json:"start_time"`
@@ -240,6 +241,22 @@ func (pt *PageTracker) trackOnSession(browserSessionID, url string, mutate func(
 		if !ok {
 			return
 		}
+		// Telemetry is emitted from the inner content frame and is the only
+		// reliable signal for client-side SPA navigations (which have no new
+		// document request). Promote its marker-free URL to the session so
+		// currentpage describes the page the developer is actually viewing.
+		if url != "" {
+			cleanURL := stripFrameMarker(url)
+			if cleanURL != session.URL {
+				delete(pt.urlToSession, normalizeURL(session.URL))
+				session.URL = cleanURL
+				pt.urlToSession[normalizeURL(cleanURL)] = sessionID
+			}
+		}
+		if fid != "" {
+			session.FrameID = fid
+			pt.frameToSession[fid] = sessionID
+		}
 		mutate(session)
 		pt.updateSessionWithBrowserID(sessionID, session, browserSessionID)
 	})
@@ -322,6 +339,7 @@ func (pt *PageTracker) GetActiveSessions() []*PageSession {
 type PageSessionSummary struct {
 	ID             string    `json:"id"`
 	URL            string    `json:"url"`
+	FrameID        string    `json:"frame_id,omitempty"`
 	PageTitle      string    `json:"page_title,omitempty"`
 	StartTime      time.Time `json:"start_time"`
 	LastActivity   time.Time `json:"last_activity"`
@@ -346,6 +364,7 @@ func (pt *PageTracker) GetActiveSessionSummaries() []PageSessionSummary {
 			summaries[i] = PageSessionSummary{
 				ID:               session.ID,
 				URL:              session.URL,
+				FrameID:          session.FrameID,
 				PageTitle:        session.PageTitle,
 				StartTime:        session.StartTime,
 				LastActivity:     session.LastActivity,
@@ -408,6 +427,7 @@ func (pt *PageTracker) createOrUpdatePageSession(entry HTTPLogEntry, browserSess
 		session.Resources = make([]HTTPLogEntry, 0)
 		pt.urlToSession[normURL] = sessionID
 		if frameID != "" {
+			session.FrameID = frameID
 			pt.frameToSession[frameID] = sessionID
 		}
 	}
@@ -438,6 +458,7 @@ func (pt *PageTracker) createOrUpdatePageSession(entry HTTPLogEntry, browserSess
 	session := &PageSession{
 		ID:              sessionID,
 		URL:             cleanURL,
+		FrameID:         frameID,
 		BrowserSession:  browserSessionID,
 		StartTime:       now,
 		LastActivity:    now,

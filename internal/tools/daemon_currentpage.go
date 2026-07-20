@@ -75,7 +75,7 @@ func (dt *DaemonTools) handleCurrentPageList(input CurrentPageInput) (*mcp.CallT
 	}
 
 	output := CurrentPageOutput{
-		Count: getInt(result, "count"),
+		Count: intPtr(getInt(result, "count")),
 	}
 
 	if sessions, ok := result["sessions"].([]interface{}); ok {
@@ -86,7 +86,7 @@ func (dt *DaemonTools) handleCurrentPageList(input CurrentPageInput) (*mcp.CallT
 		}
 	}
 
-	if output.Count == 0 {
+	if *output.Count == 0 {
 
 		proxyStatus, statusErr := dt.client.ProxyStatus(input.ProxyID)
 		listenAddr := ""
@@ -105,6 +105,8 @@ func (dt *DaemonTools) handleCurrentPageList(input CurrentPageInput) (*mcp.CallT
 
 	return nil, output, nil
 }
+
+func intPtr(v int) *int { return &v }
 
 func (dt *DaemonTools) handleCurrentPageGet(input CurrentPageInput) (*mcp.CallToolResult, CurrentPageOutput, error) {
 	if input.SessionID == "" {
@@ -185,6 +187,7 @@ func (dt *DaemonTools) handleCurrentPageTriage(input CurrentPageInput) (*mcp.Cal
 	}
 
 	triage := convertToPageTriage(result)
+	scopeTriageNextTools(&triage, input.ProxyID, sessionID)
 	return nil, CurrentPageOutput{Triage: &triage}, nil
 }
 

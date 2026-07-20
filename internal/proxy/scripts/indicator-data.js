@@ -487,9 +487,9 @@
   // we fall back to self.
   function targetWindow() {
     try {
-      if (window.__devtool_frame_role === 'chrome' &&
-          window.__devtool_frames && typeof window.__devtool_frames.active === 'function') {
-        var a = window.__devtool_frames.active();
+      var frameContext = window.__devtool_context;
+      if (frameContext.isChrome()) {
+        var a = frameContext.activeContent();
         if (a && a.win) { return a.win; }
       }
     } catch (e) { /* cross-origin / shell registry not ready — fall back to self */ }

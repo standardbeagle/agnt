@@ -85,6 +85,8 @@ func convertToPageSummary(m map[string]interface{}, detailSet map[string]bool, l
 	summary := PageSummaryOutput{
 		ID:               getString(m, "id"),
 		URL:              getString(m, "url"),
+		FrameID:          getString(m, "frame_id"),
+		ExecutionContext: "inner/content",
 		PageTitle:        getString(m, "page_title"),
 		StartTime:        getTime(m, "start_time"),
 		LastActivity:     getTime(m, "last_activity"),
@@ -881,6 +883,8 @@ func convertToPageSessionOutput(m map[string]interface{}) PageSessionOutput {
 	output := PageSessionOutput{
 		ID:               getString(m, "id"),
 		URL:              getString(m, "url"),
+		FrameID:          getString(m, "frame_id"),
+		ExecutionContext: "inner/content",
 		PageTitle:        getString(m, "page_title"),
 		Active:           getBool(m, "active"),
 		ResourceCount:    getInt(m, "resource_count"),

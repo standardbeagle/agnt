@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"fmt"
 	"sort"
 	"time"
 )
@@ -11,11 +12,15 @@ import (
 // isn't working — what's going on?" in one call, then points at the deeper
 // tools for remediation.
 type PageTriageOutput struct {
-	ID         string `json:"id"`
-	URL        string `json:"url"`
-	PageTitle  string `json:"page_title,omitempty"`
-	Active     bool   `json:"active"`
-	LoadTimeMs int64  `json:"load_time_ms,omitempty"`
+	ID      string `json:"id"`
+	URL     string `json:"url"`
+	FrameID string `json:"frame_id,omitempty"`
+	// ExecutionContext disambiguates currentpage from proxy exec's optional
+	// outer chrome-shell context. Page telemetry always describes inner content.
+	ExecutionContext string `json:"execution_context"`
+	PageTitle        string `json:"page_title,omitempty"`
+	Active           bool   `json:"active"`
+	LoadTimeMs       int64  `json:"load_time_ms,omitempty"`
 
 	ErrorCount int            `json:"error_count"`
 	TopErrors  []ErrorSummary `json:"top_errors,omitempty"`
@@ -79,6 +84,8 @@ func convertToPageTriage(m map[string]interface{}) PageTriageOutput {
 	out := PageTriageOutput{
 		ID:               getString(m, "id"),
 		URL:              getString(m, "url"),
+		FrameID:          getString(m, "frame_id"),
+		ExecutionContext: "inner/content",
 		PageTitle:        getString(m, "page_title"),
 		Active:           getBool(m, "active"),
 		LoadTimeMs:       getInt64(m, "load_time_ms"),
@@ -135,6 +142,19 @@ func convertToPageTriage(m map[string]interface{}) PageTriageOutput {
 	}
 
 	return out
+}
+
+// scopeTriageNextTools turns the generic orientation hints produced by the
+// converter into calls that can actually be copied and executed. currentpage
+// is proxy-scoped, and summary/get additionally require a session ID; dropping
+// either value here forces the caller through avoidable validation errors.
+func scopeTriageNextTools(out *PageTriageOutput, proxyID, sessionID string) {
+	out.NextTools = []string{
+		fmt.Sprintf("get_incidents {proxy_id:%q} — full, deduped, prioritized errors with remediation hints", proxyID),
+		fmt.Sprintf("proxylog {proxy_id:%q} — network requests/responses for this page", proxyID),
+		fmt.Sprintf("currentpage {proxy_id:%q, action:\"summary\", session_id:%q} — by-type rollups; {proxy_id:%q, action:\"get\", session_id:%q, raw:true} — full detail", proxyID, sessionID, proxyID, sessionID),
+		fmt.Sprintf("currentpage {proxy_id:%q, action:\"layout\", session_id:%q} — live CSS/layout diagnosis (stacking, containing-block, clip, click-interception)", proxyID, sessionID),
+	}
 }
 
 // topErrors dedupes by message and returns the n highest-count groups.

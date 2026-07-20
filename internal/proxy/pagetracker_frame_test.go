@@ -66,6 +66,27 @@ func TestPageTracker_ResolveByFrameID(t *testing.T) {
 	}
 }
 
+func TestPageTracker_TelemetryPromotesSPANavigationURL(t *testing.T) {
+	pt := newTestPageTracker(t)
+	pt.TrackHTTPRequest(docEntry("http://x/" + "?" + frameMarkerParam + "=f1"))
+
+	pt.TrackInteraction(InteractionEvent{
+		URL:       "http://x/pages/atomic-orbitals?" + frameMarkerParam + "=f1",
+		Timestamp: time.Now(),
+	}, "", "f1")
+
+	sessions := pt.GetActiveSessions()
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	if got := sessions[0].URL; got != "http://x/pages/atomic-orbitals" {
+		t.Errorf("SPA telemetry URL was not promoted: got %q", got)
+	}
+	if got := sessions[0].FrameID; got != "f1" {
+		t.Errorf("content execution frame not retained: got %q", got)
+	}
+}
+
 func TestStripFrameMarker(t *testing.T) {
 	cases := map[string]string{
 		"http://x/p?" + frameMarkerParam + "=f1":     "http://x/p",

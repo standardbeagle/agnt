@@ -376,7 +376,7 @@ func (p *Parser) ParseResponse() (*Response, error) {
 	case ResponsePong, ResponseEnd:
 		// No additional data
 
-	case ResponseJSON, ResponseData, ResponseChunk:
+	case ResponseJSON, ResponseData, ResponseChunk, ResponseStatus:
 		if dataPart == "" {
 			return nil, fmt.Errorf("%s response requires data", respType)
 		}
@@ -550,6 +550,16 @@ func (w *Writer) WriteData(data []byte) error {
 // WriteChunk writes a chunk in a streaming response.
 func (w *Writer) WriteChunk(data []byte) error {
 	frame := FormatChunk(data)
+	if err := validateFrameSize(frame); err != nil {
+		return err
+	}
+	_, err := w.w.Write(frame)
+	return err
+}
+
+// WriteStatus writes an out-of-band progress/liveness frame.
+func (w *Writer) WriteStatus(data []byte) error {
+	frame := FormatStatus(data)
 	if err := validateFrameSize(frame); err != nil {
 		return err
 	}

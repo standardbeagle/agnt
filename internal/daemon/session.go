@@ -69,6 +69,12 @@ type Session struct {
 	// cleanup is handled separately) or when the client didn't report one.
 	SessionPGID int `json:"session_pgid,omitempty"`
 
+	// OwnerPID identifies the agnt wrapper process that owns a classic session.
+	// A dropped control connection is not proof that this process exited: the
+	// daemon must confirm OwnerPID is gone before reaping SessionPGID/the Job
+	// Object. Zero means ownership is unknown and therefore fails safe.
+	OwnerPID int `json:"owner_pid,omitempty"`
+
 	// SessionJobHandle is the Windows Job Object handle for the PTY child
 	// subtree, reported by `agnt run` on Windows. The Windows equivalent
 	// of SessionPGID: every process assigned to this job (and its
@@ -171,6 +177,7 @@ func (s *Session) ToJSON() map[string]interface{} {
 		"status":             string(s.Status),
 		"last_seen":          s.LastSeen.Format(time.RFC3339),
 		"session_pgid":       s.SessionPGID,
+		"owner_pid":          s.OwnerPID,
 		"session_job_handle": s.SessionJobHandle,
 		"kind":               string(s.kindOrClassic()),
 	}
@@ -466,6 +473,7 @@ func (s *Session) MarshalJSON() ([]byte, error) {
 		Status           string   `json:"status"`
 		LastSeen         string   `json:"last_seen"`
 		SessionPGID      int      `json:"session_pgid,omitempty"`
+		OwnerPID         int      `json:"owner_pid,omitempty"`
 		SessionJobHandle uint64   `json:"session_job_handle,omitempty"`
 		Kind             string   `json:"kind,omitempty"`
 	}
@@ -480,6 +488,7 @@ func (s *Session) MarshalJSON() ([]byte, error) {
 		Status:           string(s.Status),
 		LastSeen:         s.LastSeen.Format(time.RFC3339),
 		SessionPGID:      s.SessionPGID,
+		OwnerPID:         s.OwnerPID,
 		SessionJobHandle: s.SessionJobHandle,
 		Kind:             string(s.kindOrClassic()),
 	})

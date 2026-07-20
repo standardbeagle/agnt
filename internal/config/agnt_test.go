@@ -1026,6 +1026,7 @@ func TestBuildSystemPrompt(t *testing.T) {
 		assert.Contains(t, prompt, "responsive_audit")
 		assert.Contains(t, prompt, "currentpage")
 		assert.Contains(t, prompt, "Debugging Workflow")
+		assert.Contains(t, prompt, "A `proxy_id required` response is an argument-validation error")
 		assert.Contains(t, prompt, "Common Patterns")
 		assert.Contains(t, prompt, "Process Management")
 	})

@@ -17,6 +17,7 @@ func triageWireSession() map[string]interface{} {
 	return map[string]interface{}{
 		"id":                "page-1",
 		"url":               "/checkout",
+		"frame_id":          "content-f1",
 		"page_title":        "Checkout",
 		"active":            true,
 		"load_time_ms":      float64(2200),
@@ -54,6 +55,8 @@ func TestConvertToPageTriage_FullSignals(t *testing.T) {
 	tr := convertToPageTriage(triageWireSession())
 
 	assert.Equal(t, "/checkout", tr.URL)
+	assert.Equal(t, "content-f1", tr.FrameID)
+	assert.Equal(t, "inner/content", tr.ExecutionContext)
 	assert.Equal(t, "Checkout", tr.PageTitle)
 	assert.True(t, tr.Active)
 	assert.Equal(t, int64(2200), tr.LoadTimeMs)
@@ -87,6 +90,18 @@ func TestConvertToPageTriage_FullSignals(t *testing.T) {
 	assert.Contains(t, tr.AfterLastAction.SampleError, "submit is not a function")
 
 	assert.NotEmpty(t, tr.NextTools, "points at the deeper tools for remediation")
+}
+
+func TestScopeTriageNextTools_IncludesRequiredContext(t *testing.T) {
+	tr := PageTriageOutput{}
+	scopeTriageNextTools(&tr, "project:dev:localhost-4321", "page-1")
+
+	require.Len(t, tr.NextTools, 4)
+	for _, hint := range tr.NextTools {
+		assert.Contains(t, hint, `proxy_id:"project:dev:localhost-4321"`)
+	}
+	assert.Contains(t, tr.NextTools[2], `session_id:"page-1"`)
+	assert.Contains(t, tr.NextTools[3], `session_id:"page-1"`)
 }
 
 func TestConvertToPageTriage_NoSignals(t *testing.T) {

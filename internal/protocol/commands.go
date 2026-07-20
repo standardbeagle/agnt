@@ -290,6 +290,7 @@ type SessionRegisterConfig struct {
 	Args             []string `json:"args,omitempty"`               // Command arguments
 	SessionPGID      int      `json:"session_pgid,omitempty"`       // POSIX process group ID of the PTY child (session leader); 0 on Windows or when unavailable
 	SessionJobHandle uint64   `json:"session_job_handle,omitempty"` // Windows Job Object handle for the PTY child subtree; 0 on Unix or when unavailable. Handles are per-process on Windows — this is a best-effort hint for daemon cleanup, not a stable cross-process identifier.
+	OwnerPID         int      `json:"owner_pid,omitempty"`          // PID of the agnt wrapper that owns the classic session. Disconnect cleanup may reap the child tree only after this process is confirmed gone.
 }
 
 // SessionScheduleConfig represents configuration for a SESSION SCHEDULE command.

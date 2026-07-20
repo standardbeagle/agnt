@@ -3,6 +3,7 @@
 package daemon
 
 import (
+	"os"
 	"os/exec"
 	"syscall"
 	"testing"
@@ -107,6 +108,9 @@ func TestSessionRegister_CarriesSessionPGID(t *testing.T) {
 	if sess.SessionPGID != wantPGID {
 		t.Fatalf("session_pgid round-trip failed: got %d, want %d",
 			sess.SessionPGID, wantPGID)
+	}
+	if sess.OwnerPID != os.Getpid() {
+		t.Fatalf("owner_pid round-trip failed: got %d, want wrapper pid %d", sess.OwnerPID, os.Getpid())
 	}
 }
 

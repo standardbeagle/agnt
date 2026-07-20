@@ -191,7 +191,19 @@ func TestSessionBasedCleanup(t *testing.T) {
 		t.Fatalf("Expected 2 processes, got %d", len(procsList))
 	}
 
-	// Close client1 (should trigger cleanup for project1 only)
+	// Mark the registered wrapper identity as confirmed gone. A connection close
+	// by itself is no longer cleanup authority: in production owner_pid belongs
+	// to the agnt wrapper, while this in-process fixture otherwise records the
+	// still-live test PID.
+	if session, ok := daemon.sessionRegistry.Get("session1"); ok {
+		session.mu.Lock()
+		session.OwnerPID = 1 << 30 // deliberately nonexistent PID
+		session.mu.Unlock()
+	} else {
+		t.Fatal("session1 missing before disconnect")
+	}
+
+	// Close client1 (confirmed-dead owner triggers cleanup for project1 only)
 	client1.Close()
 
 	// Poll until cleanup completes. The daemon runs cleanup via a deferred

@@ -19,21 +19,21 @@
 // Transport: the agent drives this via `proxy exec`, which lands in the active
 // content frame. On a non-host frame the companion walkthrough-proxy.js module
 // (shared role set) installs a thin forwarding proxy to the parent host
-// (window.parent.__devtool_walkthrough_host), so an exec'd
+// (through the frame-context adapter), so an exec'd
 // `window.__devtool_walkthrough.start(...)` reaches the host impl. This module
 // installs the host implementation only, and ships only in the bundles that
 // can host (chrome/passive).
 
 (function() {
   'use strict';
+	var frameContext = window.__devtool_context;
   // z-index note: walkthrough surfaces use 2147483600 — deliberately BELOW
   // the shared ui-tokens.js scale (lowest layer highlight=2147483640) so the
   // demo panel/hilites never cover the indicator, palettes, or toasts.
 
   try {
-    var role = window.__devtool_frame_role || '';
-    var isTop;
-    try { isTop = window.top === window.self; } catch (e) { isTop = false; }
+    var role = frameContext.role;
+    var isTop = frameContext.isTopLevel();
     // Host = where the outer proxy UI lives: the chrome shell, or an unwrapped
     // top-level page. A wrapped content frame and any passive embed are not.
     var isHost = (role === 'chrome') || (role !== 'passive' && isTop && role !== 'chrome' && role === 'content') || (!role && isTop);
@@ -92,11 +92,8 @@
       // Unwrapped page: we ARE the content. Wrapped: reach the active frame.
       if (role !== 'chrome') { return window; }
       try {
-        var fr = window.__devtool_frames;
-        if (fr && typeof fr.active === 'function') {
-          var a = fr.active();
-          if (a && a.win) { return a.win; }
-        }
+        var a = frameContext.activeContent();
+        if (a && a.win) { return a.win; }
       } catch (e) { /* registry not ready */ }
       // Fallback: first content iframe in the shell document.
       try {

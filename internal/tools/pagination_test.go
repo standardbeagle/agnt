@@ -73,7 +73,6 @@ func TestOutputStructsSerializeZeroCount(t *testing.T) {
 	}{
 		{"ProcOutput", ProcOutput{}},
 		{"ProxyOutput", ProxyOutput{}},
-		{"CurrentPageOutput", CurrentPageOutput{}},
 		{"StoreOutput", StoreOutput{}},
 		{"AutomationOutput", AutomationOutput{}},
 		{"BrowserOutput", BrowserOutput{}},
@@ -89,4 +88,14 @@ func TestOutputStructsSerializeZeroCount(t *testing.T) {
 			assert.Contains(t, s, `"count":0`, "count:0 must always appear even when zero")
 		})
 	}
+}
+
+func TestCurrentPageOutputCountOnlyAppliesToList(t *testing.T) {
+	triageJSON, err := json.Marshal(CurrentPageOutput{Triage: &PageTriageOutput{Active: true}})
+	require.NoError(t, err)
+	assert.NotContains(t, string(triageJSON), `"count"`, "triage must not look like an empty page list")
+
+	listJSON, err := json.Marshal(CurrentPageOutput{Count: intPtr(0)})
+	require.NoError(t, err)
+	assert.Contains(t, string(listJSON), `"count":0`, "an empty list must retain explicit zero context")
 }

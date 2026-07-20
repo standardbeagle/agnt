@@ -10,6 +10,8 @@
 (function() {
   'use strict';
 
+  var frameContext = window.__devtool_context;
+
   // Top-level error boundary - if anything fails, log and abort cleanly
   try {
     // Feature detection
@@ -174,7 +176,7 @@
             },
             url: safeGetUrl(),
             session_id: getOrCreateSessionId(),
-            frame_id: window.__devtool_frame_id || ''
+            frame_id: frameContext.frameId()
           }));
         }
       } catch (e) {
@@ -310,11 +312,11 @@
         // See docs/responsive-canonical-target.md §5.3.
         if (message.type === 'execute' && message.code) {
           var targetFrame = message.frame_id || '';
-          var myFrame = window.__devtool_frame_id || '';
+          var myFrame = frameContext.frameId();
           // '@chrome' is a role token addressing the outer shell regardless of its
           // id, so the agent can run a REPL in the outer frame ("outer" target)
           // without knowing the per-page shell id.
-          var myRole = window.__devtool_frame_role || window.__devtool_role || '';
+          var myRole = frameContext.role;
           var match = targetFrame === '' ||
             targetFrame === myFrame ||
             (targetFrame === '@chrome' && myRole === 'chrome');
@@ -502,7 +504,7 @@
           // Attribute telemetry to the emitting content frame (always-wrap
           // model). Empty for unframed/legacy pages. See
           // docs/responsive-canonical-target.md §5.2.
-          frame_id: window.__devtool_frame_id || ''
+          frame_id: frameContext.frameId()
         });
 
         return safeWebSocketSend(ws, message);
@@ -581,11 +583,11 @@
     // serves both frames) so the shell's buffers, and thus the Errors tab +
     // badge, reflect the page. kind is 'js' | 'console' | 'warning'.
     function forwardErrorToShell(kind, entry) {
-      if (window.__devtool_frame_role !== 'content') { return; }
+      if (!frameContext.isContent()) { return; }
       try {
-        var shell = window.parent;
-        if (shell && shell !== window && typeof shell.__devtool_errors_ingest === 'function') {
-          shell.__devtool_errors_ingest(kind, entry);
+        var ingest = frameContext.shellExport('__devtool_errors_ingest');
+        if (typeof ingest === 'function') {
+          ingest(kind, entry);
         }
       } catch (e) { /* cross-origin / shell gone — best-effort */ }
     }
@@ -874,7 +876,7 @@
       // The chrome shell opens a control WebSocket for the indicator + panel
       // but is not a telemetry context — it must not report its own page load
       // or performance (the content frame owns that).
-      if (window.__devtool_frame_role === 'chrome') { return; }
+      if (frameContext.isChrome()) { return; }
       try {
         if (document.readyState === 'complete') {
           capturePerformance();
@@ -1223,10 +1225,10 @@
     //     shell needs its own WebSocket even though it reports no telemetry.
     //
     // Role is resolved by frames.js (loads first) into
-    // window.__devtool_frame_role; absent (legacy/standalone) we default to the
+    // the frame-context adapter; standalone pages resolve to content.
     // content path so non-wrapped pages keep full instrumentation.
     try {
-      var __frameRole = window.__devtool_frame_role;
+      var __frameRole = frameContext.role;
       var __isContent = (!__frameRole || __frameRole === 'content');
       var __wantsTransport = __isContent || __frameRole === 'chrome';
       if (__isContent) {
@@ -1396,7 +1398,7 @@
     try {
       // Shell-side ingest sink for errors forwarded by content frames. Exported
       // unconditionally (every frame) — only the shell is ever called, by its
-      // content child via window.parent.__devtool_errors_ingest. See
+      // content child via the frame-context adapter's shell export. See
       // forwardErrorToShell / ingestForwardedError above.
       window.__devtool_errors_ingest = ingestForwardedError;
       if (!window.__devtool_errors) {

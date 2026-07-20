@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"syscall"
 	"time"
 
@@ -630,6 +631,7 @@ func (c *Client) SessionRegisterWithContainment(code string, overlayPath string,
 		Args:             args,
 		SessionPGID:      sessionPGID,
 		SessionJobHandle: sessionJobHandle,
+		OwnerPID:         os.Getpid(),
 	}
 	// overlayPath is a socket path and rides the JSON metadata only — not a
 	// positional arg. (Server reads metadata.OverlayPath; the old Args[1] copy

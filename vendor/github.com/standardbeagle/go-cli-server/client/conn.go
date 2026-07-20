@@ -309,13 +309,20 @@ func (c *Conn) execute(verb string, args []string, data []byte) (*protocol.Respo
 		return nil, fmt.Errorf("failed to send command: %w", err)
 	}
 
-	resp, err := c.parser.ParseResponse()
-	if err != nil {
-		c.handleErrorLocked()
-		return nil, fmt.Errorf("failed to read response: %w", err)
+	for {
+		resp, err := c.parser.ParseResponse()
+		if err != nil {
+			c.handleErrorLocked()
+			return nil, fmt.Errorf("failed to read response: %w", err)
+		}
+		if resp.Type == protocol.ResponseStatus {
+			// STATUS is transport progress, not request completion. Refresh the
+			// idle deadline and continue waiting for the terminal response.
+			c.setDeadlineLocked()
+			continue
+		}
+		return resp, nil
 	}
-
-	return resp, nil
 }
 
 // executeChunked runs the request and collects chunked response data.
@@ -355,6 +362,8 @@ func (c *Conn) executeChunked(verb string, args []string, data []byte) ([]byte, 
 		}
 
 		switch resp.Type {
+		case protocol.ResponseStatus:
+			continue
 		case protocol.ResponseChunk:
 			result = append(result, resp.Data...)
 		case protocol.ResponseEnd:

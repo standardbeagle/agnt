@@ -2,7 +2,6 @@ package agentadapter
 
 import (
 	"bytes"
-	"reflect"
 	"testing"
 	"time"
 )
@@ -40,6 +39,7 @@ func TestDefaultRegistry_MatchesAllKnownAgents(t *testing.T) {
 	for _, name := range []string{
 		"claude", "gemini", "copilot", "aider",
 		"cursor", "cursor-agent", "opencode", "auggie",
+		"codex", "qwen", "crush", "kimi-cli",
 	} {
 		a := r.Lookup(name)
 		if a == nil {
@@ -51,6 +51,16 @@ func TestDefaultRegistry_MatchesAllKnownAgents(t *testing.T) {
 		}
 	}
 
+}
+
+func TestDefaultRegistry_KimiSpellingsUseKimiCLIAdapter(t *testing.T) {
+	r := DefaultRegistry()
+	for _, command := range []string{"kimi", "kimi-cli", "/usr/local/bin/kimi"} {
+		a := r.Lookup(command)
+		if a == nil || a.Name() != "kimi-cli" {
+			t.Errorf("Lookup(%q) = %v, want kimi-cli adapter", command, a)
+		}
+	}
 }
 
 func TestDefaultRegistry_CursorAgentNotConfusedWithCursor(t *testing.T) {
@@ -347,27 +357,25 @@ func TestRegistry_RegisterAppendsCustomAdapter(t *testing.T) {
 	}
 }
 
-// TestKimiFallsBackToStdinAdapter pins the fix for a real failure: agnt
+// TestKimiAdapterNeverAddsUnverifiedFlags pins the fix for a real failure: agnt
 // shipped a kimi adapter that appended --agent-file, a flag the kimi on
 // PATH (kimi-code) rejects, so `agnt run kimi` died instantly with
-// "error: unknown option '--agent-file'". Two unrelated CLIs answer to the
-// name "kimi", so no name match can pick the right flag for both. The stdin
-// adapter needs no agent-specific flag knowledge, which is why it is the
-// correct home for any agent that reads and responds over stdio.
-func TestKimiFallsBackToStdinAdapter(t *testing.T) {
+// "error: unknown option '--agent-file'". The named adapter remains
+// stdin-capable so it can provide a safe fallback, but setup normally reaches
+// Kimi through its startup-loaded AGENTS.md context instead.
+func TestKimiAdapterNeverAddsUnverifiedFlags(t *testing.T) {
 	r := DefaultRegistry()
 	for _, cmd := range []string{"kimi", "kimi-cli"} {
 		a := r.Lookup(cmd)
-		if a != nil {
-			t.Fatalf("Lookup(%q) = %q; kimi must not have a built-in adapter", cmd, a.Name())
+		if a == nil || a.Name() != "kimi-cli" {
+			t.Fatalf("Lookup(%q) = %v; want canonical kimi-cli adapter", cmd, a)
 		}
-		u := Universal(cmd)
 		base := []string{"--model", "k2"}
-		if got := u.BuildArgs(base, "my prompt"); !reflect.DeepEqual(got, base) {
-			t.Errorf("Universal(%q) modified argv: %v", cmd, got)
+		if got := a.BuildArgs(base, "my prompt"); !equalStrings(got, base) {
+			t.Errorf("Lookup(%q) modified argv: %v", cmd, got)
 		}
-		if u.InitialStdin("my prompt") == nil {
-			t.Errorf("Universal(%q) injects nothing via stdin", cmd)
+		if a.InitialStdin("my prompt") == nil {
+			t.Errorf("Lookup(%q) has no safe stdin fallback", cmd)
 		}
 	}
 }

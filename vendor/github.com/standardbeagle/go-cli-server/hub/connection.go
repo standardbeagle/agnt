@@ -24,6 +24,9 @@ type Connection struct {
 	mu          sync.Mutex
 	closed      bool
 	sessionCode string
+	// terminalWritten prevents an automatic STATUS tick from being emitted
+	// after the terminal response for the current request.
+	terminalWritten bool
 }
 
 // newConnection creates a new connection handler.
@@ -103,7 +106,53 @@ func (c *Connection) handleCommand(ctx context.Context, cmd *protocol.Command) e
 	}
 
 	// Dispatch to registered handlers
-	return c.hub.commands.Dispatch(ctx, c, cmd)
+	return c.dispatchWithStatus(ctx, cmd)
+}
+
+// dispatchWithStatus keeps a healthy but silent request distinguishable from a
+// wedged daemon. Status delivery is best-effort and never waits for the shared
+// response writer: if a real response is being written, that tick is skipped.
+func (c *Connection) dispatchWithStatus(ctx context.Context, cmd *protocol.Command) error {
+	interval := c.hub.config.StatusInterval
+	if interval < 0 {
+		return c.hub.commands.Dispatch(ctx, c, cmd)
+	}
+
+	c.mu.Lock()
+	c.terminalWritten = false
+	c.mu.Unlock()
+	done := make(chan struct{})
+	started := time.Now()
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				status, err := json.Marshal(map[string]any{
+					"state":      "running",
+					"verb":       cmd.Verb,
+					"sub_verb":   cmd.SubVerb,
+					"elapsed_ms": time.Since(started).Milliseconds(),
+				})
+				if err != nil {
+					continue
+				}
+				_, err = c.TryWriteStatus(status)
+				if err != nil {
+					return
+				}
+			}
+		}
+	}()
+
+	err := c.hub.commands.Dispatch(ctx, c, cmd)
+	close(done)
+	return err
 }
 
 // handleInfo returns hub information.
@@ -199,6 +248,7 @@ func (c *Connection) WriteOK(msg string) error {
 	if c.hub.config.WriteTimeout > 0 {
 		_ = c.conn.SetWriteDeadline(time.Now().Add(c.hub.config.WriteTimeout))
 	}
+	c.terminalWritten = true
 	return c.writer.WriteOK(msg)
 }
 
@@ -210,6 +260,7 @@ func (c *Connection) WriteErr(code protocol.ErrorCode, msg string) error {
 	if c.hub.config.WriteTimeout > 0 {
 		_ = c.conn.SetWriteDeadline(time.Now().Add(c.hub.config.WriteTimeout))
 	}
+	c.terminalWritten = true
 	return c.writer.WriteErr(code, msg)
 }
 
@@ -252,6 +303,7 @@ func (c *Connection) WriteJSON(data []byte) error {
 	if c.hub.config.WriteTimeout > 0 {
 		_ = c.conn.SetWriteDeadline(time.Now().Add(c.hub.config.WriteTimeout))
 	}
+	c.terminalWritten = true
 	return c.writer.WriteJSON(data)
 }
 
@@ -263,6 +315,7 @@ func (c *Connection) WriteData(data []byte) error {
 	if c.hub.config.WriteTimeout > 0 {
 		_ = c.conn.SetWriteDeadline(time.Now().Add(c.hub.config.WriteTimeout))
 	}
+	c.terminalWritten = true
 	return c.writer.WriteData(data)
 }
 
@@ -277,6 +330,25 @@ func (c *Connection) WriteChunk(data []byte) error {
 	return c.writer.WriteChunk(data)
 }
 
+// TryWriteStatus sends a progress frame only when the response writer is idle.
+// It returns sent=false rather than blocking behind another write.
+func (c *Connection) TryWriteStatus(data []byte) (sent bool, err error) {
+	if !c.mu.TryLock() {
+		return false, nil
+	}
+	defer c.mu.Unlock()
+	if c.closed {
+		return false, net.ErrClosed
+	}
+	if c.terminalWritten {
+		return false, nil
+	}
+	if c.hub.config.WriteTimeout > 0 {
+		_ = c.conn.SetWriteDeadline(time.Now().Add(c.hub.config.WriteTimeout))
+	}
+	return true, c.writer.WriteStatus(data)
+}
+
 // WriteEnd sends the END marker for chunked responses.
 func (c *Connection) WriteEnd() error {
 	c.mu.Lock()
@@ -285,6 +357,7 @@ func (c *Connection) WriteEnd() error {
 	if c.hub.config.WriteTimeout > 0 {
 		_ = c.conn.SetWriteDeadline(time.Now().Add(c.hub.config.WriteTimeout))
 	}
+	c.terminalWritten = true
 	return c.writer.WriteEnd()
 }
 
@@ -296,6 +369,7 @@ func (c *Connection) WritePong() error {
 	if c.hub.config.WriteTimeout > 0 {
 		_ = c.conn.SetWriteDeadline(time.Now().Add(c.hub.config.WriteTimeout))
 	}
+	c.terminalWritten = true
 	return c.writer.WritePong()
 }
 

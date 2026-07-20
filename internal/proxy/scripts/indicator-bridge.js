@@ -17,17 +17,17 @@
 (function() {
   'use strict';
 
+  var frameContext = window.__devtool_context;
+
   window.__devtool_indicator_bridge = true;
 
   function isNestedFrame() {
-    try { return window.top !== window.self; } catch (e) { return true; }
+    return !frameContext.isTopLevel();
   }
 
   function parentIndicator() {
     try {
-      if (window.parent && window.parent !== window && window.parent.__devtool_indicator) {
-        return window.parent.__devtool_indicator;
-      }
+      return frameContext.shellExport('__devtool_indicator');
     } catch (e) { /* cross-origin parent — nothing to forward to */ }
     return null;
   }

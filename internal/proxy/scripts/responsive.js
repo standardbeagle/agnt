@@ -109,16 +109,9 @@
   // markedContentSrc returns the current page URL with the content-frame marker
   // appended so an off-screen sweep iframe loads the page unwrapped.
   function markedContentSrc() {
-    var param = (window.__devtool && window.__devtool.FRAME_PARAM) || '__devtool_frame';
     var rid = 'sweep-' + Date.now();
-    try {
-      var u = new URL(window.location.href);
-      u.searchParams.set(param, rid);
-      return u.toString();
-    } catch (e) {
-      var base = window.location.href.split('#')[0];
-      return base + (base.indexOf('?') >= 0 ? '&' : '?') + param + '=' + rid;
-    }
+		var u = window.__devtool_context.contentURL(window.location.href, rid);
+		return u ? u.toString() : window.location.href;
   }
 
   /**
