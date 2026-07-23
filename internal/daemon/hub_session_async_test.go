@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/incident"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -36,6 +37,7 @@ scripts {
         depends-on "slow-dep" timeout=30
     }
 }
+
 `
 	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".agnt.kdl"), []byte(configContent), 0o644))
 
@@ -68,6 +70,43 @@ scripts {
 	// Backward-compat: existing clients read result["autostart"], which must
 	// always be present (even if empty while the run is in flight).
 	assert.NotNil(t, result["autostart"], "result must include a backward-compat autostart map")
+}
+
+func TestSessionRegister_AutostartConsoleErrorReachesOwningAgent(t *testing.T) {
+	tmpDir := t.TempDir()
+	sockPath := filepath.Join(tmpDir, "test.sock")
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".agnt.kdl"), []byte(`
+scripts {
+    serve {
+        run "echo 'fatal: console signal'; sleep 60"
+        autostart true
+    }
+}
+`), 0o644))
+
+	d := New(DaemonConfig{SocketPath: sockPath, MaxClients: 10, WriteTimeout: 5 * time.Second})
+	require.NoError(t, d.Start())
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		_ = d.Stop(ctx)
+	})
+
+	client := NewClient(WithSocketPath(sockPath))
+	require.NoError(t, client.Connect())
+	t.Cleanup(func() { _ = client.Close() })
+	_, err := client.SessionRegister("console-owner", "/tmp/overlay.sock", tmpDir, "test", nil)
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		entries, _ := d.incidentBus.QuerySession("console-owner", incident.QueryFilter{})
+		for _, entry := range entries {
+			if entry.Sample != nil && entry.Sample.Ctx.ProcessID == makeProcessID(tmpDir, "serve") {
+				return true
+			}
+		}
+		return false
+	}, 8*time.Second, 25*time.Millisecond, "autostart console error never reached its owning agent")
 }
 
 // TestSessionRegister_JoinAsObserver verifies that when two sessions register

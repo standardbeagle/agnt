@@ -5,6 +5,44 @@ import (
 	"testing"
 )
 
+// TestOutputPreviewSuppressedWhilePanelOpen guards the layering contract that
+// the interactive developer panel owns the foreground. The passive agent
+// output preview shares the same chrome layer, so z-index alone cannot make
+// its ordering reliable.
+func TestOutputPreviewSuppressedWhilePanelOpen(t *testing.T) {
+	showIdx := strings.Index(indicatorJS, "function showOutputPreview(lines, throbber)")
+	if showIdx < 0 {
+		t.Fatal("showOutputPreview not found in indicator.js")
+	}
+	showBody := indicatorJS[showIdx:]
+	panelGuard := "if (state.isExpanded) return;"
+	guardIdx := strings.Index(showBody, panelGuard)
+	emptyIdx := strings.Index(showBody, "if (lines.length === 0 && !throbber) return;")
+	if guardIdx < 0 {
+		t.Fatalf("showOutputPreview must suppress passive agent updates while the panel is open (%q)", panelGuard)
+	}
+	if emptyIdx < 0 || guardIdx > emptyIdx {
+		t.Error("showOutputPreview must check panel visibility before rendering an output preview")
+	}
+
+	toggleIdx := strings.Index(indicatorJS, "function togglePanel(show)")
+	if toggleIdx < 0 {
+		t.Fatal("togglePanel not found in indicator.js")
+	}
+	toggleBody := indicatorJS[toggleIdx:]
+	showBranch := strings.Index(toggleBody, "if (shouldShow) {")
+	if showBranch < 0 {
+		t.Fatal("togglePanel must retain its open branch")
+	}
+	// Restrict the check to the opening branch, before Escape-stack handling.
+	openBranch := toggleBody[showBranch:]
+	hideIdx := strings.Index(openBranch, "hideOutputPreview();")
+	stackIdx := strings.Index(openBranch, "window.__devtoolOverlayStack.push")
+	if hideIdx < 0 || (stackIdx >= 0 && hideIdx > stackIdx) {
+		t.Error("opening the panel must immediately hide an already-visible output preview")
+	}
+}
+
 // TestTabRefreshGatedOnTextSelection verifies the floating-indicator panel's
 // 1s tab-content refresh is suppressed while the user has an active text
 // selection inside the tab content area.

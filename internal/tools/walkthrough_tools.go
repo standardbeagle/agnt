@@ -19,10 +19,12 @@ type WalkthroughInput struct {
 	ProxyID string `json:"proxy_id,omitempty" jsonschema:"Target proxy ID (preferred)"`
 	ID      string `json:"id,omitempty" jsonschema:"Alias for proxy_id"`
 	// Script is the walkthrough definition (for load/start). JSON object:
-	// {id, title, steps:[{title, body, target?, advance:{type,...}}]}.
+	// {id, title, steps:[{title, body, target?, gesture?, advance:{type,...}}]}.
 	// advance.type is one of: auto ({ms}), click-target (needs target), or
 	// wait ({when: url-contains|element-present|element-visible, value}).
-	Script   any    `json:"script,omitempty" jsonschema:"Walkthrough script object (load/start): {id,title,steps:[{title,body,target?,advance:{type,ms?,when?,value?}}]}"`
+	// gesture is one of: hover, click, scroll, drag (needs target) — renders an
+	// animated affordance over the highlight until the step advances.
+	Script   any    `json:"script,omitempty" jsonschema:"Walkthrough script object (load/start): {id,title,steps:[{title,body,target?,gesture?,advance:{type,ms?,when?,value?}}]}"`
 	ScriptID string `json:"script_id,omitempty" jsonschema:"For start: id of an already-loaded script to run"`
 	Mode     string `json:"mode,omitempty" jsonschema:"For start: auto (auto-play, default) or manual (user steps with next/prev)"`
 }
@@ -53,15 +55,18 @@ Actions:
 - list:   registered scripts
 
 Script shape:
-  {id, title, steps:[{title, body, target?, advance:{type, ...}}]}
+  {id, title, steps:[{title, body, target?, gesture?, advance:{type, ...}}]}
   advance.type:
     auto         {ms}        show ms then advance (default 5000)
     click-target            advance when the user clicks the highlighted target
     wait         {when,value} when: url-contains | element-present | element-visible
+  gesture (optional, needs target): hover | click | scroll | drag
+    Renders the matching animated affordance over the highlight; auto-dismisses
+    when the step advances. The active step's narration reads through as it lands.
 
 Examples:
   walkthrough {action:"start", proxy_id:"dev", script:{id:"demo", title:"New checkout", steps:[
-    {title:"Open cart", body:"Click the cart to begin.", target:"#cart-btn", advance:{type:"click-target"}},
+    {title:"Open cart", body:"Click the cart to begin.", target:"#cart-btn", gesture:"click", advance:{type:"click-target"}},
     {title:"Totals", body:"Order total updates live.", target:".order-total", advance:{type:"auto", ms:4000}},
     {title:"Confirm", body:"You land on the confirm page.", advance:{type:"wait", when:"url-contains", value:"/confirm"}}
   ]}}

@@ -131,6 +131,31 @@ func TestOversizeStylePatch(t *testing.T) {
 	}
 }
 
+// TestStepGestureValidation pins the closed gesture vocabulary: the four
+// affordances are accepted, empty means none, anything else is rejected.
+func TestStepGestureValidation(t *testing.T) {
+	step := func(g string) Step {
+		return Step{ID: "s1", Title: "t", Target: "#el", Gesture: g, Advance: Advance{Type: "auto"}}
+	}
+	for _, g := range []string{"", "hover", "click", "scroll", "drag"} {
+		s := step(g)
+		if err := s.Validate(); err != nil {
+			t.Errorf("gesture %q must be accepted, got: %v", g, err)
+		}
+	}
+	for _, g := range []string{"swipe", "tap", "CLICK", "hover "} {
+		s := step(g)
+		if err := s.Validate(); err == nil {
+			t.Errorf("gesture %q must be rejected", g)
+		}
+	}
+	// A gesture without a target has nothing to anchor to.
+	s := Step{ID: "s1", Title: "t", Gesture: "click", Advance: Advance{Type: "auto"}}
+	if err := s.Validate(); err == nil {
+		t.Error("gesture without a target must be rejected")
+	}
+}
+
 // TestValidSelectors / TestInvalidSelectors pin the §5a grammar directly.
 func TestValidSelectors(t *testing.T) {
 	ok := []string{

@@ -1,6 +1,8 @@
 package autoconfig
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -125,6 +127,27 @@ func TestGenerate_UnknownAndEmpty(t *testing.T) {
 	// Known type but no useful commands → not confident.
 	_, ok = Generate(&project.Project{Type: project.ProjectNode, Metadata: map[string]string{}})
 	assert.False(t, ok)
+}
+
+func TestGenerate_RootIndexHTMLWithoutBuildSignal(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "index.html"), []byte("<!doctype html>"), 0o644))
+
+	kdl, ok := Generate(&project.Project{
+		Path: dir,
+		Type: project.ProjectUnknown,
+		Name: "landing-page",
+	})
+	require.True(t, ok, "a root index.html with no build signal is a static web project")
+
+	cfg := parseGenerated(t, kdl)
+	require.Contains(t, cfg.Scripts, "dev")
+	assert.True(t, cfg.Scripts["dev"].Autostart)
+	assert.Contains(t, cfg.Scripts["dev"].Run, "ThreadingHTTPServer")
+	assert.Contains(t, cfg.Scripts["dev"].Run, "http://localhost:8000")
+	require.Contains(t, cfg.Proxies, "dev")
+	assert.Equal(t, "dev", cfg.Proxies["dev"].Script)
+	assert.Equal(t, 8000, cfg.Proxies["dev"].FallbackPort)
 }
 
 func TestGenerate_HeaderIsCommentedAndParses(t *testing.T) {

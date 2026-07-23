@@ -92,7 +92,8 @@ type Step struct {
 	ID      string  `json:"id"`
 	Title   string  `json:"title"`
 	Body    string  `json:"body"`
-	Target  string  `json:"target,omitempty"` // selector, validated by the selector grammar
+	Target  string  `json:"target,omitempty"`  // selector, validated by the selector grammar
+	Gesture string  `json:"gesture,omitempty"` // hover | click | scroll | drag: animated affordance near the highlight
 	Advance Advance `json:"advance"`
 }
 
@@ -110,6 +111,9 @@ type PublishedWalkthrough struct {
 var (
 	validAdvanceTypes = map[string]bool{"auto": true, "click-target": true, "wait": true}
 	validWaitWhen     = map[string]bool{"url-contains": true, "element-present": true, "element-visible": true}
+	// validGestures is the closed set of animated affordances a step may
+	// request next to its highlight. Empty means no affordance.
+	validGestures = map[string]bool{"hover": true, "click": true, "scroll": true, "drag": true}
 )
 
 // errf is a tiny helper to keep validator error sites terse.

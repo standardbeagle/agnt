@@ -38,6 +38,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/incident"
 )
 
 // CategoryProcessLifecycle is the AlertEntry category used for
@@ -268,14 +269,16 @@ func (d *Daemon) watchProcessExit(proc *goprocess.ManagedProcess) {
 		// record, which is what the user wants). If a DIFFERENT instance
 		// is registered, the new instance's start path already ran
 		// Clear() and its own watcher will publish eventually; skip.
+		retireOwner := false
 		if current, err := d.hub.ProcessManager().Get(proc.ID); err == nil {
 			if current != proc {
 				return
 			}
 		} else if hadOwner {
-			// The manager has removed this exact lifetime. CompareAndDelete
-			// prevents a replacement with a different owner from being erased.
-			d.incidentProcessOwner.CompareAndDelete(proc.ID, owner)
+			// Keep the captured owner in the registry until after the incident is
+			// stamped below. stampIncidentOwner deliberately verifies lifetime
+			// identity against that registry before delivering to an agent.
+			retireOwner = true
 		}
 
 		// Fire on-stop or on-crash lifecycle hook if configured.
@@ -312,6 +315,22 @@ func (d *Daemon) watchProcessExit(proc *goprocess.ManagedProcess) {
 			if alert := buildLifecycleAlert(info); alert != nil {
 				d.alertStore.Add(alert)
 			}
+		}
+
+		// Lifecycle entries make a crash pull-visible via get_errors, but agents
+		// also need the immediate incident ping. Use the exact owner captured at
+		// watcher creation so a recycled process ID cannot leak into another
+		// session's inbox.
+		if d.incidentBus != nil && info.Reason != "stopped" {
+			ev := incident.FromProcessExit(info.ProcessID, info.Reason, info.ExitCode, info.StderrTail)
+			if d.stampIncidentOwner(&ev, &d.incidentProcessOwner, proc.ID, ownerAsIncidentResource(owner)) {
+				d.incidentBus.Publish(ev)
+			}
+		}
+		if retireOwner {
+			// The manager removed this exact lifetime. CompareAndDelete prevents a
+			// replacement with a different owner from being erased.
+			d.incidentProcessOwner.CompareAndDelete(proc.ID, owner)
 		}
 
 		debug.Log("daemon", "process %s exited: code=%d reason=%s uptime=%s",

@@ -116,6 +116,48 @@ func TestPlayerPublicSurface(t *testing.T) {
 	}
 }
 
+// TestPlayerGestureAffordances pins the gesture affordance contract: the closed
+// vocabulary, the dedicated affordance element, WAAPI motion (no style element
+// or code-eval sink), reduced-motion degradation, and auto-dismiss with the
+// highlight.
+func TestPlayerGestureAffordances(t *testing.T) {
+	js := walkthroughViewerJS
+	for _, tok := range []string{"'hover'", "'click'", "'scroll'", "'drag'"} {
+		if !strings.Contains(js, tok) {
+			t.Errorf("player missing gesture %s", tok)
+		}
+	}
+	if !strings.Contains(js, "__wt_player_gesture") {
+		t.Error("player must render the gesture affordance in a dedicated __wt_player_gesture element")
+	}
+	if !strings.Contains(js, ".animate(") {
+		t.Error("gesture motion must use the Web Animations API (CSP-safe: no style element, no code-eval sink)")
+	}
+	if !strings.Contains(js, "function removeGesture") {
+		t.Error("gesture affordance must be removed (auto-dismissed) with the highlight")
+	}
+	if !strings.Contains(js, "gestureAnims[i].cancel()") {
+		t.Error("gesture animations must be cancelled on teardown (no orphaned WAAPI animations)")
+	}
+}
+
+// TestPlayerReadThroughReveal pins the narration read-through contract: a
+// tracked interval reveals the body character-by-character, reduced motion
+// shows full text instantly, and the interval self-removes on completion so
+// trackedTimerCount stays exact.
+func TestPlayerReadThroughReveal(t *testing.T) {
+	js := walkthroughViewerJS
+	if !strings.Contains(js, "function revealBody") {
+		t.Error("player must reveal the narration body with a read-through animation (revealBody)")
+	}
+	if !strings.Contains(js, "intervals.push(id)") {
+		t.Error("the reveal interval must be tracked so destroy()/disarm() kill it (teardown gate)")
+	}
+	if !strings.Contains(js, "intervals.splice(k, 1)") {
+		t.Error("the reveal interval must self-remove on completion so trackedTimerCount stays exact")
+	}
+}
+
 // headerless strips the leading line-comment header so the IIFE-prefix check
 // inspects the actual code start.
 func headerless(js string) string {

@@ -221,6 +221,10 @@
     lines = lines || [];
     throbber = throbber || '';
     if (!state.outputPreview || !state.bug) return;
+    // The interactive developer panel owns the foreground while it is open.
+    // Output previews are passive agent-update text, so showing one above the
+    // panel would obscure controls and make the panel harder to use.
+    if (state.isExpanded) return;
     if (lines.length === 0 && !throbber) return;
 
     var html = lines.map(function(line) {
@@ -3310,6 +3314,9 @@
     state.isExpanded = shouldShow;
 
     if (shouldShow) {
+      // A preview already visible before the panel opened must not linger
+      // above it during the panel's enter transition.
+      hideOutputPreview();
       // Register on the shared Escape stack so Esc closes the panel when it
       // is the top-most devtool surface.
       if (window.__devtoolOverlayStack) {

@@ -172,6 +172,12 @@ func (s *Step) Validate() error {
 			return errf("step %q: %w", s.ID, err)
 		}
 	}
+	if s.Gesture != "" && !validGestures[s.Gesture] {
+		return errf("step %q: unknown gesture %q (hover|click|scroll|drag)", s.ID, s.Gesture)
+	}
+	if s.Gesture != "" && s.Target == "" {
+		return errf("step %q: gesture requires a target", s.ID)
+	}
 	return s.Advance.Validate()
 }
 

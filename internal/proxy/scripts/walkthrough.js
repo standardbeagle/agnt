@@ -7,6 +7,10 @@
 //   * auto         — show for N ms then advance (watch mode)
 //   * click-target — advance when the user clicks the highlighted element
 //   * wait         — advance when an app-state condition holds
+// A step may also carry gesture: hover|click|scroll|drag — an animated
+// affordance rendered over the highlight (pure CSS keyframes, static under
+// prefers-reduced-motion) that auto-dismisses when the step advances, and the
+// active card's narration reads through character-by-character.
 // Panel Next/Prev/restart are always available so the user can step manually.
 //
 // The walkthrough UI lives in the OUTER frame (the always-wrap chrome shell, or
@@ -57,7 +61,15 @@
     var PANEL_ID = '__wt_panel';
     var LAUNCHER_ID = '__wt_launcher';
     var HILITE_ID = '__devtool_wt_highlight';
+    var GESTURE_ID = '__devtool_wt_gesture';
     var POLL_MS = 300;
+    var VALID_GESTURES = { hover: true, click: true, scroll: true, drag: true };
+
+    function prefersReducedMotion() {
+      try {
+        return !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+      } catch (e) { return false; }
+    }
 
     // Registered scripts (for user replay) + the active run.
     var scripts = {};            // id -> normalized script
@@ -120,9 +132,11 @@
       try {
         var ex = d.getElementById(HILITE_ID);
         if (ex && ex.parentNode) { ex.parentNode.removeChild(ex); }
+        var g = d.getElementById(GESTURE_ID);
+        if (g && g.parentNode) { g.parentNode.removeChild(g); }
       } catch (e) {}
     }
-    function highlight(selector) {
+    function highlight(selector, gesture) {
       clearHighlight();
       var el = queryTarget(selector);
       var d = contentDoc();
@@ -144,8 +158,51 @@
         box.style.width = rect.width + 'px';
         box.style.height = rect.height + 'px';
         (d.body || d.documentElement).appendChild(box);
+        if (gesture && VALID_GESTURES[gesture]) {
+          renderGesture(d, gesture, top, left, rect.width, rect.height);
+        }
         return true;
       } catch (e) { return false; }
+    }
+
+    // ---- Animated gesture affordance ---------------------------------------
+    // Renders a pointer-events:none animated affordance over the highlighted
+    // target so the viewer sees WHICH interaction the step expects (hover,
+    // click, scroll, drag). Pure CSS keyframes — no JS timers — so the
+    // affordance auto-dismisses the moment the advance condition fires and
+    // gotoStep → clearHighlight removes it with the highlight.
+    function renderGesture(d, gesture, top, left, width, height) {
+      var c = d.createElement('div');
+      c.id = GESTURE_ID;
+      c.className = '__devtool-wt-gesture';
+      c.style.top = top + 'px';
+      c.style.left = left + 'px';
+      c.style.width = width + 'px';
+      c.style.height = height + 'px';
+      if (gesture === 'hover') {
+        c.appendChild(gestureEl(d, '__devtool-wt-g-hover'));
+      } else if (gesture === 'click') {
+        c.appendChild(gestureEl(d, '__devtool-wt-g-click'));
+        c.appendChild(gestureEl(d, '__devtool-wt-g-click __devtool-wt-g-delay'));
+      } else if (gesture === 'scroll') {
+        var pill = gestureEl(d, '__devtool-wt-g-scroll');
+        pill.appendChild(gestureEl(d, '__devtool-wt-g-wheel'));
+        c.appendChild(pill);
+      } else if (gesture === 'drag') {
+        c.appendChild(gestureEl(d, '__devtool-wt-g-track'));
+        c.appendChild(gestureEl(d, '__devtool-wt-g-drag'));
+      }
+      if (prefersReducedMotion()) {
+        // Static affordance: keep the shape, drop the motion.
+        var kids = c.querySelectorAll('*');
+        for (var i = 0; i < kids.length; i++) { kids[i].style.animation = 'none'; }
+      }
+      (d.body || d.documentElement).appendChild(c);
+    }
+    function gestureEl(d, cls) {
+      var e = d.createElement('div');
+      e.className = cls;
+      return e;
     }
     function ensureContentStyle(d) {
       if (d.getElementById('__devtool_wt_content_style')) { return; }
@@ -157,7 +214,32 @@
           'border:3px solid #6ea8fe;border-radius:6px;box-shadow:0 0 0 3px rgba(110,168,254,.35),0 0 18px rgba(110,168,254,.65);' +
           'animation:__devtoolWtPulse 1.4s ease-in-out infinite;transition:top .2s,left .2s,width .2s,height .2s;}' +
           '@keyframes __devtoolWtPulse{0%,100%{box-shadow:0 0 0 3px rgba(110,168,254,.35),0 0 18px rgba(110,168,254,.55);}' +
-          '50%{box-shadow:0 0 0 6px rgba(110,168,254,.18),0 0 26px rgba(110,168,254,.85);}}';
+          '50%{box-shadow:0 0 0 6px rgba(110,168,254,.18),0 0 26px rgba(110,168,254,.85);}}' +
+          '.__devtool-wt-gesture{position:absolute;z-index:2147483601;pointer-events:none;overflow:visible;}' +
+          '.__devtool-wt-g-hover{position:absolute;left:50%;top:50%;width:28px;height:28px;border-radius:50%;' +
+          'background:rgba(110,168,254,.45);border:2px solid #6ea8fe;box-shadow:0 0 12px rgba(110,168,254,.8);' +
+          'animation:__devtoolWtGHover 1.6s ease-in-out infinite;}' +
+          '@keyframes __devtoolWtGHover{0%,100%{transform:translate(-50%,-50%) scale(1);opacity:.55;}' +
+          '50%{transform:translate(-50%,-64%) scale(1.18);opacity:.95;}}' +
+          '.__devtool-wt-g-click{position:absolute;left:50%;top:50%;width:36px;height:36px;border-radius:50%;' +
+          'border:3px solid #6ea8fe;box-shadow:0 0 10px rgba(110,168,254,.6);opacity:0;' +
+          'animation:__devtoolWtGClick 1.5s ease-out infinite backwards;}' +
+          '.__devtool-wt-g-delay{animation-delay:.75s;}' +
+          '@keyframes __devtoolWtGClick{0%{transform:translate(-50%,-50%) scale(.3);opacity:.9;}' +
+          '70%{opacity:.35;}100%{transform:translate(-50%,-50%) scale(1.7);opacity:0;}}' +
+          '.__devtool-wt-g-scroll{position:absolute;left:50%;top:50%;width:24px;height:38px;border-radius:13px;' +
+          'border:2px solid #6ea8fe;background:rgba(13,17,23,.55);box-shadow:0 0 10px rgba(110,168,254,.6);' +
+          'transform:translate(-50%,-50%);}' +
+          '.__devtool-wt-g-wheel{position:absolute;left:50%;top:7px;width:4px;height:8px;margin-left:-2px;border-radius:2px;' +
+          'background:#6ea8fe;animation:__devtoolWtGScroll 1.4s ease-in-out infinite;}' +
+          '@keyframes __devtoolWtGScroll{0%,100%{transform:translateY(0);opacity:1;}' +
+          '50%{transform:translateY(14px);opacity:.5;}}' +
+          '.__devtool-wt-g-track{position:absolute;left:12%;right:12%;top:50%;height:2px;margin-top:-1px;' +
+          'background:rgba(110,168,254,.45);border-radius:1px;}' +
+          '.__devtool-wt-g-drag{position:absolute;top:50%;width:20px;height:20px;margin-top:-10px;border-radius:50%;' +
+          'background:#6ea8fe;border:2px solid #fff;box-shadow:0 0 12px rgba(110,168,254,.8);' +
+          'animation:__devtoolWtGDrag 1.8s ease-in-out infinite;}' +
+          '@keyframes __devtoolWtGDrag{0%{left:12%;opacity:0;}12%{opacity:1;}88%{opacity:1;}100%{left:88%;opacity:0;}}';
         (d.head || d.documentElement).appendChild(s);
       } catch (e) {}
     }
@@ -167,6 +249,7 @@
       if (!run) { return; }
       if (run.timer) { clearTimeout(run.timer); run.timer = null; }
       if (run.poll) { clearInterval(run.poll); run.poll = null; }
+      if (run.reveal) { clearInterval(run.reveal); run.reveal = null; }
       if (run.armed) {
         try {
           if (run.armed.el && run.armed.handler) {
@@ -247,8 +330,9 @@
       }
       run.index = index;
       var step = run.script.steps[index];
-      highlight(step.target);
+      highlight(step.target, step.gesture);
       renderPanel();
+      startReveal(step);
       emit('step', {
         scriptId: run.script.id,
         stepIndex: index,
@@ -291,6 +375,15 @@
         if (adv.type === 'wait' && ['url-contains', 'element-present', 'element-visible'].indexOf(adv.when) === -1) {
           throw new Error('step ' + i + ': wait requires when in url-contains|element-present|element-visible');
         }
+        if (s.gesture !== undefined && s.gesture !== null && s.gesture !== '') {
+          s.gesture = String(s.gesture).toLowerCase();
+          if (!VALID_GESTURES[s.gesture]) {
+            throw new Error('step ' + i + ': unknown gesture ' + s.gesture + ' (hover|click|scroll|drag)');
+          }
+          if (!s.target) {
+            throw new Error('step ' + i + ': gesture requires a target selector');
+          }
+        }
       });
       return script;
     }
@@ -322,7 +415,7 @@
             index: -1,
             mode: (opts.mode === 'manual') ? 'manual' : 'auto',
             playing: (opts.mode !== 'manual'),
-            timer: null, poll: null, armed: null, finished: false
+            timer: null, poll: null, armed: null, reveal: null, finished: false
           };
           renderLauncher();
           ensurePanel();
@@ -347,7 +440,7 @@
         return api.status();
       },
       pause: function() {
-        if (run) { run.playing = false; disarm(); highlight(run.script.steps[run.index] && run.script.steps[run.index].target); renderPanel(); emit('pause', { scriptId: run.script.id, stepIndex: run.index }); }
+        if (run) { run.playing = false; disarm(); var st = run.script.steps[run.index]; highlight(st && st.target, st && st.gesture); renderPanel(); emit('pause', { scriptId: run.script.id, stepIndex: run.index }); }
         return api.status();
       },
       status: function() {
@@ -408,6 +501,36 @@
     }
 
     function ensurePanel() { ensureStyles(); renderPanel(); }
+
+    // ---- Read-through reveal ------------------------------------------------
+    // Narration of the ACTIVE card reads through character-by-character
+    // (typewriter sweep) so the viewer's eye tracks the text as it lands.
+    // Runs on one interval owned by the run; disarm() kills it on any step
+    // transition, so advancing never leaves a half-typed card behind.
+    function startReveal(step) {
+      if (!run || !step || !step.body || prefersReducedMotion()) { return; }
+      var root = mountRoot();
+      var panel = (root.querySelector && root.querySelector('#' + PANEL_ID)) || document.getElementById(PANEL_ID);
+      if (!panel) { return; }
+      var p = panel.querySelector('.wt-card.active p');
+      if (!p) { return; }
+      var full = p.textContent;
+      if (full.length < 2) { return; }
+      p.textContent = '';
+      var i = 0;
+      var id = setInterval(function() {
+        if (!run || run.reveal !== id) { clearInterval(id); return; }
+        i += 2;
+        if (i >= full.length) {
+          p.textContent = full;
+          clearInterval(id);
+          if (run && run.reveal === id) { run.reveal = null; }
+          return;
+        }
+        p.textContent = full.slice(0, i);
+      }, 18);
+      run.reveal = id;
+    }
 
     function removePanel() {
       var p = mountRoot().querySelector ? mountRoot().querySelector('#' + PANEL_ID) : document.getElementById(PANEL_ID);

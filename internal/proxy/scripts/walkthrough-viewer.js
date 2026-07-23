@@ -7,7 +7,11 @@
 // card, binds + applies the bound variant via the P3 variant engine BEFORE the
 // first step, highlights each step's target, and advances the same three ways
 // the live walkthrough does — auto / click-target / wait — but driven purely
-// in-page (timers + DOM listeners) with zero transport.
+// in-page (timers + DOM listeners) with zero transport. A step may also carry
+// gesture: hover|click|scroll|drag — the player renders the matching animated
+// affordance over the highlight (Web Animations API, static under reduced
+// motion) and the narration reads through character-by-character; both are
+// removed/reset the instant the step advances.
 //
 // Shared normalization (NOT a fork): the step model this player consumes is the
 // SAME one P2 defines (internal/publish/schema.go Advance/Step) and the live
@@ -110,10 +114,15 @@
         type = 'manual'; // wait with an invalid condition degrades to manual
       }
       var ms = (typeof adv.ms === 'number' && adv.ms > 0) ? Math.min(adv.ms, MAX_AUTO_MS) : DEFAULT_AUTO_MS;
+      // Gesture affordance: closed vocabulary, degrades to none. It is pure
+      // decoration rendered near the highlight — never an action source.
+      var g = s.gesture;
+      var gesture = (g === 'hover' || g === 'click' || g === 'scroll' || g === 'drag') ? g : '';
       return {
         title: clampText(s.title || ''),
         body: clampText(s.body || s.narration || s.text || ''),
         target: target,
+        gesture: target ? gesture : '',
         advance: { type: type, ms: ms, when: when || '', value: clampText(adv.value || '') }
       };
     }
@@ -145,6 +154,9 @@
       var counterEl = null;
       var liveEl = null;
       var highlight = null;
+      var gestureBox = null;
+      var gestureAnims = [];
+      var renderedGesture = '';
       var lastFocused = null;
       var lastTargetMissing = false;
       var destroyed = false;
@@ -179,7 +191,17 @@
       }
 
       // ---- Highlight (plain positioned box, pointer-events:none) --------------
+      function removeGesture() {
+        for (var i = 0; i < gestureAnims.length; i++) {
+          try { gestureAnims[i].cancel(); } catch (e) { /* ignore */ }
+        }
+        gestureAnims = [];
+        renderedGesture = '';
+        if (gestureBox && gestureBox.parentNode) { gestureBox.parentNode.removeChild(gestureBox); }
+        gestureBox = null;
+      }
       function removeHighlight() {
+        removeGesture();
         if (highlight && highlight.parentNode) { highlight.parentNode.removeChild(highlight); }
         highlight = null;
       }
@@ -209,6 +231,120 @@
         highlight.style.top = r.top + 'px';
         highlight.style.width = r.width + 'px';
         highlight.style.height = r.height + 'px';
+        positionGesture(r);
+      }
+
+      // ---- Animated gesture affordance ---------------------------------------
+      // Renders the step's requested interaction (hover/click/scroll/drag) as
+      // a pointer-events:none animated affordance over the highlight. Motion
+      // uses the Web Animations API (no style element, no code-eval sink, runs
+      // under script-src 'self'); under prefers-reduced-motion the same shapes
+      // render statically. The affordance is removed with the highlight, so it
+      // auto-dismisses the instant the advance condition fires.
+      var GESTURE_ID = '__wt_player_gesture';
+      function makeGesturePart(styleFn) {
+        var e = document.createElement('div');
+        e.setAttribute('aria-hidden', 'true');
+        e.style.position = 'absolute';
+        styleFn(e.style);
+        return e;
+      }
+      function animatePart(el, keyframes, opts) {
+        if (reducedMotion || typeof el.animate !== 'function') { return; }
+        try {
+          gestureAnims.push(el.animate(keyframes, opts));
+        } catch (e) { /* animation unsupported: static affordance */ }
+      }
+      function positionGesture(r) {
+        var gesture = (index >= 0 && index < steps.length) ? steps[index].gesture : '';
+        if (!gesture) { removeGesture(); return; }
+        if (!gestureBox || renderedGesture !== gesture) {
+          removeGesture();
+          gestureBox = document.createElement('div');
+          gestureBox.id = GESTURE_ID;
+          gestureBox.setAttribute('aria-hidden', 'true');
+          var gs = gestureBox.style;
+          gs.position = 'fixed';
+          gs.pointerEvents = 'none';
+          gs.zIndex = '2147483601';
+          buildGestureParts(gesture);
+          (document.body || document.documentElement).appendChild(gestureBox);
+          renderedGesture = gesture;
+        }
+        gestureBox.style.left = r.left + 'px';
+        gestureBox.style.top = r.top + 'px';
+        gestureBox.style.width = r.width + 'px';
+        gestureBox.style.height = r.height + 'px';
+      }
+      function buildGestureParts(gesture) {
+        if (gesture === 'hover') {
+          var dot = makeGesturePart(function (s) {
+            s.left = '50%'; s.top = '50%'; s.width = '28px'; s.height = '28px';
+            s.borderRadius = '50%'; s.background = 'rgba(76,139,245,.45)';
+            s.border = '2px solid #4c8bf5'; s.boxShadow = '0 0 12px rgba(76,139,245,.8)';
+            s.transform = 'translate(-50%,-50%)';
+          });
+          gestureBox.appendChild(dot);
+          animatePart(dot, [
+            { transform: 'translate(-50%,-50%) scale(1)', opacity: 0.55 },
+            { transform: 'translate(-50%,-64%) scale(1.18)', opacity: 0.95 }
+          ], { duration: 1600, iterations: Infinity, direction: 'alternate', easing: 'ease-in-out' });
+          return;
+        }
+        if (gesture === 'click') {
+          for (var i = 0; i < 2; i++) {
+            var ring = makeGesturePart(function (s) {
+              s.left = '50%'; s.top = '50%'; s.width = '36px'; s.height = '36px';
+              s.borderRadius = '50%'; s.border = '3px solid #4c8bf5';
+              s.boxShadow = '0 0 10px rgba(76,139,245,.6)';
+              s.transform = 'translate(-50%,-50%) scale(.3)';
+            });
+            gestureBox.appendChild(ring);
+            animatePart(ring, [
+              { transform: 'translate(-50%,-50%) scale(.3)', opacity: 0.9 },
+              { transform: 'translate(-50%,-50%) scale(1.7)', opacity: 0 }
+            ], { duration: 1500, iterations: Infinity, iterationStart: i * 0.5, easing: 'ease-out' });
+          }
+          return;
+        }
+        if (gesture === 'scroll') {
+          var pill = makeGesturePart(function (s) {
+            s.left = '50%'; s.top = '50%'; s.width = '24px'; s.height = '38px';
+            s.borderRadius = '13px'; s.border = '2px solid #4c8bf5';
+            s.background = 'rgba(20,20,26,.55)'; s.boxShadow = '0 0 10px rgba(76,139,245,.6)';
+            s.transform = 'translate(-50%,-50%)';
+          });
+          var wheel = makeGesturePart(function (s) {
+            s.left = '50%'; s.top = '7px'; s.width = '4px'; s.height = '8px';
+            s.marginLeft = '-2px'; s.borderRadius = '2px'; s.background = '#4c8bf5';
+          });
+          pill.appendChild(wheel);
+          gestureBox.appendChild(pill);
+          animatePart(wheel, [
+            { transform: 'translateY(0)', opacity: 1 },
+            { transform: 'translateY(14px)', opacity: 0.5 }
+          ], { duration: 1400, iterations: Infinity, direction: 'alternate', easing: 'ease-in-out' });
+          return;
+        }
+        if (gesture === 'drag') {
+          var track = makeGesturePart(function (s) {
+            s.left = '12%'; s.right = '12%'; s.top = '50%'; s.height = '2px';
+            s.marginTop = '-1px'; s.background = 'rgba(76,139,245,.45)'; s.borderRadius = '1px';
+          });
+          var knob = makeGesturePart(function (s) {
+            s.left = '12%'; s.top = '50%'; s.width = '20px'; s.height = '20px';
+            s.marginTop = '-10px'; s.borderRadius = '50%'; s.background = '#4c8bf5';
+            s.border = '2px solid #fff'; s.boxShadow = '0 0 12px rgba(76,139,245,.8)';
+          });
+          gestureBox.appendChild(track);
+          gestureBox.appendChild(knob);
+          animatePart(knob, [
+            { left: '12%', opacity: 0 },
+            { left: '12%', opacity: 1, offset: 0.12 },
+            { left: '88%', opacity: 1, offset: 0.88 },
+            { left: '88%', opacity: 0 }
+          ], { duration: 1800, iterations: Infinity, easing: 'ease-in-out' });
+        }
       }
       function resolveTarget(sel) {
         if (!sel) { return null; }
@@ -294,13 +430,40 @@
         // 'manual': nothing armed; user advances.
       }
 
+      // ---- Read-through reveal ------------------------------------------------
+      // The step narration reads through character-by-character (typewriter
+      // sweep) so the visitor's eye tracks the text as it lands. The interval
+      // is tracked like every other timer: disarm() (every step transition)
+      // and destroy() both kill it, and it self-removes on completion so
+      // trackedTimerCount stays exact. Reduced motion: full text instantly.
+      function revealBody(text) {
+        if (reducedMotion || !text || text.length < 2) {
+          bodyEl.textContent = text || '';
+          return;
+        }
+        bodyEl.textContent = '';
+        var i = 0;
+        var id = setInterval(function () {
+          if (destroyed) { clearInterval(id); return; }
+          i += 2;
+          if (i >= text.length) {
+            bodyEl.textContent = text;
+            clearInterval(id);
+            var k = intervals.indexOf(id);
+            if (k !== -1) { intervals.splice(k, 1); }
+            return;
+          }
+          bodyEl.textContent = text.slice(0, i);
+        }, 18);
+        intervals.push(id);
+      }
+
       // ---- Render -------------------------------------------------------------
       function render() {
         if (index < 0 || index >= steps.length) { return; }
         var step = steps[index];
         if (!card) { buildCard(); }
         titleEl.textContent = step.title;
-        bodyEl.textContent = step.body;
         counterEl.textContent = (index + 1) + ' / ' + steps.length;
 
         if (step.target) {
@@ -310,11 +473,13 @@
           lastTargetMissing = false;
         }
 
-        // Announce the step change to assistive tech.
+        // Announce the step change to assistive tech (full text immediately —
+        // the visual read-through reveal below is decoration only).
         liveEl.textContent = 'Step ' + (index + 1) + ' of ' + steps.length +
           (step.title ? ': ' + step.title : '');
 
         disarm();
+        revealBody(step.body);
         armStep();
         focusCard();
       }

@@ -23,6 +23,24 @@ type AutostartResult struct {
 	PortsCleared  []PortConflict `json:"ports_cleared,omitempty"`
 }
 
+// autostartOwnerContextKey carries the session that initiated an asynchronous
+// autostart run. Scripts are created after SESSION REGISTER returns, so they
+// must receive their ownership at creation rather than relying on a one-time
+// registry scan immediately after registration.
+type autostartOwnerContextKey struct{}
+
+func withAutostartOwner(ctx context.Context, sessionCode string) context.Context {
+	if sessionCode == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, autostartOwnerContextKey{}, sessionCode)
+}
+
+func autostartOwner(ctx context.Context) string {
+	owner, _ := ctx.Value(autostartOwnerContextKey{}).(string)
+	return owner
+}
+
 // AutostartPhase, AutostartProgress, and the Phase* constants live in
 // autostart_manager.go so that AutostartManager and RunAutostartAsync share
 // a single definition.
@@ -692,6 +710,12 @@ func (d *Daemon) StartScriptExplicit(ctx context.Context, name string, scriptCfg
 	entry, regErr := d.registerScriptEntry(name, projectPath, scriptConfigToEntry(scriptCfg))
 	if regErr != nil {
 		return fmt.Errorf("script registry: %w", regErr)
+	}
+	if owner := autostartOwner(ctx); owner != "" {
+		entry.AddSession(owner)
+		if entry.Owner() == "" {
+			entry.SetOwner(owner)
+		}
 	}
 	d.registerIncidentProcessOwner(processID, entry.Owner())
 

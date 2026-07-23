@@ -131,7 +131,7 @@ func (d *Daemon) joinOrStartAutostart(session *Session, rawProjectPath string) (
 			session.Code, session.ProjectPath)
 	}
 
-	startFn := d.makeAutostartStartFn(session.ProjectPath, rawProjectPath)
+	startFn := d.makeAutostartStartFn(session.ProjectPath, rawProjectPath, session.Code)
 	handle := d.autostartManager.GetOrCreate(session.ProjectPath, startFn)
 	return handle, joinStatus
 }
@@ -343,7 +343,7 @@ func (d *Daemon) claimProjectScripts(session *Session) {
 // normalized project path (used for scans and as the handle key) and the
 // original (unnormalized) metadata path, which RunAutostartAsync needs so
 // that its own normalization stays consistent with legacy callers.
-func (d *Daemon) makeAutostartStartFn(normalizedPath, metadataPath string) AutostartStartFunc {
+func (d *Daemon) makeAutostartStartFn(normalizedPath, metadataPath, ownerSession string) AutostartStartFunc {
 	return func(ctx context.Context, progress chan<- AutostartProgress) *AutostartResult {
 		// Emit immediately so late-joiner observers can detect that autostart
 		// has begun, even before the dup scan and config load.
@@ -362,7 +362,7 @@ func (d *Daemon) makeAutostartStartFn(normalizedPath, metadataPath string) Autos
 		// The AutostartManager broadcast callback (configured at construction
 		// time on the daemon) fans these events out to the alert hub for
 		// monitor/MCP watch subscribers — no manual tee required here.
-		result := d.RunAutostartAsync(ctx, metadataPath, progress)
+		result := d.RunAutostartAsync(withAutostartOwner(ctx, ownerSession), metadataPath, progress)
 
 		emitAutostartErrorsToAlertStore(d, normalizedPath, result)
 		return result

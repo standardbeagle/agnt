@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/incident"
 	goprocess "github.com/standardbeagle/go-cli-server/process"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -250,6 +251,30 @@ func TestWatchProcessExit_EndToEnd(t *testing.T) {
 	assert.Equal(t, "error", found.Severity)
 	assert.Contains(t, found.Description, "code 42")
 	assert.Contains(t, found.Line, "fatal: bang")
+}
+
+func TestWatchProcessExit_CrashPublishesIncidentToOwningSession(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("integration test uses /bin/sh")
+	}
+
+	d := NewForTest(t, DaemonConfig{})
+	d.addIncidentSession("exit-owner")
+	d.registerIncidentProcessOwner("owned-exit", "exit-owner")
+
+	proc, err := d.hub.ProcessManager().StartCommand(context.Background(), goprocess.ProcessConfig{
+		ID:          "owned-exit",
+		ProjectPath: t.TempDir(),
+		Command:     "/bin/sh",
+		Args:        []string{"-c", "echo 'address already in use' >&2; exit 1"},
+	})
+	require.NoError(t, err)
+	d.watchProcessExit(proc)
+
+	require.Eventually(t, func() bool {
+		entries, _ := d.incidentBus.QuerySession("exit-owner", incident.QueryFilter{})
+		return len(entries) == 1 && entries[0].Sample != nil && entries[0].Sample.Ctx.ProcessID == "owned-exit" && entries[0].Sample.Ctx.SessionID == "exit-owner"
+	}, 3*time.Second, 10*time.Millisecond, "crashing process must notify its owning agent session")
 }
 
 // TestWatchProcessExit_NewWatcherClearsStaleInfo verifies the autorestart
