@@ -92,3 +92,7 @@ __pycache__/
 
 # caveman:compress local backups
 *.original.md
+
+# tman shims
+/test
+/test.cmd
