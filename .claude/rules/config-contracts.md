@@ -24,6 +24,9 @@ Every parsed field needs consumer. Field in struct but nothing reads it = bug. K
 | `url-matchers` | `scripts.<name>.url-matchers` | URLTracker | Pattern to detect dev server URLs in output |
 | `port-conflict` | `project.port-conflict` | Port preflight | Port conflict handling policy |
 | `autostart` | `scripts.<name>.autostart` | RunAutostart | Launch on session connect or not |
+| `enabled` | `shims.enabled` | `shims.Ensure`, daemon `routeShim` | Gate shim install + routing per project |
+| `watch-script` | `shims.watch-script` | `shims.WatchScriptName` | Script restarted by restart-watch/quiesce actions |
+| `rules` | `shims.rules.<name>` | `shims.Resolve` | Glob → action routing for shimmed commands |
 
 ## URL Matcher Validation
 

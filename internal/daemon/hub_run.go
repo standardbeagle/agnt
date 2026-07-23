@@ -343,6 +343,18 @@ func (d *Daemon) registerAgntCommands() error {
 		return err
 	}
 
+	// SHIM command - shell shim routing (EXEC) + install bookkeeping
+	// (REGISTER). EXEC can block for the duration of a one-shot build/test;
+	// it runs on its own connection goroutine like every other handler.
+	if err := register(hubpkg.CommandDefinition{
+		Verb:        protocol.VerbShim,
+		SubVerbs:    routerSubVerbs(d.shimActions()),
+		Description: "Route shimmed shell commands through managed processes",
+		Handler:     d.hubHandleShim,
+	}); err != nil {
+		return err
+	}
+
 	debug.Log("daemon", "Registered %d agnt-specific commands with Hub", registered)
 	return nil
 }

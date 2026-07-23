@@ -112,7 +112,7 @@ func runConPTYChild(ctx context.Context, args []string, socketPath string, sessi
 	} else {
 		cmd = ptmx.Command(resolvedPath, launch.Args...)
 	}
-	cmd.Env = append(os.Environ(), "AGNT_PROJECT_PATH="+projectPath, hookrules.AgntRunEnv+"=1")
+	cmd.Env = shimChildEnv(append(os.Environ(), "AGNT_PROJECT_PATH="+projectPath, hookrules.AgntRunEnv+"=1", "AGNT_SESSION_CODE="+sessionCode), projectPath)
 	if err := cmd.Start(); err != nil {
 		stopSpinner()
 		return 0, fmt.Errorf("failed to start process: %w", err)

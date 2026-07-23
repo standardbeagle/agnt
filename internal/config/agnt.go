@@ -55,6 +55,11 @@ type AgntConfig struct {
 	// single AgntConfig via LoadAgntConfig rather than re-parsing KDL.
 	HookRules *HookRulesConfig `kdl:"hook-rules"`
 
+	// Shims configures per-project shell command wrappers (.agnt/bin) that
+	// route dev-server/test/kill invocations from managed agent shells
+	// through the daemon. See internal/shims.
+	Shims *ShimsConfig `kdl:"shims"`
+
 	// Setup configures the first-run auto-setup flow for `agnt run`.
 	Setup *SetupConfig `kdl:"setup"`
 
@@ -158,6 +163,66 @@ type HookBashPattern struct {
 type HookPromptPattern struct {
 	Pattern  string `kdl:"pattern"`
 	Reminder string `kdl:"reminder"`
+}
+
+// ShimsConfig is the KDL block for shell command shims. It lives in
+// .agnt.kdl as:
+//
+//	shims {
+//	    enabled true
+//	    watch-script "dev"
+//	    rules {
+//	        build-restart {
+//	            match "npm run build"
+//	            action "restart-watch"
+//	        }
+//	        out-of-tree-build {
+//	            match "go build"
+//	            action "reroute"
+//	            dir "./.agnt-build"
+//	        }
+//	    }
+//	}
+//
+// Rules match against the full command line ("npm run build") with `*` as a
+// wildcard. When several rules match, the one with the most literal
+// (non-wildcard) characters wins, with fewer wildcards breaking ties. Rule
+// map keys are diagnostic names only. Actions: "route" (default — run through the
+// managed-process pipeline), "restart-watch", "reroute", "quiesce",
+// "ignore", "block", "pass". See internal/shims for semantics.
+type ShimsConfig struct {
+	// Enabled gates shim installation and routing. Defaults to true when a
+	// .agnt.kdl exists; set false to opt a project out entirely.
+	Enabled *bool `kdl:"enabled"`
+
+	// WatchScript names the script restarted by the "restart-watch" and
+	// "quiesce" actions. Defaults to the first script named
+	// dev/watch/start/serve.
+	WatchScript string `kdl:"watch-script"`
+
+	// Rules maps a diagnostic rule name to a shim rule. Evaluation is
+	// specificity-ordered, not insertion-ordered (KDL maps are unordered).
+	Rules map[string]*ShimRule `kdl:"rules"`
+}
+
+// ShimsEnabled reports whether shims are active for this config. A nil
+// Shims block or nil Enabled field means enabled — shims fail open and
+// self-remove, so presence in a managed shell is safe by default.
+func (c *AgntConfig) ShimsEnabled() bool {
+	if c == nil || c.Shims == nil || c.Shims.Enabled == nil {
+		return true
+	}
+	return *c.Shims.Enabled
+}
+
+// ShimRule is one shim routing rule. Match is a glob over the full command
+// line where `*` matches any substring; Action is one of route,
+// restart-watch, reroute, quiesce, ignore, block, pass; Dir is the working
+// directory override for reroute (relative to the project root).
+type ShimRule struct {
+	Match  string `kdl:"match"`
+	Action string `kdl:"action"`
+	Dir    string `kdl:"dir"`
 }
 
 // SessionConfig controls daemon-side session lifecycle behaviors.

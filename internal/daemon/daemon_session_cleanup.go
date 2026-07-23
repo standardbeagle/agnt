@@ -497,6 +497,11 @@ func (d *Daemon) doCleanupExact(sessionCode string, expected *Session, expectedP
 		}
 	}
 
+	// Detach the ending session from the project's shim manifest entry.
+	// Runs for EVERY session end, not just the last — see
+	// releaseProjectShims for why a skipped detach leaks the bin dir.
+	d.releaseProjectShims(projectPath, sessionCode)
+
 	var wg sync.WaitGroup
 
 	if !hasOtherSessions {

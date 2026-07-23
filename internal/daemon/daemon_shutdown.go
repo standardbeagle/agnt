@@ -383,6 +383,12 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		d.daemonStartupLog("info", "proxy_manager_stopped", "proxy manager stopped")
 	}
 
+	// Remove shell shim bin dirs before going down. Shims only function
+	// with a live daemon, and their fail-open design means removal is safe
+	// even for shells still holding .agnt/bin on PATH. The external watcher
+	// (agnt shim watch) observes the emptied manifest and exits on its own.
+	d.cleanupAllShims()
+
 	// Flush and close state managers so pending writes reach disk
 	if d.stateMgr != nil {
 		if err := d.stateMgr.Close(); err != nil {

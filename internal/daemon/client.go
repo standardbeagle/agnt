@@ -164,6 +164,36 @@ func (c *Client) Shutdown() error {
 	return c.conn.Request(protocol.VerbShutdown).OK()
 }
 
+// ShimExecTimeout bounds a single SHIM EXEC round-trip. One-shot routed
+// commands (builds, tests) block daemon-side until the managed process
+// exits, so this must comfortably exceed the longest reasonable build.
+// Callers construct their client with WithTimeout(ShimExecTimeout).
+const ShimExecTimeout = 10 * time.Minute
+
+// ShimExec asks the daemon to route one shimmed command. Any error is
+// fail-open for the caller (`agnt shim exec` execs the real binary).
+func (c *Client) ShimExec(req protocol.ShimExecRequest) (*protocol.ShimExecResponse, error) {
+	result, err := c.conn.Request(protocol.VerbShim, protocol.SubVerbExec).WithJSON(req).JSON()
+	if err != nil {
+		return nil, err
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	var resp protocol.ShimExecResponse
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// ShimRegister records a project's installed shim bin dir with the daemon
+// for lifecycle cleanup. Best-effort: callers ignore errors.
+func (c *Client) ShimRegister(req protocol.ShimRegisterRequest) error {
+	return c.conn.Request(protocol.VerbShim, protocol.SubVerbRegister).WithJSON(req).OK()
+}
+
 // Detect detects the project type at the given path.
 func (c *Client) Detect(path string) (map[string]interface{}, error) {
 	// path is a filesystem path — carry it in the JSON data frame, not an arg.

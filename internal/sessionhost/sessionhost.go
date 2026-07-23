@@ -23,6 +23,7 @@ import (
 
 	"github.com/creack/pty"
 	"github.com/standardbeagle/agnt/internal/scope"
+	"github.com/standardbeagle/agnt/internal/shims"
 	goprocess "github.com/standardbeagle/go-cli-server/process"
 )
 
@@ -159,6 +160,15 @@ func Create(cfg CreateConfig) (*Session, error) {
 	env := os.Environ()
 	for k, v := range cfg.Env {
 		env = append(env, k+"="+v)
+	}
+	// Shadow dev/build/kill commands with the project's shim bin dir so
+	// shells inside daemon-owned sessions route through the daemon. The
+	// daemon-side CREATE handler (hub_sessionhost.go) records the install
+	// in the shim manifest; cleanup is daemon-side.
+	if cfg.ProjectPath != "" {
+		if binDir, err := shims.Ensure(cfg.ProjectPath); err == nil && binDir != "" {
+			env = shims.PrependPATH(env, binDir)
+		}
 	}
 	cmd.Env = env
 

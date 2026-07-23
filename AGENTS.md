@@ -25,7 +25,7 @@ Claude Code 治此 repo 之綱：唯導向與不變式；詳見 `docs/`、`.clau
    ```
 3. **System prompt/context delivery**：起 AI agents 時自注或持久化 agnt context；Claude Code 用 `--append-system-prompt`；Gemini, Copilot, Aider 等 normal sessions 寫入 agent context file，setup mode 才用 stdin prompt。詳 `docs/agent-adapters.md`。
 
-**Core Features**: browser debug (screenshots, DOM inspect, error capture), floating indicator messaging, sketch mode (Excalidraw-like wireframe), design mode (AI UI iteration), process/proxy management with daemon persistence, PTY overlay.
+**Core Features**: browser debug (screenshots, DOM inspect, error capture), floating indicator messaging, sketch mode (Excalidraw-like wireframe), design mode (AI UI iteration), process/proxy management with daemon persistence, PTY overlay, shell shims (`.agnt/bin` PATH wrappers routing dev/build/kill through the daemon; `internal/shims/`, SHIM verb).
 
 ## Installation
 
@@ -214,7 +214,7 @@ Test startup contract (`Start()` vs `NewForTest`)：`.claude/rules/daemon-archit
 | Topic | Location |
 |-------|----------|
 | Per-tool params, output formats, `__devtool` API, `agnt monitor` | `docs/mcp-tools.md` |
-| `.agnt.kdl` config (port-conflict, alert push, incident keys, URL tracking) | `docs/configuration.md` |
+| `.agnt.kdl` config (port-conflict, alert push, incident keys, URL tracking, shims) | `docs/configuration.md` |
 | Remote SSH (quick start, reconnect, forwarding, bootstrap, push) | `docs/remote-ssh.md` |
 | Auth breakout (OAuth flows out of the content iframe) | `docs/auth-breakout.md` |
 | Hook dispatcher (telemetry forward) | `docs/hook-dispatcher.md` |

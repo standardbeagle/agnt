@@ -195,6 +195,17 @@ type DaemonConfig struct {
 	// (task 6btkGG5QUGTL) for the migration. Never expose this field to end
 	// users — it is an internal test-safety knob, not a product feature.
 	OrphanScanEnabled bool
+
+	// ShimWatcherEnabled gates spawning the detached `agnt shim watch`
+	// cleanup process. Default zero-value (false) is the test-safe default:
+	// ensureShimWatcher spawns os.Executable(), which under `go test` is
+	// the test binary — an unguarded spawn would re-run the whole suite as
+	// a detached process.
+	//
+	// Production sets this to true explicitly in cmd/agnt/daemon.go. Same
+	// positive-naming rationale as OrphanScanEnabled. Internal test-safety
+	// knob — never expose to end users.
+	ShimWatcherEnabled bool
 }
 
 // DefaultDaemonConfig returns sensible defaults.
@@ -872,6 +883,11 @@ func (d *Daemon) Start() error {
 
 	// Restore proxies from persisted state
 	d.restoreProxies()
+
+	// Reconcile the shim manifest: drop entries whose bin dir vanished
+	// while the daemon was down, reset session lists (no session survives
+	// a daemon restart), and respawn the external cleanup watcher.
+	d.sweepShimManifest()
 
 	// Start update checker if enabled
 	if d.updateChecker != nil {

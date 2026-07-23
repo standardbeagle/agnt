@@ -25,6 +25,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/overlay"
 	"github.com/standardbeagle/agnt/internal/pathutil"
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/shims"
 	"github.com/standardbeagle/agnt/internal/tools"
 )
 
@@ -209,6 +210,22 @@ type daemonSessionConfig struct {
 	SessionJobHandle uint64
 }
 
+// registerShims refreshes the project's shim bin dir and records it with
+// the daemon so shutdown/session-end/watcher cleanup can find it. Best-
+// effort: a daemon without the SHIM verb (older binary) just errors and
+// the shims still work via fail-open passthrough.
+func registerShims(client *daemon.Client, cfg daemonSessionConfig) {
+	binDir, err := shims.Ensure(cfg.ProjectPath)
+	if err != nil || binDir == "" {
+		return
+	}
+	_ = client.ShimRegister(protocol.ShimRegisterRequest{
+		ProjectPath: cfg.ProjectPath,
+		BinDir:      binDir,
+		SessionCode: cfg.SessionCode,
+	})
+}
+
 // startDaemonSession starts daemon connection and session registration in a goroutine.
 // Returns a handle that can be used to interact with the daemon and must be closed when done.
 // The registration happens asynchronously; use handle.WaitRegistered() to block until complete.
@@ -230,6 +247,7 @@ func startDaemonSession(ctx context.Context, cfg daemonSessionConfig) *daemonSes
 		// Session registration handles per-project overlay endpoint scoping.
 		config.OnReconnect = func(client *daemon.Client) error {
 			_, _ = client.SessionRegisterWithContainment(cfg.SessionCode, cfg.OverlayEndpoint, cfg.ProjectPath, cfg.Command, cfg.CmdArgs, cfg.SessionPGID, cfg.SessionJobHandle)
+			registerShims(client, cfg)
 			return nil
 		}
 
@@ -257,6 +275,7 @@ func startDaemonSession(ctx context.Context, cfg daemonSessionConfig) *daemonSes
 
 		handle.sessionRegistered = true
 		handle.projectPath = cfg.ProjectPath
+		registerShims(client.Client(), cfg)
 		if result != nil {
 			if status, ok := result["status"].(string); ok {
 				handle.autostartStatus = status

@@ -13,6 +13,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/platform"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/sessionhost"
+	"github.com/standardbeagle/agnt/internal/shims"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
@@ -110,6 +111,23 @@ func (d *Daemon) hubHandleSessionHostCreate(conn *hubpkg.Connection, cmd *hubpro
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to create session-host session: %v", err))
 	}
 	d.sessionHosts.Add(s)
+
+	// Record the shim install sessionhost.Create made (PATH injection) so
+	// daemon shutdown / startup sweep / watcher cleanup can find the bin
+	// dir. Without this the dir would leak — the comment in sessionhost.go
+	// claiming a client-side REGISTER was wrong: session-host creates have
+	// no client-side shim step.
+	if s.ProjectPath != "" {
+		if binDir := shims.BinDir(s.ProjectPath); binDir != "" {
+			if _, err := os.Stat(binDir); err == nil {
+				if err := shims.RecordInstall(s.ProjectPath, binDir, s.ID); err != nil {
+					debug.Log("daemon", "session-host shim register failed for %s: %v", s.ProjectPath, err)
+				} else {
+					d.ensureShimWatcher()
+				}
+			}
+		}
+	}
 
 	// Also register into the shared SessionRegistry (spec §2.3) so project
 	// scoping helpers (hasOtherSessions, FindByDirectory) see it, tagged
@@ -271,6 +289,11 @@ func (d *Daemon) hubHandleSessionHostKill(conn *hubpkg.Connection, cmd *hubproto
 			d.sessionRegistry.UnregisterExact(id, entry)
 		}
 	}()
+
+	// Detach the killed session from the project's shim manifest entry and
+	// drop the bin dir when no session (classic or session-host) remains.
+	// Runs for EVERY kill, not just the last — see releaseProjectShims.
+	d.releaseProjectShims(s.ProjectPath, id)
 
 	return conn.WriteOK(fmt.Sprintf("session-host session %s killed", id))
 }

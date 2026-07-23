@@ -126,6 +126,10 @@ func newDaemonConfig(appCfg *config.Config, socketPath, publicAddr string) daemo
 		MaxClients:        100,
 		WriteTimeout:      30 * time.Second,
 		OrphanScanEnabled: true, // production: walk /proc on startup. Tests default to false.
+		// production: spawn the detached shim cleanup watcher on SHIM
+		// REGISTER / startup sweep. Tests default to false (os.Executable
+		// under `go test` is the test binary).
+		ShimWatcherEnabled: true,
 		// Public walkthrough plane (P7/§2b): opt-in. The token-gated public handler
 		// is always BUILT (so `publish feedback` reads work), but a dedicated HTTP
 		// listener is only stood up when an operator sets AGNT_PUBLIC_ADDR — we do

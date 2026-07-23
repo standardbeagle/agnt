@@ -27,6 +27,7 @@ const (
 	VerbSessionHost  = "SESSION-HOST"  // Daemon-owned detachable PTY sessions (see docs/superpowers/specs/2026-07-03-remote-ssh-design.md §1)
 	VerbScope        = "SCOPE"         // Resolve effective query scope
 	VerbPublish      = "PUBLISH"       // Public walkthrough share-token lifecycle (control plane; see docs/superpowers/specs/2026-07-13-public-walkthrough-publish-security.md)
+	VerbShim         = "SHIM"          // Shell shim routing (EXEC) + install bookkeeping (REGISTER)
 )
 
 // DirectoryFilter preserves JSON presence for global while retaining the
@@ -564,6 +565,40 @@ type HookPayload struct {
 	Event   string            `json:"event"`
 	Payload json.RawMessage   `json:"payload,omitempty"`
 	Tags    map[string]string `json:"tags,omitempty"`
+}
+
+// ShimExecRequest is the SHIM EXEC payload sent by `agnt shim exec` from
+// inside a managed shell. Cwd is the shell's working directory at
+// invocation time (may differ from ProjectPath for monorepo subdirs).
+type ShimExecRequest struct {
+	ProjectPath string   `json:"project_path"`
+	SessionCode string   `json:"session_code,omitempty"`
+	Command     string   `json:"command"`
+	Args        []string `json:"args,omitempty"`
+	Cwd         string   `json:"cwd,omitempty"`
+}
+
+// ShimExecResponse is the daemon's routing decision. Action "handled"
+// means the daemon ran (or reused) a managed process and ExitCode/Output
+// carry the result; "passthrough" tells the shim to exec the real binary;
+// "blocked" refuses the command. Message is printed to stderr by the shim,
+// Output to stdout. ToolHint names the MCP tool the agent could have used
+// directly.
+type ShimExecResponse struct {
+	Action   string `json:"action"` // handled | passthrough | blocked
+	ExitCode int    `json:"exit_code"`
+	Message  string `json:"message,omitempty"`
+	Output   string `json:"output,omitempty"`
+	ToolHint string `json:"tool_hint,omitempty"`
+}
+
+// ShimRegisterRequest is the SHIM REGISTER payload sent after a client
+// installs a project's shim bin dir, so the daemon can track liveness and
+// clean up on shutdown/session end.
+type ShimRegisterRequest struct {
+	ProjectPath string `json:"project_path"`
+	BinDir      string `json:"bin_dir"`
+	SessionCode string `json:"session_code,omitempty"`
 }
 
 // AutostartRunConfig is the JSON payload for AUTOSTART RUN. Sent from the MCP

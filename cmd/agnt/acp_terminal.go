@@ -7,11 +7,16 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"sync"
 	"syscall"
 	"unicode/utf8"
 
 	acp "github.com/coder/acp-go-sdk"
+
+	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/shims"
 )
 
 // defaultTerminalByteLimit caps a terminal's retained output when the agent
@@ -113,13 +118,18 @@ func (c *acpClient) CreateTerminal(_ context.Context, params acp.CreateTerminalR
 	if params.Cwd != nil {
 		cmd.Dir = *params.Cwd
 	}
+	env := os.Environ()
 	if len(params.Env) > 0 {
-		env := os.Environ()
 		for _, e := range params.Env {
 			env = append(env, e.Name+"="+e.Value)
 		}
-		cmd.Env = env
 	}
+	// Route shell commands inside agent-requested terminals through the
+	// daemon: stamp the project path (terminals don't inherit the
+	// AGNT_PROJECT_PATH that `agnt run` sets) and shadow dev/build/kill
+	// commands with the project's shim bin dir.
+	env = injectShimEnv(env, terminalWorkDir(cmd))
+	cmd.Env = env
 	cmd.Stdout = t
 	cmd.Stderr = t
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -146,6 +156,72 @@ func (c *acpClient) CreateTerminal(_ context.Context, params acp.CreateTerminalR
 	c.termMu.Unlock()
 
 	return acp.CreateTerminalResponse{TerminalId: id}, nil
+}
+
+// terminalWorkDir resolves the directory the terminal will run in.
+func terminalWorkDir(cmd *exec.Cmd) string {
+	if cmd.Dir != "" {
+		return cmd.Dir
+	}
+	if wd, err := os.Getwd(); err == nil {
+		return wd
+	}
+	return ""
+}
+
+// injectShimEnv stamps AGNT_PROJECT_PATH (when unset) and prepends the
+// project's shim bin dir to PATH. No-op for projects without shims.
+// Also records the install with the daemon once per project per process
+// so shutdown/watcher cleanup can find the bin dir.
+func injectShimEnv(env []string, workDir string) []string {
+	if workDir == "" {
+		return env
+	}
+	projectPath := workDir
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "AGNT_PROJECT_PATH=") {
+			projectPath = strings.TrimPrefix(kv, "AGNT_PROJECT_PATH=")
+		}
+	}
+	if !hasEnvKey(env, "AGNT_PROJECT_PATH") {
+		env = append(env, "AGNT_PROJECT_PATH="+projectPath)
+	}
+	binDir, err := shims.Ensure(projectPath)
+	if err != nil || binDir == "" {
+		return env
+	}
+	registerShimsOnce(projectPath, binDir)
+	return shims.PrependPATH(env, binDir)
+}
+
+// shimRegistrations tracks projects already registered with the daemon
+// from this process so CreateTerminal stays cheap after the first call.
+var shimRegistrations sync.Map // projectPath -> struct{}
+
+func registerShimsOnce(projectPath, binDir string) {
+	if _, loaded := shimRegistrations.LoadOrStore(projectPath, struct{}{}); loaded {
+		return
+	}
+	socketPath := daemon.DefaultSocketPath()
+	if !daemon.IsRunning(socketPath) {
+		return
+	}
+	client := daemon.NewClient(daemon.WithSocketPath(socketPath))
+	if err := client.Connect(); err != nil {
+		return
+	}
+	defer client.Close()
+	_ = client.ShimRegister(protocol.ShimRegisterRequest{ProjectPath: projectPath, BinDir: binDir})
+}
+
+func hasEnvKey(env []string, key string) bool {
+	prefix := key + "="
+	for _, kv := range env {
+		if strings.HasPrefix(kv, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // TerminalOutput returns the captured output and exit status (if any) without

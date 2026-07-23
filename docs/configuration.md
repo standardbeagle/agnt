@@ -216,3 +216,57 @@ bind failure is surfaced loud but is non-fatal: the control plane and dev proxy
 stay up, only the public plane is unavailable. Unsetting it and restarting the
 daemon removes the public surface entirely. See
 **[public-walkthroughs.md](public-walkthroughs.md)**.
+
+## Shell Shims (`shims` in `.agnt.kdl`; runtime: `internal/shims/`, `internal/daemon/hub_shim.go`)
+
+Per-project wrapper scripts in `<project>/.agnt/bin/`, prepended to `PATH` for
+agnt-managed shells only (`agnt run`, session-hosts, ACP terminals). Shimmed
+commands — `npm pnpm yarn bun vite next go cargo make kill killall pkill lsof
+fuser` — route through the daemon and print feedback naming the MCP tool the
+agent could have used directly. User shells are never touched.
+
+```kdl
+shims {
+    enabled true              # default true when .agnt.kdl exists
+    watch-script "dev"        # default: first of dev/watch/start/serve
+    rules {
+        build-restart {
+            match "npm run build"     # glob over the full command line; * = any substring
+            action "restart-watch"    # run, then restart the watch script
+        }
+        out-of-tree {
+            match "go build*"
+            action "reroute"
+            dir "./.agnt-build"       # build away from the running watch
+        }
+        make-quiesce {
+            match "make"
+            action "quiesce"          # stop watch, run, restart watch
+        }
+    }
+}
+```
+
+Actions: `route` (default for dev-server/build/test/kill/port classes — run
+through the managed-process pipeline), `restart-watch`, `reroute`, `quiesce`,
+`ignore`, `block`, `pass`. Rule precedence is most-literal-wins (count of
+non-`*` characters, then fewest `*`), not insertion order. Unmatched commands in known
+classes route by default; unknown commands (e.g. `npm install`, `go mod tidy`)
+pass through unless a rule says otherwise — an explicit `route` rule on such a
+command runs it as a managed one-shot.
+
+Routing semantics by class: dev servers start-or-reuse a managed process
+(configured scripts go through the script registry); one-shot builds/tests run
+managed, block until exit, and return exit code + output tail; `kill` is only
+intercepted when every target resolves to a daemon-managed process of the same
+project, validated before any stop is issued (otherwise real `kill` runs); `lsof`/`fuser` answer with the managed-process table plus the
+`proc cleanup_port` hint.
+
+Fail-open everywhere: unreachable daemon, missing session, or disabled config
+makes the shim `exec` the real binary — a stale `.agnt/bin` is a no-op, never
+a breakage. Cleanup is three-layered: `Daemon.Stop()` removes all registered
+bin dirs, last-session teardown removes the project's bin dir, and a detached
+`agnt shim watch` process (spawned by the daemon, own session) removes every
+manifest entry if the daemon stays dead past a 30s grace window (daemon
+auto-restart wins the race). Install bookkeeping lives in
+`$XDG_STATE_HOME/agnt/shims/manifest.json`.

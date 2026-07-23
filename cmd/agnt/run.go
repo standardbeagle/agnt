@@ -78,7 +78,8 @@ func runPTYChild(ctx context.Context, args []string, socketPath string, sessionC
 
 	stopSpinner := spinner(fmt.Sprintf("Starting %s...", command))
 	c := commandWithArgs(command, launch.Args...)
-	c.Env = append(os.Environ(), "AGNT_PROJECT_PATH="+projectPath, hookrules.AgntRunEnv+"=1")
+	env := append(os.Environ(), "AGNT_PROJECT_PATH="+projectPath, hookrules.AgntRunEnv+"=1", "AGNT_SESSION_CODE="+sessionCode)
+	c.Env = shimChildEnv(env, projectPath)
 
 	ptmx, err := pty.Start(c)
 	stopSpinner()
