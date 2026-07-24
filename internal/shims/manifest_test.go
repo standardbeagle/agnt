@@ -24,20 +24,24 @@ func TestManifestRoundTrip(t *testing.T) {
 	assert.Empty(t, m.Projects["/proj/b"].Sessions)
 
 	// Releasing one session keeps the entry.
-	assert.True(t, ReleaseSession("/proj/a", "sess-1"))
+	stillUsed, err := ReleaseSession("/proj/a", "sess-1")
+	require.NoError(t, err)
+	assert.True(t, stillUsed)
 	m = LoadManifest()
 	require.Len(t, m.Projects, 2)
 
 	// Releasing the last session detaches it but KEEPS the entry — only
 	// DropProject (after the bin dir is gone) removes it, so crash
 	// recovery never loses track of an installed dir.
-	assert.False(t, ReleaseSession("/proj/a", "sess-2"))
+	stillUsed, err = ReleaseSession("/proj/a", "sess-2")
+	require.NoError(t, err)
+	assert.False(t, stillUsed)
 	m = LoadManifest()
 	require.Len(t, m.Projects, 2)
 	assert.Empty(t, m.Projects["/proj/a"].Sessions)
 
-	DropProject("/proj/a")
-	DropProject("/proj/b")
+	require.NoError(t, DropProject("/proj/a"))
+	require.NoError(t, DropProject("/proj/b"))
 	m = LoadManifest()
 	assert.Empty(t, m.Projects)
 }

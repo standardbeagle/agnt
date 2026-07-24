@@ -133,8 +133,13 @@ func RecordInstall(projectPath, binDir, sessionCode string) error {
 // here would lose crash-recovery track of an installed dir whenever a
 // session ends while others (registered but never recorded, e.g. ACP
 // terminals) still depend on it.
-func ReleaseSession(projectPath, sessionCode string) (stillUsed bool) {
-	_ = WithManifest(func(m *Manifest) {
+//
+// On a persistence error the session detach may not have been saved, so
+// stillUsed is reported as true: the fail-safe default is "keep the bin
+// dir", never "delete a dir that may still be in use".
+func ReleaseSession(projectPath, sessionCode string) (stillUsed bool, err error) {
+	stillUsed = true
+	err = WithManifest(func(m *Manifest) {
 		e, ok := m.Projects[projectPath]
 		if !ok {
 			return
@@ -142,12 +147,12 @@ func ReleaseSession(projectPath, sessionCode string) (stillUsed bool) {
 		e.Sessions = removeString(e.Sessions, sessionCode)
 		stillUsed = len(e.Sessions) > 0
 	})
-	return stillUsed
+	return stillUsed, err
 }
 
 // DropProject removes the entry outright (bin dir already deleted).
-func DropProject(projectPath string) {
-	_ = WithManifest(func(m *Manifest) {
+func DropProject(projectPath string) error {
+	return WithManifest(func(m *Manifest) {
 		delete(m.Projects, projectPath)
 	})
 }

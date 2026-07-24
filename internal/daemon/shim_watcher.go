@@ -60,7 +60,14 @@ func (d *Daemon) releaseProjectShims(projectPath, sessionCode string) {
 	if projectPath == "" {
 		return
 	}
-	if shims.ReleaseSession(projectPath, sessionCode) {
+	stillUsed, err := shims.ReleaseSession(projectPath, sessionCode)
+	if err != nil {
+		// The detach may not have been persisted; keep the bin dir rather
+		// than risk deleting one still in use.
+		debug.Log("shim-hub", "releaseProjectShims: release session: %v", err)
+		return
+	}
+	if stillUsed {
 		return
 	}
 	for _, other := range d.sessionRegistry.List(projectPath, false) {
@@ -69,7 +76,9 @@ func (d *Daemon) releaseProjectShims(projectPath, sessionCode string) {
 		}
 	}
 	shims.Remove(projectPath)
-	shims.DropProject(projectPath)
+	if err := shims.DropProject(projectPath); err != nil {
+		debug.Log("shim-hub", "releaseProjectShims: drop project: %v", err)
+	}
 }
 
 // cleanupAllShims removes every registered shim bin dir and clears the
