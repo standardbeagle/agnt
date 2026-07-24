@@ -688,12 +688,9 @@ func runAiClaudeOverlay(ctx context.Context, opts *claude.AgentOptions, daemonHa
 		case <-lineEditor.EOF():
 			goto cleanup
 
-		case msg := <-func() <-chan string {
-			if msgCh != nil {
-				return msgCh
-			}
-			return nil
-		}():
+		// msgCh may be nil (no AI overlay): receiving on a nil channel blocks
+		// forever, which is exactly "case never fires" — no guard needed.
+		case msg := <-msgCh:
 			fmt.Fprintf(rawWriter, "\r\033[K[message] %s\n", msg)
 			prompt = msg
 			fromMessage = true

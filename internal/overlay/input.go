@@ -238,7 +238,16 @@ func (r *InputRouter) Run() error {
 	const escTimeout = 50 * time.Millisecond
 	var escTimer *time.Timer
 
+	// Hoisted out of the select: a closure in the case expression would
+	// allocate on every loop iteration.
+	var escTimerC <-chan time.Time
+
 	for {
+		if escTimer != nil {
+			escTimerC = escTimer.C
+		} else {
+			escTimerC = nil
+		}
 		select {
 		case <-r.done:
 			return nil
@@ -249,12 +258,7 @@ func (r *InputRouter) Run() error {
 			}
 			return err
 
-		case <-func() <-chan time.Time {
-			if escTimer != nil {
-				return escTimer.C
-			}
-			return nil
-		}():
+		case <-escTimerC:
 			// Escape sequence timeout - treat as plain Escape
 			escTimer = nil
 			if key, hadPending := r.escReader.Timeout(); hadPending {
