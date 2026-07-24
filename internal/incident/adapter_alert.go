@@ -3,7 +3,7 @@ package incident
 import (
 	"strings"
 
-	"github.com/standardbeagle/agnt/internal/overlay"
+	"github.com/standardbeagle/agnt/internal/alert"
 )
 
 // buildCategories maps AlertPattern.Category values that represent build-system
@@ -19,7 +19,7 @@ var buildCategories = map[string]bool{
 // IncidentEvent. Build-failure patterns (webpack, vite, nextjs, rebuild, or any
 // pattern whose description contains "build"/"compile") use SourceBuildFail;
 // all others use SourceProcessAlert.
-func FromAlertMatch(m *overlay.AlertMatch, processID string) IncidentEvent {
+func FromAlertMatch(m *alert.AlertMatch, processID string) IncidentEvent {
 	src := SourceProcessAlert
 	if isBuildPattern(m.Pattern) {
 		src = SourceBuildFail
@@ -27,9 +27,9 @@ func FromAlertMatch(m *overlay.AlertMatch, processID string) IncidentEvent {
 
 	var sev Severity
 	switch m.Pattern.Severity {
-	case overlay.AlertSeverityError:
+	case alert.AlertSeverityError:
 		sev = SeverityError
-	case overlay.AlertSeverityWarning:
+	case alert.AlertSeverityWarning:
 		sev = SeverityWarning
 	default:
 		sev = SeverityInfo
@@ -42,7 +42,7 @@ func FromAlertMatch(m *overlay.AlertMatch, processID string) IncidentEvent {
 	)
 }
 
-func isBuildPattern(p *overlay.AlertPattern) bool {
+func isBuildPattern(p *alert.AlertPattern) bool {
 	if buildCategories[p.Category] {
 		return true
 	}
