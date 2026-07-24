@@ -107,10 +107,6 @@ func runAttachTerminalUnix(client *daemonclient.Client, sessionID string, detach
 	defer close(sigDone)
 	go signalRestoreWatcher(sigCh, sigDone, restore, cancel)
 
-	type attachInfo struct {
-		id      string
-		primary bool
-	}
 	attachedCh := make(chan attachInfo, 1)
 	var attachedOnce sync.Once
 
