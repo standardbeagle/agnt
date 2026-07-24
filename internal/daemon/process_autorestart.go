@@ -203,6 +203,7 @@ func (r *ProcessAutoRestarter) Register(processID string, config AutoRestartConf
 	// need r.mu.RLock, so we cannot hold the write lock while blocking on Acquire.
 	if err := r.monitorSem.Acquire(r.ctx, 1); err != nil {
 		monitorCancel()
+		r.removeIfCurrent(processID, state)
 		debug.Warn("daemon", "Cannot start monitor for %s: context cancelled", processID)
 		return
 	}
@@ -215,6 +216,7 @@ func (r *ProcessAutoRestarter) Register(processID string, config AutoRestartConf
 		r.shutdownMu.Unlock()
 		monitorCancel()
 		r.monitorSem.Release(1)
+		r.removeIfCurrent(processID, state)
 		return
 	}
 	r.wg.Add(1)
@@ -224,6 +226,18 @@ func (r *ProcessAutoRestarter) Register(processID string, config AutoRestartConf
 		defer r.monitorSem.Release(1)
 		r.monitorProcess(processID, state)
 	}()
+}
+
+// removeIfCurrent deletes the registry entry for processID only when it still
+// holds this exact state instance — a concurrent Register may have replaced it
+// with a live one. Used on every path where registration fails or the monitor
+// exits terminally, so IsRegistered never reports true with nothing watching.
+func (r *ProcessAutoRestarter) removeIfCurrent(processID string, state *processRestartState) {
+	r.mu.Lock()
+	if cur, ok := r.processes[processID]; ok && cur == state {
+		delete(r.processes, processID)
+	}
+	r.mu.Unlock()
 }
 
 // Unregister disables auto-restart for a process.
@@ -380,6 +394,9 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string, myState *process
 			debug.Log("daemon", "Process %s exited (code %d), max restarts reached or disabled", processID, exitCode)
 			r.daemon.recordStartupEntry(processID, scriptName, "warning", "restart_gave_up",
 				fmt.Sprintf("auto-restart exhausted or disabled (exit code %d)", exitCode), 0)
+			// The monitor exits here; drop the registration so IsRegistered
+			// never reports true with nothing watching.
+			r.removeIfCurrent(processID, myState)
 			return
 		}
 
@@ -472,6 +489,11 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string, myState *process
 
 		if startupErr != nil {
 			debug.Error("daemon", "Failed to restart process %s: %v", processID, startupErr)
+
+			// The monitor exits here, so the registration must go with it:
+			// leaving the entry would make IsRegistered report true with
+			// nothing watching.
+			r.removeIfCurrent(processID, myState)
 
 			// Log restart failure to session log
 			r.daemon.startupErrorStore.Add(&StartupLogEntry{

@@ -2,12 +2,14 @@ package daemon
 
 import (
 	"context"
+	"fmt"
 	"net/url"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/go-cli-server/process"
 )
 
@@ -37,9 +39,9 @@ type URLTracker struct {
 	scannedStdout map[string]int
 	scannedStderr map[string]int
 
-	// urlMatchers stores URL matcher patterns per process ID
+	// urlMatchers stores compiled URL matcher patterns per process ID
 	// e.g., ["Local:\\s*{url}", "Network:\\s*{url}"]
-	urlMatchers map[string][]string
+	urlMatchers map[string][]urlMatcher
 
 	// scanInterval is how often to scan for new URLs
 	scanInterval time.Duration
@@ -80,19 +82,32 @@ func NewURLTracker(pm *process.ProcessManager, config URLTrackerConfig) *URLTrac
 		seenURLs:      make(map[string]map[string]bool),
 		scannedStdout: make(map[string]int),
 		scannedStderr: make(map[string]int),
-		urlMatchers:   make(map[string][]string),
+		urlMatchers:   make(map[string][]urlMatcher),
 		scanInterval:  config.ScanInterval,
 	}
 }
 
 // SetURLMatchers sets URL matcher patterns for a specific process.
 // Matchers support patterns like "Local:\\s*{url}" or "(Local|Network):\\s*{url}".
+// Patterns are compiled once here — the scan loop runs every 500ms per
+// process, so recompiling per line per tick (and silently swallowing compile
+// errors) was both hot-path waste and an invisible config failure. An invalid
+// pattern is reported and skipped.
 func (t *URLTracker) SetURLMatchers(processID string, matchers []string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	if len(matchers) > 0 {
-		t.urlMatchers[processID] = matchers
+	if len(matchers) == 0 {
+		delete(t.urlMatchers, processID)
+		return
+	}
+
+	compiled, errs := compileURLMatchers(matchers)
+	for _, err := range errs {
+		debug.Warn("daemon", "invalid URL matcher for %s: %v", processID, err)
+	}
+	if len(compiled) > 0 {
+		t.urlMatchers[processID] = compiled
 	} else {
 		delete(t.urlMatchers, processID)
 	}
@@ -174,7 +189,7 @@ func (t *URLTracker) scanAllProcesses() {
 // URL on stdout could fall below the combined cursor and never be scanned
 // (e.g. Vite 8: "Local: http://localhost:5173/" on stdout, deprecation
 // warnings on stderr). Scanning each stream independently removes the coupling.
-func scanStreamForURLs(buf []byte, scanned int, matchers []string) (urls []string, newScanned int) {
+func scanStreamForURLs(buf []byte, scanned int, matchers []urlMatcher) (urls []string, newScanned int) {
 	scanEnd := len(buf)
 	if scanEnd > maxScanBytes {
 		scanEnd = maxScanBytes
@@ -327,7 +342,7 @@ func parseDevServerURLs(output []byte) []string {
 // parseDevServerURLsWithMatchers extracts URLs matching specific patterns.
 // If matchers is nil or empty, returns all detected URLs.
 // Matchers support patterns like "Local:\s*{url}" or "(Local|Network):\s*{url}".
-func parseDevServerURLsWithMatchers(output []byte, matchers []string) []string {
+func parseDevServerURLsWithMatchers(output []byte, matchers []urlMatcher) []string {
 	lines := strings.Split(string(output), "\n")
 	seen := make(map[string]bool)
 	var urls []string
@@ -353,7 +368,7 @@ func parseDevServerURLsWithMatchers(output []byte, matchers []string) []string {
 
 		// Check if line matches any of the patterns
 		for _, matcher := range matchers {
-			if matchesURLPattern(line, matcher) {
+			if matcher.matches(line) {
 				// Extract URL from the line
 				lineMatches := devServerURLRegex.FindAllString(line, -1)
 				for _, match := range lineMatches {
@@ -399,26 +414,67 @@ func normalizeURL(u string) string {
 	return parsed.String()
 }
 
-// matchesURLPattern checks if a line matches a URL matcher pattern.
+// urlMatcher is a precompiled URL matcher pattern. A nil re matches any line
+// containing a URL (the "{url}"-only pattern).
+type urlMatcher struct {
+	re *regexp.Regexp
+}
+
+// compileURLMatcher validates and compiles a matcher pattern. The {url}
+// placeholder is stripped first — we only need to match the prefix, not the
+// URL itself.
+func compileURLMatcher(pattern string) (urlMatcher, error) {
+	p := strings.ReplaceAll(pattern, "{url}", "")
+	p = strings.TrimSpace(p)
+
+	if p == "" {
+		// Empty pattern matches any line with a URL
+		return urlMatcher{}, nil
+	}
+	re, err := regexp.Compile(p)
+	if err != nil {
+		return urlMatcher{}, fmt.Errorf("pattern %q does not compile: %w", pattern, err)
+	}
+	return urlMatcher{re: re}, nil
+}
+
+// compileURLMatchers compiles a pattern list, skipping (and reporting)
+// patterns that do not compile.
+func compileURLMatchers(patterns []string) ([]urlMatcher, []error) {
+	compiled := make([]urlMatcher, 0, len(patterns))
+	var errs []error
+	for _, pattern := range patterns {
+		m, err := compileURLMatcher(pattern)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		compiled = append(compiled, m)
+	}
+	return compiled, errs
+}
+
+// matches reports whether a line matches the pattern.
+func (m urlMatcher) matches(line string) bool {
+	if m.re == nil {
+		return devServerURLRegex.MatchString(line)
+	}
+	return m.re.MatchString(line)
+}
+
+// matchesURLPattern checks if a line matches a URL matcher pattern. Thin
+// wrapper over compileURLMatcher for one-shot callers (tests); the tracker
+// stores compiled matchers instead.
 // Supports patterns like:
 //   - "Local:\s*{url}" - matches lines containing "Local:" followed by a URL
 //   - "(Local|Network):\s*{url}" - matches lines with "Local:" or "Network:"
 //   - "{url}" - matches any line with a URL
 func matchesURLPattern(line, pattern string) bool {
-	// Replace {url} placeholder with a simple marker
-	// We don't need to match the actual URL, just check if the prefix exists
-	pattern = strings.ReplaceAll(pattern, "{url}", "")
-	pattern = strings.TrimSpace(pattern)
-
-	if pattern == "" {
-		// Empty pattern matches any line with a URL
-		return devServerURLRegex.MatchString(line)
+	m, err := compileURLMatcher(pattern)
+	if err != nil {
+		return false
 	}
-
-	// Handle regex-style patterns like "(Local|Network):"
-	// Simple matching: check if the line contains the pattern (after removing {url})
-	matched, _ := regexp.MatchString(pattern, line)
-	return matched
+	return m.matches(line)
 }
 
 // shouldIgnoreURL returns true if the URL should be ignored.

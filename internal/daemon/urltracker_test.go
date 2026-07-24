@@ -196,7 +196,8 @@ func TestParseDevServerURLsWithMatchers_ANSIStripping(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parseDevServerURLsWithMatchers(tt.input, tt.matchers)
+			compiled, _ := compileURLMatchers(tt.matchers)
+			got := parseDevServerURLsWithMatchers(tt.input, compiled)
 			if len(got) != len(tt.expected) {
 				t.Errorf("parseDevServerURLsWithMatchers() got %d URLs, want %d", len(got), len(tt.expected))
 				t.Errorf("got: %v", got)
@@ -476,7 +477,8 @@ func TestParseDevServerURLsWithMatchers(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parseDevServerURLsWithMatchers(tt.input, tt.matchers)
+			compiled, _ := compileURLMatchers(tt.matchers)
+			got := parseDevServerURLsWithMatchers(tt.input, compiled)
 			if len(got) != len(tt.expected) {
 				t.Errorf("parseDevServerURLsWithMatchers() got %d URLs, want %d", len(got), len(tt.expected))
 				t.Errorf("got: %v", got)
@@ -544,7 +546,7 @@ func TestURLTracker_ClearProcess_EnablesRescanning(t *testing.T) {
 // proxy was ever created.
 func TestScanStreamForURLs_StdoutURLSurvivesStderrAdvance(t *testing.T) {
 	t.Parallel()
-	matchers := []string{"Local:\\s+{url}"}
+	matchers, _ := compileURLMatchers([]string{"Local:\\s+{url}"})
 	// 626-ish bytes of Vite 8 deprecation noise on stderr, no URL.
 	stderrNoise := []byte("6:34:41 AM [vite] warning: `optimizeDeps.esbuildOptions` option was specified " +
 		"by \"vite:react-swc\" plugin. This option is deprecated, please use " +

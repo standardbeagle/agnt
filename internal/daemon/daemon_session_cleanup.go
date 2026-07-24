@@ -544,7 +544,7 @@ func (d *Daemon) doCleanupExact(sessionCode string, expected *Session, expectedP
 	}
 
 	// Stop only orphaned script processes (no remaining observers)
-	if len(orphanedProcessIDs) > 0 {
+	if len(orphanedProcessIDs) > 0 || !hasOtherSessions {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -562,26 +562,25 @@ func (d *Daemon) doCleanupExact(sessionCode string, expected *Session, expectedP
 					}
 				}
 			}
-		}()
-	} else if !hasOtherSessions {
-		// No orphaned scripts but last session — stop all remaining processes
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			stoppedIDs, err := d.hub.ProcessManager().StopByProjectPath(ctx, projectPath)
-			if err != nil {
-				debug.Log("daemon", "error stopping processes for project %s: %v", projectPath, err)
-				d.daemonStartupLog("warning", "stop_failed",
-					fmt.Sprintf("error stopping processes for project %s: %v", projectPath, err))
-			}
-			for _, id := range stoppedIDs {
-				d.retireIncidentProcessOwner(id)
-			}
-			if len(stoppedIDs) > 0 {
-				debug.Log("daemon", "stopped processes: %v", stoppedIDs)
-				if d.autoRestarter != nil {
-					for _, id := range stoppedIDs {
-						d.autoRestarter.Unregister(id)
+			// Last session: stop everything remaining for the project —
+			// including bare `proc run` processes, which are never in the
+			// orphaned-scripts list and would otherwise leak.
+			if !hasOtherSessions {
+				stoppedIDs, err := pm.StopByProjectPath(ctx, projectPath)
+				if err != nil {
+					debug.Log("daemon", "error stopping processes for project %s: %v", projectPath, err)
+					d.daemonStartupLog("warning", "stop_failed",
+						fmt.Sprintf("error stopping processes for project %s: %v", projectPath, err))
+				}
+				for _, id := range stoppedIDs {
+					d.retireIncidentProcessOwner(id)
+				}
+				if len(stoppedIDs) > 0 {
+					debug.Log("daemon", "stopped processes: %v", stoppedIDs)
+					if d.autoRestarter != nil {
+						for _, id := range stoppedIDs {
+							d.autoRestarter.Unregister(id)
+						}
 					}
 				}
 			}

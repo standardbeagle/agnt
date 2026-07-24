@@ -74,7 +74,8 @@ Using Frontend DevServer URL: http://localhost:5174/
 App ready.
 `)
 
-	urls := parseDevServerURLsWithMatchers(wailsOutput, script.URLMatchers)
+	compiled, _ := compileURLMatchers(script.URLMatchers)
+	urls := parseDevServerURLsWithMatchers(wailsOutput, compiled)
 	t.Logf("URLs detected with config matchers: %v", urls)
 
 	if len(urls) != 1 {
@@ -105,7 +106,7 @@ App ready.
 	t.Logf("No matchers - captured %d URLs: %v", len(urls), urls)
 
 	// Test with Wails-specific matcher (must include "Using" to avoid matching "Frontend DevServer URL")
-	matchers := []string{`Using DevServer URL:\s*{url}`}
+	matchers, _ := compileURLMatchers([]string{`Using DevServer URL:\s*{url}`})
 	urls = parseDevServerURLsWithMatchers(output, matchers)
 	t.Logf("With Wails matcher - captured %d URLs: %v", len(urls), urls)
 
