@@ -3,6 +3,7 @@ package proxy
 import (
 	"context"
 	"errors"
+	"github.com/standardbeagle/agnt/internal/pathutil"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -104,7 +105,7 @@ func (pm *ProxyManager) GetWithPathFilter(id, pathFilter string) (*ProxyServer, 
 	}
 
 	// Normalize path filter for comparison
-	normalizedFilter := normalizePath(pathFilter)
+	normalizedFilter := pathutil.NormalizeTrailingSlash(pathFilter)
 
 	// Fuzzy match: look for proxy where the ID contains the search string as a component
 	// Compound ID format: {project-hash}:{proxy-name}:{host-port}
@@ -115,7 +116,7 @@ func (pm *ProxyManager) GetWithPathFilter(id, pathFilter string) (*ProxyServer, 
 
 		// If path filter is specified, only consider proxies in that path
 		if normalizedFilter != "" && normalizedFilter != "." {
-			proxyPath := normalizePath(proxy.Path)
+			proxyPath := pathutil.NormalizeTrailingSlash(proxy.Path)
 			if proxyPath != normalizedFilter {
 				return true // Skip this proxy, continue iteration
 			}
@@ -140,18 +141,6 @@ func (pm *ProxyManager) GetWithPathFilter(id, pathFilter string) (*ProxyServer, 
 		return nil, ErrProxyAmbiguous
 	}
 	return matches[0], nil
-}
-
-// normalizePath normalizes a path for comparison.
-func normalizePath(p string) string {
-	if p == "" {
-		return ""
-	}
-	// Remove trailing slashes and normalize
-	for len(p) > 1 && p[len(p)-1] == '/' {
-		p = p[:len(p)-1]
-	}
-	return p
 }
 
 // Stop stops a proxy server and removes it from the registry.

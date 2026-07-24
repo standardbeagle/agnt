@@ -57,7 +57,10 @@ type Coalescer struct {
 }
 
 // NewCoalescer creates a Coalescer that calls pingFn when a ping should emit.
-// pingFn must not block.
+// pingFn is invoked synchronously after the coalescer lock is released — on
+// the caller's goroutine for Schedule/ForceFlush and on the timer goroutine
+// for fire — so it must not block and must never call back into the
+// Coalescer.
 func NewCoalescer(delays PingDelays, pingFn func(IncidentEvent)) *Coalescer {
 	return &Coalescer{
 		delays: delays,
@@ -75,7 +78,6 @@ func (c *Coalescer) Schedule(ev IncidentEvent) {
 	fp := ev.Fingerprint
 
 	c.mu.Lock()
-	defer c.mu.Unlock()
 
 	s, exists := c.slots[fp]
 	if exists {
@@ -91,8 +93,11 @@ func (c *Coalescer) Schedule(ev IncidentEvent) {
 		// Severity escalation: cancel pending timer and fire immediately.
 		if sevRank(ev.Severity) > sevRank(oldSev) {
 			s.timer.Stop()
-			go c.pingFn(ev)
 			delete(c.slots, fp)
+			c.mu.Unlock()
+			// Same invocation contract as fire/ForceFlush: synchronous, after
+			// unlocking — never a goroutine spawned while holding c.mu.
+			c.pingFn(ev)
 			return
 		}
 
@@ -100,6 +105,7 @@ func (c *Coalescer) Schedule(ev IncidentEvent) {
 		s.timer.Stop()
 		delay := NextPingDelay(s.occurrence, c.delays)
 		s.timer = time.AfterFunc(delay, func() { c.fire(fp) })
+		c.mu.Unlock()
 		return
 	}
 
@@ -112,6 +118,7 @@ func (c *Coalescer) Schedule(ev IncidentEvent) {
 	delay := NextPingDelay(1, c.delays)
 	slot.timer = time.AfterFunc(delay, func() { c.fire(fp) })
 	c.slots[fp] = slot
+	c.mu.Unlock()
 }
 
 // ForceFlush immediately emits a pending ping for fp, if any, and resets the slot.

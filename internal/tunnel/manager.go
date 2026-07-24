@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/standardbeagle/agnt/internal/pathutil"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -96,7 +97,7 @@ func (m *Manager) GetWithPathFilter(id, pathFilter string) (*Tunnel, error) {
 	}
 
 	// Normalize path filter for comparison
-	normalizedFilter := normalizePath(pathFilter)
+	normalizedFilter := pathutil.NormalizeTrailingSlash(pathFilter)
 
 	// Fuzzy match: look for tunnel where the ID contains the search string as a component
 	// Compound ID format: {project-hash}:{tunnel-name}:{host-port}
@@ -107,7 +108,7 @@ func (m *Manager) GetWithPathFilter(id, pathFilter string) (*Tunnel, error) {
 
 		// If path filter is specified, only consider tunnels in that path
 		if normalizedFilter != "" && normalizedFilter != "." {
-			tunnelPath := normalizePath(tunnel.Path())
+			tunnelPath := pathutil.NormalizeTrailingSlash(tunnel.Path())
 			if tunnelPath != normalizedFilter {
 				return true // Skip this tunnel, continue iteration
 			}
@@ -134,18 +135,6 @@ func (m *Manager) GetWithPathFilter(id, pathFilter string) (*Tunnel, error) {
 	return matches[0], nil
 }
 
-// normalizePath normalizes a path for comparison.
-func normalizePath(p string) string {
-	if p == "" {
-		return ""
-	}
-	// Remove trailing slashes and normalize
-	for len(p) > 1 && p[len(p)-1] == '/' {
-		p = p[:len(p)-1]
-	}
-	return p
-}
-
 // List returns information about all tunnels.
 func (m *Manager) List() []TunnelInfo {
 	var infos []TunnelInfo
@@ -165,11 +154,11 @@ func (m *Manager) ListByPath(pathFilter string) []TunnelInfo {
 		return m.List()
 	}
 
-	normalizedFilter := normalizePath(pathFilter)
+	normalizedFilter := pathutil.NormalizeTrailingSlash(pathFilter)
 	var infos []TunnelInfo
 	m.tunnels.Range(func(key, value interface{}) bool {
 		tunnel := value.(*Tunnel)
-		if normalizePath(tunnel.Path()) == normalizedFilter {
+		if pathutil.NormalizeTrailingSlash(tunnel.Path()) == normalizedFilter {
 			infos = append(infos, tunnel.Info())
 		}
 		return true
@@ -181,11 +170,11 @@ func (m *Manager) ListByPath(pathFilter string) []TunnelInfo {
 // This is used for session-scoped cleanup when a client disconnects.
 // Returns the list of stopped tunnel IDs.
 func (m *Manager) StopByProjectPath(ctx context.Context, projectPath string) ([]string, error) {
-	normalizedPath := normalizePath(projectPath)
+	normalizedPath := pathutil.NormalizeTrailingSlash(projectPath)
 	var toStop []*Tunnel
 	m.tunnels.Range(func(key, value any) bool {
 		tunnel := value.(*Tunnel)
-		if normalizePath(tunnel.Path()) == normalizedPath {
+		if pathutil.NormalizeTrailingSlash(tunnel.Path()) == normalizedPath {
 			toStop = append(toStop, tunnel)
 		}
 		return true

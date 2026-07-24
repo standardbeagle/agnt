@@ -11,27 +11,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestNormalizePath(t *testing.T) {
-	tests := []struct {
-		name string
-		in   string
-		want string
-	}{
-		{"empty stays empty", "", ""},
-		{"root preserved", "/", "/"},
-		{"single trailing slash stripped", "/foo/", "/foo"},
-		{"multiple trailing slashes stripped", "/foo/bar///", "/foo/bar"},
-		{"no slash unchanged", "foo", "foo"},
-		{"no trailing slash unchanged", "/foo/bar", "/foo/bar"},
-		{"relative dot unchanged", ".", "."},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Equal(t, tt.want, normalizePath(tt.in))
-		})
-	}
-}
-
 // startUnsupported drives Manager.Start through an unknown provider so no
 // subprocess is spawned: tunnel.Start CAS-es Idle->Starting, hits the default
 // branch, sets StateFailed, and returns an error. The manager deletes the

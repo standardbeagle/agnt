@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/standardbeagle/agnt/internal/pathutil"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -98,7 +99,7 @@ func (m *Manager) GetWithPathFilter(id, pathFilter string) (*Browser, error) {
 	}
 
 	// Normalize path filter for comparison
-	normalizedFilter := normalizePath(pathFilter)
+	normalizedFilter := pathutil.NormalizeTrailingSlash(pathFilter)
 
 	// Fuzzy match: look for browser where the ID contains the search string as a component
 	// Compound ID format: {project-hash}:{browser-name}
@@ -109,7 +110,7 @@ func (m *Manager) GetWithPathFilter(id, pathFilter string) (*Browser, error) {
 
 		// If path filter is specified, only consider browsers in that path
 		if normalizedFilter != "" && normalizedFilter != "." {
-			browserPath := normalizePath(browser.Path())
+			browserPath := pathutil.NormalizeTrailingSlash(browser.Path())
 			if browserPath != normalizedFilter {
 				return true // Skip this browser, continue iteration
 			}
@@ -136,18 +137,6 @@ func (m *Manager) GetWithPathFilter(id, pathFilter string) (*Browser, error) {
 	return matches[0], nil
 }
 
-// normalizePath normalizes a path for comparison.
-func normalizePath(p string) string {
-	if p == "" {
-		return ""
-	}
-	// Remove trailing slashes and normalize
-	for len(p) > 1 && p[len(p)-1] == '/' {
-		p = p[:len(p)-1]
-	}
-	return p
-}
-
 // List returns information about all browsers.
 func (m *Manager) List() []Info {
 	var infos []Info
@@ -166,11 +155,11 @@ func (m *Manager) ListByPath(pathFilter string) []Info {
 		return m.List()
 	}
 
-	normalizedFilter := normalizePath(pathFilter)
+	normalizedFilter := pathutil.NormalizeTrailingSlash(pathFilter)
 	var infos []Info
 	m.browsers.Range(func(key, value interface{}) bool {
 		browser := value.(*Browser)
-		if normalizePath(browser.Path()) == normalizedFilter {
+		if pathutil.NormalizeTrailingSlash(browser.Path()) == normalizedFilter {
 			infos = append(infos, browser.Info())
 		}
 		return true
@@ -182,11 +171,11 @@ func (m *Manager) ListByPath(pathFilter string) []Info {
 // This is used for session-scoped cleanup when a client disconnects.
 // Returns the list of stopped browser IDs.
 func (m *Manager) StopByProjectPath(ctx context.Context, projectPath string) ([]string, error) {
-	normalizedPath := normalizePath(projectPath)
+	normalizedPath := pathutil.NormalizeTrailingSlash(projectPath)
 	var toStop []*Browser
 	m.browsers.Range(func(key, value any) bool {
 		browser := value.(*Browser)
-		if normalizePath(browser.Path()) == normalizedPath {
+		if pathutil.NormalizeTrailingSlash(browser.Path()) == normalizedPath {
 			toStop = append(toStop, browser)
 		}
 		return true

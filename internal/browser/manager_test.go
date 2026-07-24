@@ -229,23 +229,3 @@ func TestManagerConcurrentAccess(t *testing.T) {
 
 	wg.Wait()
 }
-
-func TestNormalizePath(t *testing.T) {
-	tests := []struct {
-		input    string
-		expected string
-	}{
-		{"", ""},
-		{"/home/user", "/home/user"},
-		{"/home/user/", "/home/user"},
-		{"/home/user///", "/home/user"},
-		{".", "."},
-	}
-
-	for _, tc := range tests {
-		result := normalizePath(tc.input)
-		if result != tc.expected {
-			t.Errorf("normalizePath(%q) = %q, want %q", tc.input, result, tc.expected)
-		}
-	}
-}

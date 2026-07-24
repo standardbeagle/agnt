@@ -274,28 +274,7 @@ func (bs *BlobStore) drainRemaining() {
 func (bs *BlobStore) writeAsyncSync(req asyncWriteReq) {
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
-
-	if existing, ok := bs.entries[req.hash]; ok {
-		bs.lruList.MoveToFront(existing.elem)
-		return
-	}
-
-	ref := BlobRef{Hash: req.hash, Size: len(req.content), MIME: req.mime}
-	entry := &blobEntry{ref: ref, content: req.content}
-	entry.elem = bs.lruList.PushFront(entry)
-	bs.entries[req.hash] = entry
-	bs.usedBytes += int64(len(req.content))
-
-	for bs.usedBytes > bs.maxBytes {
-		back := bs.lruList.Back()
-		if back == nil {
-			break
-		}
-		evict := back.Value.(*blobEntry)
-		bs.lruList.Remove(back)
-		delete(bs.entries, evict.ref.Hash)
-		bs.usedBytes -= int64(len(evict.content))
-	}
+	bs.storeLocked(req.hash, req.content, req.mime)
 }
 
 func (bs *BlobStore) writeSync(content []byte, mime string) (BlobRef, error) {
@@ -305,19 +284,24 @@ func (bs *BlobStore) writeSync(content []byte, mime string) (BlobRef, error) {
 
 	bs.mu.Lock()
 	defer bs.mu.Unlock()
+	bs.storeLocked(hash, content, mime)
+	return ref, nil
+}
 
+// storeLocked inserts (or LRU-touches) a blob and evicts least-recently-used
+// entries until the store is under budget. Caller holds bs.mu.
+func (bs *BlobStore) storeLocked(hash string, content []byte, mime string) {
 	if existing, ok := bs.entries[hash]; ok {
-		// Dedup: touch LRU position
 		bs.lruList.MoveToFront(existing.elem)
-		return ref, nil
+		return
 	}
 
+	ref := BlobRef{Hash: hash, Size: len(content), MIME: mime}
 	entry := &blobEntry{ref: ref, content: content}
 	entry.elem = bs.lruList.PushFront(entry)
 	bs.entries[hash] = entry
 	bs.usedBytes += int64(len(content))
 
-	// Evict least-recently-used until under budget
 	for bs.usedBytes > bs.maxBytes {
 		back := bs.lruList.Back()
 		if back == nil {
@@ -328,6 +312,4 @@ func (bs *BlobStore) writeSync(content []byte, mime string) (BlobRef, error) {
 		delete(bs.entries, evict.ref.Hash)
 		bs.usedBytes -= int64(len(evict.content))
 	}
-
-	return ref, nil
 }

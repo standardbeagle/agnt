@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/standardbeagle/agnt/internal/pathutil"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -102,7 +103,7 @@ func (m *SessionManager) GetWithPathFilter(id, pathFilter string) (*AutomationSe
 	}
 
 	// Normalize path filter for comparison
-	normalizedFilter := normalizePath(pathFilter)
+	normalizedFilter := pathutil.NormalizeTrailingSlash(pathFilter)
 
 	// Fuzzy match: look for session where the ID contains the search string as a component
 	// Compound ID format: {project-hash}:{session-name}
@@ -113,7 +114,7 @@ func (m *SessionManager) GetWithPathFilter(id, pathFilter string) (*AutomationSe
 
 		// If path filter is specified, only consider sessions in that path
 		if normalizedFilter != "" && normalizedFilter != "." {
-			sessionPath := normalizePath(session.Path())
+			sessionPath := pathutil.NormalizeTrailingSlash(session.Path())
 			if sessionPath != normalizedFilter {
 				return true // Skip this session, continue iteration
 			}
@@ -140,18 +141,6 @@ func (m *SessionManager) GetWithPathFilter(id, pathFilter string) (*AutomationSe
 	return matches[0], nil
 }
 
-// normalizePath normalizes a path for comparison.
-func normalizePath(p string) string {
-	if p == "" {
-		return ""
-	}
-	// Remove trailing slashes and normalize
-	for len(p) > 1 && p[len(p)-1] == '/' {
-		p = p[:len(p)-1]
-	}
-	return p
-}
-
 // List returns information about all sessions.
 func (m *SessionManager) List() []SessionInfo {
 	var infos []SessionInfo
@@ -170,11 +159,11 @@ func (m *SessionManager) ListByPath(pathFilter string) []SessionInfo {
 		return m.List()
 	}
 
-	normalizedFilter := normalizePath(pathFilter)
+	normalizedFilter := pathutil.NormalizeTrailingSlash(pathFilter)
 	var infos []SessionInfo
 	m.sessions.Range(func(key, value interface{}) bool {
 		session := value.(*AutomationSession)
-		if normalizePath(session.Path()) == normalizedFilter {
+		if pathutil.NormalizeTrailingSlash(session.Path()) == normalizedFilter {
 			infos = append(infos, session.Info())
 		}
 		return true
@@ -186,11 +175,11 @@ func (m *SessionManager) ListByPath(pathFilter string) []SessionInfo {
 // This is used for session-scoped cleanup when a client disconnects.
 // Returns the list of stopped session IDs.
 func (m *SessionManager) StopByProjectPath(ctx context.Context, projectPath string) ([]string, error) {
-	normalizedPath := normalizePath(projectPath)
+	normalizedPath := pathutil.NormalizeTrailingSlash(projectPath)
 	var toStop []*AutomationSession
 	m.sessions.Range(func(key, value any) bool {
 		session := value.(*AutomationSession)
-		if normalizePath(session.Path()) == normalizedPath {
+		if pathutil.NormalizeTrailingSlash(session.Path()) == normalizedPath {
 			toStop = append(toStop, session)
 		}
 		return true
