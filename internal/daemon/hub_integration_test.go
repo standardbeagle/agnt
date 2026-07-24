@@ -2055,16 +2055,15 @@ func TestHubIntegration_FallbackPortCheck_EventLoopCreatesProxy(t *testing.T) {
 	// rather than sleeping a fixed duration.
 	expectedID := makeProcessID(tmpDir, proxyName)
 	deadline := time.Now().Add(2 * time.Second)
-	var server interface{}
 	var err error
 	for time.Now().Before(deadline) {
-		server, err = daemon.proxym.Get(expectedID)
-		if err == nil && server != nil {
+		_, err = daemon.proxym.Get(expectedID)
+		if err == nil {
 			break
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if err != nil || server == nil {
+	if err != nil {
 		t.Fatalf("Expected fallback proxy %q to exist after event dispatch, got err=%v", expectedID, err)
 	}
 

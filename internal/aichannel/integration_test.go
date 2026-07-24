@@ -164,14 +164,14 @@ echo '{"type":"result","result":"Hello from stream"}'`,
 				t.Fatalf("SendAndParse() error = %v", err)
 			}
 
+			// Response struct should be non-nil
+			if resp == nil {
+				t.Fatal("Response should not be nil")
+			}
+
 			// Verify the contract: Result must be non-empty
 			if resp.Result == "" {
 				t.Error("Result should not be empty")
-			}
-
-			// Response struct should be non-nil
-			if resp == nil {
-				t.Error("Response should not be nil")
 			}
 		})
 	}

@@ -47,7 +47,10 @@ func TestRegisterProxyDependencies_GatesUntilAllDepsReady(t *testing.T) {
 	defer backend.Close()
 
 	d := newTestDaemon(t)
-	server := newTestProxyServer(t, backend.URL)
+	// The detached server is discarded below in favor of the manager-tracked
+	// instance; the helper call stays for its t.Cleanup (stops the chaos
+	// engine and page tracker it creates).
+	_ = newTestProxyServer(t, backend.URL)
 
 	// Register proxy in manager so the waiter's Get() lookup succeeds.
 	d.proxym = proxy.NewProxyManager()
@@ -69,9 +72,9 @@ func TestRegisterProxyDependencies_GatesUntilAllDepsReady(t *testing.T) {
 	t.Cleanup(func() {
 		_ = d.proxym.Stop(context.Background(), "test-proxy")
 	})
-	// Replace our detached `server` with the manager-tracked one so
-	// the assertions and the waiter target the same instance.
-	server = created
+	// Use the manager-tracked instance so the assertions and the waiter
+	// target the same server.
+	server := created
 
 	projectPath := "/tmp/project"
 	proxyCfg := &config.ProxyConfig{

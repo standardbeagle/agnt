@@ -104,7 +104,7 @@ func (b *Browser) Start(ctx context.Context) error {
 		binaryPath = discoverer.Find()
 		if binaryPath == "" {
 			b.setState(StateFailed)
-			b.setError(fmt.Errorf("Chrome not found: install Chrome or specify binary_path"))
+			b.setError(fmt.Errorf("chrome not found: install Chrome or specify binary_path"))
 			close(b.done)
 			return b.Error()
 		}
@@ -136,7 +136,7 @@ func (b *Browser) Start(ctx context.Context) error {
 		err := b.cmd.Wait()
 		if err != nil && ctx.Err() == nil {
 			// Process exited with error (not cancelled)
-			b.setError(fmt.Errorf("Chrome exited: %w", err))
+			b.setError(fmt.Errorf("chrome exited: %w", err))
 			b.setState(StateFailed)
 		} else {
 			b.setState(StateStopped)

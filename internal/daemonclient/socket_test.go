@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -23,7 +24,9 @@ func TestDefaultSocketPath(t *testing.T) {
 
 	// Always /tmp regardless of XDG_RUNTIME_DIR: agnt daemon outlives sessions
 	// and XDG_RUNTIME_DIR is cleaned up by pam_systemd on logout.
-	if !filepath.HasPrefix(path, "/tmp/") {
+	// strings.HasPrefix, not filepath.HasPrefix: the latter is deprecated and
+	// its Clean-based semantics can surprise on boundary segments.
+	if !strings.HasPrefix(path, "/tmp/") {
 		t.Errorf("Expected path to start with /tmp/, got %s", path)
 	}
 	if !containsUID(path, uid) {

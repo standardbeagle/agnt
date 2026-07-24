@@ -78,7 +78,7 @@ func TestResilientClient_WrapperMethods(t *testing.T) {
 			t.Fatalf("Info failed: %v", err)
 		}
 		if info == nil {
-			t.Error("Expected non-nil info")
+			t.Fatal("Expected non-nil info")
 		}
 		if info.Version == "" {
 			t.Error("Expected non-empty version")
