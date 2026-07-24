@@ -499,9 +499,14 @@ func displayAutostartResults(ctx context.Context, handle *daemonSessionHandle, o
 		} else {
 			// Fallback: no router (raw passthrough). Read stdin directly; in
 			// this mode nothing else consumes stdin so there is no race.
+			// Killing another process is destructive and must never happen
+			// unattended: a read error or EOF (non-TTY, closed stdin) means
+			// "decline", not the [Y] default.
 			buf := make([]byte, 1)
 			n, err := os.Stdin.Read(buf)
-			if err == nil && n > 0 && buf[0] != '\n' && buf[0] != '\r' {
+			if err != nil || n == 0 {
+				answer = 'n'
+			} else if buf[0] != '\n' && buf[0] != '\r' {
 				answer = buf[0]
 			}
 		}
