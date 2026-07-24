@@ -48,7 +48,10 @@ func TestParseOutput(t *testing.T) {
 			var cbURL atomic.Pointer[string]
 			tun.OnURL(func(u string) { cbURL.Store(&u) })
 
-			assert.Equal(t, StateIdle, tun.State(), "starts idle")
+			// Parsers only run after Start in production; the Connected
+			// transition is a CAS from Starting so a late URL line can never
+			// resurrect a terminal state.
+			tun.setState(StateStarting)
 			tt.parse(tun, strings.NewReader(tt.input))
 
 			assert.Equal(t, tt.wantURL, tun.PublicURL(), "public URL set from parsed line")
@@ -57,6 +60,13 @@ func TestParseOutput(t *testing.T) {
 			assert.Equal(t, tt.wantURL, *cbURL.Load(), "callback received the URL")
 		})
 	}
+
+	t.Run("late url does not resurrect terminal state", func(t *testing.T) {
+		tun := New(Config{Provider: ProviderCloudflare, LocalPort: 1})
+		tun.setState(StateStopped)
+		tun.parseCloudflareOutput(strings.NewReader("INF | https://late.trycloudflare.com |\n"))
+		assert.Equal(t, StateStopped, tun.State(), "terminal state is not stomped")
+	})
 
 	t.Run("no url leaves idle and no callback", func(t *testing.T) {
 		tun := New(Config{Provider: ProviderCloudflare, LocalPort: 1})
@@ -155,17 +165,18 @@ func TestTunnelStart_DoubleAndUnsupported(t *testing.T) {
 		assert.Equal(t, StateStarting, tun.State(), "state unchanged by rejected second start")
 	})
 
-	t.Run("unsupported provider -> StateFailed, no done close", func(t *testing.T) {
+	t.Run("unsupported provider -> StateFailed, done closed", func(t *testing.T) {
 		tun := New(Config{Provider: Provider("bogus"), LocalPort: 1})
 		err := tun.Start(context.Background())
 		require.Error(t, err)
 		assert.Contains(t, err.Error(), "unsupported tunnel provider")
 		assert.Equal(t, StateFailed, tun.State())
-		// done is NOT closed for the unsupported path; verify it's still open.
+		// done MUST close on this terminal path, otherwise Stop/WaitForURL
+		// block until context expiry.
 		select {
 		case <-tun.done:
-			t.Fatal("done should remain open for unsupported provider")
 		default:
+			t.Fatal("done must be closed for unsupported provider")
 		}
 		// cancel was installed before the switch.
 		assert.NotNil(t, tun.cancel)
@@ -173,10 +184,17 @@ func TestTunnelStart_DoubleAndUnsupported(t *testing.T) {
 }
 
 func TestTunnelStop(t *testing.T) {
+	t.Run("stop before start is a no-op", func(t *testing.T) {
+		tun := New(Config{Provider: ProviderCloudflare, LocalPort: 1})
+		require.NoError(t, tun.Stop(context.Background()))
+		assert.Equal(t, StateIdle, tun.State(), "idle tunnel stays idle")
+	})
+
 	t.Run("nil cmd/process safe when done already closed", func(t *testing.T) {
 		tun := New(Config{Provider: ProviderCloudflare, LocalPort: 1})
-		// Stop before Start: cancel nil, cmd nil. Close done so the select
-		// returns immediately and we hit the clean StateStopped path.
+		// Simulate a started tunnel whose cmd never got published; close
+		// done so the select returns immediately.
+		tun.setState(StateStarting)
 		close(tun.done)
 		require.NoError(t, tun.Stop(context.Background()))
 		assert.Equal(t, StateStopped, tun.State())
@@ -184,6 +202,7 @@ func TestTunnelStop(t *testing.T) {
 
 	t.Run("ctx timeout when done never closes", func(t *testing.T) {
 		tun := New(Config{Provider: ProviderCloudflare, LocalPort: 1})
+		tun.setState(StateStarting)
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 		defer cancel()
 		err := tun.Stop(ctx)
@@ -195,9 +214,12 @@ func TestTunnelStop(t *testing.T) {
 
 	t.Run("invokes cancel when set", func(t *testing.T) {
 		tun := New(Config{Provider: ProviderCloudflare, LocalPort: 1})
+		tun.setState(StateStarting)
 		var cancelled atomic.Bool
 		_, cancel := context.WithCancel(context.Background())
+		tun.procMu.Lock()
 		tun.cancel = func() { cancelled.Store(true); cancel() }
+		tun.procMu.Unlock()
 		close(tun.done)
 		require.NoError(t, tun.Stop(context.Background()))
 		assert.True(t, cancelled.Load(), "Stop must invoke the stored cancel func")

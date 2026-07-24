@@ -72,11 +72,16 @@ type Tunnel struct {
 	config    Config
 	state     atomic.Uint32
 	publicURL atomic.Pointer[string]
-	cmd       *exec.Cmd
-	cancel    context.CancelFunc
 	done      chan struct{}
+	doneOnce  sync.Once
 	err       error
 	errMu     sync.RWMutex
+
+	// procMu guards cmd and cancel: Start publishes them while Stop reads
+	// them concurrently.
+	procMu sync.Mutex
+	cmd    *exec.Cmd
+	cancel context.CancelFunc
 
 	// Callbacks
 	onURL func(url string)
@@ -117,7 +122,11 @@ func (t *Tunnel) Start(ctx context.Context) error {
 	}
 
 	ctx, cancel := context.WithCancel(ctx)
+	// Publish cancel before any provider goroutine starts so a concurrent
+	// Stop always has happens-before visibility of it.
+	t.procMu.Lock()
 	t.cancel = cancel
+	t.procMu.Unlock()
 
 	switch t.config.Provider {
 	case ProviderCloudflare:
@@ -127,20 +136,32 @@ func (t *Tunnel) Start(ctx context.Context) error {
 	case ProviderTailscale:
 		return t.startTailscale(ctx)
 	default:
+		err := fmt.Errorf("unsupported tunnel provider: %s", t.config.Provider)
 		t.setState(StateFailed)
-		return fmt.Errorf("unsupported tunnel provider: %s", t.config.Provider)
+		t.setError(err)
+		t.closeDone()
+		return err
 	}
 }
 
 // Stop stops the tunnel.
 func (t *Tunnel) Stop(ctx context.Context) error {
-	if t.cancel != nil {
-		t.cancel()
+	if t.State() == StateIdle {
+		return nil
 	}
 
-	if t.cmd != nil && t.cmd.Process != nil {
+	t.procMu.Lock()
+	cancel := t.cancel
+	cmd := t.cmd
+	t.procMu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+
+	if cmd != nil && cmd.Process != nil {
 		// Send interrupt first for graceful shutdown
-		if err := t.cmd.Process.Kill(); err != nil {
+		if err := cmd.Process.Kill(); err != nil {
 			return fmt.Errorf("failed to kill tunnel process: %w", err)
 		}
 	}
@@ -240,6 +261,20 @@ func (t *Tunnel) compareAndSwapState(old, new State) bool {
 	return t.state.CompareAndSwap(uint32(old), uint32(new))
 }
 
+// markConnected transitions Starting → Connected. Output-parse goroutines
+// use this instead of an unconditional store so a late URL line can never
+// resurrect a tunnel that already reached a terminal state (Failed/Stopped).
+func (t *Tunnel) markConnected() {
+	t.compareAndSwapState(StateStarting, StateConnected)
+}
+
+// closeDone closes t.done exactly once; every terminal path (start error,
+// process exit, unsupported provider) must funnel through it so Stop and
+// WaitForURL never block until context expiry.
+func (t *Tunnel) closeDone() {
+	t.doneOnce.Do(func() { close(t.done) })
+}
+
 func (t *Tunnel) setError(err error) {
 	t.errMu.Lock()
 	t.err = err
@@ -267,38 +302,45 @@ func (t *Tunnel) startCloudflare(ctx context.Context) error {
 
 	// Check if binary exists
 	if _, err := exec.LookPath(binary); err != nil {
+		err = fmt.Errorf("cloudflared not found in PATH: %w", err)
 		t.setState(StateFailed)
-		t.setError(fmt.Errorf("cloudflared not found in PATH: %w", err))
-		close(t.done)
-		return t.err
+		t.setError(err)
+		t.closeDone()
+		return err
 	}
 
 	localURL := fmt.Sprintf("http://%s:%d", t.config.LocalHost, t.config.LocalPort)
-	t.cmd = exec.CommandContext(ctx, binary, "tunnel", "--url", localURL)
+	cmd := exec.CommandContext(ctx, binary, "tunnel", "--url", localURL)
 
 	// Capture stderr (cloudflared logs to stderr)
-	stderr, err := t.cmd.StderrPipe()
+	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		err = fmt.Errorf("failed to create stderr pipe: %w", err)
 		t.setState(StateFailed)
-		t.setError(fmt.Errorf("failed to create stderr pipe: %w", err))
-		close(t.done)
-		return t.err
+		t.setError(err)
+		t.closeDone()
+		return err
 	}
 
-	if err := t.cmd.Start(); err != nil {
+	if err := cmd.Start(); err != nil {
+		err = fmt.Errorf("failed to start cloudflared: %w", err)
 		t.setState(StateFailed)
-		t.setError(fmt.Errorf("failed to start cloudflared: %w", err))
-		close(t.done)
-		return t.err
+		t.setError(err)
+		t.closeDone()
+		return err
 	}
+
+	t.procMu.Lock()
+	t.cmd = cmd
+	t.procMu.Unlock()
 
 	// Parse output in goroutine
 	go t.parseCloudflareOutput(stderr)
 
 	// Wait for process in goroutine
 	go func() {
-		defer close(t.done)
-		if err := t.cmd.Wait(); err != nil {
+		defer t.closeDone()
+		if err := cmd.Wait(); err != nil {
 			if ctx.Err() == nil { // Not cancelled
 				t.setError(fmt.Errorf("cloudflared exited: %w", err))
 				t.setState(StateFailed)
@@ -315,7 +357,7 @@ func (t *Tunnel) parseCloudflareOutput(r io.Reader) {
 		line := scanner.Text()
 		if match := cloudflareURLPattern.FindString(line); match != "" {
 			t.setPublicURL(match)
-			t.setState(StateConnected)
+			t.markConnected()
 		}
 	}
 }
@@ -334,37 +376,44 @@ func (t *Tunnel) startNgrok(ctx context.Context) error {
 
 	// Check if binary exists
 	if _, err := exec.LookPath(binary); err != nil {
+		err = fmt.Errorf("ngrok not found in PATH: %w", err)
 		t.setState(StateFailed)
-		t.setError(fmt.Errorf("ngrok not found in PATH: %w", err))
-		close(t.done)
-		return t.err
+		t.setError(err)
+		t.closeDone()
+		return err
 	}
 
-	t.cmd = exec.CommandContext(ctx, binary, "http", fmt.Sprintf("%d", t.config.LocalPort))
+	cmd := exec.CommandContext(ctx, binary, "http", fmt.Sprintf("%d", t.config.LocalPort))
 
 	// ngrok outputs to stdout
-	stdout, err := t.cmd.StdoutPipe()
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		err = fmt.Errorf("failed to create stdout pipe: %w", err)
 		t.setState(StateFailed)
-		t.setError(fmt.Errorf("failed to create stdout pipe: %w", err))
-		close(t.done)
-		return t.err
+		t.setError(err)
+		t.closeDone()
+		return err
 	}
 
-	if err := t.cmd.Start(); err != nil {
+	if err := cmd.Start(); err != nil {
+		err = fmt.Errorf("failed to start ngrok: %w", err)
 		t.setState(StateFailed)
-		t.setError(fmt.Errorf("failed to start ngrok: %w", err))
-		close(t.done)
-		return t.err
+		t.setError(err)
+		t.closeDone()
+		return err
 	}
+
+	t.procMu.Lock()
+	t.cmd = cmd
+	t.procMu.Unlock()
 
 	// Parse output in goroutine
 	go t.parseNgrokOutput(stdout)
 
 	// Wait for process in goroutine
 	go func() {
-		defer close(t.done)
-		if err := t.cmd.Wait(); err != nil {
+		defer t.closeDone()
+		if err := cmd.Wait(); err != nil {
 			if ctx.Err() == nil { // Not cancelled
 				t.setError(fmt.Errorf("ngrok exited: %w", err))
 				t.setState(StateFailed)
@@ -381,7 +430,7 @@ func (t *Tunnel) parseNgrokOutput(r io.Reader) {
 		line := scanner.Text()
 		if match := ngrokURLPattern.FindString(line); match != "" {
 			t.setPublicURL(match)
-			t.setState(StateConnected)
+			t.markConnected()
 		}
 	}
 }
@@ -406,39 +455,47 @@ func (t *Tunnel) startTailscale(ctx context.Context) error {
 	}
 
 	if _, err := exec.LookPath(binary); err != nil {
+		err = fmt.Errorf("tailscale not found in PATH: %w", err)
 		t.setState(StateFailed)
-		t.setError(fmt.Errorf("tailscale not found in PATH: %w", err))
-		close(t.done)
-		return t.err
+		t.setError(err)
+		t.closeDone()
+		return err
 	}
 
 	// Foreground `tailscale serve <port>` — blocks until killed and
 	// tears down the serve mapping on exit. Do NOT pass --bg; that
 	// would detach from the lifecycle and leave the serve config
 	// behind on Stop().
-	t.cmd = exec.CommandContext(ctx, binary, "serve", fmt.Sprintf("%d", t.config.LocalPort))
+	cmd := exec.CommandContext(ctx, binary, "serve", fmt.Sprintf("%d", t.config.LocalPort))
 
-	stdout, err := t.cmd.StdoutPipe()
+	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		err = fmt.Errorf("failed to create stdout pipe: %w", err)
 		t.setState(StateFailed)
-		t.setError(fmt.Errorf("failed to create stdout pipe: %w", err))
-		close(t.done)
-		return t.err
+		t.setError(err)
+		t.closeDone()
+		return err
 	}
-	stderr, err := t.cmd.StderrPipe()
+	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		err = fmt.Errorf("failed to create stderr pipe: %w", err)
 		t.setState(StateFailed)
-		t.setError(fmt.Errorf("failed to create stderr pipe: %w", err))
-		close(t.done)
-		return t.err
+		t.setError(err)
+		t.closeDone()
+		return err
 	}
 
-	if err := t.cmd.Start(); err != nil {
+	if err := cmd.Start(); err != nil {
+		err = fmt.Errorf("failed to start tailscale serve: %w", err)
 		t.setState(StateFailed)
-		t.setError(fmt.Errorf("failed to start tailscale serve: %w", err))
-		close(t.done)
-		return t.err
+		t.setError(err)
+		t.closeDone()
+		return err
 	}
+
+	t.procMu.Lock()
+	t.cmd = cmd
+	t.procMu.Unlock()
 
 	// Parse both pipes — serve's URL output stream is not version-stable.
 	go t.parseTailscaleOutput(stdout)
@@ -459,13 +516,13 @@ func (t *Tunnel) startTailscale(ctx context.Context) error {
 		}
 		if name := platform.TailscaleDNSName(ctx); name != "" {
 			t.setPublicURL("https://" + name)
-			t.setState(StateConnected)
+			t.markConnected()
 		}
 	}()
 
 	go func() {
-		defer close(t.done)
-		if err := t.cmd.Wait(); err != nil {
+		defer t.closeDone()
+		if err := cmd.Wait(); err != nil {
 			if ctx.Err() == nil { // Not cancelled
 				t.setError(fmt.Errorf("tailscale serve exited: %w", err))
 				t.setState(StateFailed)
@@ -482,7 +539,7 @@ func (t *Tunnel) parseTailscaleOutput(r io.Reader) {
 		line := scanner.Text()
 		if match := tailscaleURLPattern.FindString(line); match != "" {
 			t.setPublicURL(match)
-			t.setState(StateConnected)
+			t.markConnected()
 		}
 	}
 }
