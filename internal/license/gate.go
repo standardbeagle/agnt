@@ -31,9 +31,10 @@ var now = time.Now
 // Pro features consult via Check. Validation (ECDSA verify) happens once at
 // load, never on the hot path.
 type Manager struct {
-	mu     sync.RWMutex
-	loaded bool
-	status Status
+	mu      sync.RWMutex
+	loaded  bool
+	status  Status
+	loadErr error // unexpected I/O error from the last Load; nil on success
 }
 
 // NewManager returns an unloaded Manager. Call Load (or let Check lazy-load)
@@ -46,7 +47,7 @@ func NewManager() *Manager { return &Manager{} }
 // tests only — production code must use NewManager + Load.
 func NewManagerForTest(s Status) *Manager {
 	m := &Manager{}
-	m.set(s)
+	m.set(s, nil)
 	return m
 }
 
@@ -57,24 +58,29 @@ func NewManagerForTest(s Status) *Manager {
 func (m *Manager) Load() error {
 	blob, err := Load()
 	if err == ErrNoLicense {
-		m.set(Status{State: StateMissing})
+		m.set(Status{State: StateMissing}, nil)
 		return nil
 	}
 	if err != nil {
+		// Cache the failure so Status/Check can report the real problem
+		// (e.g. a permission error) instead of misreading the zero-value
+		// status as "no license installed".
+		m.set(Status{State: StateMissing}, err)
 		return err
 	}
 	payload, err := Validate(blob)
 	if err != nil {
-		m.set(Status{State: StateInvalid})
+		m.set(Status{State: StateInvalid}, nil)
 		return nil
 	}
-	m.set(Evaluate(payload, now()))
+	m.set(Evaluate(payload, now()), nil)
 	return nil
 }
 
-func (m *Manager) set(s Status) {
+func (m *Manager) set(s Status, loadErr error) {
 	m.mu.Lock()
 	m.status = s
+	m.loadErr = loadErr
 	m.loaded = true
 	m.mu.Unlock()
 }
@@ -102,6 +108,23 @@ func (m *Manager) Status() Status {
 	return m.status
 }
 
+// LoadError returns the unexpected I/O error from the last Load, if any.
+// A non-nil LoadError means the cached status is a placeholder — callers
+// must surface the error rather than the (misleading) missing-license state.
+func (m *Manager) LoadError() error {
+	m.mu.RLock()
+	if m.loaded {
+		err := m.loadErr
+		m.mu.RUnlock()
+		return err
+	}
+	m.mu.RUnlock()
+	_ = m.Load()
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.loadErr
+}
+
 // GateError is returned by Check when a Pro capability is denied. It carries
 // the deciding state so callers can tailor messaging.
 type GateError struct {
@@ -126,8 +149,14 @@ func (e *GateError) Error() string {
 // Check authorizes a Pro capability. It returns nil when the license is in a
 // serving state (Valid or Grace) and grants cap; otherwise a *GateError. When
 // the state is Grace, it also returns a non-empty warning the caller should
-// surface (the error is still nil — Pro is allowed during grace).
+// surface (the error is still nil — Pro is allowed during grace). An
+// unexpected license-read I/O error is returned as-is: remediating with
+// `agnt activate` cannot fix a disk problem, so it must not be misreported
+// as a missing license.
 func (m *Manager) Check(cap Capability) (warning string, err error) {
+	if loadErr := m.LoadError(); loadErr != nil {
+		return "", fmt.Errorf("reading license: %w", loadErr)
+	}
 	s := m.Status()
 	if !s.State.serving() {
 		return "", &GateError{Capability: cap, State: s.State}
