@@ -43,7 +43,10 @@ func (ps *ProxyServer) Stop(ctx context.Context) error {
 		ps.cancelFunc()
 	}
 
-	err := ps.httpServer.Shutdown(ctx)
+	var err error
+	if srv := ps.httpServer.Load(); srv != nil {
+		err = srv.Shutdown(ctx)
+	}
 	ps.running.Store(false)
 
 	// Close active WebSocket connections and drop them from the registry so a
@@ -160,7 +163,15 @@ func (ps *ProxyServer) HasOverlayEndpoint() bool {
 // This URL is used for URL rewriting when behind a tunnel.
 // Example: "https://abc123.trycloudflare.com"
 func (ps *ProxyServer) SetPublicURL(publicURL string) {
-	ps.PublicURL = publicURL
+	ps.publicURL.Store(&publicURL)
+}
+
+// GetPublicURL returns the public URL for tunnel services, or "" if unset.
+func (ps *ProxyServer) GetPublicURL() string {
+	if p := ps.publicURL.Load(); p != nil {
+		return *p
+	}
+	return ""
 }
 
 // SetSessionClientFactory sets the factory for creating session clients.
@@ -300,7 +311,7 @@ func (ps *ProxyServer) Stats() ProxyStats {
 		ListenAddr:    ps.ListenAddr,
 		Path:          ps.Path,
 		BindAddress:   ps.BindAddress,
-		PublicURL:     ps.PublicURL,
+		PublicURL:     ps.GetPublicURL(),
 		Running:       ps.running.Load(),
 		Uptime:        time.Since(ps.startTime),
 		TotalRequests: ps.requestSeq.Load(),
@@ -634,4 +645,14 @@ func (rr *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 		return nil, nil, fmt.Errorf("underlying ResponseWriter does not support hijacking")
 	}
 	return hijacker.Hijack()
+}
+
+// Flush implements http.Flusher so httputil.ReverseProxy's FlushInterval = -1
+// ("flush after every write") actually reaches the client through the
+// recorder — without it the type assertion in the copy loop fails silently
+// and SSE/streaming responses are buffered whole.
+func (rr *responseRecorder) Flush() {
+	if flusher, ok := rr.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }

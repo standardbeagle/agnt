@@ -22,7 +22,10 @@ func TestCheckWSOrigin(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			ps := &ProxyServer{PublicURL: tt.publicURL}
+			ps := &ProxyServer{}
+			if tt.publicURL != "" {
+				ps.SetPublicURL(tt.publicURL)
+			}
 			req := &http.Request{Host: tt.host, Header: make(http.Header)}
 			if tt.origin != "" {
 				req.Header.Set("Origin", tt.origin)

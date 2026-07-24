@@ -36,7 +36,7 @@ func TestProxyServer_AutoRestart(t *testing.T) {
 	t.Logf("Proxy started on: %s", originalAddr)
 
 	// Simulate a crash by closing the server
-	err = proxy.httpServer.Close()
+	err = proxy.httpServer.Load().Close()
 	if err != nil {
 		t.Logf("Error closing server (expected): %v", err)
 	}

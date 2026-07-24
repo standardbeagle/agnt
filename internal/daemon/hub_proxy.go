@@ -161,8 +161,8 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 	// tunnel tool that later calls SetPublicURL). The MCP tool reads this to
 	// render the "access at" URL — without it, proxyAccessURL fell back to the
 	// bare loopback address even when the proxy was fronted by a public URL.
-	if proxyServer.PublicURL != "" {
-		resp["public_url"] = proxyServer.PublicURL
+	if publicURL := proxyServer.GetPublicURL(); publicURL != "" {
+		resp["public_url"] = publicURL
 	}
 
 	data, _ := json.Marshal(resp)
@@ -480,7 +480,7 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 	projectPath := p.Path
 	bindAddress := p.BindAddress
 	allowExternal := p.AllowExternal
-	publicURL := p.PublicURL
+	publicURL := p.GetPublicURL()
 	skipTLSVerify := p.SkipTLSVerify
 	boundPort := p.BoundPort()
 	// Capture any still-pending readiness dependencies so the gate is re-armed

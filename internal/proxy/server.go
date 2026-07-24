@@ -36,20 +36,26 @@ type ProxyServer struct {
 	// port. Set by callers that hand us an explicit listen port (e.g.
 	// autostart with .agnt.kdl `listen-port`).
 	StrictListenPort bool
-	PublicURL        string // Optional public URL for tunnel services
-	SkipTLSVerify    bool   // Whether TLS cert verification was disabled for the backend transport
+	SkipTLSVerify    bool // Whether TLS cert verification was disabled for the backend transport
 	logger           *TrafficLogger
 	pageTracker      *PageTracker
-	httpServer       *http.Server
-	wsUpgrader       websocket.Upgrader
-	proxy            *httputil.ReverseProxy
-	running          atomic.Bool
-	startTime        time.Time
-	requestSeq       atomic.Int64
-	mu               sync.Mutex
-	cancelFunc       context.CancelFunc
-	wsConns          sync.Map     // Active WebSocket connections
-	lastError        atomic.Value // stores last error (string) if server crashed
+	// httpServer is replaced by the runServer auto-restart loop, so it is
+	// published atomically; readers (Stop, Serve) must Load() it.
+	httpServer atomic.Pointer[http.Server]
+	// publicURL holds the optional public URL for tunnel services. Tunnels
+	// resolve their URL after the proxy is already serving, so SetPublicURL
+	// races request-path readers (checkWSOrigin, URL rewriting, Stats) —
+	// hence atomic. Access via GetPublicURL/SetPublicURL only.
+	publicURL  atomic.Pointer[string]
+	wsUpgrader websocket.Upgrader
+	proxy      *httputil.ReverseProxy
+	running    atomic.Bool
+	startTime  time.Time
+	requestSeq atomic.Int64
+	mu         sync.Mutex
+	cancelFunc context.CancelFunc
+	wsConns    sync.Map     // Active WebSocket connections
+	lastError  atomic.Value // stores last error (string) if server crashed
 
 	// Ready signal - closed when server is ready to accept connections
 	ready     chan struct{}
@@ -299,7 +305,6 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 		BindAddress:         bindAddress,
 		AllowExternal:       config.AllowExternal,
 		StrictListenPort:    config.StrictListenPort && config.ListenPort > 0,
-		PublicURL:           config.PublicURL,
 		SkipTLSVerify:       config.SkipTLSVerify,
 		logger:              logger,
 		pageTracker:         NewPageTracker(100, 5*time.Minute),
@@ -320,6 +325,8 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 	// channel carries control frames (frame_active retargets exec, etc.), so a
 	// foreign page must not be able to open it and hijack the exec target.
 	ps.wsUpgrader = websocket.Upgrader{CheckOrigin: ps.checkWSOrigin}
+
+	ps.SetPublicURL(config.PublicURL)
 
 	ps.authBreakout.Store(config.AuthBreakout)
 
@@ -551,13 +558,13 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 	ps.ListenAddr = listener.Addr().String()
 	ps.setBoundAddr(ps.ListenAddr)
 
-	ps.httpServer = &http.Server{
+	ps.httpServer.Store(&http.Server{
 		Addr:    ps.ListenAddr,
 		Handler: mux,
 		BaseContext: func(l net.Listener) context.Context {
 			return ctx
 		},
-	}
+	})
 
 	ps.startTime = time.Now()
 	ps.running.Store(true)
@@ -664,7 +671,7 @@ func (ps *ProxyServer) runServer(ctx context.Context, listener net.Listener) {
 
 	for {
 		serveStart := time.Now()
-		err := ps.httpServer.Serve(listener)
+		err := ps.httpServer.Load().Serve(listener)
 
 		// Normal shutdown, exit
 		if err == http.ErrServerClosed || ctx.Err() != nil {
@@ -735,13 +742,13 @@ func (ps *ProxyServer) runServer(ctx context.Context, listener net.Listener) {
 			listener = newListener
 			newAddr := newListener.Addr().String()
 			ps.setBoundAddr(newAddr)
-			ps.httpServer = &http.Server{
+			ps.httpServer.Store(&http.Server{
 				Addr:    newAddr,
-				Handler: ps.httpServer.Handler,
+				Handler: ps.httpServer.Load().Handler,
 				BaseContext: func(l net.Listener) context.Context {
 					return ctx
 				},
-			}
+			})
 			ps.running.Store(true)
 
 			// Continue loop to restart server
@@ -770,8 +777,8 @@ func (ps *ProxyServer) checkWSOrigin(r *http.Request) bool {
 	if strings.EqualFold(u.Host, r.Host) && isLoopbackAuthority(r.Host) {
 		return true
 	}
-	if ps.PublicURL != "" {
-		if pu, perr := url.Parse(ps.PublicURL); perr == nil && pu.Host != "" && strings.EqualFold(pu.Host, u.Host) {
+	if publicURL := ps.GetPublicURL(); publicURL != "" {
+		if pu, perr := url.Parse(publicURL); perr == nil && pu.Host != "" && strings.EqualFold(pu.Host, u.Host) {
 			return true
 		}
 	}

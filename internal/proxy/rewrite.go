@@ -42,6 +42,9 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 	// Check if response is compressed
 	encoding := strings.ToLower(resp.Header.Get("Content-Encoding"))
 	var bodyReader io.ReadCloser = resp.Body
+	// Set when an oversized unknown-length body is passed through mid-decode:
+	// the decompressor is handed downstream, so its deferred Close must not run.
+	passthrough := false
 
 	// Decompress if needed
 	if strings.Contains(encoding, "gzip") {
@@ -51,16 +54,29 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 			debug.Log("proxy", "Failed to decompress gzip response: %v", err)
 			return nil
 		}
-		defer gzReader.Close()
+		defer func() {
+			if !passthrough {
+				gzReader.Close()
+			}
+		}()
 		bodyReader = gzReader
 	} else if strings.Contains(encoding, "deflate") {
 		deflateReader := flate.NewReader(resp.Body)
-		defer deflateReader.Close()
+		defer func() {
+			if !passthrough {
+				deflateReader.Close()
+			}
+		}()
 		bodyReader = deflateReader
 	} else if strings.Contains(encoding, "br") {
 		brReader := brotli.NewReader(resp.Body)
-		bodyReader = io.NopCloser(brReader)
-		defer bodyReader.Close()
+		brCloser := io.NopCloser(brReader)
+		defer func() {
+			if !passthrough {
+				brCloser.Close()
+			}
+		}()
+		bodyReader = brCloser
 	} else if strings.Contains(encoding, "zstd") {
 		zstdReader, err := zstd.NewReader(resp.Body)
 		if err != nil {
@@ -68,7 +84,11 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 			debug.Log("proxy", "Failed to decompress zstd response: %v", err)
 			return nil
 		}
-		defer zstdReader.Close()
+		defer func() {
+			if !passthrough {
+				zstdReader.Close()
+			}
+		}()
 		bodyReader = io.NopCloser(zstdReader)
 	} else if encoding != "" && encoding != "identity" {
 		// Unsupported encoding - pass through without modification
@@ -85,25 +105,41 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 	if bodyReader == resp.Body {
 		sizeHint = resp.ContentLength
 	}
-	bodyBytes, err := readAllSized(bodyReader, sizeHint)
+	// A known-oversized identity body is passed through untouched: injection
+	// requires buffering the whole document and an unbounded buffer is an OOM
+	// vector on HTML-typed downloads/streams.
+	if sizeHint > maxInjectBodyBytes {
+		debug.Log("proxy", "Skipping injection: body too large (%d bytes)", sizeHint)
+		return nil
+	}
+	bodyBytes, truncated, err := readAllCapped(bodyReader, sizeHint, maxInjectBodyBytes)
 	if err != nil {
 		return err
 	}
-	resp.Body.Close()
-
-	// Extract port from the live listen address (handles both :port and
-	// [::]:port formats); liveAddr() tracks auto-restart rebinds race-free.
-	addr := ps.liveAddr()
-	port := 8080
-	if lastColon := strings.LastIndex(addr, ":"); lastColon != -1 {
-		if p, err := strconv.Atoi(addr[lastColon+1:]); err == nil {
-			port = p
+	if truncated {
+		// Unknown-length (chunked or decompressed) body exceeded the injection
+		// cap mid-read. Pass it through uncompressed without injection: the
+		// already-read head plus the in-flight decompressor reassemble the full
+		// stream downstream. Deferred decompressor Close is skipped because the
+		// reader is handed off.
+		passthrough = true
+		resp.Body = &passthroughReadCloser{
+			Reader: io.MultiReader(bytes.NewReader(bodyBytes), bodyReader),
+			Closer: resp.Body,
 		}
+		resp.ContentLength = -1
+		resp.Header.Del("Content-Length")
+		resp.Header.Del("Content-Encoding")
+		resp.Header.Del("ETag")
+		resp.Header.Del("Last-Modified")
+		resp.Header.Del("Content-MD5")
+		debug.Log("proxy", "Skipping injection: body exceeded %d bytes", maxInjectBodyBytes)
+		return nil
 	}
+	resp.Body.Close()
 
 	// Rewrite absolute URLs in HTML content pointing to target back to proxy
 	modifiedBody := ps.rewriteURLsInBody(bodyBytes)
-	_ = port // wsPort is deprecated/unused; kept for signature compatibility
 
 	// Always-wrap model: a genuine top-level navigation (a real request, no
 	// frame marker, a full HTML document) is replaced by an outer chrome shell
@@ -207,18 +243,49 @@ func (ps *ProxyServer) interceptAuthRedirect(resp *http.Response) bool {
 	return true
 }
 
-// readAllSized reads all of r into a single buffer. When sizeHint > 0 it
-// presizes the buffer to that exact size plus a small read margin, so a body
-// whose length is known up front (identity Content-Length) is read in one
+// maxInjectBodyBytes caps how much of an HTML response body modifyResponse
+// will buffer for rewriting/injection. Injection is inherently a whole-body
+// operation, so without a bound a huge HTML-typed download or stream is fully
+// loaded into memory (OOM vector). Oversized bodies are passed through
+// unmodified — injection is a dev convenience, never worth destabilizing the
+// proxy for.
+const maxInjectBodyBytes = 16 << 20 // 16 MiB
+
+// passthroughReadCloser pairs a reassembled reader (buffered head + in-flight
+// remainder) with the closer of the original response body.
+type passthroughReadCloser struct {
+	io.Reader
+	io.Closer
+}
+
+// readAllCapped reads up to cap bytes from r. When sizeHint > 0 it presizes
+// the buffer to that exact size plus a small read margin, so a body whose
+// length is known up front (identity Content-Length) is read in one
 // allocation with no grow-by-doubling reallocations. A non-positive hint
-// (unknown length — chunked or decompressed) falls back to io.ReadAll.
-func readAllSized(r io.Reader, sizeHint int64) ([]byte, error) {
-	if sizeHint <= 0 {
-		return io.ReadAll(r)
+// (unknown length — chunked or decompressed) starts small. truncated reports
+// whether r still had data beyond the cap; the unread remainder stays in r
+// for the caller to pass through.
+func readAllCapped(r io.Reader, sizeHint int64, cap int64) ([]byte, bool, error) {
+	var buf *bytes.Buffer
+	if sizeHint > 0 {
+		if sizeHint > cap {
+			sizeHint = cap
+		}
+		buf = bytes.NewBuffer(make([]byte, 0, sizeHint+bytes.MinRead))
+	} else {
+		buf = &bytes.Buffer{}
 	}
-	buf := bytes.NewBuffer(make([]byte, 0, sizeHint+bytes.MinRead))
-	_, err := buf.ReadFrom(r)
-	return buf.Bytes(), err
+	_, err := buf.ReadFrom(io.LimitReader(r, cap+1))
+	data := buf.Bytes()
+	if err != nil {
+		return nil, false, err
+	}
+	if int64(len(data)) > cap {
+		// The (cap+1)-th byte is already consumed; hand the whole head to the
+		// passthrough MultiReader so no byte is lost.
+		return data, true, nil
+	}
+	return data, false, nil
 }
 
 // stripFrameDenyHeaders removes framing-prohibition headers from a proxied
@@ -371,8 +438,8 @@ func (ps *ProxyServer) rewriteURL(rawURL string) string {
 // Otherwise returns localhost:port for local development.
 func (ps *ProxyServer) getProxyHost() string {
 	// If a public URL is configured (for tunnels), use its host
-	if ps.PublicURL != "" {
-		if parsed, err := url.Parse(ps.PublicURL); err == nil && parsed.Host != "" {
+	if publicURL := ps.GetPublicURL(); publicURL != "" {
+		if parsed, err := url.Parse(publicURL); err == nil && parsed.Host != "" {
 			return parsed.Host
 		}
 	}
@@ -390,8 +457,8 @@ func (ps *ProxyServer) getProxyHost() string {
 // getProxyScheme returns the scheme (http/https) for the proxy server.
 // If a public URL is configured with HTTPS (common for tunnels), returns https.
 func (ps *ProxyServer) getProxyScheme() string {
-	if ps.PublicURL != "" {
-		if parsed, err := url.Parse(ps.PublicURL); err == nil && parsed.Scheme != "" {
+	if publicURL := ps.GetPublicURL(); publicURL != "" {
+		if parsed, err := url.Parse(publicURL); err == nil && parsed.Scheme != "" {
 			return parsed.Scheme
 		}
 	}

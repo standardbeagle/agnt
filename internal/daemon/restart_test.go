@@ -613,7 +613,7 @@ func TestRestartIntegration_ProxyRestart_PreservesConfig(t *testing.T) {
 	// Sanity: the original server carries the config.
 	before, err := d.proxym.Get("cfg-proxy")
 	require.NoError(t, err)
-	require.Equal(t, publicURL, before.PublicURL)
+	require.Equal(t, publicURL, before.GetPublicURL())
 	require.True(t, before.SkipTLSVerify)
 
 	_, err = client.ProxyRestart("cfg-proxy")
@@ -622,7 +622,7 @@ func TestRestartIntegration_ProxyRestart_PreservesConfig(t *testing.T) {
 	// After restart the recreated server must still carry both.
 	after, err := d.proxym.Get("cfg-proxy")
 	require.NoError(t, err)
-	require.Equal(t, publicURL, after.PublicURL, "restart must preserve PublicURL")
+	require.Equal(t, publicURL, after.GetPublicURL(), "restart must preserve PublicURL")
 	require.True(t, after.SkipTLSVerify, "restart must preserve SkipTLSVerify")
 
 	_ = client.ProxyStop("cfg-proxy")
