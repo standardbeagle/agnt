@@ -47,11 +47,14 @@ type daemonSessionHandle struct {
 	mu     sync.Mutex
 	closed bool
 
-	client            *daemonclient.ResilientClient
-	heartbeatOnce     sync.Once
+	client        *daemonclient.ResilientClient
+	heartbeatOnce sync.Once
+	// heartbeatStop is allocated at handle construction (before the handle is
+	// shared), so Close can never race a nil channel with the registration
+	// goroutine that starts the heartbeat loop.
 	heartbeatStop     chan struct{}
 	sessionCode       string
-	sessionRegistered bool
+	sessionRegistered atomic.Bool
 
 	// Completion signaling for async registration
 	registrationDone chan struct{}
@@ -109,16 +112,14 @@ func (h *daemonSessionHandle) Close() {
 	}
 	// Stop heartbeat
 	h.heartbeatOnce.Do(func() {
-		if h.heartbeatStop != nil {
-			close(h.heartbeatStop)
-		}
+		close(h.heartbeatStop)
 	})
 
 	client := h.takeClient()
 	if client == nil {
 		return
 	}
-	if h.sessionRegistered {
+	if h.sessionRegistered.Load() {
 		_ = client.SessionUnregister(h.sessionCode)
 	}
 	client.Close()
@@ -234,6 +235,7 @@ func startDaemonSession(ctx context.Context, cfg daemonSessionConfig) *daemonSes
 	handle := &daemonSessionHandle{
 		sessionCode:      cfg.SessionCode,
 		registrationDone: make(chan struct{}),
+		heartbeatStop:    make(chan struct{}),
 	}
 
 	go func() {
@@ -274,7 +276,7 @@ func startDaemonSession(ctx context.Context, cfg daemonSessionConfig) *daemonSes
 			return
 		}
 
-		handle.sessionRegistered = true
+		handle.sessionRegistered.Store(true)
 		handle.projectPath = cfg.ProjectPath
 		registerShims(client.Client(), cfg)
 		if result != nil {
@@ -359,7 +361,6 @@ func startDaemonSession(ctx context.Context, cfg daemonSessionConfig) *daemonSes
 		if interval == 0 {
 			interval = 30 * time.Second
 		}
-		handle.heartbeatStop = make(chan struct{})
 		go func() {
 			ticker := time.NewTicker(interval)
 			defer ticker.Stop()
@@ -635,11 +636,15 @@ func setupAlertScanner(projectPath, sessionCode string, netOverlay *Overlay, dae
 			// Protected (explicit user action) matches are not errors — skip
 			// them so panel messages / sketches don't pollute get_errors.
 			if daemonHandle != nil && daemonHandle.IsConnected() {
+				hc := daemonHandle.currentClient()
+				if hc == nil {
+					return
+				}
 				for _, m := range batch.Matches {
 					if m.Protected {
 						continue
 					}
-					_ = daemonHandle.client.AlertReport(protocol.AlertReportPayload{
+					_ = hc.AlertReport(protocol.AlertReportPayload{
 						PatternID:   m.Pattern.ID,
 						Severity:    string(m.Pattern.Severity),
 						Category:    m.Pattern.Category,

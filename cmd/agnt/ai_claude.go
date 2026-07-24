@@ -791,7 +791,7 @@ func printDaemonStatusTo(h *daemonSessionHandle, w io.Writer) {
 	if h == nil {
 		return
 	}
-	if !h.sessionRegistered {
+	if !h.sessionRegistered.Load() {
 		if h.registrationErr != nil {
 			fmt.Fprintf(w, "[daemon: not available: %v]\n", h.registrationErr)
 		} else {
@@ -1115,7 +1115,7 @@ func printDaemonStatus(h *daemonSessionHandle) {
 	if h == nil {
 		return
 	}
-	if !h.sessionRegistered {
+	if !h.sessionRegistered.Load() {
 		if h.registrationErr != nil {
 			fmt.Fprintf(os.Stderr, "[daemon: not available: %v]\n", h.registrationErr)
 		} else {
