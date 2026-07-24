@@ -292,8 +292,21 @@ type Scheduler struct {
 
 // NewScheduler creates a new scheduler.
 func NewScheduler(config SchedulerConfig, registry *SessionRegistry, stateMgr *SchedulerStateManager) *Scheduler {
+	// Default per-field, not whole-config: replacing the entire config when
+	// only the tick is unset silently discards the caller's MaxRetries,
+	// RetryDelay, DeliveryTimeout, and MaxConcurrentDeliveries.
+	defaults := DefaultSchedulerConfig()
 	if config.TickInterval == 0 {
-		config = DefaultSchedulerConfig()
+		config.TickInterval = defaults.TickInterval
+	}
+	if config.MaxRetries == 0 {
+		config.MaxRetries = defaults.MaxRetries
+	}
+	if config.RetryDelay == 0 {
+		config.RetryDelay = defaults.RetryDelay
+	}
+	if config.DeliveryTimeout == 0 {
+		config.DeliveryTimeout = defaults.DeliveryTimeout
 	}
 	if config.MaxConcurrentDeliveries <= 0 {
 		config.MaxConcurrentDeliveries = 10
@@ -424,7 +437,13 @@ func (s *Scheduler) checkDueTasks() {
 			return false // context cancelled, stop iteration
 		}
 
+		// Track the delivery goroutine so Stop actually waits for in-flight
+		// deliveries as documented — untracked goroutines kept mutating storage
+		// after shutdown. The Add is safe against wg.Wait: the counter is held
+		// non-zero by run() for the whole lifetime of checkDueTasks.
+		s.wg.Add(1)
 		go func() {
+			defer s.wg.Done()
 			defer s.deliverySem.Release(1)
 			s.deliverTask(task)
 		}()
