@@ -33,13 +33,15 @@
 //     side-table keyed by processID, populated by lazy observation. This is
 //     intentionally Option (b) from the task description.
 
-package daemon
+package health
 
 import (
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/debug"
 
 	goprocess "github.com/standardbeagle/go-cli-server/process"
 
@@ -322,13 +324,13 @@ func (h *HealthTracker) observe(proxyID, processID string, currentState goproces
 	// take down the daemon if a callback misbehaves.
 	if outageStarted && h.onOutageStart != nil {
 		func() {
-			defer logRecovered("health-tracker", "onOutageStart callback")
+			defer debug.LogRecovered("health-tracker", "onOutageStart callback")
 			h.onOutageStart(processID, outageStartTime)
 		}()
 	}
 	if returnedToHealthy && h.onReturnToHealthy != nil {
 		func() {
-			defer logRecovered("health-tracker", "onReturnToHealthy callback")
+			defer debug.LogRecovered("health-tracker", "onReturnToHealthy callback")
 			h.onReturnToHealthy(processID)
 		}()
 	}
@@ -555,7 +557,7 @@ func (h *HealthTracker) emit(proxyID, message string, level proxy.ProxyDiagnosti
 	}
 	// Recover from any panic in the emitter — this runs on the hot log
 	// path and must never take down the daemon.
-	defer logRecovered("health-tracker", "emitDiagnostic emitter")
+	defer debug.LogRecovered("health-tracker", "emitDiagnostic emitter")
 	entry := proxy.LogEntry{
 		Type: proxy.LogTypeDiagnostic,
 		Diagnostic: &proxy.ProxyDiagnostic{
@@ -667,7 +669,7 @@ func (h *HealthTracker) RecordRecoverySignal(proxyID string, ts time.Time) {
 
 	if cb := h.onTransportRecovery.Load(); cb != nil {
 		func() {
-			defer logRecovered("health-tracker", "onTransportRecovery callback")
+			defer debug.LogRecovered("health-tracker", "onTransportRecovery callback")
 			(*cb)(proxyID)
 		}()
 	}
@@ -727,4 +729,27 @@ func openMarkerMessage(processID string, state goprocess.ProcessState) string {
 
 func closeMarkerMessage(processID string) string {
 	return fmt.Sprintf("proxy error stream resumed: process %s healthy", processID)
+}
+
+// FormatDuration renders a duration compactly for diagnostics.
+func FormatDuration(d time.Duration) string {
+	if d < time.Second {
+		return fmt.Sprintf("%dms", d.Milliseconds())
+	}
+	if d < time.Minute {
+		return fmt.Sprintf("%.1fs", d.Seconds())
+	}
+	if d < time.Hour {
+		m := int(d.Minutes())
+		s := int(d.Seconds()) % 60
+		return fmt.Sprintf("%dm%ds", m, s)
+	}
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	return fmt.Sprintf("%dh%dm", h, m)
+}
+
+// SetNowFuncForTest overrides the clock. Tests only — production uses time.Now.
+func (h *HealthTracker) SetNowFuncForTest(fn func() time.Time) {
+	h.nowFn = fn
 }

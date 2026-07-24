@@ -1,4 +1,4 @@
-package daemon
+package health
 
 import (
 	"sync"

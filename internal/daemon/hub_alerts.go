@@ -60,7 +60,7 @@ func (d *Daemon) hubHandleAlertsReport(conn *hubpkg.Connection, cmd *hubproto.Co
 
 	// Rebuild-category alerts are evidence that the next process stop
 	// is part of an intentional rebuild, not a crash. Stamp the health
-	// tracker so OutageClassifier biases its decision toward Rebuild.
+	// tracker so health.OutageClassifier biases its decision toward Rebuild.
 	if payload.Category == "rebuild" && payload.ScriptID != "" {
 		d.healthTracker.RecordRebuildSignal(payload.ScriptID)
 	}

@@ -486,7 +486,7 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 
 	// Stop the process if running
 	if state == "running" {
-		// Mark this stop as daemon-initiated so the OutageClassifier
+		// Mark this stop as daemon-initiated so the health.OutageClassifier
 		// treats the upcoming outage as a Rebuild rather than a Crash.
 		d.healthTracker.MarkDaemonInitiatedStop(processID)
 		stopCtx, cancel := context.WithTimeout(ctx, 5*time.Second)

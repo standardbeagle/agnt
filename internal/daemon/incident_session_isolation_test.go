@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemon/health"
 	"github.com/standardbeagle/agnt/internal/incident"
 	"github.com/standardbeagle/agnt/internal/overlay"
 	"github.com/standardbeagle/agnt/internal/proxy"
@@ -123,18 +124,18 @@ func TestIncidentOwnerCanBeReboundOnlyAfterResourceTeardown(t *testing.T) {
 	d.registerIncidentProxyOwner("reused", "first")
 	d.registerIncidentProxyOwner("reused", "second")
 	owner, _ := d.incidentProxyOwner.Load("reused")
-	require.Equal(t, "first", ownerAsIncidentResource(owner).sessionCode, "owner must stay immutable during one resource lifetime")
+	require.Equal(t, "first", ownerAsIncidentResource(owner).SessionCode, "owner must stay immutable during one resource lifetime")
 
 	d.retireIncidentProxyOwner("reused")
 	d.registerIncidentProxyOwner("reused", "second")
 	owner, _ = d.incidentProxyOwner.Load("reused")
-	require.Equal(t, "second", ownerAsIncidentResource(owner).sessionCode, "a recreated resource must bind a fresh owner")
+	require.Equal(t, "second", ownerAsIncidentResource(owner).SessionCode, "a recreated resource must bind a fresh owner")
 
 	d.registerIncidentProcessOwner("reused", "first")
 	d.retireIncidentProcessOwner("reused")
 	d.registerIncidentProcessOwner("reused", "second")
 	owner, _ = d.incidentProcessOwner.Load("reused")
-	require.Equal(t, "second", ownerAsIncidentResource(owner).sessionCode)
+	require.Equal(t, "second", ownerAsIncidentResource(owner).SessionCode)
 }
 
 func TestProxyLoggerDelayedCallbackRejectsReusedIDLifetime(t *testing.T) {
@@ -213,9 +214,9 @@ func TestHeldProxyCallbackRejectsReusedIDLifetime(t *testing.T) {
 	}
 	d.registerIncidentProxyOwner("reused-held-proxy", "owner-a")
 	owner, _ := d.incidentProxyOwner.Load("reused-held-proxy")
-	b := newOwnedHoldBuffer(nil, d.fireHoldEmitForOwner)
+	b := health.NewOwnedHoldBuffer(nil, d.fireHoldEmitForOwner)
 	t.Cleanup(b.Stop)
-	b.nowFn = func() time.Time { return time.Now().Add(-10 * time.Second) }
+	b.SetNowFuncForTest(func() time.Time { return time.Now().Add(-10 * time.Second) })
 	b.HoldForOwner(proxy.LogEntry{Type: proxy.LogTypeDiagnostic, Diagnostic: &proxy.ProxyDiagnostic{
 		Level: proxy.DiagnosticError, Category: "proxy", Event: "config_error", Message: "held old lifetime",
 	}}, "reused-held-proxy", "same-fingerprint", false, ownerAsIncidentResource(owner))

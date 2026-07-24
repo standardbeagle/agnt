@@ -71,12 +71,12 @@ func goleakOptions() []goleak.Option {
 		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/daemon.(*Daemon).handleProxyEvents"),
 		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/daemon.(*Daemon).drainHooks"),
 		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/daemon.(*AutostartManager).run"),
-		// HoldBuffer.loop: introduced by transport-outage gate WIP.
+		// health.HoldBuffer.loop: introduced by transport-outage gate WIP.
 		// ApplyAlertsConfig races daemon.Stop in some autostart-driven
 		// tests — the new buffer is created after Stop has already passed
 		// the holdBuffer.Stop call. Tracked under the unify-message-queue
 		// follow-up plan; ignore here so test load is the only signal.
-		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/daemon.(*HoldBuffer).loop"),
+		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/daemon.(*health.HoldBuffer).loop"),
 		// AutostartManager.run spawns goroutines for DuplicateScanner and
 		// ScanForProject; these may be mid-execution when daemon stops.
 		goleak.IgnoreAnyFunction("github.com/standardbeagle/agnt/internal/daemon.(*DuplicateScanner).scanDuplicates"),

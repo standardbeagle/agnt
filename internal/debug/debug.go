@@ -145,6 +145,16 @@ func Warn(component, format string, args ...interface{}) {
 	logger.Printf("[WARN] [%s] %s", component, msg)
 }
 
+// LogRecovered converts a panic in a hot-path callback into an error log.
+// Use as `defer LogRecovered(component, what)`. A panic must not take down
+// the process, but a silently swallowed one makes a recurring misbehaving
+// callback invisible forever — log it instead.
+func LogRecovered(component, what string) {
+	if r := recover(); r != nil {
+		Error(component, "%s panicked: %v", what, r)
+	}
+}
+
 // Info logs an info message (always logged, regardless of debug mode).
 func Info(component, format string, args ...interface{}) {
 	msg := fmt.Sprintf(format, args...)

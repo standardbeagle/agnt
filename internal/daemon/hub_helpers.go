@@ -13,6 +13,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemon/health"
+
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/incident"
@@ -256,20 +258,7 @@ func extractPortFromURL(urlStr string) int {
 // Note: Registering a command that Hub already registered will override Hub's handler.
 
 func formatDuration(d time.Duration) string {
-	if d < time.Second {
-		return fmt.Sprintf("%dms", d.Milliseconds())
-	}
-	if d < time.Minute {
-		return fmt.Sprintf("%.1fs", d.Seconds())
-	}
-	if d < time.Hour {
-		m := int(d.Minutes())
-		s := int(d.Seconds()) % 60
-		return fmt.Sprintf("%dm%ds", m, s)
-	}
-	h := int(d.Hours())
-	m := int(d.Minutes()) % 60
-	return fmt.Sprintf("%dh%dm", h, m)
+	return health.FormatDuration(d)
 }
 
 // hubHandleDetect handles the DETECT command.
@@ -325,7 +314,7 @@ func (d *Daemon) hubHandleDetect(ctx context.Context, conn *hubpkg.Connection, c
 // Transport-signal contract: in addition to process-state suppression,
 // the gate watches for transport-error bursts (refused/EOF/dial timeout)
 // and HTTP 2xx/3xx recoveries. A burst flips the proxy into synthetic
-// outage and held entries collect in the HoldBuffer. A recovery signal
+// outage and held entries collect in the health.HoldBuffer. A recovery signal
 // drains the buffer — cascade entries are dropped, real errors emitted.
 // See internal/daemon/hold_buffer.go and the OutageHold config block.
 func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
@@ -339,7 +328,7 @@ func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
 	}
 	proxyID := server.ID
 	owner, _ := d.incidentProxyOwner.Load(proxyID)
-	lifetimeOwner, _ := owner.(*incidentResourceOwner)
+	lifetimeOwner, _ := owner.(*health.ResourceOwner)
 	d.eventHub.RegisterProxyPath(proxyID, server.Path)
 	server.Logger().SetOnLogEntry(func(entry proxy.LogEntry) {
 		// Feed transport signals to the tracker before gating so the
@@ -355,7 +344,7 @@ func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
 			if hb == nil {
 				return
 			}
-			fp := FingerprintForEntry(entry)
+			fp := health.FingerprintForEntry(entry)
 			cascade := d.classifyCascade(entry)
 			hb.HoldForOwner(entry, proxyID, fp, cascade, lifetimeOwner)
 		case gateDrop:
@@ -367,22 +356,18 @@ func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
 
 // registerIncidentProxyOwner records the exact session captured when a proxy
 // is created. LoadOrStore makes ownership immutable for the resource lifetime.
-type incidentResourceOwner struct {
-	sessionCode string
-}
-
 func (d *Daemon) registerIncidentProxyOwner(proxyID, sessionCode string) {
 	if proxyID == "" || sessionCode == "" {
 		return
 	}
-	d.incidentProxyOwner.LoadOrStore(proxyID, &incidentResourceOwner{sessionCode: sessionCode})
+	d.incidentProxyOwner.LoadOrStore(proxyID, &health.ResourceOwner{SessionCode: sessionCode})
 }
 
 // registerIncidentProxyResourceOwner transfers the process lifetime's exact
 // typed owner to a proxy created on that process's behalf. Keeping the same
 // pointer is required by stampIncidentOwner's lifetime identity check.
-func (d *Daemon) registerIncidentProxyResourceOwner(proxyID string, owner *incidentResourceOwner) {
-	if proxyID == "" || owner == nil || owner.sessionCode == "" {
+func (d *Daemon) registerIncidentProxyResourceOwner(proxyID string, owner *health.ResourceOwner) {
+	if proxyID == "" || owner == nil || owner.SessionCode == "" {
 		return
 	}
 	d.incidentProxyOwner.LoadOrStore(proxyID, owner)
@@ -390,7 +375,7 @@ func (d *Daemon) registerIncidentProxyResourceOwner(proxyID string, owner *incid
 
 func (d *Daemon) registerIncidentProcessOwner(processID, sessionCode string) {
 	if processID != "" && sessionCode != "" {
-		d.incidentProcessOwner.LoadOrStore(processID, &incidentResourceOwner{sessionCode: sessionCode})
+		d.incidentProcessOwner.LoadOrStore(processID, &health.ResourceOwner{SessionCode: sessionCode})
 	}
 }
 
@@ -406,7 +391,7 @@ func (d *Daemon) retireIncidentProcessOwner(processID string) {
 
 // stampIncidentOwner stamps exact resource ownership and fails closed when it
 // was not captured at creation time.
-func (d *Daemon) stampIncidentOwner(ev *incident.IncidentEvent, owners *sync.Map, resourceID string, captured *incidentResourceOwner) bool {
+func (d *Daemon) stampIncidentOwner(ev *incident.IncidentEvent, owners *sync.Map, resourceID string, captured *health.ResourceOwner) bool {
 	if ev == nil {
 		return false
 	}
@@ -417,7 +402,7 @@ func (d *Daemon) stampIncidentOwner(ev *incident.IncidentEvent, owners *sync.Map
 	if !ok || captured == nil || owner != captured {
 		return false
 	}
-	ev.Ctx.SessionID = captured.sessionCode
+	ev.Ctx.SessionID = captured.SessionCode
 	return true
 }
 
@@ -445,7 +430,7 @@ func (d *Daemon) applyAuthBreakout(server *proxy.ProxyServer) {
 }
 
 // feedTransportSignals inspects the entry for transport-error or
-// recovery signals and updates the HealthTracker accordingly. Diagnostic
+// recovery signals and updates the health.HealthTracker accordingly. Diagnostic
 // entries categorised "transport" trigger an err record; HTTP responses
 // with status <500 (non-error) trigger a recovery signal (proof the
 // upstream is reachable).
@@ -497,7 +482,7 @@ func (d *Daemon) classifyCascade(entry proxy.LogEntry) bool {
 // fireGatedFanOut delivers an entry to all consumers after the gate
 // (or hold-buffer emit) has approved it: EventHub stream sinks AND the
 // incident bus. Used both for the immediate-pass path and as the
-// HoldBuffer emit callback. mergedCount > 1 indicates the entry coalesced
+// health.HoldBuffer emit callback. mergedCount > 1 indicates the entry coalesced
 // during the hold window; today the count is informational only — sinks
 // see the original entry — but a future pass can synthesise a count
 // prefix on the summary.
@@ -506,25 +491,25 @@ func (d *Daemon) fireGatedFanOut(entry proxy.LogEntry, proxyID string, _ int) {
 	d.fireGatedFanOutForOwner(entry, proxyID, 1, ownerAsIncidentResource(owner))
 }
 
-func ownerAsIncidentResource(owner any) *incidentResourceOwner {
-	result, _ := owner.(*incidentResourceOwner)
+func ownerAsIncidentResource(owner any) *health.ResourceOwner {
+	result, _ := owner.(*health.ResourceOwner)
 	return result
 }
 
-func (d *Daemon) fireGatedFanOutForOwner(entry proxy.LogEntry, proxyID string, _ int, owner *incidentResourceOwner) {
+func (d *Daemon) fireGatedFanOutForOwner(entry proxy.LogEntry, proxyID string, _ int, owner *health.ResourceOwner) {
 	if d.eventHub != nil {
 		d.eventHub.BroadcastLogEntry(entry, proxyID)
 	}
 	d.fireToIncidentBusForOwner(entry, proxyID, owner)
 }
 
-// fireHoldEmit is the HoldBuffer emit callback. Same fan-out as direct
+// fireHoldEmit is the health.HoldBuffer emit callback. Same fan-out as direct
 // gate-accept but with the merged-count signal preserved for telemetry.
 func (d *Daemon) fireHoldEmit(entry proxy.LogEntry, proxyID string, mergedCount int) {
 	d.fireGatedFanOut(entry, proxyID, mergedCount)
 }
 
-func (d *Daemon) fireHoldEmitForOwner(entry proxy.LogEntry, proxyID string, mergedCount int, owner *incidentResourceOwner) {
+func (d *Daemon) fireHoldEmitForOwner(entry proxy.LogEntry, proxyID string, mergedCount int, owner *health.ResourceOwner) {
 	d.fireGatedFanOutForOwner(entry, proxyID, mergedCount, owner)
 }
 
@@ -538,7 +523,7 @@ func (d *Daemon) fireToIncidentBus(entry proxy.LogEntry, proxyID string) {
 	d.fireToIncidentBusForOwner(entry, proxyID, ownerAsIncidentResource(owner))
 }
 
-func (d *Daemon) fireToIncidentBusForOwner(entry proxy.LogEntry, proxyID string, owner *incidentResourceOwner) {
+func (d *Daemon) fireToIncidentBusForOwner(entry proxy.LogEntry, proxyID string, owner *health.ResourceOwner) {
 	if d.incidentBus == nil {
 		return
 	}
@@ -614,7 +599,7 @@ type gateDecision int
 const (
 	// gateAccept allows the entry to flow to all consumers immediately.
 	gateAccept gateDecision = iota
-	// gateHold queues the entry into the HoldBuffer; emission is
+	// gateHold queues the entry into the health.HoldBuffer; emission is
 	// deferred until the hold window expires or the proxy recovers.
 	gateHold
 	// gateDrop discards the entry without emission. Used only for
@@ -633,23 +618,23 @@ func (d *Daemon) proxyBroadcastGate(proxyID string, entry proxy.LogEntry) bool {
 }
 
 // proxyBroadcastDecision returns the gate decision for entry on proxyID:
-// accept (forward immediately), hold (queue into HoldBuffer), or drop
+// accept (forward immediately), hold (queue into health.HoldBuffer), or drop
 // (discard).
 //
 // Diagnostic entries always accept — they are how the daemon
 // communicates suppression state to the agent.
 //
 // For non-diagnostic entries:
-//   - The HealthTracker is invoked for its side-effect (edge detection,
+//   - The health.HealthTracker is invoked for its side-effect (edge detection,
 //     marker emission) regardless of the result.
-//   - The OutageClassifier's tri-state SuppressionMode now considers BOTH
+//   - The health.OutageClassifier's tri-state health.SuppressionMode now considers BOTH
 //     the linked process state (existing behaviour) AND the proxy's
 //     synthetic transport-outage flag (new behaviour). When the proxy is
-//     in transport outage but the process is healthy, ModeFull applies.
-//   - ModeFull → hold. ModeDiagnosticOnly → hold for error-class entries,
-//     accept for the rest. ModeOff → accept.
+//     in transport outage but the process is healthy, health.ModeFull applies.
+//   - health.ModeFull → hold. health.ModeDiagnosticOnly → hold for error-class entries,
+//     accept for the rest. health.ModeOff → accept.
 //
-// The hold buffer (NewHoldBuffer) drives final disposition: held entries
+// The hold buffer (health.NewHoldBuffer) drives final disposition: held entries
 // either replay on window expiry or drop on recovery.
 func (d *Daemon) proxyBroadcastDecision(proxyID string, entry proxy.LogEntry) gateDecision {
 	if entry.Type == proxy.LogTypeDiagnostic {
@@ -663,14 +648,14 @@ func (d *Daemon) proxyBroadcastDecision(proxyID string, entry proxy.LogEntry) ga
 
 	mode := d.outageClassifier.SuppressionModeProxy(proxyID, linkedProcessID)
 	switch mode {
-	case ModeFull:
+	case health.ModeFull:
 		return gateHold
-	case ModeDiagnosticOnly:
+	case health.ModeDiagnosticOnly:
 		if isErrorClassEntry(entry) {
 			return gateHold
 		}
 		return gateAccept
-	case ModeOff:
+	case health.ModeOff:
 		fallthrough
 	default:
 		// Just past the grace window — emit the close marker now
@@ -684,7 +669,7 @@ func (d *Daemon) proxyBroadcastDecision(proxyID string, entry proxy.LogEntry) ga
 }
 
 // isErrorClassEntry reports whether a proxy log entry is "error class"
-// for the purposes of ModeDiagnosticOnly suppression. Frontend errors,
+// for the purposes of health.ModeDiagnosticOnly suppression. Frontend errors,
 // HTTP 5xx responses, and explicit error-level diagnostics all qualify.
 // Diagnostics are handled before this gate function runs, so callers
 // only see non-diagnostic types here.

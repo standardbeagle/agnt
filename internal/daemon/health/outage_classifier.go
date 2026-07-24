@@ -37,13 +37,15 @@
 // entry by proxyBroadcastGate. It reads only atomics on the tracker side,
 // plus an O(1) restart-rate check on a small ring of timestamps.
 
-package daemon
+package health
 
 import (
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/debug"
 
 	goprocess "github.com/standardbeagle/go-cli-server/process"
 
@@ -571,7 +573,7 @@ func (c *OutageClassifier) fireLongRebuildHeartbeat(processID string) {
 	}
 	c.emit(proxyID, fmt.Sprintf(
 		"proxy %s: rebuild ongoing, suppression active for %s",
-		proxyID, formatDuration(elapsed),
+		proxyID, FormatDuration(elapsed),
 	), proxy.DiagnosticInfo, "rebuild_ongoing")
 
 	// Reschedule. Bail if the timer was already torn down (Swap(nil)) by a
@@ -631,7 +633,7 @@ func (c *OutageClassifier) emitExpiredRebuildOnce(processID string) {
 	}
 	c.emit(proxyID, fmt.Sprintf(
 		"proxy %s: rebuild exceeded %s, resuming error stream",
-		proxyID, formatDuration(RebuildLongWindow),
+		proxyID, FormatDuration(RebuildLongWindow),
 	), proxy.DiagnosticWarning, "rebuild_expired")
 }
 
@@ -675,7 +677,7 @@ func (c *OutageClassifier) emit(proxyID, message string, level proxy.ProxyDiagno
 	if c.emitDiagnostic == nil {
 		return
 	}
-	defer logRecovered("outage-classifier", "emitDiagnostic emitter")
+	defer debug.LogRecovered("outage-classifier", "emitDiagnostic emitter")
 	entry := proxy.LogEntry{
 		Type: proxy.LogTypeDiagnostic,
 		Diagnostic: &proxy.ProxyDiagnostic{
@@ -687,4 +689,9 @@ func (c *OutageClassifier) emit(proxyID, message string, level proxy.ProxyDiagno
 		},
 	}
 	c.emitDiagnostic(entry, proxyID)
+}
+
+// SetNowFuncForTest overrides the clock. Tests only — production uses time.Now.
+func (c *OutageClassifier) SetNowFuncForTest(fn func() time.Time) {
+	c.nowFn = fn
 }

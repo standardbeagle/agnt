@@ -25,7 +25,7 @@
 // timer. This avoids the "deadline-driven heap with concurrent eviction"
 // dance that would otherwise be required.
 
-package daemon
+package health
 
 import (
 	"container/heap"
@@ -35,6 +35,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/debug"
+
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/proxy"
 )
@@ -43,7 +45,14 @@ import (
 // a held entry. The implementation is responsible for fanning the entry
 // to all consumers (EventHub stream sinks, incident bus adapters, etc).
 type HoldEmitFn func(entry proxy.LogEntry, proxyID string, mergedCount int)
-type holdOwnerEmitFn func(entry proxy.LogEntry, proxyID string, mergedCount int, owner *incidentResourceOwner)
+
+// ResourceOwner is the exact session captured when a proxied resource is
+// created; ownership is immutable for the resource lifetime.
+type ResourceOwner struct {
+	SessionCode string
+}
+
+type HoldOwnerEmitFn func(entry proxy.LogEntry, proxyID string, mergedCount int, owner *ResourceOwner)
 
 // holdEntry is the internal record kept per (proxyID, fingerprint).
 type holdEntry struct {
@@ -54,7 +63,7 @@ type holdEntry struct {
 	emitAt      time.Time
 	count       int
 	cascade     bool
-	owner       *incidentResourceOwner
+	owner       *ResourceOwner
 
 	// heapIndex is maintained by the heap.Interface methods; -1 when not
 	// in the heap (entry was emitted or dropped).
@@ -94,7 +103,7 @@ type holdMessage struct {
 	proxyID  string
 	fp       string
 	cascade  bool
-	owner    *incidentResourceOwner
+	owner    *ResourceOwner
 	now      time.Time
 	resultCh chan int // for synchronous size-query in tests; nil otherwise
 }
@@ -115,7 +124,7 @@ const (
 type HoldBuffer struct {
 	cfg       *config.OutageHoldConfig
 	emit      HoldEmitFn
-	ownerEmit holdOwnerEmitFn
+	ownerEmit HoldOwnerEmitFn
 	nowFn     func() time.Time
 	patterns  []string // lowercased cache of cfg.JSCascadePatterns
 
@@ -150,7 +159,7 @@ func NewHoldBuffer(cfg *config.OutageHoldConfig, emit HoldEmitFn) *HoldBuffer {
 	return b
 }
 
-func newOwnedHoldBuffer(cfg *config.OutageHoldConfig, emit holdOwnerEmitFn) *HoldBuffer {
+func NewOwnedHoldBuffer(cfg *config.OutageHoldConfig, emit HoldOwnerEmitFn) *HoldBuffer {
 	b := NewHoldBuffer(cfg, nil)
 	b.ownerEmit = emit
 	return b
@@ -171,11 +180,11 @@ func (b *HoldBuffer) Hold(entry proxy.LogEntry, proxyID, fingerprint string, cla
 	b.hold(entry, proxyID, fingerprint, classifyCascade, nil)
 }
 
-func (b *HoldBuffer) HoldForOwner(entry proxy.LogEntry, proxyID, fingerprint string, classifyCascade bool, owner *incidentResourceOwner) {
+func (b *HoldBuffer) HoldForOwner(entry proxy.LogEntry, proxyID, fingerprint string, classifyCascade bool, owner *ResourceOwner) {
 	b.hold(entry, proxyID, fingerprint, classifyCascade, owner)
 }
 
-func (b *HoldBuffer) hold(entry proxy.LogEntry, proxyID, fingerprint string, classifyCascade bool, owner *incidentResourceOwner) {
+func (b *HoldBuffer) hold(entry proxy.LogEntry, proxyID, fingerprint string, classifyCascade bool, owner *ResourceOwner) {
 	if b == nil || b.closed.Load() {
 		return
 	}
@@ -319,7 +328,7 @@ func (b *HoldBuffer) loop() {
 	emit := func(e *holdEntry) {
 		if b.emit != nil || b.ownerEmit != nil {
 			func() {
-				defer logRecovered("hold-buffer", "emit callback")
+				defer debug.LogRecovered("hold-buffer", "emit callback")
 				if b.ownerEmit != nil {
 					b.ownerEmit(e.entry, e.proxyID, e.count, e.owner)
 				} else {
@@ -417,7 +426,7 @@ func holdKey(proxyID, fingerprint string) string {
 	return proxyID + "|" + fingerprint
 }
 
-func holdLifetimeKey(proxyID, fingerprint string, owner *incidentResourceOwner) string {
+func holdLifetimeKey(proxyID, fingerprint string, owner *ResourceOwner) string {
 	if owner == nil {
 		return holdKey(proxyID, fingerprint)
 	}
@@ -461,3 +470,8 @@ func canonicalize(s string) string {
 
 // guard against unused-import warnings when fields are added later.
 var _ sync.Mutex
+
+// SetNowFuncForTest overrides the clock. Tests only — production uses time.Now.
+func (b *HoldBuffer) SetNowFuncForTest(fn func() time.Time) {
+	b.nowFn = fn
+}

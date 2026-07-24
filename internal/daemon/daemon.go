@@ -49,6 +49,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemon/health"
+
 	"github.com/standardbeagle/agnt/internal/daemonclient"
 
 	"github.com/standardbeagle/agnt/internal/alert"
@@ -251,8 +253,8 @@ type Daemon struct {
 	startupErrorStore    *StartupLogStore                       // Ring buffer for startup events
 	eventHub             *EventHub                              // Routes alerts to overlay/MCP/stream sinks
 	incidentBus          *incident.MPSCBus                      // Incident pipeline event bus (L8+)
-	incidentProxyOwner   sync.Map                               // proxy ID -> *incidentResourceOwner for one lifetime
-	incidentProcessOwner sync.Map                               // process ID -> *incidentResourceOwner for one lifetime
+	incidentProxyOwner   sync.Map                               // proxy ID -> *health.ResourceOwner for one lifetime
+	incidentProcessOwner sync.Map                               // process ID -> *health.ResourceOwner for one lifetime
 	hookRing             *hookRingBuffer                        // Claude Code hook event ring buffer (phase 1 scope)
 
 	// forwardingPaused records per-session "stop pushing to the agent" toggles
@@ -364,13 +366,13 @@ type Daemon struct {
 	// healthTracker observes process state edges to drive proxy error
 	// stream suppression during rebuild/restart windows. See
 	// internal/daemon/health_tracker.go for the suppression contract.
-	healthTracker *HealthTracker
+	healthTracker *health.HealthTracker
 
 	// outageClassifier wraps healthTracker with rebuild-vs-crash
 	// classification. The proxy broadcast gate consults its
-	// SuppressionMode() on every log entry. See
+	// health.SuppressionMode() on every log entry. See
 	// internal/daemon/outage_classifier.go for the rules.
-	outageClassifier *OutageClassifier
+	outageClassifier *health.OutageClassifier
 
 	// holdBuffer holds transport / browser-JS errors during synthetic
 	// transport outage and replays them on window expiry, dropping
@@ -381,9 +383,9 @@ type Daemon struct {
 	// session connect, from an async autostart worker) while hub-handler
 	// goroutines read it on every proxy log entry and Stop reads it on
 	// shutdown — an unsynchronised field swap was a data race. All
-	// HoldBuffer methods are nil/closed-safe, so Load → call is lock-free
+	// health.HoldBuffer methods are nil/closed-safe, so Load → call is lock-free
 	// and correct even against a concurrent Swap+Stop.
-	holdBuffer atomic.Pointer[HoldBuffer]
+	holdBuffer atomic.Pointer[health.HoldBuffer]
 
 	// alertPushConfigs stores effective alerts.push policy by normalized project
 	// path. Pinger callbacks resolve their session's current project at delivery
@@ -456,16 +458,6 @@ func (d *Daemon) isShuttingDown() bool {
 	d.shutdownMu.Lock()
 	defer d.shutdownMu.Unlock()
 	return d.shutdown
-}
-
-// logRecovered converts a panic in a hot-path callback into an error log.
-// Use as `defer logRecovered(component, what)`. The gate hot path must not
-// take down the daemon when a callback misbehaves, but a silently swallowed
-// panic makes a recurring failure invisible forever — log it instead.
-func logRecovered(component, what string) {
-	if r := recover(); r != nil {
-		debug.Error(component, "%s panicked: %v", what, r)
-	}
 }
 
 // goTracked runs fn in a goroutine tracked by d.wg, unless shutdown has begun.
@@ -570,10 +562,10 @@ func New(config DaemonConfig) *Daemon {
 	d.eventHub.SetProxyBroadcaster(newProxyManagerBroadcaster(d.proxym))
 	d.eventHub.AddAgentNoticeSink(sessionHostAgentNoticeSink{registry: d.sessionHosts})
 
-	// HealthTracker is initialised after the struct so it can capture `d`
+	// health.HealthTracker is initialised after the struct so it can capture `d`
 	// in its lookup closures. Its emitDiagnostic routes back through the
 	// EventHub directly so suppression markers always bypass the gate.
-	d.healthTracker = NewHealthTracker(
+	d.healthTracker = health.NewHealthTracker(
 		func(processID string) (*process.ManagedProcess, error) {
 			return d.hub.ProcessManager().Get(processID)
 		},
@@ -585,15 +577,15 @@ func New(config DaemonConfig) *Daemon {
 		},
 	)
 
-	// HoldBuffer suppresses transport-cascade noise during synthetic
+	// health.HoldBuffer suppresses transport-cascade noise during synthetic
 	// transport outages. The emit callback fans replays through both the
 	// EventHub (legacy stream sinks) and the incident bus (get_incidents).
 	// Construction uses default config until the per-project AgntConfig is
 	// loaded; ApplyAlertsConfig replaces it on session connect.
-	d.holdBuffer.Store(newOwnedHoldBuffer(nil, d.fireHoldEmitForOwner))
-	d.healthTracker.SetTransportConfig(DefaultTransportConfig)
+	d.holdBuffer.Store(health.NewOwnedHoldBuffer(nil, d.fireHoldEmitForOwner))
+	d.healthTracker.SetTransportConfig(health.DefaultTransportConfig)
 
-	// Wire transport-recovery callback so HealthTracker exits to the buffer
+	// Wire transport-recovery callback so health.HealthTracker exits to the buffer
 	// flush path on every recovery signal.
 	d.healthTracker.SetOnTransportRecovery(func(proxyID string) {
 		if hb := d.holdBuffer.Load(); hb != nil {
@@ -601,12 +593,12 @@ func New(config DaemonConfig) *Daemon {
 		}
 	})
 
-	// OutageClassifier extends HealthTracker with rebuild/crash
+	// health.OutageClassifier extends health.HealthTracker with rebuild/crash
 	// classification. It needs the same process lookup, an emitter for
 	// long-rebuild heartbeats and the expired-rebuild warning, and a
 	// reverse lookup from processID → proxyID so heartbeat diagnostics
 	// can be addressed to the right proxy.
-	d.outageClassifier = NewOutageClassifier(
+	d.outageClassifier = health.NewOutageClassifier(
 		d.healthTracker,
 		func(processID string) (*process.ManagedProcess, error) {
 			return d.hub.ProcessManager().Get(processID)
@@ -1034,7 +1026,7 @@ func (d *Daemon) ingestProcessAlert(m *overlay.AlertMatch, fallbackTS time.Time)
 
 func (d *Daemon) ingestProcessIncident(m *overlay.AlertMatch) {
 	ev := incident.FromAlertMatch(m, m.ScriptID)
-	owner, _ := m.LifetimeToken.(*incidentResourceOwner)
+	owner, _ := m.LifetimeToken.(*health.ResourceOwner)
 	if d.stampIncidentOwner(&ev, &d.incidentProcessOwner, m.ScriptID, owner) {
 		d.incidentBus.Publish(ev)
 	}
@@ -1056,8 +1048,8 @@ func (d *Daemon) IncidentBus() *incident.MPSCBus {
 }
 
 // ApplyAlertsConfig pushes the alerts block from a project's AgntConfig
-// into the daemon's runtime alert subsystems: the HoldBuffer's per-proxy
-// hold window and cascade patterns, and the HealthTracker's transport
+// into the daemon's runtime alert subsystems: the health.HoldBuffer's per-proxy
+// hold window and cascade patterns, and the health.HealthTracker's transport
 // outage thresholds. Safe to call multiple times — the latest values win.
 // A nil cfg restores defaults.
 func (d *Daemon) ApplyAlertsConfig(projectPath string, cfg *config.AlertsConfig) {
@@ -1085,7 +1077,7 @@ func (d *Daemon) ApplyAlertsConfig(projectPath string, cfg *config.AlertsConfig)
 
 	// Swap atomically, then stop the old buffer. Concurrent readers either
 	// see the old buffer (its methods are closed-safe) or the new one.
-	newHB := newOwnedHoldBuffer(holdCfg, d.fireHoldEmitForOwner)
+	newHB := health.NewOwnedHoldBuffer(holdCfg, d.fireHoldEmitForOwner)
 	if old := d.holdBuffer.Swap(newHB); old != nil {
 		old.Stop()
 	}
@@ -1102,7 +1094,7 @@ func (d *Daemon) ApplyAlertsConfig(projectPath string, cfg *config.AlertsConfig)
 	}
 
 	if d.healthTracker != nil {
-		d.healthTracker.SetTransportConfig(TransportConfig{
+		d.healthTracker.SetTransportConfig(health.TransportConfig{
 			Threshold:        holdCfg.GetTransportErrThreshold(),
 			Window:           holdCfg.GetTransportErrWindow(),
 			RecoveryDebounce: holdCfg.GetRecoveryDebounce(),
