@@ -57,11 +57,11 @@ func (dt *DaemonTools) makeLoadingAuditHandler() func(context.Context, *mcp.Call
 	return func(ctx context.Context, req *mcp.CallToolRequest, input LoadingAuditInput) (*mcp.CallToolResult, LoadingAuditOutput, error) {
 		input.ProxyID = pickProxyID(input.ID, input.ProxyID)
 		if input.ProxyID == "" {
-			return errorResult("proxy_id required (or `id` alias)"), LoadingAuditOutput{}, nil
+			return fail[LoadingAuditOutput]("proxy_id required (or `id` alias)")
 		}
 
 		if err := dt.ensureConnected(); err != nil {
-			return errorResult(err.Error()), LoadingAuditOutput{}, nil
+			return fail[LoadingAuditOutput](err.Error())
 		}
 
 		res, summary, raw := dt.runBufferAudit(loadingAuditSpec, input.ProxyID, input.Target, input.FrameID, input.Raw)

@@ -99,7 +99,7 @@ var replaytestFreeActions = map[string]bool{
 
 func (h *replaytestHandler) handle(ctx context.Context, in ReplaytestInput) (*mcp.CallToolResult, ReplaytestOutput, error) {
 	if !replaytestGatedActions[in.Action] && !replaytestFreeActions[in.Action] {
-		return errorResult("unknown action: " + in.Action), ReplaytestOutput{}, nil
+		return fail[ReplaytestOutput]("unknown action: " + in.Action)
 	}
 
 	// Scope the scenario store to the caller's session project when no
@@ -111,7 +111,7 @@ func (h *replaytestHandler) handle(ctx context.Context, in ReplaytestInput) (*mc
 
 	if replaytestGatedActions[in.Action] {
 		if _, err := h.lic.Check(license.CapAdvancedTesting); err != nil {
-			return errorResult("advanced_testing requires a Pro license — run `agnt activate <key>` to enable replaytest"), ReplaytestOutput{}, nil
+			return fail[ReplaytestOutput]("advanced_testing requires a Pro license — run `agnt activate <key>` to enable replaytest")
 		}
 		switch in.Action {
 		case "replay":
@@ -131,27 +131,27 @@ func (h *replaytestHandler) handle(ctx context.Context, in ReplaytestInput) (*mc
 	case "list":
 		names, err := replaytest.NewStore(in.Directory).List()
 		if err != nil {
-			return errorResult("failed to list scenarios: " + err.Error()), ReplaytestOutput{}, nil
+			return fail[ReplaytestOutput]("failed to list scenarios: " + err.Error())
 		}
 		out := ReplaytestOutput{Scenarios: names, Success: true}
 		return replaytestOK("listed scenarios"), out, nil
 	case "show":
 		if in.Name == "" {
-			return errorResult("provide a scenario name to show"), ReplaytestOutput{}, nil
+			return fail[ReplaytestOutput]("provide a scenario name to show")
 		}
 		sc, err := replaytest.NewStore(in.Directory).LoadScenario(in.Name)
 		if err != nil {
-			return errorResult("failed to load scenario: " + err.Error()), ReplaytestOutput{}, nil
+			return fail[ReplaytestOutput]("failed to load scenario: " + err.Error())
 		}
 		data, err := sc.MarshalJSON()
 		if err != nil {
-			return errorResult("failed to encode scenario: " + err.Error()), ReplaytestOutput{}, nil
+			return fail[ReplaytestOutput]("failed to encode scenario: " + err.Error())
 		}
 		out := ReplaytestOutput{Report: string(data), Success: true}
 		return replaytestOK("loaded scenario " + in.Name), out, nil
 	}
 
-	return errorResult("unknown action: " + in.Action), ReplaytestOutput{}, nil
+	return fail[ReplaytestOutput]("unknown action: " + in.Action)
 }
 
 // handleReplay runs the baseline (and an optional preset) seed lane against a
@@ -160,12 +160,12 @@ func (h *replaytestHandler) handle(ctx context.Context, in ReplaytestInput) (*mc
 // live dev server is required — but it does drive a real headless browser.
 func (h *replaytestHandler) handleReplay(ctx context.Context, in ReplaytestInput) (*mcp.CallToolResult, ReplaytestOutput, error) {
 	if in.Name == "" {
-		return errorResult("provide a scenario name to replay"), ReplaytestOutput{}, nil
+		return fail[ReplaytestOutput]("provide a scenario name to replay")
 	}
 	store := replaytest.NewStore(in.Directory)
 	sc, err := store.LoadScenario(in.Name)
 	if err != nil {
-		return errorResult("failed to load scenario: " + err.Error()), ReplaytestOutput{}, nil
+		return fail[ReplaytestOutput]("failed to load scenario: " + err.Error())
 	}
 
 	// Always run the baseline; add the requested preset when set. Running all
@@ -173,7 +173,7 @@ func (h *replaytestHandler) handleReplay(ctx context.Context, in ReplaytestInput
 	presets := []string{""}
 	if in.Preset != "" {
 		if _, ok := replaytest.Preset(in.Preset); !ok {
-			return errorResult(fmt.Sprintf("unknown preset %q; available: %s", in.Preset, strings.Join(replaytest.PresetNames(), ", "))), ReplaytestOutput{}, nil
+			return fail[ReplaytestOutput](fmt.Sprintf("unknown preset %q; available: %s", in.Preset, strings.Join(replaytest.PresetNames(), ", ")))
 		}
 		presets = append(presets, in.Preset)
 	}
@@ -183,7 +183,7 @@ func (h *replaytestHandler) handleReplay(ctx context.Context, in ReplaytestInput
 	for _, p := range presets {
 		rep, err := driver.RunSeed(ctx, sc, p)
 		if err != nil {
-			return errorResult("replay failed: " + err.Error()), ReplaytestOutput{}, nil
+			return fail[ReplaytestOutput]("replay failed: " + err.Error())
 		}
 		agg.Seeds = append(agg.Seeds, rep.Seeds...)
 		agg.Crashes = append(agg.Crashes, rep.Crashes...)
@@ -191,10 +191,10 @@ func (h *replaytestHandler) handleReplay(ctx context.Context, in ReplaytestInput
 
 	data, err := agg.JSON()
 	if err != nil {
-		return errorResult("failed to encode report: " + err.Error()), ReplaytestOutput{}, nil
+		return fail[ReplaytestOutput]("failed to encode report: " + err.Error())
 	}
 	if err := store.SaveReport(sc.Name, data); err != nil {
-		return errorResult("failed to save report: " + err.Error()), ReplaytestOutput{}, nil
+		return fail[ReplaytestOutput]("failed to save report: " + err.Error())
 	}
 
 	out := ReplaytestOutput{Report: string(data), Success: agg.Passed()}
@@ -208,11 +208,11 @@ func (h *replaytestHandler) handleReplay(ctx context.Context, in ReplaytestInput
 // subagent per returned seed.
 func (h *replaytestHandler) handleExplore(in ReplaytestInput) (*mcp.CallToolResult, ReplaytestOutput, error) {
 	if in.Name == "" {
-		return errorResult("provide a scenario name to explore"), ReplaytestOutput{}, nil
+		return fail[ReplaytestOutput]("provide a scenario name to explore")
 	}
 	sc, err := replaytest.NewStore(in.Directory).LoadScenario(in.Name)
 	if err != nil {
-		return errorResult("failed to load scenario: " + err.Error()), ReplaytestOutput{}, nil
+		return fail[ReplaytestOutput]("failed to load scenario: " + err.Error())
 	}
 
 	seeds := computeExploreSeeds(sc, in.ExploreAgents)
@@ -276,7 +276,7 @@ type refinerProvider interface {
 // than failing.
 func (h *replaytestHandler) handleRefine(ctx context.Context, in ReplaytestInput) (*mcp.CallToolResult, ReplaytestOutput, error) {
 	if in.Name == "" {
-		return errorResult("provide a scenario name to refine"), ReplaytestOutput{}, nil
+		return fail[ReplaytestOutput]("provide a scenario name to refine")
 	}
 	provider := aichannel.NewAnthropicProvider(aichannel.ProviderConfig{})
 	return h.refineWith(ctx, in, &anthropicRefiner{p: provider})
@@ -296,17 +296,17 @@ func (h *replaytestHandler) refineWith(ctx context.Context, in ReplaytestInput, 
 	store := replaytest.NewStore(in.Directory)
 	sc, err := store.LoadScenario(in.Name)
 	if err != nil {
-		return errorResult("failed to load scenario: " + err.Error()), ReplaytestOutput{}, nil
+		return fail[ReplaytestOutput]("failed to load scenario: " + err.Error())
 	}
 	if err := replaytest.Refine(ctx, sc, refiner); err != nil {
-		return errorResult("refine failed: " + err.Error()), ReplaytestOutput{}, nil
+		return fail[ReplaytestOutput]("refine failed: " + err.Error())
 	}
 	if err := store.SaveScenario(sc); err != nil {
-		return errorResult("failed to save refined scenario: " + err.Error()), ReplaytestOutput{}, nil
+		return fail[ReplaytestOutput]("failed to save refined scenario: " + err.Error())
 	}
 	data, err := sc.MarshalJSON()
 	if err != nil {
-		return errorResult("failed to encode scenario: " + err.Error()), ReplaytestOutput{}, nil
+		return fail[ReplaytestOutput]("failed to encode scenario: " + err.Error())
 	}
 	out := ReplaytestOutput{Report: string(data), Success: true}
 	return replaytestOK("refined scenario " + sc.Name), out, nil
@@ -372,25 +372,25 @@ func (h *replaytestHandler) handleRecord(in ReplaytestInput) (*mcp.CallToolResul
 		return replaytestOK(out.Message), out, nil
 	}
 	if h.clientFn == nil {
-		return errorResult("record/stop require daemon mode — no daemon client is available to pull proxy traffic"), ReplaytestOutput{}, nil
+		return fail[ReplaytestOutput]("record/stop require daemon mode — no daemon client is available to pull proxy traffic")
 	}
 	client, err := h.clientFn()
 	if err != nil {
-		return errorResult("failed to reach daemon: " + err.Error()), ReplaytestOutput{}, nil
+		return fail[ReplaytestOutput]("failed to reach daemon: " + err.Error())
 	}
 	status, err := client.ProxyStatus(in.ProxyID)
 	if err != nil {
-		return errorResult("failed to inspect proxy " + in.ProxyID + ": " + err.Error()), ReplaytestOutput{}, nil
+		return fail[ReplaytestOutput]("failed to inspect proxy " + in.ProxyID + ": " + err.Error())
 	}
 	baseURL, _ := status["target_url"].(string)
 	if baseURL == "" {
-		return errorResult("proxy " + in.ProxyID + " has no target_url"), ReplaytestOutput{}, nil
+		return fail[ReplaytestOutput]("proxy " + in.ProxyID + " has no target_url")
 	}
 
 	h.mu.Lock()
 	if _, exists := h.sessions[in.Name]; exists {
 		h.mu.Unlock()
-		return errorResult("recording already active for " + in.Name), ReplaytestOutput{}, nil
+		return fail[ReplaytestOutput]("recording already active for " + in.Name)
 	}
 	h.sessions[in.Name] = recordingSession{
 		ProxyID:   in.ProxyID,
@@ -420,27 +420,27 @@ func (h *replaytestHandler) handleStop(in ReplaytestInput) (*mcp.CallToolResult,
 	sess, ok := h.sessions[in.Name]
 	h.mu.Unlock()
 	if !ok {
-		return errorResult("no active recording for " + in.Name), ReplaytestOutput{}, nil
+		return fail[ReplaytestOutput]("no active recording for " + in.Name)
 	}
 
 	if h.clientFn == nil {
-		return errorResult("record/stop require daemon mode — the legacy MCP path has no daemon client to pull proxy traffic from"), ReplaytestOutput{}, nil
+		return fail[ReplaytestOutput]("record/stop require daemon mode — the legacy MCP path has no daemon client to pull proxy traffic from")
 	}
 	client, err := h.clientFn()
 	if err != nil {
-		return errorResult("failed to reach daemon: " + err.Error()), ReplaytestOutput{}, nil
+		return fail[ReplaytestOutput]("failed to reach daemon: " + err.Error())
 	}
 
 	filter := protocol.LogQueryFilter{Since: sess.Start.Format(time.RFC3339Nano)}
 	entries, _, _, err := client.ProxyLogQueryFull(sess.ProxyID, filter)
 	if err != nil {
-		return errorResult("failed to pull proxy traffic: " + err.Error()), ReplaytestOutput{}, nil
+		return fail[ReplaytestOutput]("failed to pull proxy traffic: " + err.Error())
 	}
 
 	sc := replaytest.AssembleScenario(in.Name, sess.BaseURL, entries)
 	store := replaytest.NewStore(sess.Directory)
 	if err := store.SaveScenario(sc); err != nil {
-		return errorResult("failed to save scenario: " + err.Error()), ReplaytestOutput{}, nil
+		return fail[ReplaytestOutput]("failed to save scenario: " + err.Error())
 	}
 
 	h.mu.Lock()

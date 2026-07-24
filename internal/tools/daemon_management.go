@@ -91,7 +91,7 @@ Use stop_all/restart_all to manage running resources without stopping the daemon
 func makeDaemonHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolRequest, DaemonInput) (*mcp.CallToolResult, DaemonOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input DaemonInput) (*mcp.CallToolResult, DaemonOutput, error) {
 		if err := validateDaemonInput(input); err != nil {
-			return errorResult(validationError("daemon", err)), DaemonOutput{}, nil
+			return fail[DaemonOutput](validationError("daemon", err))
 		}
 		switch input.Action {
 		case "status":
@@ -113,7 +113,7 @@ func makeDaemonHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolReque
 		case "doctor":
 			return handleDaemonDoctor(dt)
 		default:
-			return errorResult(fmt.Sprintf("unknown action %q. Use: status, info, start, stop, restart, stop_all, restart_all, startup_log, doctor", input.Action)), DaemonOutput{}, nil
+			return fail[DaemonOutput](fmt.Sprintf("unknown action %q. Use: status, info, start, stop, restart, stop_all, restart_all, startup_log, doctor", input.Action))
 		}
 	}
 }
@@ -135,12 +135,12 @@ func handleDaemonStatus(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, err
 
 func handleDaemonInfo(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, error) {
 	if err := dt.ensureConnected(); err != nil {
-		return errorResult(fmt.Sprintf("daemon not running: %v", err)), DaemonOutput{}, nil
+		return fail[DaemonOutput](fmt.Sprintf("daemon not running: %v", err))
 	}
 
 	info, err := dt.client.Info()
 	if err != nil {
-		return errorResult(fmt.Sprintf("failed to get info: %v", err)), DaemonOutput{}, nil
+		return fail[DaemonOutput](fmt.Sprintf("failed to get info: %v", err))
 	}
 
 	output := DaemonOutput{
@@ -181,7 +181,7 @@ func handleDaemonStart(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, erro
 
 	// Try to start and connect
 	if err := dt.ensureConnected(); err != nil {
-		return errorResult(fmt.Sprintf("failed to start daemon: %v", err)), DaemonOutput{}, nil
+		return fail[DaemonOutput](fmt.Sprintf("failed to start daemon: %v", err))
 	}
 
 	return nil, DaemonOutput{
@@ -210,7 +210,7 @@ func handleDaemonStop(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, error
 
 	// Stop the daemon
 	if err := daemonclient.StopDaemon(socketPath); err != nil {
-		return errorResult(fmt.Sprintf("failed to stop daemon: %v", err)), DaemonOutput{}, nil
+		return fail[DaemonOutput](fmt.Sprintf("failed to stop daemon: %v", err))
 	}
 
 	// Close our connection
@@ -236,7 +236,7 @@ func handleDaemonRestart(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, er
 	// Stop if running
 	if daemonclient.IsDaemonRunning(socketPath) {
 		if err := daemonclient.StopDaemon(socketPath); err != nil {
-			return errorResult(fmt.Sprintf("failed to stop daemon: %v", err)), DaemonOutput{}, nil
+			return fail[DaemonOutput](fmt.Sprintf("failed to stop daemon: %v", err))
 		}
 
 		// Close our connection
@@ -248,7 +248,7 @@ func handleDaemonRestart(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, er
 
 	// Start again
 	if err := dt.ensureConnected(); err != nil {
-		return errorResult(fmt.Sprintf("failed to start daemon: %v", err)), DaemonOutput{}, nil
+		return fail[DaemonOutput](fmt.Sprintf("failed to start daemon: %v", err))
 	}
 
 	return nil, DaemonOutput{
@@ -268,12 +268,12 @@ func formatStatusMessage(running bool) string {
 
 func handleDaemonStopAll(dt *DaemonTools, global *bool) (*mcp.CallToolResult, DaemonOutput, error) {
 	if err := dt.ensureConnected(); err != nil {
-		return errorResult(fmt.Sprintf("daemon not running: %v", err)), DaemonOutput{}, nil
+		return fail[DaemonOutput](fmt.Sprintf("daemon not running: %v", err))
 	}
 
 	result, err := dt.client.StopAllScoped(dt.scopeFilter(global))
 	if err != nil {
-		return errorResult(fmt.Sprintf("failed to stop all: %v", err)), DaemonOutput{}, nil
+		return fail[DaemonOutput](fmt.Sprintf("failed to stop all: %v", err))
 	}
 
 	processesStopped := getInt(result, "processes_stopped")
@@ -290,12 +290,12 @@ func handleDaemonStopAll(dt *DaemonTools, global *bool) (*mcp.CallToolResult, Da
 
 func handleDaemonRestartAll(dt *DaemonTools, global *bool) (*mcp.CallToolResult, DaemonOutput, error) {
 	if err := dt.ensureConnected(); err != nil {
-		return errorResult(fmt.Sprintf("daemon not running: %v", err)), DaemonOutput{}, nil
+		return fail[DaemonOutput](fmt.Sprintf("daemon not running: %v", err))
 	}
 
 	result, err := dt.client.RestartAllScoped(dt.scopeFilter(global))
 	if err != nil {
-		return errorResult(fmt.Sprintf("failed to restart all: %v", err)), DaemonOutput{}, nil
+		return fail[DaemonOutput](fmt.Sprintf("failed to restart all: %v", err))
 	}
 
 	processesRestarted := getInt(result, "processes_restarted")
@@ -316,12 +316,12 @@ func handleDaemonRestartAll(dt *DaemonTools, global *bool) (*mcp.CallToolResult,
 
 func handleDaemonDoctor(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, error) {
 	if err := dt.ensureConnected(); err != nil {
-		return errorResult(fmt.Sprintf("daemon not running: %v", err)), DaemonOutput{}, nil
+		return fail[DaemonOutput](fmt.Sprintf("daemon not running: %v", err))
 	}
 
 	result, err := dt.client.Doctor(getProjectPath())
 	if err != nil {
-		return errorResult(fmt.Sprintf("failed to run doctor: %v", err)), DaemonOutput{}, nil
+		return fail[DaemonOutput](fmt.Sprintf("failed to run doctor: %v", err))
 	}
 
 	status, _ := result["status"].(string)
@@ -362,7 +362,7 @@ func handleDaemonDoctor(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, err
 
 func handleDaemonStartupLog(dt *DaemonTools, global *bool) (*mcp.CallToolResult, DaemonOutput, error) {
 	if err := dt.ensureConnected(); err != nil {
-		return errorResult(fmt.Sprintf("daemon not running: %v", err)), DaemonOutput{}, nil
+		return fail[DaemonOutput](fmt.Sprintf("daemon not running: %v", err))
 	}
 
 	// Scope through the session-scope chokepoint: the MCP daemon connection
@@ -373,7 +373,7 @@ func handleDaemonStartupLog(dt *DaemonTools, global *bool) (*mcp.CallToolResult,
 	dirFilter := dt.scopeFilter(global)
 	result, err := dt.client.StartupLog(50, dirFilter)
 	if err != nil {
-		return errorResult(fmt.Sprintf("failed to query startup log: %v", err)), DaemonOutput{}, nil
+		return fail[DaemonOutput](fmt.Sprintf("failed to query startup log: %v", err))
 	}
 
 	entries, _ := result["entries"].([]interface{})

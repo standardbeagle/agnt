@@ -53,7 +53,7 @@ func (dt *DaemonTools) makeChannelReplyHandler() func(context.Context, *mcp.Call
 	return func(ctx context.Context, req *mcp.CallToolRequest, input ChannelReplyInput) (*mcp.CallToolResult, ChannelReplyOutput, error) {
 		input.ProxyID = pickProxyID(input.ID, input.ProxyID)
 		if input.Content == "" {
-			return errorResult("content is required"), ChannelReplyOutput{}, nil
+			return fail[ChannelReplyOutput]("content is required")
 		}
 
 		severity := input.Severity
@@ -61,21 +61,21 @@ func (dt *DaemonTools) makeChannelReplyHandler() func(context.Context, *mcp.Call
 			severity = "info"
 		}
 		if severity != "info" && severity != "success" && severity != "warning" && severity != "error" {
-			return errorResult(fmt.Sprintf("invalid severity %q: must be info, success, warning, or error", severity)), ChannelReplyOutput{}, nil
+			return fail[ChannelReplyOutput](fmt.Sprintf("invalid severity %q: must be info, success, warning, or error", severity))
 		}
 
 		// Secret-entry mode: request a masked password field. The submitted
 		// value routes browser → proxy → daemon store; it never appears in
 		// channel events — the agent only sees {name, fingerprint:last-4}.
 		if input.Input != "" && input.Input != "secret" {
-			return errorResult(fmt.Sprintf("invalid input mode %q: only 'secret' is supported", input.Input)), ChannelReplyOutput{}, nil
+			return fail[ChannelReplyOutput](fmt.Sprintf("invalid input mode %q: only 'secret' is supported", input.Input))
 		}
 		if input.Input == "secret" && !store.ValidSecretName(input.Name) {
-			return errorResult(fmt.Sprintf("input 'secret' requires a valid env-var-style name (got %q): [A-Za-z_][A-Za-z0-9_]*", input.Name)), ChannelReplyOutput{}, nil
+			return fail[ChannelReplyOutput](fmt.Sprintf("input 'secret' requires a valid env-var-style name (got %q): [A-Za-z_][A-Za-z0-9_]*", input.Name))
 		}
 
 		if err := dt.ensureConnected(); err != nil {
-			return errorResult(err.Error()), ChannelReplyOutput{}, nil
+			return fail[ChannelReplyOutput](err.Error())
 		}
 
 		toastConfig := protocol.ToastConfig{
@@ -90,7 +90,7 @@ func (dt *DaemonTools) makeChannelReplyHandler() func(context.Context, *mcp.Call
 		if input.ProxyID != "" {
 			_, err := dt.client.ProxyToast(input.ProxyID, toastConfig)
 			if err != nil {
-				return errorResult(fmt.Sprintf("proxy %q not found or unavailable: %v", input.ProxyID, err)), ChannelReplyOutput{}, nil
+				return fail[ChannelReplyOutput](fmt.Sprintf("proxy %q not found or unavailable: %v", input.ProxyID, err))
 			}
 			return nil, ChannelReplyOutput{
 				Delivered: 1,
@@ -103,12 +103,12 @@ func (dt *DaemonTools) makeChannelReplyHandler() func(context.Context, *mcp.Call
 
 		listResult, err := dt.client.ProxyList(dirFilter)
 		if err != nil {
-			return errorResult(fmt.Sprintf("failed to list proxies: %v", err)), ChannelReplyOutput{}, nil
+			return fail[ChannelReplyOutput](fmt.Sprintf("failed to list proxies: %v", err))
 		}
 
 		proxyIDs := extractProxyIDs(listResult)
 		if len(proxyIDs) == 0 {
-			return errorResult("no active proxies to deliver message to"), ChannelReplyOutput{}, nil
+			return fail[ChannelReplyOutput]("no active proxies to deliver message to")
 		}
 
 		delivered := 0

@@ -141,11 +141,11 @@ allowing you to remind the agent to check on tasks or verify completions.`,
 func (dt *DaemonTools) makeSessionHandler() func(context.Context, *mcp.CallToolRequest, SessionInput) (*mcp.CallToolResult, SessionOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input SessionInput) (*mcp.CallToolResult, SessionOutput, error) {
 		if err := validateSessionInput(input); err != nil {
-			return errorResult(validationError("session", err)), SessionOutput{}, nil
+			return fail[SessionOutput](validationError("session", err))
 		}
 
 		if err := dt.ensureConnected(); err != nil {
-			return errorResult(err.Error()), SessionOutput{}, nil
+			return fail[SessionOutput](err.Error())
 		}
 
 		switch input.Action {
@@ -162,7 +162,7 @@ func (dt *DaemonTools) makeSessionHandler() func(context.Context, *mcp.CallToolR
 		case "cancel":
 			return dt.handleSessionCancel(input)
 		default:
-			return errorResult(fmt.Sprintf("unknown action %q. Use: list, get, send, schedule, tasks, cancel", input.Action)), SessionOutput{}, nil
+			return fail[SessionOutput](fmt.Sprintf("unknown action %q. Use: list, get, send, schedule, tasks, cancel", input.Action))
 		}
 	}
 }
@@ -221,7 +221,7 @@ func (dt *DaemonTools) handleSessionList(input SessionInput) (*mcp.CallToolResul
 
 func (dt *DaemonTools) handleSessionGet(input SessionInput) (*mcp.CallToolResult, SessionOutput, error) {
 	if input.Code == "" {
-		return errorResult("code required for get"), SessionOutput{}, nil
+		return fail[SessionOutput]("code required for get")
 	}
 
 	result, err := dt.client.SessionGet(input.Code)
@@ -259,10 +259,10 @@ func (dt *DaemonTools) handleSessionGet(input SessionInput) (*mcp.CallToolResult
 
 func (dt *DaemonTools) handleSessionSend(input SessionInput) (*mcp.CallToolResult, SessionOutput, error) {
 	if input.Code == "" {
-		return errorResult("code required for send"), SessionOutput{}, nil
+		return fail[SessionOutput]("code required for send")
 	}
 	if input.Message == "" {
-		return errorResult("message required for send"), SessionOutput{}, nil
+		return fail[SessionOutput]("message required for send")
 	}
 
 	result, err := dt.client.SessionSend(input.Code, input.Message)
@@ -278,13 +278,13 @@ func (dt *DaemonTools) handleSessionSend(input SessionInput) (*mcp.CallToolResul
 
 func (dt *DaemonTools) handleSessionSchedule(input SessionInput) (*mcp.CallToolResult, SessionOutput, error) {
 	if input.Code == "" {
-		return errorResult("code required for schedule"), SessionOutput{}, nil
+		return fail[SessionOutput]("code required for schedule")
 	}
 	if input.Duration == "" {
-		return errorResult("duration required for schedule (e.g. '5m', '1h30m')"), SessionOutput{}, nil
+		return fail[SessionOutput]("duration required for schedule (e.g. '5m', '1h30m')")
 	}
 	if input.Message == "" {
-		return errorResult("message required for schedule"), SessionOutput{}, nil
+		return fail[SessionOutput]("message required for schedule")
 	}
 
 	result, err := dt.client.SessionSchedule(input.Code, input.Duration, input.Message)
@@ -354,7 +354,7 @@ func (dt *DaemonTools) handleSessionTasks(input SessionInput) (*mcp.CallToolResu
 
 func (dt *DaemonTools) handleSessionCancel(input SessionInput) (*mcp.CallToolResult, SessionOutput, error) {
 	if input.TaskID == "" {
-		return errorResult("task_id required for cancel"), SessionOutput{}, nil
+		return fail[SessionOutput]("task_id required for cancel")
 	}
 
 	err := dt.client.SessionCancel(input.TaskID)

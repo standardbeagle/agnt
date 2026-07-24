@@ -22,11 +22,11 @@ import (
 func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolRequest, RunInput) (*mcp.CallToolResult, RunOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input RunInput) (*mcp.CallToolResult, RunOutput, error) {
 		if err := validateRunInput(input); err != nil {
-			return errorResult(validationError("run", err)), RunOutput{}, nil
+			return fail[RunOutput](validationError("run", err))
 		}
 
 		if err := dt.ensureConnected(); err != nil {
-			return errorResult(err.Error()), RunOutput{}, nil
+			return fail[RunOutput](err.Error())
 		}
 
 		path := input.Path
@@ -35,7 +35,7 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 		}
 		absPath, err := filepath.Abs(path)
 		if err != nil {
-			return errorResult(fmt.Sprintf("failed to resolve path: %v", err)), RunOutput{}, nil
+			return fail[RunOutput](fmt.Sprintf("failed to resolve path: %v", err))
 		}
 
 		// Resolve script name to command if needed
@@ -47,7 +47,7 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 		if input.Raw {
 
 			if input.Command == "" {
-				return errorResult("raw mode requires command"), RunOutput{}, nil
+				return fail[RunOutput]("raw mode requires command")
 			}
 			cmd = input.Command
 			args = input.Args
@@ -69,13 +69,13 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 				// Fall back to project detection (package.json scripts, etc.)
 				proj, detectErr := project.Detect(absPath)
 				if detectErr != nil {
-					return errorResult(fmt.Sprintf("failed to detect project: %v", detectErr)), RunOutput{}, nil
+					return fail[RunOutput](fmt.Sprintf("failed to detect project: %v", detectErr))
 				}
 
 				cmdDef := project.GetCommandByName(proj, input.ScriptName)
 				if cmdDef == nil {
 					available := project.GetCommandNames(proj)
-					return errorResult(fmt.Sprintf("unknown script %q. Available: %s", input.ScriptName, strings.Join(available, ", "))), RunOutput{}, nil
+					return fail[RunOutput](fmt.Sprintf("unknown script %q. Available: %s", input.ScriptName, strings.Join(available, ", ")))
 				}
 
 				cmd = cmdDef.Command
@@ -86,7 +86,7 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 				}
 			}
 		} else {
-			return errorResult("script_name required (or use raw=true with command)"), RunOutput{}, nil
+			return fail[RunOutput]("script_name required (or use raw=true with command)")
 		}
 
 		mode := string(input.Mode)
@@ -155,7 +155,7 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 				// Interrupt the blocked read on the dedicated connection so the
 				// goroutine unwinds; nothing else shares this conn.
 				runClient.Close()
-				return errorResult(fmt.Sprintf("run cancelled: %v", ctx.Err())), RunOutput{}, nil
+				return fail[RunOutput](fmt.Sprintf("run cancelled: %v", ctx.Err()))
 			case rr := <-ch:
 				runClient.Close()
 				if rr.err != nil {
@@ -190,11 +190,11 @@ func (dt *DaemonTools) makeProcHandler() func(context.Context, *mcp.CallToolRequ
 	return func(ctx context.Context, req *mcp.CallToolRequest, input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
 		input.ProcessID = pickProcessID(input.ID, input.ProcessID)
 		if err := validateProcInput(input); err != nil {
-			return errorResult(validationError("proc", err)), ProcOutput{}, nil
+			return fail[ProcOutput](validationError("proc", err))
 		}
 
 		if err := dt.ensureConnected(); err != nil {
-			return errorResult(err.Error()), ProcOutput{}, nil
+			return fail[ProcOutput](err.Error())
 		}
 
 		switch input.Action {
@@ -229,14 +229,14 @@ func (dt *DaemonTools) makeProcHandler() func(context.Context, *mcp.CallToolRequ
 		case "wait":
 			return dt.handleProcWait(ctx, input)
 		default:
-			return errorResult(fmt.Sprintf("unknown action %q. Use: status, output, find, stop, restart, list, cleanup_port, autorestart, scripts, script_output, script_history, snapshot, run, run_group, wait", input.Action)), ProcOutput{}, nil
+			return fail[ProcOutput](fmt.Sprintf("unknown action %q. Use: status, output, find, stop, restart, list, cleanup_port, autorestart, scripts, script_output, script_history, snapshot, run, run_group, wait", input.Action))
 		}
 	}
 }
 
 func (dt *DaemonTools) handleProcStatus(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
 	if input.ProcessID == "" {
-		return errorResult("process_id required for status"), ProcOutput{}, nil
+		return fail[ProcOutput]("process_id required for status")
 	}
 
 	result, err := dt.client.ProcStatus(input.ProcessID)
@@ -291,7 +291,7 @@ func (dt *DaemonTools) handleProcOutput(input ProcInput) (*mcp.CallToolResult, P
 		return dt.handleProcOutputMulti(input)
 	}
 	if input.ProcessID == "" {
-		return errorResult("process_id (or process_ids) required for output"), ProcOutput{}, nil
+		return fail[ProcOutput]("process_id (or process_ids) required for output")
 	}
 
 	filter := protocol.OutputFilter{
@@ -316,7 +316,7 @@ func (dt *DaemonTools) handleProcOutput(input ProcInput) (*mcp.CallToolResult, P
 				// filter (Stream) that the script-history buffer can't honor.
 				lines, note, ferr := filterScriptFallbackLines(lines, filter)
 				if ferr != nil {
-					return errorResult(ferr.Error()), ProcOutput{}, nil
+					return fail[ProcOutput](ferr.Error())
 				}
 				out := ProcOutput{
 					ProcessID: input.ProcessID,
@@ -410,14 +410,14 @@ func (dt *DaemonTools) handleProcOutputMulti(input ProcInput) (*mcp.CallToolResu
 // catastrophic IPC failure that prevents even the first poll.
 func (dt *DaemonTools) handleProcWait(ctx context.Context, input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
 	if input.ProcessID == "" {
-		return errorResult("process_id required for wait"), ProcOutput{}, nil
+		return fail[ProcOutput]("process_id required for wait")
 	}
 	wanted := input.Signals
 	if len(wanted) == 0 && input.Signal != "" {
 		wanted = []string{input.Signal}
 	}
 	if len(wanted) == 0 {
-		return errorResult("signal (or signals) required for wait"), ProcOutput{}, nil
+		return fail[ProcOutput]("signal (or signals) required for wait")
 	}
 
 	// We always pull from the tail of the buffer — long-running processes
@@ -448,7 +448,7 @@ func (dt *DaemonTools) handleProcWait(ctx context.Context, input ProcInput) (*mc
 
 	select {
 	case <-ctx.Done():
-		return errorResult(fmt.Sprintf("wait cancelled: %v", ctx.Err())), ProcOutput{}, nil
+		return fail[ProcOutput](fmt.Sprintf("wait cancelled: %v", ctx.Err()))
 	case res := <-ch:
 		return nil, ProcOutput{
 			ProcessID: input.ProcessID,
@@ -459,10 +459,10 @@ func (dt *DaemonTools) handleProcWait(ctx context.Context, input ProcInput) (*mc
 
 func (dt *DaemonTools) handleProcFind(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
 	if input.ProcessID == "" {
-		return errorResult("process_id required for find"), ProcOutput{}, nil
+		return fail[ProcOutput]("process_id required for find")
 	}
 	if input.What == "" {
-		return errorResult("what required for find (build-warnings, build-errors, compile-errors, type-errors, test-failures)"), ProcOutput{}, nil
+		return fail[ProcOutput]("what required for find (build-warnings, build-errors, compile-errors, type-errors, test-failures)")
 	}
 
 	// First get the process command so we can pick the right pattern.
@@ -474,7 +474,7 @@ func (dt *DaemonTools) handleProcFind(input ProcInput) (*mcp.CallToolResult, Pro
 
 	pattern, patErr := buildWhatPattern(input.What, cmdFull)
 	if patErr != nil {
-		return errorResult(patErr.Error()), ProcOutput{}, nil
+		return fail[ProcOutput](patErr.Error())
 	}
 
 	filter := protocol.OutputFilter{
@@ -493,7 +493,7 @@ func (dt *DaemonTools) handleProcFind(input ProcInput) (*mcp.CallToolResult, Pro
 				lines := getStringSlice(scriptResult, "lines")
 				re, reErr := regexp.Compile(pattern)
 				if reErr != nil {
-					return errorResult(fmt.Sprintf("internal: bad pattern for %q: %v", input.What, reErr)), ProcOutput{}, nil
+					return fail[ProcOutput](fmt.Sprintf("internal: bad pattern for %q: %v", input.What, reErr))
 				}
 				var matched []string
 				for _, line := range lines {
@@ -530,7 +530,7 @@ func (dt *DaemonTools) handleProcFind(input ProcInput) (*mcp.CallToolResult, Pro
 
 func (dt *DaemonTools) handleProcStop(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
 	if input.ProcessID == "" {
-		return errorResult("process_id required for stop"), ProcOutput{}, nil
+		return fail[ProcOutput]("process_id required for stop")
 	}
 
 	result, err := dt.client.ProcStop(input.ProcessID, input.Force)
@@ -547,7 +547,7 @@ func (dt *DaemonTools) handleProcStop(input ProcInput) (*mcp.CallToolResult, Pro
 
 func (dt *DaemonTools) handleProcRestart(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
 	if input.ProcessID == "" {
-		return errorResult("process_id required for restart"), ProcOutput{}, nil
+		return fail[ProcOutput]("process_id required for restart")
 	}
 
 	result, err := dt.client.ProcRestart(input.ProcessID)
@@ -565,7 +565,7 @@ func (dt *DaemonTools) handleProcRestart(input ProcInput) (*mcp.CallToolResult, 
 
 func (dt *DaemonTools) handleProcAutoRestart(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
 	if input.ProcessID == "" {
-		return errorResult("process_id required for autorestart"), ProcOutput{}, nil
+		return fail[ProcOutput]("process_id required for autorestart")
 	}
 
 	action := "disable"
@@ -656,7 +656,7 @@ func (dt *DaemonTools) handleProcList(input ProcInput) (*mcp.CallToolResult, Pro
 
 func (dt *DaemonTools) handleProcCleanupPort(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
 	if input.Port <= 0 || input.Port > 65535 {
-		return errorResult("valid port number required (1-65535)"), ProcOutput{}, nil
+		return fail[ProcOutput]("valid port number required (1-65535)")
 	}
 
 	result, err := dt.client.ProcCleanupPort(input.Port)
@@ -695,10 +695,10 @@ func (dt *DaemonTools) handleProcRun(input ProcInput) (*mcp.CallToolResult, Proc
 		id = input.ScriptName
 	}
 	if id == "" {
-		return errorResult("proc run: id required (or pass script_name)"), ProcOutput{}, nil
+		return fail[ProcOutput]("proc run: id required (or pass script_name)")
 	}
 	if input.Run == "" && input.Command == "" {
-		return errorResult("proc run: requires `run` or `command`"), ProcOutput{}, nil
+		return fail[ProcOutput]("proc run: requires `run` or `command`")
 	}
 
 	projectPath := input.Path
@@ -707,7 +707,7 @@ func (dt *DaemonTools) handleProcRun(input ProcInput) (*mcp.CallToolResult, Proc
 	}
 	absPath, err := filepath.Abs(projectPath)
 	if err != nil {
-		return errorResult(fmt.Sprintf("proc run: failed to resolve path: %v", err)), ProcOutput{}, nil
+		return fail[ProcOutput](fmt.Sprintf("proc run: failed to resolve path: %v", err))
 	}
 
 	cfg := daemonclient.ProcRunConfig{
@@ -748,7 +748,7 @@ func (dt *DaemonTools) handleProcRun(input ProcInput) (*mcp.CallToolResult, Proc
 // returns an error and no process is started.
 func (dt *DaemonTools) handleProcRunGroup(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
 	if len(input.Processes) == 0 {
-		return errorResult("proc run_group: processes list cannot be empty"), ProcOutput{}, nil
+		return fail[ProcOutput]("proc run_group: processes list cannot be empty")
 	}
 
 	projectPath := input.Path
@@ -757,16 +757,16 @@ func (dt *DaemonTools) handleProcRunGroup(input ProcInput) (*mcp.CallToolResult,
 	}
 	absPath, err := filepath.Abs(projectPath)
 	if err != nil {
-		return errorResult(fmt.Sprintf("proc run_group: failed to resolve path: %v", err)), ProcOutput{}, nil
+		return fail[ProcOutput](fmt.Sprintf("proc run_group: failed to resolve path: %v", err))
 	}
 
 	groupProcs := make([]protocol.GroupProcess, 0, len(input.Processes))
 	for i, gp := range input.Processes {
 		if gp.ID == "" {
-			return errorResult(fmt.Sprintf("proc run_group: process[%d] missing id", i)), ProcOutput{}, nil
+			return fail[ProcOutput](fmt.Sprintf("proc run_group: process[%d] missing id", i))
 		}
 		if gp.Run == "" && gp.Command == "" {
-			return errorResult(fmt.Sprintf("proc run_group: process %q requires `run` or `command`", gp.ID)), ProcOutput{}, nil
+			return fail[ProcOutput](fmt.Sprintf("proc run_group: process %q requires `run` or `command`", gp.ID))
 		}
 		groupProcs = append(groupProcs, protocol.GroupProcess{
 			Name:        gp.ID,
@@ -820,7 +820,7 @@ func (dt *DaemonTools) handleProcRunGroup(input ProcInput) (*mcp.CallToolResult,
 func (dt *DaemonTools) handleScriptList(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
 	projectPath := getProjectPath()
 	if projectPath == "" {
-		return errorResult("could not determine project path"), ProcOutput{}, nil
+		return fail[ProcOutput]("could not determine project path")
 	}
 
 	result, err := dt.client.ScriptList(projectPath)
@@ -869,12 +869,12 @@ func (dt *DaemonTools) handleScriptList(input ProcInput) (*mcp.CallToolResult, P
 
 func (dt *DaemonTools) handleScriptOutput(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
 	if input.ScriptName == "" {
-		return errorResult("script_name required for script_output"), ProcOutput{}, nil
+		return fail[ProcOutput]("script_name required for script_output")
 	}
 
 	projectPath := getProjectPath()
 	if projectPath == "" {
-		return errorResult("could not determine project path"), ProcOutput{}, nil
+		return fail[ProcOutput]("could not determine project path")
 	}
 
 	result, err := dt.client.ScriptOutput(input.ScriptName, projectPath, input.Tail)
@@ -891,12 +891,12 @@ func (dt *DaemonTools) handleScriptOutput(input ProcInput) (*mcp.CallToolResult,
 
 func (dt *DaemonTools) handleScriptHistory(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
 	if input.ScriptName == "" {
-		return errorResult("script_name required for script_history"), ProcOutput{}, nil
+		return fail[ProcOutput]("script_name required for script_history")
 	}
 
 	projectPath := getProjectPath()
 	if projectPath == "" {
-		return errorResult("could not determine project path"), ProcOutput{}, nil
+		return fail[ProcOutput]("could not determine project path")
 	}
 
 	result, err := dt.client.ScriptGet(input.ScriptName, projectPath)

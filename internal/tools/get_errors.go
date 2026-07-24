@@ -66,7 +66,7 @@ func (e *unifiedError) dedupKey() string {
 func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToolRequest, GetErrorsInput) (*mcp.CallToolResult, GetErrorsOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input GetErrorsInput) (*mcp.CallToolResult, GetErrorsOutput, error) {
 		if err := validateGetErrorsInput(input); err != nil {
-			return errorResult(validationError("get_errors", err)), GetErrorsOutput{}, nil
+			return fail[GetErrorsOutput](validationError("get_errors", err))
 		}
 
 		includeWarnings := true
@@ -80,7 +80,7 @@ func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToo
 		}
 
 		if err := dt.ensureConnected(); err != nil {
-			return errorResult(err.Error()), GetErrorsOutput{}, nil
+			return fail[GetErrorsOutput](err.Error())
 		}
 
 		// Retention actions: pin/unpin/clear mutate the daemon's error
@@ -91,7 +91,7 @@ func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToo
 		case "pin", "unpin", "clear":
 			return dt.handleErrorRetentionAction(input)
 		default:
-			return errorResult(validationError("get_errors", fmt.Errorf("unknown action %q: want query, pin, unpin, or clear", input.Action))), GetErrorsOutput{}, nil
+			return fail[GetErrorsOutput](validationError("get_errors", fmt.Errorf("unknown action %q: want query, pin, unpin, or clear", input.Action)))
 		}
 
 		// Shim over the always-active incident pipeline when this session inbox
@@ -105,7 +105,7 @@ func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToo
 			return dt.client.ResolveQueryScope(dt.scopeFilter(nil))
 		})
 		if err != nil {
-			return errorResult("failed to resolve query scope: " + err.Error()), GetErrorsOutput{}, nil
+			return fail[GetErrorsOutput]("failed to resolve query scope: " + err.Error())
 		}
 		// Pinned errors ride along on every query path — a pin means "keep
 		// showing me this until I unpin", so it is exempt from source, since,

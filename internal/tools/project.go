@@ -17,7 +17,7 @@ import (
 func detectAndFormat(path string, raw bool) (*mcp.CallToolResult, DetectOutput, error) {
 	proj, err := project.Detect(path)
 	if err != nil {
-		return errorResult(fmt.Sprintf("failed to detect: %v", err)), DetectOutput{}, nil
+		return fail[DetectOutput](fmt.Sprintf("failed to detect: %v", err))
 	}
 
 	scripts := buildDetectScripts(proj.Commands)

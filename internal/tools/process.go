@@ -416,6 +416,16 @@ func errorResult(msg string) *mcp.CallToolResult {
 	}
 }
 
+// fail is the three-value form of errorResult for MCP tool handlers:
+// it pairs the error result with the zero Output and a nil Go error (MCP
+// handler contract: tool errors travel as CallToolResult, not Go errors).
+// Collapses the ubiquitous 'return errorResult(msg), XxxOutput{}, nil'
+// triplet.
+func fail[Out any](msg string) (*mcp.CallToolResult, Out, error) {
+	var zero Out
+	return errorResult(msg), zero, nil
+}
+
 func formatDuration(d time.Duration) string {
 	if d < time.Second {
 		return fmt.Sprintf("%dms", d.Milliseconds())

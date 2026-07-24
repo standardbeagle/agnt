@@ -76,55 +76,55 @@ func makePublishHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolRequ
 	return func(ctx context.Context, req *mcp.CallToolRequest, input PublishInput) (*mcp.CallToolResult, PublishOutput, error) {
 		action := strings.ToLower(strings.TrimSpace(input.Action))
 		if action == "" {
-			return errorResult("publish: action is required (create|status|list|revoke|rotate)"), PublishOutput{}, nil
+			return fail[PublishOutput]("publish: action is required (create|status|list|revoke|rotate)")
 		}
 		if dt == nil {
-			return errorResult("publish unavailable: no daemon client"), PublishOutput{}, nil
+			return fail[PublishOutput]("publish unavailable: no daemon client")
 		}
 		if err := dt.ensureConnected(); err != nil {
-			return errorResult("publish failed: cannot reach daemon: " + err.Error()), PublishOutput{}, nil
+			return fail[PublishOutput]("publish failed: cannot reach daemon: " + err.Error())
 		}
 
 		switch action {
 		case "create":
 			if len(input.Walkthrough) == 0 {
-				return errorResult("publish create: walkthrough is required"), PublishOutput{}, nil
+				return fail[PublishOutput]("publish create: walkthrough is required")
 			}
 			res, err := dt.client.PublishCreate(protocol.PublishCreateRequest{Walkthrough: input.Walkthrough})
 			if err != nil {
-				return errorResult("publish create failed: " + err.Error()), PublishOutput{}, nil
+				return fail[PublishOutput]("publish create failed: " + err.Error())
 			}
 			out := PublishOutput{Action: action, ID: res.ID, Token: res.Token, ShareURL: res.ShareURL, Digest: res.Digest}
 			return renderPublish(out, input.Raw), out, nil
 
 		case "rotate":
 			if input.ID == "" {
-				return errorResult("publish rotate: id is required"), PublishOutput{}, nil
+				return fail[PublishOutput]("publish rotate: id is required")
 			}
 			res, err := dt.client.PublishRotate(input.ID)
 			if err != nil {
-				return errorResult("publish rotate failed: " + err.Error()), PublishOutput{}, nil
+				return fail[PublishOutput]("publish rotate failed: " + err.Error())
 			}
 			out := PublishOutput{Action: action, ID: res.ID, Token: res.Token, ShareURL: res.ShareURL}
 			return renderPublish(out, input.Raw), out, nil
 
 		case "revoke":
 			if input.ID == "" {
-				return errorResult("publish revoke: id is required"), PublishOutput{}, nil
+				return fail[PublishOutput]("publish revoke: id is required")
 			}
 			if err := dt.client.PublishRevoke(input.ID); err != nil {
-				return errorResult("publish revoke failed: " + err.Error()), PublishOutput{}, nil
+				return fail[PublishOutput]("publish revoke failed: " + err.Error())
 			}
 			out := PublishOutput{Action: action, ID: input.ID}
 			return renderPublish(out, input.Raw), out, nil
 
 		case "status":
 			if input.ID == "" {
-				return errorResult("publish status: id is required"), PublishOutput{}, nil
+				return fail[PublishOutput]("publish status: id is required")
 			}
 			info, err := dt.client.PublishStatus(input.ID)
 			if err != nil {
-				return errorResult("publish status failed: " + err.Error()), PublishOutput{}, nil
+				return fail[PublishOutput]("publish status failed: " + err.Error())
 			}
 			out := PublishOutput{Action: action, ID: info.ID, Share: info}
 			return renderPublish(out, input.Raw), out, nil
@@ -132,18 +132,18 @@ func makePublishHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolRequ
 		case "list":
 			res, err := dt.client.PublishList()
 			if err != nil {
-				return errorResult("publish list failed: " + err.Error()), PublishOutput{}, nil
+				return fail[PublishOutput]("publish list failed: " + err.Error())
 			}
 			out := PublishOutput{Action: action, Shares: res.Shares}
 			return renderPublish(out, input.Raw), out, nil
 
 		case "feedback":
 			if input.ID == "" {
-				return errorResult("publish feedback: id is required"), PublishOutput{}, nil
+				return fail[PublishOutput]("publish feedback: id is required")
 			}
 			res, err := dt.client.PublishFeedback(input.ID, input.Cursor, input.Limit)
 			if err != nil {
-				return errorResult("publish feedback failed: " + err.Error()), PublishOutput{}, nil
+				return fail[PublishOutput]("publish feedback failed: " + err.Error())
 			}
 			out := PublishOutput{
 				Action:     action,
@@ -156,7 +156,7 @@ func makePublishHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolRequ
 			return renderPublish(out, input.Raw), out, nil
 
 		default:
-			return errorResult("publish: unknown action " + action + " (create|status|list|revoke|rotate)"), PublishOutput{}, nil
+			return fail[PublishOutput]("publish: unknown action " + action + " (create|status|list|revoke|rotate)")
 		}
 	}
 }

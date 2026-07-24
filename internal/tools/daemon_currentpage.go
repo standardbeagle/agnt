@@ -17,11 +17,11 @@ import (
 func (dt *DaemonTools) makeCurrentPageHandler() func(context.Context, *mcp.CallToolRequest, CurrentPageInput) (*mcp.CallToolResult, CurrentPageOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input CurrentPageInput) (*mcp.CallToolResult, CurrentPageOutput, error) {
 		if err := validateCurrentPageInput(input); err != nil {
-			return errorResult(validationError("currentpage", err)), CurrentPageOutput{}, nil
+			return fail[CurrentPageOutput](validationError("currentpage", err))
 		}
 
 		if err := dt.ensureConnected(); err != nil {
-			return errorResult(err.Error()), CurrentPageOutput{}, nil
+			return fail[CurrentPageOutput](err.Error())
 		}
 
 		input.ProxyID = pickProxyID(input.ID, input.ProxyID)
@@ -38,10 +38,10 @@ func (dt *DaemonTools) makeCurrentPageHandler() func(context.Context, *mcp.CallT
 							}
 						}
 					}
-					return errorResult(fmt.Sprintf("proxy_id required. Running proxies: %s\nExample: currentpage {proxy_id: %q}", strings.Join(ids, ", "), ids[0])), CurrentPageOutput{}, nil
+					return fail[CurrentPageOutput](fmt.Sprintf("proxy_id required. Running proxies: %s\nExample: currentpage {proxy_id: %q}", strings.Join(ids, ", "), ids[0]))
 				}
 			}
-			return errorResult("proxy_id required. No proxies are running. Start one with: proxy {action: \"start\", id: \"dev\", target_url: \"http://localhost:3000\"}"), CurrentPageOutput{}, nil
+			return fail[CurrentPageOutput]("proxy_id required. No proxies are running. Start one with: proxy {action: \"start\", id: \"dev\", target_url: \"http://localhost:3000\"}")
 		}
 
 		action := input.Action
@@ -63,7 +63,7 @@ func (dt *DaemonTools) makeCurrentPageHandler() func(context.Context, *mcp.CallT
 		case "layout":
 			return dt.handleCurrentPageLayout(input)
 		default:
-			return errorResult(fmt.Sprintf("unknown action %q. Use: triage, list, get, summary, clear, layout", action)), CurrentPageOutput{}, nil
+			return fail[CurrentPageOutput](fmt.Sprintf("unknown action %q. Use: triage, list, get, summary, clear, layout", action))
 		}
 	}
 }
@@ -110,7 +110,7 @@ func intPtr(v int) *int { return &v }
 
 func (dt *DaemonTools) handleCurrentPageGet(input CurrentPageInput) (*mcp.CallToolResult, CurrentPageOutput, error) {
 	if input.SessionID == "" {
-		return errorResult("session_id required for get"), CurrentPageOutput{}, nil
+		return fail[CurrentPageOutput]("session_id required for get")
 	}
 
 	result, err := dt.client.CurrentPageGet(input.ProxyID, input.SessionID)
@@ -135,7 +135,7 @@ func (dt *DaemonTools) handleCurrentPageGet(input CurrentPageInput) (*mcp.CallTo
 
 func (dt *DaemonTools) handleCurrentPageSummary(input CurrentPageInput) (*mcp.CallToolResult, CurrentPageOutput, error) {
 	if input.SessionID == "" {
-		return errorResult("session_id required for summary"), CurrentPageOutput{}, nil
+		return fail[CurrentPageOutput]("session_id required for summary")
 	}
 
 	result, err := dt.client.CurrentPageGet(input.ProxyID, input.SessionID)
@@ -253,12 +253,12 @@ func (dt *DaemonTools) handleCurrentPageLayout(input CurrentPageInput) (*mcp.Cal
 		return formatDaemonError(err, "currentpage"), CurrentPageOutput{}, nil
 	}
 	if errMsg, ok := result["error"].(string); ok && errMsg != "" {
-		return errorResult(fmt.Sprintf("layout diagnose failed: %s", errMsg)), CurrentPageOutput{}, nil
+		return fail[CurrentPageOutput](fmt.Sprintf("layout diagnose failed: %s", errMsg))
 	}
 
 	layout, perr := parseLayoutDiagnostics(getString(result, "result"))
 	if perr != nil {
-		return errorResult(perr.Error()), CurrentPageOutput{}, nil
+		return fail[CurrentPageOutput](perr.Error())
 	}
 	return nil, CurrentPageOutput{Layout: &layout}, nil
 }

@@ -39,11 +39,11 @@ func proxyAccessURL(listenAddr, bindAddress, publicURL string) string {
 func (dt *DaemonTools) makeProxyHandler() func(context.Context, *mcp.CallToolRequest, ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
 		if err := validateProxyInput(input); err != nil {
-			return errorResult(validationError("proxy", err)), ProxyOutput{}, nil
+			return fail[ProxyOutput](validationError("proxy", err))
 		}
 
 		if err := dt.ensureConnected(); err != nil {
-			return errorResult(err.Error()), ProxyOutput{}, nil
+			return fail[ProxyOutput](err.Error())
 		}
 
 		switch input.Action {
@@ -68,17 +68,17 @@ func (dt *DaemonTools) makeProxyHandler() func(context.Context, *mcp.CallToolReq
 		case "chaos":
 			return dt.handleProxyChaos(input)
 		default:
-			return errorResult(fmt.Sprintf("unknown action %q. Use: start, stop, restart, status, list, exec, navigate, resize, toast, chaos", input.Action)), ProxyOutput{}, nil
+			return fail[ProxyOutput](fmt.Sprintf("unknown action %q. Use: start, stop, restart, status, list, exec, navigate, resize, toast, chaos", input.Action))
 		}
 	}
 }
 
 func (dt *DaemonTools) handleProxyStart(input ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
 	if input.ID == "" {
-		return errorResult("id required for start"), ProxyOutput{}, nil
+		return fail[ProxyOutput]("id required for start")
 	}
 	if input.TargetURL == "" {
-		return errorResult("target_url required for start"), ProxyOutput{}, nil
+		return fail[ProxyOutput]("target_url required for start")
 	}
 
 	cwd := getProjectPath()
@@ -119,7 +119,7 @@ func (dt *DaemonTools) handleProxyStart(input ProxyInput) (*mcp.CallToolResult, 
 
 func (dt *DaemonTools) handleProxyStop(input ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
 	if input.ID == "" {
-		return errorResult("id required for stop"), ProxyOutput{}, nil
+		return fail[ProxyOutput]("id required for stop")
 	}
 
 	err := dt.client.ProxyStop(input.ID)
@@ -135,7 +135,7 @@ func (dt *DaemonTools) handleProxyStop(input ProxyInput) (*mcp.CallToolResult, P
 
 func (dt *DaemonTools) handleProxyRestart(input ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
 	if input.ID == "" {
-		return errorResult("id required for restart"), ProxyOutput{}, nil
+		return fail[ProxyOutput]("id required for restart")
 	}
 
 	result, err := dt.client.ProxyRestart(input.ID)
@@ -154,7 +154,7 @@ func (dt *DaemonTools) handleProxyRestart(input ProxyInput) (*mcp.CallToolResult
 
 func (dt *DaemonTools) handleProxyStatus(input ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
 	if input.ID == "" {
-		return errorResult("id required for status"), ProxyOutput{}, nil
+		return fail[ProxyOutput]("id required for status")
 	}
 
 	result, err := dt.client.ProxyStatus(input.ID)
@@ -269,10 +269,10 @@ func (dt *DaemonTools) handleProxyExec(input ProxyInput) (*mcp.CallToolResult, P
 	}
 
 	if input.ID == "" {
-		return errorResult("id required for exec"), ProxyOutput{}, nil
+		return fail[ProxyOutput]("id required for exec")
 	}
 	if input.Code == "" {
-		return errorResult("code required for exec"), ProxyOutput{}, nil
+		return fail[ProxyOutput]("code required for exec")
 	}
 
 	// Scan for anti-pattern hints before execution (advisory only, never blocks).
@@ -284,7 +284,7 @@ func (dt *DaemonTools) handleProxyExec(input ProxyInput) (*mcp.CallToolResult, P
 
 	execTarget, err := resolveExecTarget(input.Target, input.FrameID)
 	if err != nil {
-		return errorResult(err.Error()), ProxyOutput{}, nil
+		return fail[ProxyOutput](err.Error())
 	}
 
 	result, err := dt.client.ProxyExec(input.ID, input.Code, execTarget)
@@ -333,21 +333,21 @@ Use the Read tool to view the full result.`, filePath, duration),
 // handleProxyNavigate drives the active content frame (back/forward/reload/goto).
 func (dt *DaemonTools) handleProxyNavigate(input ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
 	if input.ID == "" {
-		return errorResult("id required for navigate"), ProxyOutput{}, nil
+		return fail[ProxyOutput]("id required for navigate")
 	}
 	code, err := buildNavigateJS(input.Direction, input.TargetURL)
 	if err != nil {
-		return errorResult(err.Error()), ProxyOutput{}, nil
+		return fail[ProxyOutput](err.Error())
 	}
 	execTarget, err := resolveExecTarget(input.Target, "")
 	if err != nil {
-		return errorResult(err.Error()), ProxyOutput{}, nil
+		return fail[ProxyOutput](err.Error())
 	}
 	// Navigation drives the page content frame. Navigating the outer chrome
 	// shell (the proxy UI runtime) is never the intent and would blow away the
 	// shell that hosts the page — fail loud rather than do it.
 	if execTarget == "@chrome" {
-		return errorResult("navigate cannot target the outer chrome shell; it drives the page content frame (omit target, or use target:\"inner\")"), ProxyOutput{}, nil
+		return fail[ProxyOutput]("navigate cannot target the outer chrome shell; it drives the page content frame (omit target, or use target:\"inner\")")
 	}
 	result, err := dt.client.ProxyExec(input.ID, code, execTarget)
 	if err != nil {
@@ -364,7 +364,7 @@ func (dt *DaemonTools) handleProxyNavigate(input ProxyInput) (*mcp.CallToolResul
 // handleProxyResize resizes the live content frame from the outer chrome shell.
 func (dt *DaemonTools) handleProxyResize(input ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
 	if input.ID == "" {
-		return errorResult("id required for resize"), ProxyOutput{}, nil
+		return fail[ProxyOutput]("id required for resize")
 	}
 	result, err := dt.client.ProxyExec(input.ID, buildResizeJS(input.Width, input.Height), "@chrome")
 	if err != nil {
@@ -385,10 +385,10 @@ func (dt *DaemonTools) handleProxyResize(input ProxyInput) (*mcp.CallToolResult,
 
 func (dt *DaemonTools) handleProxyToast(input ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
 	if input.ID == "" {
-		return errorResult("id required for toast"), ProxyOutput{}, nil
+		return fail[ProxyOutput]("id required for toast")
 	}
 	if input.ToastMessage == "" {
-		return errorResult("toast_message required for toast"), ProxyOutput{}, nil
+		return fail[ProxyOutput]("toast_message required for toast")
 	}
 
 	toastConfig := protocol.ToastConfig{
@@ -417,7 +417,7 @@ func (dt *DaemonTools) handleProxyToast(input ProxyInput) (*mcp.CallToolResult, 
 
 func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
 	if input.ID == "" {
-		return errorResult("id required for chaos"), ProxyOutput{}, nil
+		return fail[ProxyOutput]("id required for chaos")
 	}
 
 	operation := input.ChaosOperation
@@ -495,7 +495,7 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 
 	case "set":
 		if input.ChaosConfig == nil {
-			return errorResult("chaos_config required for set operation"), ProxyOutput{}, nil
+			return fail[ProxyOutput]("chaos_config required for set operation")
 		}
 		config := protocol.ChaosConfigPayload{
 			Enabled:     input.ChaosConfig.Enabled,
@@ -519,7 +519,7 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 
 	case "add_rule":
 		if input.ChaosRule == nil {
-			return errorResult("chaos_rule required for add_rule operation"), ProxyOutput{}, nil
+			return fail[ProxyOutput]("chaos_rule required for add_rule operation")
 		}
 		rule := inputRuleToProtocol(*input.ChaosRule)
 		result, err := dt.client.ChaosAddRule(input.ID, rule)
@@ -533,7 +533,7 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 
 	case "remove_rule":
 		if input.ChaosRuleID == "" {
-			return errorResult("chaos_rule_id required for remove_rule operation"), ProxyOutput{}, nil
+			return fail[ProxyOutput]("chaos_rule_id required for remove_rule operation")
 		}
 		_, err := dt.client.ChaosRemoveRule(input.ID, input.ChaosRuleID)
 		if err != nil {
@@ -578,7 +578,7 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 		}, nil
 
 	default:
-		return errorResult(fmt.Sprintf("unknown chaos operation %q. Use: enable, disable, status, preset, set, add_rule, remove_rule, list_rules, stats, clear", operation)), ProxyOutput{}, nil
+		return fail[ProxyOutput](fmt.Sprintf("unknown chaos operation %q. Use: enable, disable, status, preset, set, add_rule, remove_rule, list_rules, stats, clear", operation))
 	}
 }
 
@@ -586,16 +586,16 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 func (dt *DaemonTools) makeProxyLogHandler() func(context.Context, *mcp.CallToolRequest, ProxyLogInput) (*mcp.CallToolResult, ProxyLogOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input ProxyLogInput) (*mcp.CallToolResult, ProxyLogOutput, error) {
 		if err := validateProxyLogInput(input); err != nil {
-			return errorResult(validationError("proxylog", err)), ProxyLogOutput{}, nil
+			return fail[ProxyLogOutput](validationError("proxylog", err))
 		}
 
 		if err := dt.ensureConnected(); err != nil {
-			return errorResult(err.Error()), ProxyLogOutput{}, nil
+			return fail[ProxyLogOutput](err.Error())
 		}
 
 		input.ProxyID = pickProxyID(input.ID, input.ProxyID)
 		if input.ProxyID == "" {
-			return errorResult("proxy_id required (or `id` alias)"), ProxyLogOutput{}, nil
+			return fail[ProxyLogOutput]("proxy_id required (or `id` alias)")
 		}
 
 		action := input.Action
@@ -613,7 +613,7 @@ func (dt *DaemonTools) makeProxyLogHandler() func(context.Context, *mcp.CallTool
 		case "stats":
 			return dt.handleProxyLogStats(input)
 		default:
-			return errorResult(fmt.Sprintf("unknown action %q. Use: query, summary, clear, stats", action)), ProxyLogOutput{}, nil
+			return fail[ProxyLogOutput](fmt.Sprintf("unknown action %q. Use: query, summary, clear, stats", action))
 		}
 	}
 }
@@ -690,13 +690,13 @@ func (dt *DaemonTools) handleProxyLogSummary(input ProxyLogInput) (*mcp.CallTool
 	// wire/protocol break from the agent.
 	raw, present := result["entries"]
 	if !present {
-		return errorResult("proxylog summary: daemon response missing 'entries' field"), ProxyLogOutput{}, nil
+		return fail[ProxyLogOutput]("proxylog summary: daemon response missing 'entries' field")
 	}
 	var entries []interface{}
 	if raw != nil {
 		arr, ok := raw.([]interface{})
 		if !ok {
-			return errorResult(fmt.Sprintf("proxylog summary: 'entries' is %T, expected an array", raw)), ProxyLogOutput{}, nil
+			return fail[ProxyLogOutput](fmt.Sprintf("proxylog summary: 'entries' is %T, expected an array", raw))
 		}
 		entries = arr
 	}

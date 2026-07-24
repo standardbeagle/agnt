@@ -44,7 +44,7 @@ Examples:
 func (dt *DaemonTools) makeErrorQueueHandler() func(context.Context, *mcp.CallToolRequest, ErrorQueueInput) (*mcp.CallToolResult, ErrorQueueOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input ErrorQueueInput) (*mcp.CallToolResult, ErrorQueueOutput, error) {
 		if strings.TrimSpace(input.Message) == "" {
-			return errorResult("message is required"), ErrorQueueOutput{}, nil
+			return fail[ErrorQueueOutput]("message is required")
 		}
 		source := input.Source
 		if source == "" {
@@ -61,11 +61,11 @@ func (dt *DaemonTools) makeErrorQueueHandler() func(context.Context, *mcp.CallTo
 		}
 		projectPath, err := resolveQueueProjectPath(input.ProjectPath)
 		if err != nil {
-			return errorResult(err.Error()), ErrorQueueOutput{}, nil
+			return fail[ErrorQueueOutput](err.Error())
 		}
 
 		if err := dt.ensureConnected(); err != nil {
-			return errorResult(err.Error()), ErrorQueueOutput{}, nil
+			return fail[ErrorQueueOutput](err.Error())
 		}
 		payload := protocol.AlertReportPayload{
 			PatternID:   "external." + sanitizeQueueSource(source),
@@ -78,7 +78,7 @@ func (dt *DaemonTools) makeErrorQueueHandler() func(context.Context, *mcp.CallTo
 			Timestamp:   time.Now().Format(time.RFC3339),
 		}
 		if err := dt.client.Client().AlertReport(payload); err != nil {
-			return errorResult(fmt.Sprintf("failed to queue error: %v", err)), ErrorQueueOutput{}, nil
+			return fail[ErrorQueueOutput](fmt.Sprintf("failed to queue error: %v", err))
 		}
 		return nil, ErrorQueueOutput{
 			Queued:      true,

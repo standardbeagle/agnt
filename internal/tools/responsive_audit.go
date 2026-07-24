@@ -79,18 +79,18 @@ func (dt *DaemonTools) makeResponsiveAuditHandler() func(context.Context, *mcp.C
 	return func(ctx context.Context, req *mcp.CallToolRequest, input ResponsiveAuditInput) (*mcp.CallToolResult, ResponsiveAuditOutput, error) {
 		input.ProxyID = pickProxyID(input.ID, input.ProxyID)
 		if err := validateResponsiveAuditInputSize(input); err != nil {
-			return errorResult(validationError("responsive_audit", err)), ResponsiveAuditOutput{}, nil
+			return fail[ResponsiveAuditOutput](validationError("responsive_audit", err))
 		}
 		if err := validateResponsiveAuditInput(input); err != nil {
-			return errorResult(err.Error()), ResponsiveAuditOutput{}, nil
+			return fail[ResponsiveAuditOutput](err.Error())
 		}
 
 		if input.ProxyID == "" {
-			return errorResult("proxy_id required (or `id` alias)"), ResponsiveAuditOutput{}, nil
+			return fail[ResponsiveAuditOutput]("proxy_id required (or `id` alias)")
 		}
 
 		if err := dt.ensureConnected(); err != nil {
-			return errorResult(err.Error()), ResponsiveAuditOutput{}, nil
+			return fail[ResponsiveAuditOutput](err.Error())
 		}
 		return dt.executeResponsiveAuditDaemon(input)
 	}
@@ -104,7 +104,7 @@ func (dt *DaemonTools) executeResponsiveAuditDaemon(input ResponsiveAuditInput) 
 	// Build JavaScript code to execute
 	optsJSON, err := json.Marshal(auditOpts)
 	if err != nil {
-		return errorResult(fmt.Sprintf("failed to marshal options: %v", err)), ResponsiveAuditOutput{}, nil
+		return fail[ResponsiveAuditOutput](fmt.Sprintf("failed to marshal options: %v", err))
 	}
 
 	code := fmt.Sprintf(`(function() {
@@ -124,16 +124,16 @@ func (dt *DaemonTools) executeResponsiveAuditDaemon(input ResponsiveAuditInput) 
 	// Execute via daemon
 	execTarget, err := resolveExecTarget(input.Target, input.FrameID)
 	if err != nil {
-		return errorResult(err.Error()), ResponsiveAuditOutput{}, nil
+		return fail[ResponsiveAuditOutput](err.Error())
 	}
 	result, err := dt.client.ProxyExec(input.ProxyID, code, execTarget)
 	if err != nil {
-		return errorResult(fmt.Sprintf("failed to execute audit: %v", err)), ResponsiveAuditOutput{}, nil
+		return fail[ResponsiveAuditOutput](fmt.Sprintf("failed to execute audit: %v", err))
 	}
 
 	// Check for error
 	if errMsg, ok := result["error"].(string); ok && errMsg != "" {
-		return errorResult(fmt.Sprintf("audit failed: %s", errMsg)), ResponsiveAuditOutput{}, nil
+		return fail[ResponsiveAuditOutput](fmt.Sprintf("audit failed: %s", errMsg))
 	}
 
 	// Get result string

@@ -60,11 +60,11 @@ func (dt *DaemonTools) makeAPIAuditHandler() func(context.Context, *mcp.CallTool
 	return func(ctx context.Context, req *mcp.CallToolRequest, input APIAuditInput) (*mcp.CallToolResult, APIAuditOutput, error) {
 		input.ProxyID = pickProxyID(input.ID, input.ProxyID)
 		if input.ProxyID == "" {
-			return errorResult("proxy_id required (or `id` alias)"), APIAuditOutput{}, nil
+			return fail[APIAuditOutput]("proxy_id required (or `id` alias)")
 		}
 
 		if err := dt.ensureConnected(); err != nil {
-			return errorResult(err.Error()), APIAuditOutput{}, nil
+			return fail[APIAuditOutput](err.Error())
 		}
 
 		res, summary, raw := dt.runBufferAudit(apiAuditSpec, input.ProxyID, input.Target, input.FrameID, input.Raw)
@@ -112,15 +112,15 @@ func (dt *DaemonTools) runBufferAudit(spec bufferAuditSpec, proxyID, target, fra
 
 	execTarget, err := resolveExecTarget(target, frameID)
 	if err != nil {
-		return errorResult(err.Error()), "", nil
+		return fail[string](err.Error())
 	}
 	result, err := dt.client.ProxyExec(proxyID, code, execTarget)
 	if err != nil {
-		return errorResult(fmt.Sprintf("failed to execute audit: %v", err)), "", nil
+		return fail[string](fmt.Sprintf("failed to execute audit: %v", err))
 	}
 
 	if errMsg, ok := result["error"].(string); ok && errMsg != "" {
-		return errorResult(fmt.Sprintf("audit failed: %s", errMsg)), "", nil
+		return fail[string](fmt.Sprintf("audit failed: %s", errMsg))
 	}
 
 	resultStr := getString(result, "result")
@@ -137,7 +137,7 @@ func (dt *DaemonTools) runBufferAudit(spec bufferAuditSpec, proxyID, target, fra
 
 	// Module-level error (e.g. audit module not loaded).
 	if errMsg, ok := parsed["error"].(string); ok && errMsg != "" {
-		return errorResult(errMsg), "", nil
+		return fail[string](errMsg)
 	}
 
 	if raw {

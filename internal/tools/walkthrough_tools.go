@@ -81,22 +81,22 @@ func (dt *DaemonTools) makeWalkthroughHandler() func(context.Context, *mcp.CallT
 
 		code, err := buildWalkthroughExec(input)
 		if err != nil {
-			return errorResult(err.Error()), WalkthroughOutput{}, nil
+			return fail[WalkthroughOutput](err.Error())
 		}
 
 		if input.ProxyID == "" {
-			return errorResult("proxy_id required (or `id` alias)"), WalkthroughOutput{}, nil
+			return fail[WalkthroughOutput]("proxy_id required (or `id` alias)")
 		}
 		if err := dt.ensureConnected(); err != nil {
-			return errorResult(err.Error()), WalkthroughOutput{}, nil
+			return fail[WalkthroughOutput](err.Error())
 		}
 
 		result, err := dt.client.ProxyExec(input.ProxyID, code)
 		if err != nil {
-			return errorResult(fmt.Sprintf("proxy exec failed: %v", err)), WalkthroughOutput{}, nil
+			return fail[WalkthroughOutput](fmt.Sprintf("proxy exec failed: %v", err))
 		}
 		if errMsg, ok := result["error"].(string); ok && errMsg != "" {
-			return errorResult(fmt.Sprintf("walkthrough failed: %s", errMsg)), WalkthroughOutput{}, nil
+			return fail[WalkthroughOutput](fmt.Sprintf("walkthrough failed: %s", errMsg))
 		}
 
 		resultStr := getString(result, "result")

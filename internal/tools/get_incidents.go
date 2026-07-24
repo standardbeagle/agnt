@@ -125,7 +125,7 @@ func makeGetIncidentsHandler(dt *DaemonTools) func(context.Context, *mcp.CallToo
 		}
 
 		if dt == nil {
-			return errorResult("incident query unavailable: no daemon client"), GetIncidentsOutput{}, nil
+			return fail[GetIncidentsOutput]("incident query unavailable: no daemon client")
 		}
 		// A failed connect or query must be surfaced, not swallowed: rendering an
 		// empty inbox for a down daemon reports a false-healthy state and the
@@ -133,11 +133,11 @@ func makeGetIncidentsHandler(dt *DaemonTools) func(context.Context, *mcp.CallToo
 		// empty inbox (PipelineEnabled distinguishes an unavailable session inbox
 		// from a registered inbox with no data).
 		if err := dt.ensureConnected(); err != nil {
-			return errorResult("incident query failed: cannot reach daemon: " + err.Error()), GetIncidentsOutput{}, nil
+			return fail[GetIncidentsOutput]("incident query failed: cannot reach daemon: " + err.Error())
 		}
 		result, err := dt.client.IncidentQuery(filter)
 		if err != nil {
-			return errorResult("incident query failed: " + err.Error()), GetIncidentsOutput{}, nil
+			return fail[GetIncidentsOutput]("incident query failed: " + err.Error())
 		}
 		if result == nil {
 			result = &protocol.IncidentQueryResult{}

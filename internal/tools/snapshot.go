@@ -75,7 +75,7 @@ Example compare (diff_threshold overrides sensitivity, default 0.01):
 func handleSnapshot(manager *snapshot.Manager, dt *DaemonTools, ctx context.Context, req *mcp.CallToolRequest, input SnapshotInput) (*mcp.CallToolResult, SnapshotOutput, error) {
 	input.ProxyID = pickProxyID(input.ID, input.ProxyID)
 	if err := validateSnapshotInput(input); err != nil {
-		return errorResult(validationError("snapshot", err)), SnapshotOutput{}, nil
+		return fail[SnapshotOutput](validationError("snapshot", err))
 	}
 
 	switch input.Action {
@@ -92,23 +92,23 @@ func handleSnapshot(manager *snapshot.Manager, dt *DaemonTools, ctx context.Cont
 	case "screenshot":
 		return handleSnapshotScreenshot(dt, input)
 	default:
-		return errorResult(fmt.Sprintf("Unknown action: %s. Valid actions: screenshot, baseline, compare, list, delete, get", input.Action)), SnapshotOutput{}, nil
+		return fail[SnapshotOutput](fmt.Sprintf("Unknown action: %s. Valid actions: screenshot, baseline, compare, list, delete, get", input.Action))
 	}
 }
 
 func handleSnapshotBaseline(manager *snapshot.Manager, input SnapshotInput) (*mcp.CallToolResult, SnapshotOutput, error) {
 	if input.Name == "" {
-		return errorResult("Missing required parameter: name"), SnapshotOutput{}, nil
+		return fail[SnapshotOutput]("Missing required parameter: name")
 	}
 
 	if len(input.Pages) == 0 {
-		return errorResult("Missing or empty required parameter: pages"), SnapshotOutput{}, nil
+		return fail[SnapshotOutput]("Missing or empty required parameter: pages")
 	}
 
 	// Create baseline
 	baseline, err := manager.CreateBaseline(input.Name, input.Pages)
 	if err != nil {
-		return errorResult(fmt.Sprintf("Failed to create baseline: %v", err)), SnapshotOutput{}, nil
+		return fail[SnapshotOutput](fmt.Sprintf("Failed to create baseline: %v", err))
 	}
 
 	// Format response
@@ -133,17 +133,17 @@ func handleSnapshotBaseline(manager *snapshot.Manager, input SnapshotInput) (*mc
 func handleSnapshotCompare(manager *snapshot.Manager, input SnapshotInput) (*mcp.CallToolResult, SnapshotOutput, error) {
 	baselineName := input.Baseline
 	if baselineName == "" {
-		return errorResult("Missing required parameter: baseline"), SnapshotOutput{}, nil
+		return fail[SnapshotOutput]("Missing required parameter: baseline")
 	}
 
 	if len(input.Pages) == 0 {
-		return errorResult("Missing or empty required parameter: pages"), SnapshotOutput{}, nil
+		return fail[SnapshotOutput]("Missing or empty required parameter: pages")
 	}
 
 	// Compare to baseline (input.DiffThreshold <= 0 falls back to the default)
 	result, err := manager.CompareToBaseline(baselineName, input.Pages, input.DiffThreshold)
 	if err != nil {
-		return errorResult(fmt.Sprintf("Failed to compare: %v", err)), SnapshotOutput{}, nil
+		return fail[SnapshotOutput](fmt.Sprintf("Failed to compare: %v", err))
 	}
 
 	// Format response
@@ -164,7 +164,7 @@ func handleSnapshotCompare(manager *snapshot.Manager, input SnapshotInput) (*mcp
 func handleSnapshotList(manager *snapshot.Manager, input SnapshotInput) (*mcp.CallToolResult, SnapshotOutput, error) {
 	baselines, err := manager.ListBaselines()
 	if err != nil {
-		return errorResult(fmt.Sprintf("Failed to list baselines: %v", err)), SnapshotOutput{}, nil
+		return fail[SnapshotOutput](fmt.Sprintf("Failed to list baselines: %v", err))
 	}
 
 	if len(baselines) == 0 {
@@ -204,11 +204,11 @@ func handleSnapshotList(manager *snapshot.Manager, input SnapshotInput) (*mcp.Ca
 
 func handleSnapshotDelete(manager *snapshot.Manager, input SnapshotInput) (*mcp.CallToolResult, SnapshotOutput, error) {
 	if input.Name == "" {
-		return errorResult("Missing required parameter: name"), SnapshotOutput{}, nil
+		return fail[SnapshotOutput]("Missing required parameter: name")
 	}
 
 	if err := manager.DeleteBaseline(input.Name); err != nil {
-		return errorResult(fmt.Sprintf("Failed to delete baseline: %v", err)), SnapshotOutput{}, nil
+		return fail[SnapshotOutput](fmt.Sprintf("Failed to delete baseline: %v", err))
 	}
 
 	return nil, SnapshotOutput{
@@ -219,12 +219,12 @@ func handleSnapshotDelete(manager *snapshot.Manager, input SnapshotInput) (*mcp.
 
 func handleSnapshotGet(manager *snapshot.Manager, input SnapshotInput) (*mcp.CallToolResult, SnapshotOutput, error) {
 	if input.Name == "" {
-		return errorResult("Missing required parameter: name"), SnapshotOutput{}, nil
+		return fail[SnapshotOutput]("Missing required parameter: name")
 	}
 
 	baseline, err := manager.GetBaseline(input.Name)
 	if err != nil {
-		return errorResult(fmt.Sprintf("Failed to get baseline: %v", err)), SnapshotOutput{}, nil
+		return fail[SnapshotOutput](fmt.Sprintf("Failed to get baseline: %v", err))
 	}
 
 	data, _ := json.MarshalIndent(baseline, "", "  ")
@@ -246,13 +246,13 @@ func handleSnapshotGet(manager *snapshot.Manager, input SnapshotInput) (*mcp.Cal
 // JS, then polls proxylog briefly for the saved path.
 func handleSnapshotScreenshot(dt *DaemonTools, input SnapshotInput) (*mcp.CallToolResult, SnapshotOutput, error) {
 	if dt == nil {
-		return errorResult("screenshot action requires daemon mode"), SnapshotOutput{}, nil
+		return fail[SnapshotOutput]("screenshot action requires daemon mode")
 	}
 	if input.ProxyID == "" {
-		return errorResult("proxy_id required (or `id` alias)"), SnapshotOutput{}, nil
+		return fail[SnapshotOutput]("proxy_id required (or `id` alias)")
 	}
 	if err := dt.ensureConnected(); err != nil {
-		return errorResult(err.Error()), SnapshotOutput{}, nil
+		return fail[SnapshotOutput](err.Error())
 	}
 
 	name := input.Name
@@ -274,17 +274,17 @@ func handleSnapshotScreenshot(dt *DaemonTools, input SnapshotInput) (*mcp.CallTo
 
 	execTarget, err := resolveExecTarget(input.Target, input.FrameID)
 	if err != nil {
-		return errorResult(err.Error()), SnapshotOutput{}, nil
+		return fail[SnapshotOutput](err.Error())
 	}
 	result, err := dt.client.ProxyExec(input.ProxyID, code, execTarget)
 	if err != nil {
-		return errorResult(fmt.Sprintf("proxy exec failed: %v", err)), SnapshotOutput{}, nil
+		return fail[SnapshotOutput](fmt.Sprintf("proxy exec failed: %v", err))
 	}
 	// ProxyExec reports browser-side JS failures via result["success"]=false +
 	// result["error"] (transport err is nil in that case), so a transport-only
 	// check would report a phantom success. Surface the JS error explicitly.
 	if !getBool(result, "success") {
-		return errorResult(fmt.Sprintf("screenshot failed: %s", getString(result, "error"))), SnapshotOutput{}, nil
+		return fail[SnapshotOutput](fmt.Sprintf("screenshot failed: %s", getString(result, "error")))
 	}
 
 	message := fmt.Sprintf("✓ Screenshot triggered on proxy %q (name=%q). "+

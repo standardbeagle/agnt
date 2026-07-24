@@ -17,21 +17,21 @@ func (dt *DaemonTools) handleErrorRetentionAction(input GetErrorsInput) (*mcp.Ca
 	switch input.Action {
 	case "pin", "unpin":
 		if input.ErrorID == "" {
-			return errorResult(validationError("get_errors", fmt.Errorf("action %q requires error_id (the #id from a prior get_errors result)", input.Action))), GetErrorsOutput{}, nil
+			return fail[GetErrorsOutput](validationError("get_errors", fmt.Errorf("action %q requires error_id (the #id from a prior get_errors result)", input.Action)))
 		}
 		payload := protocol.AlertPinPayload{ID: input.ErrorID, Tag: input.Tag}
 		payload.SessionCode, payload.Directory = dt.sessionScope()
 
 		if input.Action == "unpin" {
 			if err := dt.client.AlertUnpin(payload); err != nil {
-				return errorResult("unpin failed: " + err.Error()), GetErrorsOutput{}, nil
+				return fail[GetErrorsOutput]("unpin failed: " + err.Error())
 			}
 			return nil, GetErrorsOutput{Summary: fmt.Sprintf("Error %s unpinned — normal retention applies again.", input.ErrorID)}, nil
 		}
 
 		result, err := dt.client.AlertPin(payload)
 		if err != nil {
-			return errorResult("pin failed: " + err.Error()), GetErrorsOutput{}, nil
+			return fail[GetErrorsOutput]("pin failed: " + err.Error())
 		}
 		msg := getString(result, "message")
 		if msg == "" {
@@ -46,7 +46,7 @@ func (dt *DaemonTools) handleErrorRetentionAction(input GetErrorsInput) (*mcp.Ca
 		}
 		result, err := dt.client.AlertClear(filter)
 		if err != nil {
-			return errorResult("clear failed: " + err.Error()), GetErrorsOutput{}, nil
+			return fail[GetErrorsOutput]("clear failed: " + err.Error())
 		}
 		msg := getString(result, "message")
 		if msg == "" {
@@ -54,7 +54,7 @@ func (dt *DaemonTools) handleErrorRetentionAction(input GetErrorsInput) (*mcp.Ca
 		}
 		return nil, GetErrorsOutput{Summary: msg}, nil
 	}
-	return errorResult(validationError("get_errors", fmt.Errorf("unknown action %q", input.Action))), GetErrorsOutput{}, nil
+	return fail[GetErrorsOutput](validationError("get_errors", fmt.Errorf("unknown action %q", input.Action)))
 }
 
 // collectPinnedErrors fetches the project's pinned errors from the daemon.
