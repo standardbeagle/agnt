@@ -34,6 +34,7 @@ func RunLifecycleHook(cmd, scriptID, event string, scriptCfg *config.ScriptConfi
 	shell, shellArgs := resolveHookShell(cmd, scriptCfg)
 	c := exec.CommandContext(ctx, shell, shellArgs...)
 	c.Env = buildHookEnv(scriptCfg, scriptID, event, exitCode)
+	configureHookProcessGroup(c)
 
 	if err := c.Run(); err != nil {
 		if ctx.Err() != nil {
