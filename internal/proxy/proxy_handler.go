@@ -458,12 +458,26 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 	default:
 		bodyBytes, err := io.ReadAll(r.Body)
 		if err != nil {
+			// The body is partially consumed; forwarding it with the original
+			// Content-Length intact would leave the backend waiting for bytes
+			// that never come (hang). Fail the request instead.
 			reqBody = fmt.Sprintf("[request body not captured: read error: %v]", err)
-		} else {
-			reqBody = string(bodyBytes)
-			// Restore body for proxy
-			r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+			ps.logger.LogHTTP(HTTPLogEntry{
+				ID:             reqID,
+				Timestamp:      startTime,
+				Method:         r.Method,
+				URL:            publish.ScrubSharePath(r.URL.String()),
+				RequestHeaders: reqHeaders,
+				StatusCode:     http.StatusBadRequest,
+				Duration:       time.Since(startTime),
+				Error:          fmt.Sprintf("request body read error: %v", err),
+			})
+			http.Error(w, "failed to read request body", http.StatusBadRequest)
+			return
 		}
+		reqBody = string(bodyBytes)
+		// Restore body for proxy
+		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
 	}
 
 	// For WebSocket upgrades, proxy directly without response recording
