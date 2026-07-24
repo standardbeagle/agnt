@@ -22,9 +22,13 @@ type TunnelManager struct {
 	running   atomic.Bool
 	cmd       *exec.Cmd
 	cancel    context.CancelFunc
-	mu        sync.Mutex
-	output    []string // recent output lines for debugging
-	outputMu  sync.RWMutex
+	// exited is closed by the reaper goroutine when the tunnel process exits.
+	// The reaper is the sole caller of cmd.Wait — a second Wait errors
+	// immediately, so Stop must wait on this channel instead.
+	exited   chan struct{}
+	mu       sync.Mutex
+	output   []string // recent output lines for debugging
+	outputMu sync.RWMutex
 }
 
 // Common patterns to extract public URLs from tunnel output
@@ -97,18 +101,31 @@ func (tm *TunnelManager) Start(ctx context.Context) error {
 	}
 
 	tm.running.Store(true)
+	tm.exited = make(chan struct{})
 
 	// Monitor output for URL extraction
 	go tm.monitorOutput(bufio.NewScanner(stdout))
 	go tm.monitorOutput(bufio.NewScanner(stderr))
 
-	// Wait for process to exit
+	// Reap the process when it exits. This goroutine is the ONLY caller of
+	// cmd.Wait; Stop waits on tm.exited.
 	go func() {
 		tm.cmd.Wait()
 		tm.running.Store(false)
+		close(tm.exited)
 	}()
 
 	return nil
+}
+
+// SetProxyPort updates the port the tunnel forwards to. Must be called
+// before Start; the proxy fixes it up after binding so a tunnel is never
+// pointed at the *requested* port when the bind fell back to an
+// auto-assigned one.
+func (tm *TunnelManager) SetProxyPort(port int) {
+	tm.mu.Lock()
+	defer tm.mu.Unlock()
+	tm.proxyPort = port
 }
 
 // buildCommand builds the tunnel command based on provider.
@@ -234,21 +251,18 @@ func (tm *TunnelManager) Stop() error {
 		tm.cancel()
 	}
 
-	// Give it a moment to exit gracefully
-	done := make(chan struct{})
-	go func() {
-		if tm.cmd != nil && tm.cmd.Process != nil {
-			tm.cmd.Wait()
-		}
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(5 * time.Second):
-		// Force kill if still running
-		if tm.cmd != nil && tm.cmd.Process != nil {
-			tm.cmd.Process.Kill()
+	// Give it a moment to exit gracefully; the reaper (started in Start) is
+	// the sole cmd.Wait caller and closes tm.exited.
+	if tm.exited != nil {
+		select {
+		case <-tm.exited:
+		case <-time.After(5 * time.Second):
+			// Force kill if still running
+			if tm.cmd != nil && tm.cmd.Process != nil {
+				tm.cmd.Process.Kill()
+			}
+			// Reap after the kill so no zombie or in-flight Wait outlives Stop.
+			<-tm.exited
 		}
 	}
 

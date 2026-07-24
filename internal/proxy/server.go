@@ -576,8 +576,11 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 	ps.backendHealthy.Store(true)
 	go ps.runHealthCheck(ctx)
 
-	// Start tunnel if configured
+	// Start tunnel if configured, pointing it at the ACTUAL bound port — the
+	// manager was constructed with the requested port, which is wrong when
+	// the bind fell back to an auto-assigned one.
 	if ps.tunnel != nil {
+		ps.tunnel.SetProxyPort(ps.BoundPort())
 		if err := ps.tunnel.Start(ctx); err != nil {
 			// Log but don't fail - proxy can work without tunnel
 			ps.logger.LogError(FrontendError{
