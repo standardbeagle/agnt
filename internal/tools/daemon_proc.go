@@ -987,49 +987,42 @@ func resolveKDLScript(projectPath, scriptName string, extraArgs []string) (strin
 }
 
 // populateLastExitFields copies last-exit fields from a daemon response
-// map onto a ProcOutput. Uses pointer-to-int for LastExitCode so a real
-// zero exit code (clean shutdown) is distinguishable from "field absent".
+// map into the shared LastExitFields embedded by ProcOutput/ProcEntry.
+// Uses pointer-to-int for LastExitCode so a real zero exit code (clean
+// shutdown) is distinguishable from "field absent".
 func populateLastExitFields(out *ProcOutput, resp map[string]interface{}) {
-	if out == nil || resp == nil {
+	if out == nil {
 		return
 	}
-	if at := getString(resp, "last_exit_at"); at != "" {
-		out.LastExitAt = at
-	}
-	if _, ok := resp["last_exit_code"]; ok {
-		code := getInt(resp, "last_exit_code")
-		out.LastExitCode = &code
-	}
-	if reason := getString(resp, "last_exit_reason"); reason != "" {
-		out.LastExitReason = reason
-	}
-	if uptime := getString(resp, "last_uptime"); uptime != "" {
-		out.LastUptime = uptime
-	}
-	if tail := getString(resp, "last_stderr_tail"); tail != "" {
-		out.LastStderrTail = tail
-	}
+	populateLastExit(&out.LastExitFields, resp)
 }
 
 // populateLastExitFieldsEntry is the per-entry variant for proc list.
 func populateLastExitFieldsEntry(entry *ProcEntry, resp map[string]interface{}) {
-	if entry == nil || resp == nil {
+	if entry == nil {
+		return
+	}
+	populateLastExit(&entry.LastExitFields, resp)
+}
+
+func populateLastExit(fields *LastExitFields, resp map[string]interface{}) {
+	if resp == nil {
 		return
 	}
 	if at := getString(resp, "last_exit_at"); at != "" {
-		entry.LastExitAt = at
+		fields.LastExitAt = at
 	}
 	if _, ok := resp["last_exit_code"]; ok {
 		code := getInt(resp, "last_exit_code")
-		entry.LastExitCode = &code
+		fields.LastExitCode = &code
 	}
 	if reason := getString(resp, "last_exit_reason"); reason != "" {
-		entry.LastExitReason = reason
+		fields.LastExitReason = reason
 	}
 	if uptime := getString(resp, "last_uptime"); uptime != "" {
-		entry.LastUptime = uptime
+		fields.LastUptime = uptime
 	}
 	if tail := getString(resp, "last_stderr_tail"); tail != "" {
-		entry.LastStderrTail = tail
+		fields.LastStderrTail = tail
 	}
 }

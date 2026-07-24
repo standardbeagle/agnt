@@ -180,15 +180,6 @@ type EventHub struct {
 	proxyPaths       proxyPathRegistry // proxyID → project path for stream routing
 }
 
-func (h *EventHub) BroadcastDeveloperToast(severity, title, message string) {
-	h.mu.RLock()
-	pb := h.proxyBroadcaster
-	h.mu.RUnlock()
-	if pb != nil {
-		pb.BroadcastAlertToast(severity, title, message)
-	}
-}
-
 func (h *EventHub) DeliverDeveloperEvent(event protocol.DeveloperEvent) {
 	h.mu.RLock()
 	pb := h.proxyBroadcaster

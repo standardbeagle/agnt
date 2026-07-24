@@ -35,12 +35,6 @@ type AgntConfig struct {
 	// AI configuration for run and ai commands
 	AI *AIConfig `kdl:"ai"`
 
-	// Hooks configuration
-	Hooks *HooksConfig `kdl:"hooks"`
-
-	// Toast notification settings
-	Toast *ToastConfig `kdl:"toast"`
-
 	// Alerts configuration for process output monitoring
 	Alerts *AlertsConfig `kdl:"alerts"`
 
@@ -633,32 +627,6 @@ func validateAuthBreakout(a *AuthBreakoutConfig) error {
 	return nil
 }
 
-// HooksConfig defines hook behavior.
-type HooksConfig struct {
-	// OnResponse controls what happens when Claude responds
-	OnResponse *ResponseHookConfig `kdl:"on-response"`
-}
-
-// ResponseHookConfig controls response notification behavior.
-type ResponseHookConfig struct {
-	// Toast shows a toast notification in the browser
-	Toast bool `kdl:"toast"`
-	// Indicator updates the bug indicator
-	Indicator bool `kdl:"indicator"`
-	// Sound plays a notification sound
-	Sound bool `kdl:"sound"`
-}
-
-// ToastConfig configures toast notifications.
-type ToastConfig struct {
-	// Duration in milliseconds (default 4000)
-	Duration int `kdl:"duration"`
-	// Position: "top-right", "top-left", "bottom-right", "bottom-left"
-	Position string `kdl:"position"`
-	// MaxVisible is the max number of visible toasts (default 3)
-	MaxVisible int `kdl:"max-visible"`
-}
-
 // AlertsConfig configures process output alert monitoring.
 type AlertsConfig struct {
 	// Enabled controls whether alerts are active. Default: true.
@@ -1095,18 +1063,6 @@ func DefaultAgntConfig() *AgntConfig {
 	return &AgntConfig{
 		Scripts: make(map[string]*ScriptConfig),
 		Proxies: make(map[string]*ProxyConfig),
-		Hooks: &HooksConfig{
-			OnResponse: &ResponseHookConfig{
-				Toast:     true,
-				Indicator: true,
-				Sound:     false,
-			},
-		},
-		Toast: &ToastConfig{
-			Duration:   4000,
-			Position:   "bottom-right",
-			MaxVisible: 3,
-		},
 		Channel: &ChannelConfig{
 			Enabled:      &channelDisabled,
 			Severity:     "warning",

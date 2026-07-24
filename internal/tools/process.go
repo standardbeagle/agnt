@@ -183,11 +183,7 @@ type ProcOutput struct {
 	// Last known death record — populated when the process has exited
 	// (cleanly or via crash/signal) within the retention window. Lets the
 	// agent tell "never started" from "started and died at T".
-	LastExitAt     string `json:"last_exit_at,omitempty"`
-	LastExitCode   *int   `json:"last_exit_code,omitempty"`
-	LastExitReason string `json:"last_exit_reason,omitempty"` // "stopped" | "crash" | "signal"
-	LastUptime     string `json:"last_uptime,omitempty"`
-	LastStderrTail string `json:"last_stderr_tail,omitempty"`
+	LastExitFields
 	// For output
 	Output    string `json:"output,omitempty"`
 	Lines     int    `json:"lines,omitempty"`
@@ -242,13 +238,22 @@ type ProcEntry struct {
 	Produces   []string `json:"produces,omitempty"`
 	OutputHint string   `json:"output_hint,omitempty"`
 	// Last known death record — see ProcOutput for field semantics.
-	LastExitAt     string `json:"last_exit_at,omitempty"`
-	LastExitCode   *int   `json:"last_exit_code,omitempty"`
-	LastExitReason string `json:"last_exit_reason,omitempty"`
-	LastUptime     string `json:"last_uptime,omitempty"`
-	LastStderrTail string `json:"last_stderr_tail,omitempty"`
+	LastExitFields
 	// WaitingFor is populated for processes still gated on declared deps.
 	WaitingFor []string `json:"waiting_for,omitempty"`
+}
+
+// LastExitFields is the last known death record of a process — populated
+// when the process has exited (cleanly or via crash/signal) within the
+// retention window. Lets the agent tell "never started" from "started and
+// died at T". Shared by ProcOutput (single proc) and ProcEntry (list) so
+// the population logic lives in exactly one place.
+type LastExitFields struct {
+	LastExitAt     string `json:"last_exit_at,omitempty"`
+	LastExitCode   *int   `json:"last_exit_code,omitempty"`
+	LastExitReason string `json:"last_exit_reason,omitempty"` // "stopped" | "crash" | "signal"
+	LastUptime     string `json:"last_uptime,omitempty"`
+	LastStderrTail string `json:"last_stderr_tail,omitempty"`
 }
 
 type ProcessRole struct {

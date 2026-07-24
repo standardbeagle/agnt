@@ -878,17 +878,6 @@ func TestDefaultAgntConfig(t *testing.T) {
 
 	assert.NotNil(t, cfg.Proxies)
 	assert.Len(t, cfg.Proxies, 0)
-
-	assert.NotNil(t, cfg.Hooks)
-	assert.NotNil(t, cfg.Hooks.OnResponse)
-	assert.True(t, cfg.Hooks.OnResponse.Toast)
-	assert.True(t, cfg.Hooks.OnResponse.Indicator)
-	assert.False(t, cfg.Hooks.OnResponse.Sound)
-
-	assert.NotNil(t, cfg.Toast)
-	assert.Equal(t, 4000, cfg.Toast.Duration)
-	assert.Equal(t, "bottom-right", cfg.Toast.Position)
-	assert.Equal(t, 3, cfg.Toast.MaxVisible)
 }
 
 func TestParseAIConfig_AdapterAliases(t *testing.T) {

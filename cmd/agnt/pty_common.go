@@ -1861,7 +1861,7 @@ func setupTerminalOverlay(ctx context.Context, handle *ptyHandle, rt *pipelineRu
 		summarizer := overlay.NewSummarizer(daemonClient, overlay.SummarizerConfig{
 			Agent:       aichannel.AgentType(agent),
 			Timeout:     2 * time.Minute,
-			ProjectPath: projectPathFromHandle(handle),
+			ProjectPath: currentProjectPath(),
 		})
 		rt.inputRouter.SetSummarizer(summarizer)
 	}
@@ -1928,10 +1928,9 @@ func setupTerminalOverlay(ctx context.Context, handle *ptyHandle, rt *pipelineRu
 	})
 }
 
-// projectPathFromHandle returns a project-path string. We don't carry it
-// on ptyHandle (it's only used by the summarizer), so look it up here from
-// the working directory.
-func projectPathFromHandle(_ *ptyHandle) string {
+// currentProjectPath returns the working directory as the project path.
+// ptyHandle doesn't carry one (it's only used by the summarizer).
+func currentProjectPath() string {
 	cwd, _ := os.Getwd()
 	return cwd
 }

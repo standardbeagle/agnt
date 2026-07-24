@@ -152,7 +152,7 @@ func (dt *DaemonTools) runBufferAudit(spec bufferAuditSpec, proxyID, target, fra
 func formatBufferAuditCompact(headline string, parsed map[string]any) string {
 	var b strings.Builder
 
-	score := getFloat(parsed, "score")
+	score := getFloat64(parsed, "score")
 	grade := getString(parsed, "grade")
 	fmt.Fprintf(&b, "=== %s: %s (%d) ===\n", headline, grade, int(score))
 
@@ -198,12 +198,4 @@ func formatBufferAuditCompact(headline string, parsed map[string]any) string {
 	}
 
 	return strings.TrimRight(b.String(), "\n")
-}
-
-// getFloat extracts a float64 value from a parsed JSON map.
-func getFloat(m map[string]any, key string) float64 {
-	if v, ok := m[key].(float64); ok {
-		return v
-	}
-	return 0
 }
