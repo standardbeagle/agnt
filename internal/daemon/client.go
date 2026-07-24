@@ -895,7 +895,12 @@ func (c *Client) SessionHostAttach(ctx context.Context, id string, onAttached fu
 					AttachID  string `json:"attach_id"`
 					IsPrimary bool   `json:"is_primary"`
 				}
-				_ = json.Unmarshal(f.Data, &attached)
+				if err := json.Unmarshal(f.Data, &attached); err != nil {
+					// A malformed attach frame must not deliver an empty
+					// AttachID to the caller as if it were real.
+					debug.Log("client", "SessionHostAttach: failed to unmarshal attached frame: %v", err)
+					continue
+				}
 				if onAttached != nil {
 					onAttached(attached.AttachID, attached.IsPrimary)
 				}

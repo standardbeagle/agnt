@@ -319,7 +319,7 @@ func (b *HoldBuffer) loop() {
 	emit := func(e *holdEntry) {
 		if b.emit != nil || b.ownerEmit != nil {
 			func() {
-				defer func() { _ = recover() }()
+				defer logRecovered("hold-buffer", "emit callback")
 				if b.ownerEmit != nil {
 					b.ownerEmit(e.entry, e.proxyID, e.count, e.owner)
 				} else {

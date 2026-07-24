@@ -549,7 +549,13 @@ func (c *OutageClassifier) fireLongRebuildHeartbeat(processID string) {
 	}
 	// Defensive: if the classifier no longer wants this band, stop.
 	mode := c.classifyForHeartbeat(processID)
-	st := c.getOrCreate(processID)
+	// Look up — never getOrCreate — the state: a Forget that landed between
+	// the timer fire and now must not be undone by recreating the entry,
+	// which would also re-arm a heartbeat for a cleaned-up process.
+	st, ok := c.lookup(processID)
+	if !ok {
+		return
+	}
 	if mode != OutageLongRebuild {
 		st.longRebuildTimer.Store(nil)
 		return
@@ -669,9 +675,7 @@ func (c *OutageClassifier) emit(proxyID, message string, level proxy.ProxyDiagno
 	if c.emitDiagnostic == nil {
 		return
 	}
-	defer func() {
-		_ = recover()
-	}()
+	defer logRecovered("outage-classifier", "emitDiagnostic emitter")
 	entry := proxy.LogEntry{
 		Type: proxy.LogTypeDiagnostic,
 		Diagnostic: &proxy.ProxyDiagnostic{

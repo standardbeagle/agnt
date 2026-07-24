@@ -64,7 +64,10 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 
 	maxLogSize := 1000
 	if len(cmd.Args) > 3 {
-		maxLogSize, _ = strconv.Atoi(cmd.Args[3])
+		maxLogSize, err = strconv.Atoi(cmd.Args[3])
+		if err != nil {
+			return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid max_log_size")
+		}
 	}
 
 	// Parse extended config from JSON data (optional).

@@ -232,14 +232,11 @@ func (d *Daemon) RunAutostartAsync(
 // plus any child/descendant processes spawned by managed processes.
 func (d *Daemon) collectManagedPIDs() map[int]bool {
 	managed := make(map[int]bool)
-	var roots []int
 
 	// Collect directly managed PIDs
 	for _, proc := range d.hub.ProcessManager().List() {
-		pid := proc.PID()
-		if pid > 0 {
+		if pid := proc.PID(); pid > 0 {
 			managed[pid] = true
-			roots = append(roots, pid)
 		}
 	}
 
@@ -275,7 +272,6 @@ func (d *Daemon) collectManagedPIDs() map[int]bool {
 		}
 	}
 
-	_ = roots
 	return managed
 }
 

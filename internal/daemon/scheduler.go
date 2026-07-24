@@ -400,6 +400,14 @@ func (s *Scheduler) checkDueTasks() {
 	s.tasks.Range(func(key, value interface{}) bool {
 		task := value.(*ScheduledTask)
 
+		// Check the due time BEFORE claiming: claiming a non-due task and
+		// reverting opens a window where a concurrent Cancel sees
+		// "delivering" and spuriously fails even though nothing is being
+		// delivered.
+		if !task.GetDeliverAt().Before(now) {
+			return true
+		}
+
 		// Atomically claim: only Pending -> Delivering succeeds.
 		// If another tick or Cancel already transitioned the status, CAS fails
 		// and we skip this task. This eliminates the TOCTOU race.
@@ -407,16 +415,10 @@ func (s *Scheduler) checkDueTasks() {
 			return true
 		}
 
-		if !task.GetDeliverAt().Before(now) {
-			// Not due yet, revert to pending
-			task.status.Store(uint32(taskStatusPending))
-			return true
-		}
-
 		// Acquire semaphore slot, respecting context cancellation.
 		// If the context is cancelled or we can't acquire, revert and stop.
 		if err := s.deliverySem.Acquire(s.ctx, 1); err != nil {
-			task.status.Store(uint32(taskStatusPending))
+			task.CompareAndSwapStatus(taskStatusDelivering, taskStatusPending)
 			return false // context cancelled, stop iteration
 		}
 

@@ -177,8 +177,9 @@ type HealthTracker struct {
 
 	// onTransportRecovery is fired when a proxy exits transport outage
 	// via a recovery signal (HTTP 2xx/3xx, WS open). HoldBuffer subscribes
-	// to flush held entries. May be nil.
-	onTransportRecovery func(proxyID string)
+	// to flush held entries. May be nil. Atomic because the setter is
+	// exported while the read happens on the proxy hot path.
+	onTransportRecovery atomic.Pointer[func(proxyID string)]
 }
 
 // NewHealthTracker constructs a HealthTracker with production lookups.
@@ -321,13 +322,13 @@ func (h *HealthTracker) observe(proxyID, processID string, currentState goproces
 	// take down the daemon if a callback misbehaves.
 	if outageStarted && h.onOutageStart != nil {
 		func() {
-			defer func() { _ = recover() }()
+			defer logRecovered("health-tracker", "onOutageStart callback")
 			h.onOutageStart(processID, outageStartTime)
 		}()
 	}
 	if returnedToHealthy && h.onReturnToHealthy != nil {
 		func() {
-			defer func() { _ = recover() }()
+			defer logRecovered("health-tracker", "onReturnToHealthy callback")
 			h.onReturnToHealthy(processID)
 		}()
 	}
@@ -554,9 +555,7 @@ func (h *HealthTracker) emit(proxyID, message string, level proxy.ProxyDiagnosti
 	}
 	// Recover from any panic in the emitter — this runs on the hot log
 	// path and must never take down the daemon.
-	defer func() {
-		_ = recover()
-	}()
+	defer logRecovered("health-tracker", "emitDiagnostic emitter")
 	entry := proxy.LogEntry{
 		Type: proxy.LogTypeDiagnostic,
 		Diagnostic: &proxy.ProxyDiagnostic{
@@ -586,7 +585,11 @@ func (h *HealthTracker) SetOnTransportRecovery(fn func(proxyID string)) {
 	if h == nil {
 		return
 	}
-	h.onTransportRecovery = fn
+	if fn == nil {
+		h.onTransportRecovery.Store(nil)
+		return
+	}
+	h.onTransportRecovery.Store(&fn)
 }
 
 // transportCfg returns the active transport config or the default.
@@ -662,10 +665,10 @@ func (h *HealthTracker) RecordRecoverySignal(proxyID string, ts time.Time) {
 	st.errTimestamps = st.errTimestamps[:0]
 	st.mu.Unlock()
 
-	if h.onTransportRecovery != nil {
+	if cb := h.onTransportRecovery.Load(); cb != nil {
 		func() {
-			defer func() { _ = recover() }()
-			h.onTransportRecovery(proxyID)
+			defer logRecovered("health-tracker", "onTransportRecovery callback")
+			(*cb)(proxyID)
 		}()
 	}
 }

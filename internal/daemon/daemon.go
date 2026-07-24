@@ -457,6 +457,16 @@ func (d *Daemon) isShuttingDown() bool {
 	return d.shutdown
 }
 
+// logRecovered converts a panic in a hot-path callback into an error log.
+// Use as `defer logRecovered(component, what)`. The gate hot path must not
+// take down the daemon when a callback misbehaves, but a silently swallowed
+// panic makes a recurring failure invisible forever — log it instead.
+func logRecovered(component, what string) {
+	if r := recover(); r != nil {
+		debug.Error(component, "%s panicked: %v", what, r)
+	}
+}
+
 // goTracked runs fn in a goroutine tracked by d.wg, unless shutdown has begun.
 // It reports whether the goroutine was started.
 //
