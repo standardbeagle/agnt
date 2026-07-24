@@ -99,7 +99,7 @@ func (dt *DaemonTools) makeChannelReplyHandler() func(context.Context, *mcp.Call
 		}
 
 		// Fan-out: list proxies for the current session/project directory.
-		dirFilter := buildDirFilter(dt)
+		dirFilter := dt.scopeFilter(nil)
 
 		listResult, err := dt.client.ProxyList(dirFilter)
 		if err != nil {
@@ -124,17 +124,6 @@ func (dt *DaemonTools) makeChannelReplyHandler() func(context.Context, *mcp.Call
 			Message:   fmt.Sprintf("Message delivered to %d/%d proxies", delivered, len(proxyIDs)),
 		}, nil
 	}
-}
-
-// buildDirFilter creates a DirectoryFilter scoped to the current session or project.
-func buildDirFilter(dt *DaemonTools) protocol.DirectoryFilter {
-	dirFilter := protocol.DirectoryFilter{}
-	if sessionCode := dt.SessionCode(); sessionCode != "" {
-		dirFilter.SessionCode = sessionCode
-	} else if p := getProjectPath(); p != "" {
-		dirFilter.Directory = p
-	}
-	return dirFilter
 }
 
 // extractProxyIDs pulls proxy IDs from a ProxyList daemon response.

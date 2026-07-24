@@ -200,19 +200,7 @@ func (dt *DaemonTools) handleProxyStatus(input ProxyInput) (*mcp.CallToolResult,
 
 func (dt *DaemonTools) handleProxyList(input ProxyInput) (*mcp.CallToolResult, ProxyOutput, error) {
 
-	dirFilter := protocol.DirectoryFilter{
-		GlobalOverride: input.Global,
-	}
-
-	if sessionCode := dt.SessionCode(); sessionCode != "" {
-		dirFilter.SessionCode = sessionCode
-	} else {
-
-		projectPath := getProjectPath()
-		if projectPath != "" {
-			dirFilter.Directory = projectPath
-		}
-	}
+	dirFilter := dt.scopeFilter(input.Global)
 
 	result, err := dt.client.ProxyList(dirFilter)
 	if err != nil {

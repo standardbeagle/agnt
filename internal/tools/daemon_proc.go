@@ -596,19 +596,7 @@ func (dt *DaemonTools) handleProcAutoRestart(input ProcInput) (*mcp.CallToolResu
 
 func (dt *DaemonTools) handleProcList(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
 
-	dirFilter := protocol.DirectoryFilter{
-		GlobalOverride: input.Global,
-	}
-
-	if sessionCode := dt.SessionCode(); sessionCode != "" {
-		dirFilter.SessionCode = sessionCode
-	} else {
-
-		projectPath := getProjectPath()
-		if projectPath != "" {
-			dirFilter.Directory = projectPath
-		}
-	}
+	dirFilter := dt.scopeFilter(input.Global)
 
 	result, err := dt.client.ProcList(dirFilter)
 	if err != nil {

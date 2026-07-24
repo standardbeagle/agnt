@@ -5,7 +5,6 @@ import (
 	"fmt"
 
 	"github.com/standardbeagle/agnt/internal/daemon"
-	"github.com/standardbeagle/agnt/internal/protocol"
 
 	"github.com/standardbeagle/go-sdk/mcp"
 )
@@ -267,31 +266,12 @@ func formatStatusMessage(running bool) string {
 	return "Daemon is not running"
 }
 
-// daemonScopeFilter builds the DirectoryFilter for the daemon-wide lifecycle
-// actions (stop_all/restart_all). The MCP daemon connection is not
-// session-bound, so a non-global call names the project explicitly (SessionCode
-// preferred, Directory fallback) exactly like handleDaemonStartupLog and the
-// other gated tools. global:true is the deliberate cross-project override; a
-// non-global contextless call is rejected daemon-side rather than tearing down
-// every project's resources.
-func daemonScopeFilter(dt *DaemonTools, global *bool) protocol.DirectoryFilter {
-	dirFilter := protocol.DirectoryFilter{GlobalOverride: global}
-	if !globalEnabled(global) {
-		if sessionCode := dt.SessionCode(); sessionCode != "" {
-			dirFilter.SessionCode = sessionCode
-		} else if p := getProjectPath(); p != "" {
-			dirFilter.Directory = p
-		}
-	}
-	return dirFilter
-}
-
 func handleDaemonStopAll(dt *DaemonTools, global *bool) (*mcp.CallToolResult, DaemonOutput, error) {
 	if err := dt.ensureConnected(); err != nil {
 		return errorResult(fmt.Sprintf("daemon not running: %v", err)), DaemonOutput{}, nil
 	}
 
-	result, err := dt.client.StopAllScoped(daemonScopeFilter(dt, global))
+	result, err := dt.client.StopAllScoped(dt.scopeFilter(global))
 	if err != nil {
 		return errorResult(fmt.Sprintf("failed to stop all: %v", err)), DaemonOutput{}, nil
 	}
@@ -313,7 +293,7 @@ func handleDaemonRestartAll(dt *DaemonTools, global *bool) (*mcp.CallToolResult,
 		return errorResult(fmt.Sprintf("daemon not running: %v", err)), DaemonOutput{}, nil
 	}
 
-	result, err := dt.client.RestartAllScoped(daemonScopeFilter(dt, global))
+	result, err := dt.client.RestartAllScoped(dt.scopeFilter(global))
 	if err != nil {
 		return errorResult(fmt.Sprintf("failed to restart all: %v", err)), DaemonOutput{}, nil
 	}
@@ -390,14 +370,7 @@ func handleDaemonStartupLog(dt *DaemonTools, global *bool) (*mcp.CallToolResult,
 	// (mirrors collectProcessAlerts). global:true bypasses the scope; a
 	// non-global contextless call is rejected daemon-side rather than leaking
 	// every project's startup events.
-	dirFilter := protocol.DirectoryFilter{GlobalOverride: global}
-	if !globalEnabled(global) {
-		if sessionCode := dt.SessionCode(); sessionCode != "" {
-			dirFilter.SessionCode = sessionCode
-		} else if p := getProjectPath(); p != "" {
-			dirFilter.Directory = p
-		}
-	}
+	dirFilter := dt.scopeFilter(global)
 	result, err := dt.client.StartupLog(50, dirFilter)
 	if err != nil {
 		return errorResult(fmt.Sprintf("failed to query startup log: %v", err)), DaemonOutput{}, nil

@@ -102,7 +102,7 @@ func (dt *DaemonTools) makeGetErrorsHandler() func(context.Context, *mcp.CallToo
 		// sessions without a registered inbox fall through to legacy collectors,
 		// which is the only path that can serve those compatibility cases.
 		effectiveGlobal, err := resolveEffectiveGlobal(input.Global, func() (bool, error) {
-			return dt.client.ResolveQueryScope(sessionScopeFilter(dt, nil))
+			return dt.client.ResolveQueryScope(dt.scopeFilter(nil))
 		})
 		if err != nil {
 			return errorResult("failed to resolve query scope: " + err.Error()), GetErrorsOutput{}, nil
@@ -306,11 +306,7 @@ func (dt *DaemonTools) collectProcessAlerts(processID, since string, global *boo
 		Global:    global,
 	}
 	if !globalEnabled(global) {
-		if sessionCode := dt.SessionCode(); sessionCode != "" {
-			filter.SessionCode = sessionCode
-		} else if p := getProjectPath(); p != "" {
-			filter.Directory = p
-		}
+		filter.SessionCode, filter.Directory = dt.sessionScope()
 	}
 
 	result, err := dt.client.AlertQuery(filter)
@@ -344,14 +340,7 @@ func (dt *DaemonTools) collectProcessAlerts(processID, since string, global *boo
 // chokepoint (cross-project); otherwise the query is scoped to the caller's
 // session/project so other projects' startup events don't leak in.
 func (dt *DaemonTools) collectStartupErrors(processID, since string, global *bool) ([]unifiedError, string) {
-	dirFilter := protocol.DirectoryFilter{GlobalOverride: global}
-	if !globalEnabled(global) {
-		if sessionCode := dt.SessionCode(); sessionCode != "" {
-			dirFilter.SessionCode = sessionCode
-		} else if p := getProjectPath(); p != "" {
-			dirFilter.Directory = p
-		}
-	}
+	dirFilter := dt.scopeFilter(global)
 	result, err := dt.client.StartupLog(50, dirFilter)
 	if err != nil {
 		// Non-fatal, but must be visible rather than reported as no errors.
@@ -401,14 +390,7 @@ func (dt *DaemonTools) collectStartupErrors(processID, since string, global *boo
 // collectStartupErrors so a single get_errors {global:true} is uniform.
 func (dt *DaemonTools) collectProxyErrors(proxyID, since string, global *bool) ([]unifiedError, []string) {
 	// Build directory filter for proxy list
-	dirFilter := protocol.DirectoryFilter{GlobalOverride: global}
-	if !globalEnabled(global) {
-		if sessionCode := dt.SessionCode(); sessionCode != "" {
-			dirFilter.SessionCode = sessionCode
-		} else if p := getProjectPath(); p != "" {
-			dirFilter.Directory = p
-		}
-	}
+	dirFilter := dt.scopeFilter(global)
 
 	var warnings []string
 	var proxyIDs []string

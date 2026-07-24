@@ -6,7 +6,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/go-sdk/mcp"
 )
 
@@ -80,12 +79,7 @@ type SnapshotURL struct {
 func (dt *DaemonTools) handleProcSnapshot(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {
 	// Build directory filter once so process list and proxy list see the
 	// same scope (current session or current project).
-	dirFilter := protocol.DirectoryFilter{GlobalOverride: input.Global}
-	if sessionCode := dt.SessionCode(); sessionCode != "" {
-		dirFilter.SessionCode = sessionCode
-	} else if projectPath := getProjectPath(); projectPath != "" {
-		dirFilter.Directory = projectPath
-	}
+	dirFilter := dt.scopeFilter(input.Global)
 
 	type procResult struct {
 		entries     []map[string]interface{}

@@ -10,23 +10,33 @@ import (
 	"github.com/standardbeagle/go-sdk/mcp"
 )
 
-// sessionScopeFilter builds a DirectoryFilter for the session list/tasks verbs.
-// When global is true it leaves Directory unset (cross-project); otherwise it
-// scopes to the caller's session/project via the SessionCode-first chain so the
-// MCP daemon connection — which is not session-bound — names the project on the
-// wire instead of leaking the daemon's own cwd.
 func globalEnabled(global *bool) bool { return global != nil && *global }
 
-func sessionScopeFilter(dt *DaemonTools, global *bool) protocol.DirectoryFilter {
+// sessionScope returns the caller's session code, or the current project
+// path when no session is bound. The MCP daemon connection is not
+// session-bound, so a non-global call must name the project on the wire
+// (SessionCode preferred, Directory fallback) instead of leaking the
+// daemon's own cwd. This is the single chokepoint for that chain — every
+// scoped tool/payload must resolve through it so the cross-project-leak
+// guard cannot drift between copies.
+func (dt *DaemonTools) sessionScope() (sessionCode, directory string) {
+	if sessionCode := dt.SessionCode(); sessionCode != "" {
+		return sessionCode, ""
+	}
+	return "", getProjectPath()
+}
+
+// scopeFilter builds a DirectoryFilter for scoped list/query verbs.
+// global:true is the deliberate cross-project override and leaves the scope
+// empty; otherwise the filter names the caller's session/project via
+// sessionScope. A non-global contextless call is rejected daemon-side
+// (errNoSessionScope) rather than tearing down every project's resources.
+func (dt *DaemonTools) scopeFilter(global *bool) protocol.DirectoryFilter {
 	filter := protocol.DirectoryFilter{GlobalOverride: global}
 	if globalEnabled(global) {
 		return filter
 	}
-	if sessionCode := dt.SessionCode(); sessionCode != "" {
-		filter.SessionCode = sessionCode
-	} else if p := getProjectPath(); p != "" {
-		filter.Directory = p
-	}
+	filter.SessionCode, filter.Directory = dt.sessionScope()
 	return filter
 }
 
@@ -158,10 +168,10 @@ func (dt *DaemonTools) makeSessionHandler() func(context.Context, *mcp.CallToolR
 }
 
 func (dt *DaemonTools) handleSessionList(input SessionInput) (*mcp.CallToolResult, SessionOutput, error) {
-	// Scope through the SessionCode-first chain (mirrors buildDirFilter /
-	// collectStartupErrors) instead of a bare os.Getwd(): the MCP daemon
-	// connection is not session-bound, so cwd is not the caller's project.
-	dirFilter := sessionScopeFilter(dt, input.Global)
+	// Scope through the SessionCode-first chain (mirrors collectStartupErrors)
+	// instead of a bare os.Getwd(): the MCP daemon connection is not
+	// session-bound, so cwd is not the caller's project.
+	dirFilter := dt.scopeFilter(input.Global)
 
 	result, err := dt.client.SessionList(dirFilter)
 	if err != nil {
@@ -299,7 +309,7 @@ func (dt *DaemonTools) handleSessionSchedule(input SessionInput) (*mcp.CallToolR
 
 func (dt *DaemonTools) handleSessionTasks(input SessionInput) (*mcp.CallToolResult, SessionOutput, error) {
 	// Same SessionCode-first scoping as handleSessionList.
-	dirFilter := sessionScopeFilter(dt, input.Global)
+	dirFilter := dt.scopeFilter(input.Global)
 
 	result, err := dt.client.SessionTasks(dirFilter)
 	if err != nil {

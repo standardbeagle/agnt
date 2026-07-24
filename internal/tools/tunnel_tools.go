@@ -206,16 +206,7 @@ func (dt *DaemonTools) handleTunnelList(input TunnelInput) (*mcp.CallToolResult,
 	// must name the project explicitly (SessionCode preferred, Directory
 	// fallback) or the session-scope chokepoint rejects it. Mirrors
 	// handleProxyList / handleProcList.
-	dirFilter := protocol.DirectoryFilter{
-		GlobalOverride: input.Global,
-	}
-	if !globalEnabled(input.Global) {
-		if sessionCode := dt.SessionCode(); sessionCode != "" {
-			dirFilter.SessionCode = sessionCode
-		} else if projectPath := getProjectPath(); projectPath != "" {
-			dirFilter.Directory = projectPath
-		}
-	}
+	dirFilter := dt.scopeFilter(input.Global)
 
 	result, err := dt.client.TunnelList(dirFilter)
 	if err != nil {

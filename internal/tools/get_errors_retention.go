@@ -20,11 +20,7 @@ func (dt *DaemonTools) handleErrorRetentionAction(input GetErrorsInput) (*mcp.Ca
 			return errorResult(validationError("get_errors", fmt.Errorf("action %q requires error_id (the #id from a prior get_errors result)", input.Action))), GetErrorsOutput{}, nil
 		}
 		payload := protocol.AlertPinPayload{ID: input.ErrorID, Tag: input.Tag}
-		if sessionCode := dt.SessionCode(); sessionCode != "" {
-			payload.SessionCode = sessionCode
-		} else if p := getProjectPath(); p != "" {
-			payload.Directory = p
-		}
+		payload.SessionCode, payload.Directory = dt.sessionScope()
 
 		if input.Action == "unpin" {
 			if err := dt.client.AlertUnpin(payload); err != nil {
@@ -46,11 +42,7 @@ func (dt *DaemonTools) handleErrorRetentionAction(input GetErrorsInput) (*mcp.Ca
 	case "clear":
 		filter := protocol.AlertClearFilter{ProcessID: input.ProcessID, Global: input.Global}
 		if !globalEnabled(input.Global) {
-			if sessionCode := dt.SessionCode(); sessionCode != "" {
-				filter.SessionCode = sessionCode
-			} else if p := getProjectPath(); p != "" {
-				filter.Directory = p
-			}
+			filter.SessionCode, filter.Directory = dt.sessionScope()
 		}
 		result, err := dt.client.AlertClear(filter)
 		if err != nil {
@@ -71,11 +63,7 @@ func (dt *DaemonTools) handleErrorRetentionAction(input GetErrorsInput) (*mcp.Ca
 func (dt *DaemonTools) collectPinnedErrors(global *bool) []unifiedError {
 	filter := protocol.AlertQueryFilter{Limit: 1, Global: global}
 	if !globalEnabled(global) {
-		if sessionCode := dt.SessionCode(); sessionCode != "" {
-			filter.SessionCode = sessionCode
-		} else if p := getProjectPath(); p != "" {
-			filter.Directory = p
-		}
+		filter.SessionCode, filter.Directory = dt.sessionScope()
 	}
 	result, err := dt.client.AlertQuery(filter)
 	if err != nil {

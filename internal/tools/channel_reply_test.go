@@ -47,7 +47,7 @@ func TestExtractProxyIDs(t *testing.T) {
 func TestBuildDirFilter(t *testing.T) {
 	t.Run("no session falls back to project path", func(t *testing.T) {
 		dt := &DaemonTools{}
-		filter := buildDirFilter(dt)
+		filter := dt.scopeFilter(nil)
 		assert.Equal(t, "", filter.SessionCode)
 		// When no session is set, getProjectPath() falls back to cwd.
 		assert.NotEmpty(t, filter.Directory)
@@ -56,7 +56,7 @@ func TestBuildDirFilter(t *testing.T) {
 	t.Run("uses session code when set", func(t *testing.T) {
 		dt := &DaemonTools{}
 		dt.SetSessionCode("sess-123")
-		filter := buildDirFilter(dt)
+		filter := dt.scopeFilter(nil)
 		assert.Equal(t, "sess-123", filter.SessionCode)
 		assert.Equal(t, "", filter.Directory)
 	})
