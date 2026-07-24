@@ -41,8 +41,10 @@ type Overlay struct {
 	auditSummarizer *overlay.AuditSummarizer
 	activityCh      chan struct{} // Signaled when output activity is detected
 
-	// Auto-forward state for browser/proxy errors
-	autoForward        *config.AutoForwardConfig
+	// Auto-forward state for browser/proxy errors. atomic.Pointer because
+	// SetAutoForwardConfig runs on the pipeline goroutine while HTTP handler
+	// goroutines read it in processAutoForwardEvent.
+	autoForward        atomic.Pointer[config.AutoForwardConfig]
 	autoForwardEnabled atomic.Bool // Runtime toggle (config + indicator override)
 
 	// forwardPaused, when set, suppresses PTY injection of errors/notifications
@@ -422,13 +424,14 @@ func (o *Overlay) processAutoForwardEvent(event ProxyEvent) {
 	if event.Type == "http_error" {
 		source = "http"
 	}
-	if o.autoForward != nil && !o.autoForward.ShouldForwardSource(source) {
+	af := o.autoForward.Load()
+	if af != nil && !af.ShouldForwardSource(source) {
 		return
 	}
 
 	// Severity filter for HTTP errors (4xx = warning, 5xx = error).
-	if event.Type == "http_error" && o.autoForward != nil {
-		minSev := o.autoForward.GetSeverity()
+	if event.Type == "http_error" && af != nil {
+		minSev := af.GetSeverity()
 		var data struct {
 			StatusCode int `json:"status_code"`
 		}
@@ -563,7 +566,7 @@ func (o *Overlay) SetAlertScanner(scanner *overlay.AlertScanner, cascadePatterns
 
 // SetAutoForwardConfig configures the auto-forward filter from .agnt.kdl alerts config.
 func (o *Overlay) SetAutoForwardConfig(cfg *config.AutoForwardConfig) {
-	o.autoForward = cfg
+	o.autoForward.Store(cfg)
 	o.autoForwardEnabled.Store(cfg.IsEnabled())
 }
 

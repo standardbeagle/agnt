@@ -150,7 +150,7 @@ func runSSH(cmd *cobra.Command, args []string) error {
 		},
 	}
 
-	return runSSHRelayLoop(host, remotePath, attachName, client, session, forwarding, control, reconnector)
+	return runSSHRelayLoop(cmd.Context(), host, remotePath, attachName, client, session, forwarding, control, reconnector)
 }
 
 func localSSHUser(getenv func(string) string) string {
@@ -172,7 +172,7 @@ func localSSHUser(getenv func(string) string) string {
 // it (see reconnect.go's doc comment) and doubles as the Ctrl-C detector
 // during RECONNECTING, since raw mode never delivers a real SIGINT for
 // that byte.
-func runSSHRelayLoop(host, remotePath, attachName string, client *sshclient.Client, session *sshclient.PTYSession, forwarding *reconnectForwarding, control *reconnectControl, reconnector *sshclient.Reconnector) error {
+func runSSHRelayLoop(ctx context.Context, host, remotePath, attachName string, client *sshclient.Client, session *sshclient.PTYSession, forwarding *reconnectForwarding, control *reconnectControl, reconnector *sshclient.Reconnector) error {
 	// The control owner intentionally survives individual transport drops, but
 	// it must not survive this relay loop itself: exhausted retries and Ctrl-C
 	// during RECONNECTING both return from here and must release queued callers.
@@ -194,7 +194,9 @@ func runSSHRelayLoop(host, remotePath, attachName string, client *sshclient.Clie
 		pr, pw := io.Pipe()
 		pump.SetTarget(pw)
 
-		relayCtx, relayCancel := context.WithCancel(context.Background())
+		// Derive from the caller's context so cancellation (signal, command
+		// teardown) actually reaches session.Relay.
+		relayCtx, relayCancel := context.WithCancel(ctx)
 		watchDone := make(chan struct{})
 		go func() {
 			defer close(watchDone)
@@ -214,6 +216,7 @@ func runSSHRelayLoop(host, remotePath, attachName string, client *sshclient.Clie
 		<-watchDone
 		pump.SetTarget(nil)
 		pw.Close()
+		pr.Close()
 		session.Close()
 
 		transportDead := isClosedChan(client.Dead())

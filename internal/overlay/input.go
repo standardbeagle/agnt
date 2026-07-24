@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -95,6 +96,7 @@ type InputRouter struct {
 	input            io.Reader // defaults to os.Stdin
 	running          atomic.Bool
 	done             chan struct{}
+	stopOnce         sync.Once
 	escReader        *EscapeSequenceReader
 	outputFetcher    ProcessOutputFetcher
 	daemonConnector  DaemonConnector
@@ -332,14 +334,16 @@ func (r *InputRouter) Run() error {
 	}
 }
 
-// Stop stops the input router.
+// Stop stops the input router. Idempotent: pipelineRuntime.Stop is documented
+// safe to call multiple times, and a bare close(r.done) would panic on the
+// second call.
 func (r *InputRouter) Stop() {
 	r.overlay.mu.Lock()
 	r.stopPanelRefresh()
 	r.overlay.mu.Unlock()
-	if r.running.Load() {
+	r.stopOnce.Do(func() {
 		close(r.done)
-	}
+	})
 }
 
 // handleOverlayInput processes input when overlay is active.
