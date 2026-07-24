@@ -13,6 +13,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/publish"
 	storepkg "github.com/standardbeagle/agnt/internal/store"
 )
 
@@ -59,7 +60,7 @@ func (ps *ProxyServer) errorHandler(w http.ResponseWriter, r *http.Request, err 
 		ID:         reqID,
 		Timestamp:  timestamp,
 		Method:     r.Method,
-		URL:        r.URL.String(),
+		URL:        publish.ScrubSharePath(r.URL.String()),
 		StatusCode: http.StatusBadGateway,
 		Error:      errStr,
 	})
