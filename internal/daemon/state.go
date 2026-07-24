@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/debug"
@@ -45,6 +46,8 @@ type StateManager struct {
 	stopCh    chan struct{}
 	stopped   chan struct{}
 	closeOnce sync.Once
+	// finalErr records the shutdown flush error for Close to report.
+	finalErr atomic.Pointer[error]
 
 	// Debounce interval: after a mutation, the writer waits this long
 	// for more mutations before flushing to disk.
@@ -246,12 +249,14 @@ func (sm *StateManager) writeLoop() {
 			case <-sm.stopCh:
 				timer.Stop()
 				// Shutting down — do final write
-				sm.doWrite()
+				sm.writeFinal()
 				return
 			}
 			// Drain any extra signals that arrived during debounce
 			sm.drainWriteCh()
-			sm.doWrite()
+			if err := sm.doWrite(); err != nil {
+				debug.Log("daemon", "state persist failed (will retry on next mutation): %v", err)
+			}
 
 		case done := <-sm.flushCh:
 			// Flush with no pending write — still write current state
@@ -260,9 +265,19 @@ func (sm *StateManager) writeLoop() {
 		case <-sm.stopCh:
 			// Drain any pending write signal and flush
 			sm.drainWriteCh()
-			sm.doWrite()
+			sm.writeFinal()
 			return
 		}
+	}
+}
+
+// writeFinal performs the shutdown write and records its error so Close can
+// report it — a failed final flush means state mutations were lost, which
+// must never be silent.
+func (sm *StateManager) writeFinal() {
+	if err := sm.doWrite(); err != nil {
+		debug.Log("daemon", "final state persist failed: %v", err)
+		sm.finalErr.Store(&err)
 	}
 }
 
@@ -393,14 +408,16 @@ func (sm *StateManager) Flush() error {
 }
 
 // Close stops the background writer after flushing pending state.
-// Safe to call multiple times.
+// Safe to call multiple times. Returns the final flush error, if any.
 func (sm *StateManager) Close() error {
-	var err error
 	sm.closeOnce.Do(func() {
 		close(sm.stopCh)
 		<-sm.stopped
 	})
-	return err
+	if errp := sm.finalErr.Load(); errp != nil {
+		return *errp
+	}
+	return nil
 }
 
 // State returns a copy of the current state.
