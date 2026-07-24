@@ -153,7 +153,7 @@ func runAiClaude(cmd *cobra.Command, args []string) {
 			code = generateSessionCode("ai-claude")
 		}
 		projectPath, _ := os.Getwd()
-		daemonSocketPath, _ := rootCmd.Flags().GetString("socket")
+		daemonSocketPath := getSocketPath(rootCmd)
 		daemonHandle = startDaemonSession(ctx, daemonSessionConfig{
 			SessionCode:   code,
 			ProjectPath:   projectPath,
@@ -276,7 +276,7 @@ func applyAgntSystemPrompt(opts *claude.AgentOptions, allowSetup bool) {
 			}
 		}
 		if systemPrompt == "" {
-			socketPath, _ := rootCmd.Flags().GetString("socket")
+			socketPath := getSocketPath(rootCmd)
 			systemPrompt = buildAgntSystemPrompt(socketPath)
 		}
 	}
@@ -330,7 +330,7 @@ func runAiClaudeInteractive(ctx context.Context) error {
 
 		// Register daemon session (triggers .agnt.kdl autostart)
 		projectPath, _ := os.Getwd()
-		daemonSocketPath, _ := rootCmd.Flags().GetString("socket")
+		daemonSocketPath := getSocketPath(rootCmd)
 		overlayEndpoint := ""
 		if aiOverlay != nil {
 			overlayEndpoint = aiOverlay.SocketPath()
@@ -589,7 +589,7 @@ func runAiClaudeOverlay(ctx context.Context, opts *claude.AgentOptions, daemonHa
 	})
 
 	// Set up shared daemon connection for overlay components
-	daemonSocketPath, _ := rootCmd.Flags().GetString("socket")
+	daemonSocketPath := getSocketPath(rootCmd)
 	daemonConn := daemon.NewConn(daemonSocketPath)
 	defer daemonConn.Close()
 

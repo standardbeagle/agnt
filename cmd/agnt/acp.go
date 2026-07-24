@@ -198,7 +198,7 @@ func startACPDaemonSession(ctx context.Context, agent, code, overlayEndpoint str
 		code = generateSessionCode("acp-" + sanitizeAgentName(agent))
 	}
 	projectPath, _ := os.Getwd()
-	socketPath, _ := rootCmd.Flags().GetString("socket")
+	socketPath := getSocketPath(rootCmd)
 	return startDaemonSession(ctx, daemonSessionConfig{
 		SessionCode:     code,
 		OverlayEndpoint: overlayEndpoint,
@@ -303,7 +303,7 @@ func buildACPSystemContext(allowSetup bool) string {
 			}
 		}
 	}
-	socketPath, _ := rootCmd.Flags().GetString("socket")
+	socketPath := getSocketPath(rootCmd)
 	return buildAgntSystemPrompt(socketPath)
 }
 
@@ -522,7 +522,7 @@ func runACPOverlay(ctx context.Context, conn *acp.ClientSideConnection, client *
 		lineEditor.Redraw()
 	})
 
-	daemonSocketPath, _ := rootCmd.Flags().GetString("socket")
+	daemonSocketPath := getSocketPath(rootCmd)
 	daemonConn := daemon.NewConn(daemonSocketPath)
 	defer daemonConn.Close()
 

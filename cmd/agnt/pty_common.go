@@ -1078,10 +1078,7 @@ func generateSessionCode(command string) string {
 	base = strings.TrimSuffix(base, ".exe")
 
 	// Connect to daemon to get a unique sequence number
-	socketPath, _ := rootCmd.Flags().GetString("socket")
-	if socketPath == "" {
-		socketPath = daemonclient.DefaultSocketPath()
-	}
+	socketPath := getSocketPath(rootCmd)
 
 	client := daemonclient.NewClient(daemonclient.WithSocketPath(socketPath))
 	if err := client.Connect(); err == nil {
@@ -1590,7 +1587,7 @@ func runOverlayPipeline(
 	}
 
 	// Daemon session registration (autostart + overlay endpoint scoping).
-	daemonSocketPath, _ := rootCmd.Flags().GetString("socket")
+	daemonSocketPath := getSocketPath(rootCmd)
 	rt.daemonHandle = startDaemonSession(ctx, daemonSessionConfig{
 		SessionCode:      sessionCode,
 		OverlayEndpoint:  rt.netOverlay.SocketPath(),
@@ -1881,7 +1878,7 @@ func setupTerminalOverlay(ctx context.Context, handle *ptyHandle, rt *pipelineRu
 	rt.inputRouter = overlay.NewInputRouter(handle.Backend, rt.termOverlay)
 
 	// Shared daemon connection for all overlay components.
-	socketPath, _ := rootCmd.Flags().GetString("socket")
+	socketPath := getSocketPath(rootCmd)
 	rt.daemonConn = daemon.NewConn(socketPath)
 	daemonClient := newDaemonClientAdapter(rt.daemonConn)
 	rt.inputRouter.SetOutputFetcher(overlay.NewDaemonOutputFetcher(daemonClient))
