@@ -277,6 +277,19 @@
         gestureBox.style.height = r.height + 'px';
       }
       function buildGestureParts(gesture) {
+        // Verb label under the affordance so the shape reads as an
+        // instruction, not a clickable control.
+        var labels = { hover: 'Hover', click: 'Click', scroll: 'Scroll', drag: 'Drag' };
+        var lbl = makeGesturePart(function (s) {
+          s.left = '50%'; s.top = 'calc(50% + 32px)'; s.transform = 'translateX(-50%)';
+          s.padding = '2px 10px'; s.borderRadius = '10px';
+          s.background = 'rgba(20,20,26,.85)'; s.border = '1px solid #4c8bf5';
+          s.color = '#e6edf3'; s.font = '600 11px/1.6 system-ui,sans-serif';
+          s.letterSpacing = '.04em'; s.whiteSpace = 'nowrap';
+          s.boxShadow = '0 0 10px rgba(76,139,245,.5)';
+        });
+        lbl.textContent = labels[gesture] || gesture;
+        gestureBox.appendChild(lbl);
         if (gesture === 'hover') {
           var dot = makeGesturePart(function (s) {
             s.left = '50%'; s.top = '50%'; s.width = '28px'; s.height = '28px';

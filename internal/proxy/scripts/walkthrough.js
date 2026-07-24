@@ -64,6 +64,9 @@
     var GESTURE_ID = '__devtool_wt_gesture';
     var POLL_MS = 300;
     var VALID_GESTURES = { hover: true, click: true, scroll: true, drag: true };
+    // Verb label rendered under each affordance — without it the animated
+    // shape reads as a control (viewers click the hover dot to "activate" it).
+    var GESTURE_LABELS = { hover: 'Hover', click: 'Click', scroll: 'Scroll', drag: 'Drag' };
 
     function prefersReducedMotion() {
       try {
@@ -192,6 +195,9 @@
         c.appendChild(gestureEl(d, '__devtool-wt-g-track'));
         c.appendChild(gestureEl(d, '__devtool-wt-g-drag'));
       }
+      var lbl = gestureEl(d, '__devtool-wt-g-label');
+      lbl.textContent = GESTURE_LABELS[gesture] || gesture;
+      c.appendChild(lbl);
       if (prefersReducedMotion()) {
         // Static affordance: keep the shape, drop the motion.
         var kids = c.querySelectorAll('*');
@@ -239,7 +245,11 @@
           '.__devtool-wt-g-drag{position:absolute;top:50%;width:20px;height:20px;margin-top:-10px;border-radius:50%;' +
           'background:#6ea8fe;border:2px solid #fff;box-shadow:0 0 12px rgba(110,168,254,.8);' +
           'animation:__devtoolWtGDrag 1.8s ease-in-out infinite;}' +
-          '@keyframes __devtoolWtGDrag{0%{left:12%;opacity:0;}12%{opacity:1;}88%{opacity:1;}100%{left:88%;opacity:0;}}';
+          '@keyframes __devtoolWtGDrag{0%{left:12%;opacity:0;}12%{opacity:1;}88%{opacity:1;}100%{left:88%;opacity:0;}}' +
+          '.__devtool-wt-g-label{position:absolute;left:50%;top:calc(50% + 32px);transform:translateX(-50%);' +
+          'padding:2px 10px;border-radius:10px;background:rgba(13,17,23,.85);border:1px solid #6ea8fe;' +
+          'color:#e6edf3;font:600 11px/1.6 system-ui,sans-serif;letter-spacing:.04em;white-space:nowrap;' +
+          'box-shadow:0 0 10px rgba(110,168,254,.5);}';
         (d.head || d.documentElement).appendChild(s);
       } catch (e) {}
     }
