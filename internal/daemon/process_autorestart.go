@@ -64,6 +64,12 @@ type processRestartState struct {
 	consecutiveFails int            // Consecutive rapid failures for backoff calculation
 	mu               sync.Mutex
 
+	// monitorCtx/monitorCancel bound the monitor goroutine spawned for this
+	// registration. Re-registering or unregistering a process cancels the old
+	// monitor so it cannot race the new one through a duplicate restart.
+	monitorCtx    context.Context
+	monitorCancel context.CancelFunc
+
 	// Atomic stats for lock-free reads from Stats().
 	// These mirror data in the mutex-protected fields above but allow
 	// Stats() to avoid acquiring per-process locks.
@@ -149,6 +155,11 @@ type ProcessAutoRestarter struct {
 	cancel     context.CancelFunc
 	wg         sync.WaitGroup
 	monitorSem *semaphore.Weighted // bounds concurrent monitor goroutines
+
+	// shutdownMu/shutdown guard wg.Add against Shutdown's wg.Wait, mirroring
+	// Daemon.goTracked: an Add racing Wait is a WaitGroup misuse panic.
+	shutdownMu sync.Mutex
+	shutdown   bool
 }
 
 // NewProcessAutoRestarter creates a new auto-restarter.
@@ -164,9 +175,11 @@ func NewProcessAutoRestarter(d *Daemon) *ProcessAutoRestarter {
 }
 
 // Register enables auto-restart for a process.
+// Re-registering replaces the previous registration and cancels its monitor,
+// so exactly one monitor goroutine is active per process at any time.
 func (r *ProcessAutoRestarter) Register(processID string, config AutoRestartConfig, command string, args []string, env []string, expectedPorts []int, projectPath, workingDir string) {
-	r.mu.Lock()
-	r.processes[processID] = &processRestartState{
+	monitorCtx, monitorCancel := context.WithCancel(r.ctx)
+	state := &processRestartState{
 		config:        config,
 		command:       command,
 		args:          args,
@@ -174,27 +187,54 @@ func (r *ProcessAutoRestarter) Register(processID string, config AutoRestartConf
 		expectedPorts: expectedPorts,
 		projectPath:   projectPath,
 		workingDir:    workingDir,
+		monitorCtx:    monitorCtx,
+		monitorCancel: monitorCancel,
 	}
+
+	r.mu.Lock()
+	old := r.processes[processID]
+	r.processes[processID] = state
 	r.mu.Unlock()
+	if old != nil {
+		old.monitorCancel()
+	}
 
 	// Acquire semaphore outside the lock to prevent deadlock: monitor goroutines
 	// need r.mu.RLock, so we cannot hold the write lock while blocking on Acquire.
 	if err := r.monitorSem.Acquire(r.ctx, 1); err != nil {
+		monitorCancel()
 		debug.Warn("daemon", "Cannot start monitor for %s: context cancelled", processID)
 		return
 	}
+
+	// The Add must be atomic with the shutdown check: Shutdown sets shutdown
+	// under shutdownMu before wg.Wait(), so taking the same lock means Add(1)
+	// either strictly precedes Wait or is skipped.
+	r.shutdownMu.Lock()
+	if r.shutdown {
+		r.shutdownMu.Unlock()
+		monitorCancel()
+		r.monitorSem.Release(1)
+		return
+	}
 	r.wg.Add(1)
+	r.shutdownMu.Unlock()
+
 	go func() {
 		defer r.monitorSem.Release(1)
-		r.monitorProcess(processID)
+		r.monitorProcess(processID, state)
 	}()
 }
 
 // Unregister disables auto-restart for a process.
 func (r *ProcessAutoRestarter) Unregister(processID string) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
+	old := r.processes[processID]
 	delete(r.processes, processID)
+	r.mu.Unlock()
+	if old != nil {
+		old.monitorCancel()
+	}
 }
 
 // IsRegistered checks if a process has auto-restart enabled.
@@ -275,16 +315,34 @@ func formatRestartRuntime(d time.Duration) string {
 }
 
 // monitorProcess watches a process and restarts it when it exits.
-func (r *ProcessAutoRestarter) monitorProcess(processID string) {
+// It owns the registration state: on every iteration it verifies the map still
+// holds myState, so a superseded or unregistered monitor exits instead of
+// racing a newer monitor through a duplicate restart.
+func (r *ProcessAutoRestarter) monitorProcess(processID string, myState *processRestartState) {
 	defer r.wg.Done()
 
+	pm := r.daemon.hub.ProcessManager()
+
 	for {
-		// Get process
-		proc, err := r.daemon.hub.ProcessManager().Get(processID)
+		// Confirm we're still the active registration before touching anything.
+		r.mu.RLock()
+		current := r.processes[processID]
+		r.mu.RUnlock()
+		if current != myState {
+			return
+		}
+
+		// Get process scoped to this registration's project path. A bare Get
+		// would report ErrProcessAmbiguous when two projects share a script
+		// name, which is a normal multi-project state — not a removal.
+		proc, err := pm.GetByPath(processID, myState.projectPath)
 		if err != nil {
-			// Process doesn't exist (might have been removed)
+			// Process doesn't exist (might have been removed). Only drop the
+			// registration if it is still ours.
 			r.mu.Lock()
-			delete(r.processes, processID)
+			if r.processes[processID] == myState {
+				delete(r.processes, processID)
+			}
 			r.mu.Unlock()
 			return
 		}
@@ -293,17 +351,19 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 		select {
 		case <-r.ctx.Done():
 			return
+		case <-myState.monitorCtx.Done():
+			return
 		case <-proc.Done():
 			// Process exited
 		}
 
 		// Check if we should restart
 		r.mu.RLock()
-		state, exists := r.processes[processID]
+		current = r.processes[processID]
 		r.mu.RUnlock()
 
-		if !exists {
-			// Auto-restart was disabled
+		if current != myState {
+			// Auto-restart was disabled or re-registered (new monitor owns it)
 			return
 		}
 
@@ -316,7 +376,7 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 
 		// ScriptEntry state on process exit is now handled by ProcessManager lifecycle
 
-		if !state.shouldRestart(exitCode) {
+		if !myState.shouldRestart(exitCode) {
 			debug.Log("daemon", "Process %s exited (code %d), max restarts reached or disabled", processID, exitCode)
 			r.daemon.recordStartupEntry(processID, scriptName, "warning", "restart_gave_up",
 				fmt.Sprintf("auto-restart exhausted or disabled (exit code %d)", exitCode), 0)
@@ -325,34 +385,36 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 
 		// Calculate restart delay with exponential backoff for rapid failures.
 		// A process that ran < 5s is considered a rapid failure (likely port conflict).
-		delay := state.config.RestartDelay
-		state.mu.Lock()
+		delay := myState.config.RestartDelay
+		myState.mu.Lock()
 		if proc.Runtime() < 5*time.Second {
-			state.consecutiveFails++
+			myState.consecutiveFails++
 			// Exponential backoff: 1s, 2s, 4s, 8s, 16s (capped)
-			for i := 1; i < state.consecutiveFails && delay < 16*time.Second; i++ {
+			for i := 1; i < myState.consecutiveFails && delay < 16*time.Second; i++ {
 				delay *= 2
 			}
-			debug.Log("daemon", "Process %s failed rapidly (%v), backoff delay %v (attempt %d)", processID, proc.Runtime(), delay, state.consecutiveFails)
+			debug.Log("daemon", "Process %s failed rapidly (%v), backoff delay %v (attempt %d)", processID, proc.Runtime(), delay, myState.consecutiveFails)
 			r.daemon.recordStartupEntry(processID, scriptName, "warning", "crash_loop_backoff",
-				fmt.Sprintf("rapid failure (runtime %v), backoff delay %v (attempt %d)", proc.Runtime(), delay, state.consecutiveFails), 0)
+				fmt.Sprintf("rapid failure (runtime %v), backoff delay %v (attempt %d)", proc.Runtime(), delay, myState.consecutiveFails), 0)
 		} else {
-			state.consecutiveFails = 0 // Reset on successful run
+			myState.consecutiveFails = 0 // Reset on successful run
 		}
-		state.mu.Unlock()
+		myState.mu.Unlock()
 
 		// Wait before restart
 		select {
 		case <-r.ctx.Done():
 			return
+		case <-myState.monitorCtx.Done():
+			return
 		case <-time.After(delay):
 		}
 
-		// Double-check we're still registered
+		// Double-check we're still the active registration
 		r.mu.RLock()
-		state, exists = r.processes[processID]
+		current = r.processes[processID]
 		r.mu.RUnlock()
-		if !exists {
+		if current != myState {
 			return
 		}
 
@@ -381,7 +443,7 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 		stdout, _ := proc.Stdout()
 		stderr, _ := proc.Stderr()
 		combined := string(stdout) + "\n" + string(stderr)
-		state.addRestartEvent(RestartEvent{
+		myState.addRestartEvent(RestartEvent{
 			Timestamp:  time.Now(),
 			ExitCode:   exitCode,
 			Runtime:    proc.Runtime(),
@@ -391,13 +453,22 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 		// Clear URL tracker state so new process output is scanned fresh
 		r.daemon.urlTracker.ClearProcess(processID)
 
-		// Remove old process
-		r.daemon.hub.ProcessManager().RemoveByPath(processID, state.projectPath)
+		// Remove the dead process, but only if the registry still holds this
+		// instance: a manual restart between Done() and here would have
+		// registered a live replacement we must not delete (mirrors the
+		// instance-identity check in process_exit_watcher.go).
+		if cur, getErr := pm.GetByPath(processID, myState.projectPath); getErr == nil && cur == proc {
+			pm.RemoveByPath(processID, myState.projectPath)
+		} else if getErr == nil {
+			// Registry holds a different (live) instance — watch that instead.
+			continue
+		}
+		// getErr != nil: already removed by someone else; registry is clear.
 
 		// Restart with EADDRINUSE recovery (use startScriptWithRetry instead of StartScript
 		// to avoid re-registering for auto-restart, since we're already monitoring).
 		// No timeout — startup may take a long time (e.g., dotnet restore + compile).
-		proc, startupErr := r.daemon.startScriptWithRetry(r.ctx, processID, state.projectPath, state.workingDir, state.command, state.args, state.env, state.expectedPorts, false)
+		proc, startupErr := r.daemon.startScriptWithRetry(r.ctx, processID, myState.projectPath, myState.workingDir, myState.command, myState.args, myState.env, myState.expectedPorts, false)
 
 		if startupErr != nil {
 			debug.Error("daemon", "Failed to restart process %s: %v", processID, startupErr)
@@ -422,7 +493,7 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 			return
 		}
 
-		state.recordRestart()
+		myState.recordRestart()
 		debug.Log("daemon", "Process %s restarted (new PID: %d)", processID, proc.PID())
 
 		// Log restart success to session log
@@ -441,6 +512,9 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string) {
 // returns immediately (goroutines are still cancelled via r.cancel but may not
 // have exited yet).
 func (r *ProcessAutoRestarter) Shutdown(ctx context.Context) {
+	r.shutdownMu.Lock()
+	r.shutdown = true
+	r.shutdownMu.Unlock()
 	r.cancel()
 
 	done := make(chan struct{})
