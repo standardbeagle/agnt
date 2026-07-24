@@ -6,6 +6,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/debug"
 )
 
 // LogEntryType categorizes different types of log entries.
@@ -664,9 +666,14 @@ func (d *logCallbackDispatcher) run() {
 			}
 			// A panicking sink must not take down the worker (and with it every
 			// subsequent entry). The callback is documented "must not block";
-			// panics are contained here as defence in depth.
+			// panics are contained here as defence in depth — and logged, so a
+			// recurring panicking sink is visible instead of silent forever.
 			func() {
-				defer func() { _ = recover() }()
+				defer func() {
+					if r := recover(); r != nil {
+						debug.Error("proxy", "log callback sink panicked: %v", r)
+					}
+				}()
 				(*cb)(entry)
 			}()
 		}

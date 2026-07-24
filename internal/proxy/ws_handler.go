@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -140,11 +141,24 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 	defer rawConn.Close()
 
+	// Track per-message handler goroutines so they cannot outlive the
+	// connection: the deferred Wait (registered after the Close defers, so
+	// it runs first) awaits them before asyncConn/rawConn are torn down.
+	var handlerWG sync.WaitGroup
+	spawnHandler := func(fn func()) {
+		handlerWG.Add(1)
+		go func() {
+			defer handlerWG.Done()
+			fn()
+		}()
+	}
+
 	// Wrap rawConn in async writer so broadcasts never block on slow clients.
 	// asyncConn is stored in wsConns for broadcast use only; rawConn is used
 	// for all per-connection reads and direct writes from this goroutine.
 	asyncConn := newAsyncWSWriter(rawConn, websocket.TextMessage)
 	defer asyncConn.Close()
+	defer handlerWG.Wait()
 
 	// Store connection for sending messages
 	connID := fmt.Sprintf("conn-%d", time.Now().UnixNano())
@@ -738,17 +752,17 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			// Handle session API requests from browser. Writes go through the
 			// serialising asyncConn — this runs in its own goroutine concurrent
 			// with the read loop and the broadcast drain.
-			go ps.handleSessionRequest(asyncConn, msg.Data)
+			spawnHandler(func() { ps.handleSessionRequest(asyncConn, msg.Data) })
 
 		case "store_request":
 			// Handle store API requests from browser (serialised via asyncConn).
-			go ps.handleStoreRequest(asyncConn, msg.Data)
+			spawnHandler(func() { ps.handleStoreRequest(asyncConn, msg.Data) })
 
 		case "chaos_request":
 			// Handle chaos control requests from the indicator panel
 			// (serialised via asyncConn). Acts directly on this proxy's
 			// chaos engine — no daemon round trip.
-			go ps.handleChaosRequest(asyncConn, msg.Data)
+			spawnHandler(func() { ps.handleChaosRequest(asyncConn, msg.Data) })
 
 		case "voice_start":
 			// Start voice transcription session

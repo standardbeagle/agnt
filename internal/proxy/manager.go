@@ -42,11 +42,6 @@ func (pm *ProxyManager) Create(ctx context.Context, config ProxyConfig) (*ProxyS
 		return nil, errors.New("proxy manager is shutting down")
 	}
 
-	// Check if proxy already exists
-	if _, exists := pm.proxies.Load(config.ID); exists {
-		return nil, ErrProxyExists
-	}
-
 	// Create proxy server
 	proxy, err := NewProxyServer(config)
 	if err != nil {
@@ -62,8 +57,15 @@ func (pm *ProxyManager) Create(ctx context.Context, config ProxyConfig) (*ProxyS
 		return nil, err
 	}
 
-	// Store in registry
-	pm.proxies.Store(config.ID, proxy)
+	// Store in registry atomically. A check-then-store would let two
+	// concurrent Creates with the same ID both pass the exists-check; the
+	// second Store would overwrite the first and leak its started proxy.
+	if _, loaded := pm.proxies.LoadOrStore(config.ID, proxy); loaded {
+		if err := proxy.Stop(ctx); err != nil {
+			debug.Log("proxy", "error stopping proxy %s lost to create race: %v", config.ID, err)
+		}
+		return nil, ErrProxyExists
+	}
 
 	// Re-check after the store: if Shutdown set the flag between our entry
 	// check and the Store, its registry sweep may already have run and missed
