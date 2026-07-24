@@ -9,7 +9,7 @@ import (
 )
 
 // TestBus_RemediationStatusCodes_DetachedFromSourceAndDedup pins the
-// detachment property cloneRemediationArgs (bus.go) exists to guarantee: a
+// detachment property cloneIncidentEvent (dedup.go) guarantees: a
 // []int status_codes value carried on an IncidentEvent's Remediation.PrimaryArgs
 // through the real bus → dedup → inbox Sample path is deep-copied, not
 // aliased. Structural-clone coverage elsewhere (TestDedup_FirstAndLastPreserved

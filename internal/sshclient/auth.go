@@ -147,12 +147,3 @@ func interactiveAuthMethod(prompter Prompter) ssh.AuthMethod {
 		return answers, nil
 	})
 }
-
-// passwordFallback is exposed for callers/tests that want a plain
-// password AuthMethod without the keyboard-interactive framing (some
-// servers only offer "password" auth, not "keyboard-interactive").
-func passwordFallback(prompter Prompter) ssh.AuthMethod {
-	return ssh.PasswordCallback(func() (string, error) {
-		return promptPassphrase(prompter, "password"), nil
-	})
-}

@@ -505,10 +505,3 @@ func shouldIgnoreURL(url string) bool {
 
 	return false
 }
-
-// parseURLsFromBytes extracts unique URLs from output bytes.
-// This is a broader parser used as fallback - prefer parseDevServerURLs.
-func parseURLsFromBytes(output []byte) []string {
-	// Use the dev server regex for consistency
-	return parseDevServerURLs(output)
-}

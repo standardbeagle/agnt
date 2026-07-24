@@ -479,23 +479,18 @@ func (d *Daemon) classifyCascade(entry proxy.LogEntry) bool {
 	}
 }
 
-// fireGatedFanOut delivers an entry to all consumers after the gate
+func ownerAsIncidentResource(owner any) *health.ResourceOwner {
+	result, _ := owner.(*health.ResourceOwner)
+	return result
+}
+
+// fireGatedFanOutForOwner delivers an entry to all consumers after the gate
 // (or hold-buffer emit) has approved it: EventHub stream sinks AND the
 // incident bus. Used both for the immediate-pass path and as the
 // health.HoldBuffer emit callback. mergedCount > 1 indicates the entry coalesced
 // during the hold window; today the count is informational only — sinks
 // see the original entry — but a future pass can synthesise a count
 // prefix on the summary.
-func (d *Daemon) fireGatedFanOut(entry proxy.LogEntry, proxyID string, _ int) {
-	owner, _ := d.incidentProxyOwner.Load(proxyID)
-	d.fireGatedFanOutForOwner(entry, proxyID, 1, ownerAsIncidentResource(owner))
-}
-
-func ownerAsIncidentResource(owner any) *health.ResourceOwner {
-	result, _ := owner.(*health.ResourceOwner)
-	return result
-}
-
 func (d *Daemon) fireGatedFanOutForOwner(entry proxy.LogEntry, proxyID string, _ int, owner *health.ResourceOwner) {
 	if d.eventHub != nil {
 		d.eventHub.BroadcastLogEntry(entry, proxyID)
@@ -503,12 +498,9 @@ func (d *Daemon) fireGatedFanOutForOwner(entry proxy.LogEntry, proxyID string, _
 	d.fireToIncidentBusForOwner(entry, proxyID, owner)
 }
 
-// fireHoldEmit is the health.HoldBuffer emit callback. Same fan-out as direct
-// gate-accept but with the merged-count signal preserved for telemetry.
-func (d *Daemon) fireHoldEmit(entry proxy.LogEntry, proxyID string, mergedCount int) {
-	d.fireGatedFanOut(entry, proxyID, mergedCount)
-}
-
+// fireHoldEmitForOwner is the health.HoldBuffer emit callback. Same fan-out
+// as direct gate-accept but with the merged-count signal preserved for
+// telemetry.
 func (d *Daemon) fireHoldEmitForOwner(entry proxy.LogEntry, proxyID string, mergedCount int, owner *health.ResourceOwner) {
 	d.fireGatedFanOutForOwner(entry, proxyID, mergedCount, owner)
 }

@@ -55,54 +55,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
-	"go.uber.org/goleak"
 )
-
-// verifyNoSchedulerLeaks asserts that this test leaked no goroutines beyond
-// the ones alive when the test started, with one narrowly-scoped exception:
-// os/exec subprocess-drain goroutines belonging to SIBLING tests in the
-// package.
-//
-// Why the exception is needed and safe:
-//
-// The daemon package's other tests spawn real OS subprocesses (agnt binary,
-// sleep, echo). Each spawn leaves the os/exec machinery running two kinds of
-// background goroutine — the stdin/stdout/stderr pipe pump
-// (os/exec.(*Cmd).writerDescriptor.func1, blocked in an io.Copy) and the
-// context watcher (os/exec.(*Cmd).watchCtx). goleak.IgnoreCurrent() snapshots
-// the goroutine set at the START of THIS test; a sibling subprocess whose
-// pipe pump / watcher is spawned AFTER that snapshot, and whose reap is
-// delayed past this test's boundary under a loaded serial full-suite run,
-// then shows up here as a false-positive "leak". This file's system under
-// test is a STUB persister — it never touches os/exec — so any os/exec frame
-// in a reported stack is provably not ours.
-//
-// The filters match on frame presence (IgnoreAnyFunction), not stack top, so
-// they cover both the blocked (internal/poll.runtime_pollWait top) and the
-// runnable (io.Copy / bytes growth top) forms of the pump goroutine. They are
-// scoped to os/exec drain frames only; a genuine SchedulerStateManager leak
-// (a stuck writeLoop goroutine — the actual regression this harness exists to
-// catch) has a scheduler_state.go stack with no os/exec frame and still fails.
-//
-// CRITICAL call-site contract: callers MUST pass goleak.IgnoreCurrent() as the
-// argument at the `defer` STATEMENT, i.e. `defer verifyNoSchedulerLeaks(t,
-// goleak.IgnoreCurrent())`. Go evaluates a deferred call's arguments at the
-// defer statement (test start), so IgnoreCurrent() snapshots the goroutine set
-// BEFORE the scheduler under test spawns its writeLoop. If IgnoreCurrent() were
-// instead constructed inside this helper (which runs at test end), it would
-// snapshot the still-running writeLoop as "current" and silently ignore a
-// genuine leak — the check would lose its teeth. The extra os/exec filters are
-// static (function-name strings, no snapshot) so appending them here is safe.
-//
-// See docs/testing-flake-registry.md — "TestSchedulerWriteBehind_* goleak vs
-// sibling os/exec drain".
-func verifyNoSchedulerLeaks(t *testing.T, opts ...goleak.Option) {
-	opts = append(opts,
-		goleak.IgnoreAnyFunction("os/exec.(*Cmd).writerDescriptor.func1"),
-		goleak.IgnoreAnyFunction("os/exec.(*Cmd).watchCtx"),
-	)
-	goleak.VerifyNone(t, opts...)
-}
 
 // stubPersister is the canonical isolated persister. It counts calls, can
 // sleep, can return errors at a configured cadence, and can panic at a

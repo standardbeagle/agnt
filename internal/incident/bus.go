@@ -445,37 +445,7 @@ func (b *MPSCBus) deliver(ev *IncidentEvent) {
 	}
 }
 
-// cloneRemediationArgs deep-copies the slice-typed values (the only reference
-// types the remediation routing table stores in a toolCall's args — see
-// remediation.go's routes literal) inside a Remediation args map. Without this,
-// a struct-value copy of IncidentEvent (as happens on every dedup.Ingest and
-// every per-session fan-out in deliver) still shares the same backing array
-// for any []int/[]string value, so mutating the originating event after
-// delivery — or delivering the same event to two sessions — would silently
-// corrupt an already-delivered dedup/inbox Sample, or vice versa.
-func cloneRemediationArgs(args map[string]any) map[string]any {
-	if args == nil {
-		return nil
-	}
-	out := make(map[string]any, len(args))
-	for k, v := range args {
-		switch t := v.(type) {
-		case []int:
-			c := make([]int, len(t))
-			copy(c, t)
-			out[k] = c
-		case []string:
-			c := make([]string, len(t))
-			copy(c, t)
-			out[k] = c
-		default:
-			out[k] = v
-		}
-	}
-	return out
-}
-
-// ingestToSession runs dedup → inbox for one session. Called on the dispatch
+// ingestToSession runs dedup → inbox for one session. Called on the dispatch// ingestToSession runs dedup → inbox for one session. Called on the dispatch
 // goroutine; must not block.
 func (b *MPSCBus) ingestToSession(pl *sessionPipeline, ev *IncidentEvent) {
 	event := cloneIncidentEvent(*ev)

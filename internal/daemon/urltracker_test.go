@@ -332,14 +332,14 @@ func TestParseURLsFromBytes(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := parseURLsFromBytes(tt.input)
+			got := parseDevServerURLs(tt.input)
 			if len(got) != len(tt.expected) {
-				t.Errorf("parseURLsFromBytes() got %d URLs, want %d", len(got), len(tt.expected))
+				t.Errorf("parseDevServerURLs() got %d URLs, want %d", len(got), len(tt.expected))
 				return
 			}
 			for i, url := range got {
 				if url != tt.expected[i] {
-					t.Errorf("parseURLsFromBytes()[%d] = %q, want %q", i, url, tt.expected[i])
+					t.Errorf("parseDevServerURLs()[%d] = %q, want %q", i, url, tt.expected[i])
 				}
 			}
 		})
