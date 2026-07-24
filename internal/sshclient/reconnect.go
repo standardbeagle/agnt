@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"sync/atomic"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/debug"
 )
 
 // This file implements the reconnect state machine (task 09c, spec
@@ -182,9 +185,10 @@ func (r *Reconnector) status(msg string) {
 // loop forwarding stdin to a remote that doesn't exist yet, so this is the
 // only way Ctrl-C during backoff/reattach is observable.
 type InputPump struct {
-	mu        sync.Mutex
-	target    io.Writer
-	interrupt func()
+	mu             sync.Mutex
+	target         io.Writer
+	interrupt      func()
+	writeErrLogged atomic.Bool
 }
 
 // NewInputPump constructs a pump; interrupt is called (from the pump's own
@@ -226,7 +230,15 @@ func (p *InputPump) handle(data []byte) {
 		}
 		return
 	}
-	_, _ = target.Write(data)
+	if _, err := target.Write(data); err != nil {
+		// Dropped keystrokes are otherwise invisible and make reconnect
+		// debugging miserable; log once per failure streak.
+		if p.writeErrLogged.CompareAndSwap(false, true) {
+			debug.Log("sshclient", "input pump: dropping input, write failed: %v", err)
+		}
+		return
+	}
+	p.writeErrLogged.Store(false)
 }
 
 // SetTarget switches the forwarding destination. Pass nil to enter the
