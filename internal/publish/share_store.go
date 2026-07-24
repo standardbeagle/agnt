@@ -403,6 +403,12 @@ func (s *Store) persist(sh *Share) error {
 		os.Remove(tmp)
 		return fmt.Errorf("publishstore: rename: %w", err)
 	}
+	// Fsync the parent directory so the rename itself is durable: without it
+	// a power loss after a successful rename() can still lose the new dir
+	// entry, leaving the record absent despite the temp-file fsync above.
+	if err := fsyncDir(s.dir); err != nil {
+		return fmt.Errorf("publishstore: fsync dir: %w", err)
+	}
 	return nil
 }
 

@@ -406,7 +406,7 @@ func (s *FeedbackStore) persist(shareID string, records []FeedbackRecord) error 
 		os.Remove(tmp)
 		return fmt.Errorf("publish: chmod temp feedback: %w", err)
 	}
-	if err := fsyncFeedbackFile(tmp); err != nil {
+	if err := fsyncFile(tmp); err != nil {
 		os.Remove(tmp)
 		return fmt.Errorf("publish: fsync temp feedback: %w", err)
 	}
@@ -416,8 +416,7 @@ func (s *FeedbackStore) persist(shareID string, records []FeedbackRecord) error 
 	}
 	// Fsync the parent directory so the rename itself is durable: without it a
 	// power loss after a successful rename() can still lose the new dir entry,
-	// leaving the record absent despite the temp-file fsync above. (P6
-	// share_store.go persist currently omits this — it should mirror this fix.)
+	// leaving the record absent despite the temp-file fsync above.
 	if err := fsyncDir(s.dir); err != nil {
 		return fmt.Errorf("publish: fsync feedback dir: %w", err)
 	}
@@ -450,18 +449,6 @@ func fsyncDir(dir string) error {
 func feedbackFileName(shareID string) string {
 	sum := sha256.Sum256([]byte(shareID))
 	return hex.EncodeToString(sum[:]) + feedbackFileSuffix
-}
-
-func fsyncFeedbackFile(path string) error {
-	f, err := os.OpenFile(path, os.O_RDWR, 0600)
-	if err != nil {
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	return f.Close()
 }
 
 // computeChecksum is a deterministic integrity checksum over the ring with
