@@ -14,7 +14,7 @@ Claude Code 治此 repo 之綱：唯導向與不變式；詳見 `docs/`、`.clau
 - `agnt-daemon`: daemon auto-start 副本（避 sandbox 禁 fork）
 - `devtool-mcp`: 舊名 alias（backwards compat）
 
-**CLI Subcommands**: `mcp` (MCP server), `run` (PTY wrapper), `session` (`hosts` lists detachable sessions; `kill` terminates one), `attach` (detach/reattach a daemon-owned PTY), `ssh` (remote session-host client with reconnect and forwarding), `push` (SFTP delivery to an active remote session), `init` (setup-only, no relaunch), `skills` (install agnt skills via `npx skills` + register MCP), `monitor` (event stream), `ai` (interactive AI — Claude-only, stream-json), `acp` (any ACP agent via `coder/acp-go-sdk`: gemini/opencode/claude-code-acp; one-shot + overlay/cooked REPL; fs+terminal caps; deterministic alert gate), `hook` (telemetry forwarder), `setup-project`, `activate`/`license` (Pro license activation + management — offline lk validation, see `internal/license/`)
+**CLI Subcommands**: `mcp` (MCP server), `serve`, `run` (PTY wrapper), `daemon`, `session` (`hosts` lists detachable sessions; `kill` terminates one), `attach` (detach/reattach a daemon-owned PTY), `ssh` (remote session-host client with reconnect and forwarding), `push` (SFTP delivery to an active remote session), `init` (setup-only, no relaunch), `skills` (install agnt skills via `npx skills` + register MCP), `shim` (shim watcher/install), `monitor` (event stream), `errors`, `ci`, `doctor`, `notify`, `up`, `upgrade`, `completion`, `ai` (interactive AI — Claude-only, stream-json), `acp` (any ACP agent via `coder/acp-go-sdk`: gemini/opencode/claude-code-acp; one-shot + overlay/cooked REPL; fs+terminal caps; deterministic alert gate), `hook` (telemetry forwarder), `activate`/`license` (Pro license activation + management — offline lk validation, see `internal/license/`)。`setup-project` is a skill (`/agnt:setup-project`), not a cobra command.
 
 **Core Architecture Decisions**:
 
@@ -56,7 +56,7 @@ make test-coverage  # Generate coverage.html
 make install-local  # Install to ~/.local/bin
 
 # Single package tests
-go test -v ./internal/process
+go test -v ./internal/daemon
 go test -race ./...
 ```
 
@@ -67,8 +67,8 @@ go test -race ./...
 1. **MCP Tools** (`internal/tools/`): daemon-aware MCP tools
 2. **Daemon** (`internal/daemon/`): background service, persistent state, socket IPC
 3. **Protocol** (`internal/protocol/`): text IPC protocol
-4. **Business Logic** (`internal/project/`, `internal/process/`, `internal/proxy/`): project detection, process management, reverse proxy
-5. **Infrastructure** (`internal/process/ringbuf.go`, `internal/config/`): RingBuffer, config
+4. **Business Logic** (`internal/project/`, `internal/proxy/`): project detection, reverse proxy. Process management lives in the vendored `github.com/standardbeagle/go-cli-server/process` (ProcessManager, ManagedProcess) — there is no `internal/process` package.
+5. **Infrastructure** (`go-cli-server/process` RingBuffer, `internal/config/`): RingBuffer, config
 
 ### Critical Design: Lock-Free Process Management
 
@@ -133,8 +133,15 @@ PTY overlay components：command palette (`:`/`/` filterable, **not** a shell bo
 | `snapshot` | Visual regression testing (baseline/compare screenshots) |
 | `replaytest` | Record→worker-mock→replay front-end testing; fuzz + subagent breadth (Pro: advanced_testing) |
 | `daemon` | Daemon management |
+| `session` | `agnt run` session management + scheduled messages for AI agents |
 | `watch` | Get `agnt monitor` command for streaming events |
 | `channel_reply` | Send messages to developer's browser overlay (channel mode beta) |
+| `automation` | Chromedp browser automation sessions (programmatic testing, screenshots) |
+| `browser` | Launch/manage Chrome instances for automation |
+| `error_queue` | Push external CI/CD failures into the unified error view |
+| `store` | Persistent key-value storage with scoped namespaces |
+| `walkthrough` | Live demo playback in the browser overlay (step list, element highlight) |
+| `publish` | Public walkthrough shares (session-scoped control plane) |
 
 **Handler pattern**：Input/Output structs 帶 JSON schema tags；return `(*mcp.CallToolResult, OutputStruct, error)`；errors 作 `CallToolResult{IsError: true}`（非 Go errors）。
 
@@ -144,7 +151,7 @@ Per-tool parameters、output formats、`window.__devtool` frontend API、`agnt m
 
 ## Configuration
 
-`.agnt.kdl` per-project config。Hardcoded daemon defaults：`DefaultTimeout: 0`, `MaxOutputBuffer: 256KB`, `GracefulTimeout: 5s`, `HealthCheckPeriod: 10s` (`main.go:31-36`)。
+`.agnt.kdl` per-project config。Hardcoded daemon defaults：`DefaultTimeout: 0`, `MaxOutputBuffer: 256KB`, `GracefulTimeout: 5s` (canonical: `config.DefaultGracefulTimeout`), `HealthCheckPeriod: 10s` (`cmd/agnt/daemon.go` `newDaemonConfig`)。
 
 Port-conflict policy、autostart cleanup ordering、alert push channels、incident-pipeline keys、URL tracking：**`docs/configuration.md`**。
 
@@ -163,7 +170,7 @@ Port-conflict policy、autostart cleanup ordering、alert push channels、incide
 
 `chromee2e`-tagged real-Chrome tests: `internal/proxy/{authbreakout_e2e,bridge_live,currentpage_e2e_browser,layout_diagnose_e2e,responsive_overlay_live,tabs_pull_live}_test.go` and `internal/chromedp/{integration,screenshot_iframe,testutil}_test.go` (the last is their shared helper closure). These are intentionally absent from `make test`; run `make test-chrome-e2e` manually only on an unloaded machine because renderer starvation under oversubscription is non-deterministic. HTTP-only `internal/proxy/wrap_e2e_test.go` remains in the general suite.
 
-餘 daemon tests native；`Start()` orphan scan 由 `DaemonConfig.OrphanScanEnabled` gate（zero value default `false`，literal `DaemonConfig{}` safe）。Production 於 `cmd/agnt/daemon.go` 設 `true`。**此欄唯 internal test-safety knob，勿寫 user-facing docs，勿 expose in `.agnt.kdl`.** 代舊 `AGNT_DISABLE_ORPHAN_SCAN` env var（已刪）。
+餘 daemon tests native；`Start()` orphan scan 由 `DaemonConfig.OrphanScanEnabled` gate（zero value default `false`，literal `DaemonConfig{}` safe）。Production 於 `cmd/agnt/daemon.go` 設 `true`。**`DaemonConfig.OrphanScanEnabled` 唯 internal test-safety knob，勿 expose in `.agnt.kdl`**；與之別者 `session.orphan-pgid-scan`（`internal/config/agnt.go`）乃 deliberate user-facing opt-out（e.g. tmux pgid 干擾），可寫 user-facing docs。代舊 `AGNT_DISABLE_ORPHAN_SCAN` env var（已刪）。
 
 **Pre-commit hook** (`.git/hooks/pre-commit`)：`gofmt`, `go vet ./...`, then `go test -count=1 -race -p 1` on staged packages。Adaptive flake detection：first race pass <10s → 2 more passes (`-count=2`)；slow packages (`internal/daemon` ~90s) single pass only。Tests starting real OS processes (`sleep`, `echo`, agnt binary) must NOT use `t.Parallel()`；`exec.CommandContext` PID-reuse race under high concurrency kills unrelated processes。
 

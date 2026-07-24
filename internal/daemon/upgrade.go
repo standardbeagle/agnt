@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	agntconfig "github.com/standardbeagle/agnt/internal/config"
 	goclient "github.com/standardbeagle/go-cli-server/client"
 )
 
@@ -45,7 +46,7 @@ func DefaultUpgradeConfig() UpgradeConfig {
 	return UpgradeConfig{
 		SocketPath:      DefaultSocketPath(),
 		Timeout:         30 * time.Second,
-		GracefulTimeout: 5 * time.Second,
+		GracefulTimeout: agntconfig.DefaultGracefulTimeout,
 		Force:           false,
 		Verbose:         false,
 	}
@@ -67,7 +68,7 @@ func NewDaemonUpgrader(config UpgradeConfig) *DaemonUpgrader {
 		config.Timeout = 30 * time.Second
 	}
 	if config.GracefulTimeout == 0 {
-		config.GracefulTimeout = 5 * time.Second
+		config.GracefulTimeout = agntconfig.DefaultGracefulTimeout
 	}
 
 	lockPath := config.SocketPath + ".upgrade.lock"

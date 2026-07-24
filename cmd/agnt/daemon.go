@@ -120,7 +120,7 @@ func newDaemonConfig(appCfg *config.Config, socketPath, publicAddr string) daemo
 		ProcessConfig: process.ManagerConfig{
 			DefaultTimeout:    0,
 			MaxOutputBuffer:   process.DefaultBufferSize,
-			GracefulTimeout:   5 * time.Second,
+			GracefulTimeout:   config.DefaultGracefulTimeout,
 			HealthCheckPeriod: 10 * time.Second,
 		},
 		MaxClients:        100,

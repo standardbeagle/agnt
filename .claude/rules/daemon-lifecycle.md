@@ -1,7 +1,7 @@
 ---
 paths:
   - "internal/daemon/**"
-  - "internal/process/**"
+  - "vendor/github.com/standardbeagle/go-cli-server/process/**"
 ---
 
 # Process & Proxy Lifecycle

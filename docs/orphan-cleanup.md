@@ -43,7 +43,7 @@ A persistent PID tracker that saves process information to disk:
 - Stores PGID for process group kills
 - Per-project process tracking
 
-### 2. Process Group Management (`internal/process/lifecycle_unix.go`)
+### 2. Process Group Management (`go-cli-server/process` lifecycle_unix.go)
 
 **Changed behavior**: All child processes now inherit the daemon's process group:
 
@@ -81,7 +81,7 @@ Daemon (PGID=1000)
 - Signals to daemon affect all children
 - All processes in same terminal session
 
-### 3. Integration (`internal/process/manager.go`, `internal/daemon/daemon.go`)
+### 3. Integration (`go-cli-server/process` manager.go, `internal/daemon/daemon.go`)
 
 **ProcessManager changes**:
 - Added `PIDTracker` interface for dependency injection

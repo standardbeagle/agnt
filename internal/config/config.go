@@ -29,6 +29,12 @@ type Config struct {
 	Feedback FeedbackConfig `json:"feedback"`
 }
 
+// DefaultGracefulTimeout is the canonical graceful-shutdown budget: SIGTERM,
+// wait this long, then SIGKILL. Referenced by the app config default, the
+// daemon's process manager, and the self-upgrade path so the value cannot
+// drift between copies.
+const DefaultGracefulTimeout = 5 * time.Second
+
 // Settings holds global configuration settings.
 type Settings struct {
 	// DefaultTimeout is the default process timeout.
@@ -74,7 +80,7 @@ func DefaultConfig() *Config {
 		Settings: Settings{
 			DefaultTimeout:  0, // No timeout
 			MaxOutputBuffer: 256 * 1024,
-			GracefulTimeout: 5 * time.Second,
+			GracefulTimeout: DefaultGracefulTimeout,
 		},
 		Feedback: DefaultFeedbackConfig(),
 		Languages: map[string]LanguageConfig{
