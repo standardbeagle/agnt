@@ -155,10 +155,22 @@ func (s *AutomationSession) Start(ctx context.Context) error {
 		}
 	}
 
+	// Publish Running with a CAS, not a store: Stop may have claimed
+	// Starting→Stopping while the browser was launching. The CAS pair also
+	// gives Stop happens-before visibility of the cancel fields written
+	// above, so Stop's cleanup never observes them nil.
+	if !s.compareAndSwapState(StateStarting, StateRunning) {
+		// Stop won the race during startup — we own cleanup on this path
+		// because Stop never touches cancel fields from Starting.
+		s.cleanup()
+		s.setState(StateStopped)
+		close(s.done)
+		return fmt.Errorf("session stopped during startup")
+	}
+
 	// Record start time
 	now := time.Now()
 	s.startedAt.Store(&now)
-	s.setState(StateRunning)
 
 	// Monitor for context cancellation
 	go func() {
@@ -180,14 +192,16 @@ func (s *AutomationSession) Stop(ctx context.Context) error {
 		return nil // Already stopped
 	}
 
-	if !s.compareAndSwapState(StateRunning, StateStopping) {
-		// Try from starting state
-		if !s.compareAndSwapState(StateStarting, StateStopping) {
-			return nil // Already stopping or stopped
-		}
+	if s.compareAndSwapState(StateRunning, StateStopping) {
+		// The Running CAS pairs with Start's Starting→Running CAS, so the
+		// cancel fields are guaranteed visible here.
+		s.cleanup()
+	} else if s.compareAndSwapState(StateStarting, StateStopping) {
+		// Start is still launching the browser and owns its cancel fields;
+		// it will observe Stopping, clean up, and close done itself.
+	} else {
+		return nil // Already stopping or stopped
 	}
-
-	s.cleanup()
 
 	// Wait for done or context timeout
 	select {
