@@ -12,7 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/standardbeagle/agnt/internal/daemonclient"
+	"github.com/standardbeagle/agnt/internal/protocol"
 )
 
 // ErrSessionExists is returned by SessionRegistry.Register when a session with
@@ -361,8 +361,8 @@ func (r *SessionRegistry) GenerateSessionCode(command string) string {
 }
 
 // Info returns statistics about the session registry.
-func (r *SessionRegistry) Info() daemonclient.SessionInfo {
-	return daemonclient.SessionInfo{
+func (r *SessionRegistry) Info() protocol.SessionInfo {
+	return protocol.SessionInfo{
 		ActiveCount:       r.ActiveCount(),
 		TotalRegistered:   r.totalRegistered.Load(),
 		TotalUnregistered: r.totalUnregistered.Load(),

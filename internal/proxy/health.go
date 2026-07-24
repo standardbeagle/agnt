@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -36,11 +37,26 @@ func (ps *ProxyServer) runHealthCheck(ctx context.Context) {
 	}
 }
 
+// backendProbeAddr returns the host:port to TCP-probe for a target URL,
+// filling in the scheme default when the URL carries no explicit port —
+// net.Dial has no scheme awareness and rejects a bare hostname with
+// "missing port in address".
+func backendProbeAddr(u *url.URL) string {
+	if u.Port() != "" {
+		return u.Host
+	}
+	port := "80"
+	if strings.EqualFold(u.Scheme, "https") {
+		port = "443"
+	}
+	return net.JoinHostPort(u.Hostname(), port)
+}
+
 // probeBackend attempts a TCP connect to the backend target.
 // On consecutive failures exceeding the threshold, it marks the backend
 // unhealthy and emits a diagnostic event. Recovery resets the failure count.
 func (ps *ProxyServer) probeBackend() {
-	host := ps.TargetURL.Host
+	host := backendProbeAddr(ps.TargetURL)
 	err := probeTCP(host, ps.healthProbeTimeout)
 	now := time.Now()
 	ps.lastHealthCheck.Store(now)

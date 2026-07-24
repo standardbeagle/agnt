@@ -51,7 +51,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/daemon/health"
 
-	"github.com/standardbeagle/agnt/internal/daemonclient"
+	"github.com/standardbeagle/agnt/internal/protocol"
 
 	"github.com/standardbeagle/agnt/internal/alert"
 	"github.com/standardbeagle/agnt/internal/automation"
@@ -214,7 +214,7 @@ type DaemonConfig struct {
 // DefaultDaemonConfig returns sensible defaults.
 func DefaultDaemonConfig() DaemonConfig {
 	return DaemonConfig{
-		SocketPath:             daemonclient.DefaultSocketPath(),
+		SocketPath:             protocol.DefaultSocketPath(),
 		ProcessConfig:          process.DefaultManagerConfig(),
 		MaxClients:             100,
 		ReadTimeout:            0, // No timeout for long-running commands
@@ -446,7 +446,7 @@ type Daemon struct {
 // finds the orphans a previous run left behind. Any other socket gets its own
 // file beside it.
 func pidTrackerPathFor(socketPath string) string {
-	if socketPath == "" || socketPath == daemonclient.DefaultSocketPath() {
+	if socketPath == "" || socketPath == protocol.DefaultSocketPath() {
 		return "" // library default: XDG state dir, AppName-derived
 	}
 	return socketPath + ".pids.json"
@@ -908,27 +908,27 @@ func (d *Daemon) Start() error {
 }
 
 // Info returns daemon information.
-func (d *Daemon) Info() daemonclient.DaemonInfo {
-	info := daemonclient.DaemonInfo{
+func (d *Daemon) Info() protocol.DaemonInfo {
+	info := protocol.DaemonInfo{
 		Version:     Version,
 		BuildTime:   BuildTime,
 		GitCommit:   GitCommit,
 		SocketPath:  d.hub.SocketPath(),
 		Uptime:      time.Since(d.started),
 		ClientCount: d.hub.ClientCount(),
-		ProcessInfo: daemonclient.ProcessInfo{
+		ProcessInfo: protocol.ProcessInfo{
 			Active:       d.hub.ProcessManager().ActiveCount(),
 			TotalStarted: d.hub.ProcessManager().TotalStarted(),
 			TotalFailed:  d.hub.ProcessManager().TotalFailed(),
 		},
-		ProxyInfo: daemonclient.ProxyInfo{
+		ProxyInfo: protocol.ProxyInfo{
 			Active:       d.proxym.ActiveCount(),
 			TotalStarted: d.proxym.TotalStarted(),
 		},
-		TunnelInfo: daemonclient.TunnelInfo{
+		TunnelInfo: protocol.TunnelInfo{
 			Active: int64(d.tunnelm.ActiveCount()),
 		},
-		BrowserInfo: daemonclient.BrowserInfo{
+		BrowserInfo: protocol.BrowserInfo{
 			Active:       int64(d.browserm.ActiveCount()),
 			TotalStarted: d.browserm.TotalStarted(),
 		},

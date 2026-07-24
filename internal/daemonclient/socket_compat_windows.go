@@ -9,10 +9,12 @@ import (
 
 	"github.com/standardbeagle/go-cli-server/socket"
 	"golang.org/x/sys/windows"
+
+	"github.com/standardbeagle/agnt/internal/protocol"
 )
 
 // SocketName is the socket name used for agnt daemon.
-const SocketName = "devtool-mcp"
+const SocketName = protocol.SocketName
 
 // Socket errors re-exported from go-cli-server/socket for convenience.
 // These are used by cmd/agnt when checking daemon status before startup.
@@ -41,22 +43,11 @@ func DefaultSocketConfig() SocketConfig {
 // AGNT_SOCKET, when set, overrides the default (see the unix variant for the
 // rationale — isolated/test daemons, second-daemon escape hatch).
 func DefaultSocketPath() string {
-	if p := os.Getenv("AGNT_SOCKET"); p != "" {
-		return p
-	}
-	return socket.DefaultSocketPath(SocketName)
+	return protocol.DefaultSocketPath()
 }
 
-// migrateLegacySocket is a no-op on Windows.
-//
-// The legacy migration (see the !windows twin in socket_compat.go) retires a
-// daemon left on the pre-0.13.32 socket path /tmp/<name>-<uid>.sock. That path
-// and the hardened-bind per-uid-subdirectory move that superseded it are Unix
-// /tmp + os.Getuid() constructs; Windows resolves its socket via
-// socket.DefaultSocketPath (a different scheme entirely) and never had that
-// legacy layout, so there is nothing to migrate. daemon.go calls this on every
-// platform, hence the Windows stub.
-func (d *Daemon) migrateLegacySocket() {}
+// migrateLegacySocket lives in internal/daemon (socket_migrate_windows.go);
+// the daemon-side stub belongs to the daemon package, not the client.
 
 // SocketManager handles socket lifecycle.
 // This is a compatibility wrapper around socket.Manager.

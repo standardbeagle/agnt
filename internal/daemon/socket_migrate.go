@@ -1,11 +1,16 @@
+//go:build !windows
+
 package daemon
 
 import (
+	"errors"
 	"fmt"
 	"os"
 
-	"github.com/standardbeagle/agnt/internal/daemonclient"
+	"github.com/standardbeagle/go-cli-server/socket"
+
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/protocol"
 )
 
 // migrateLegacySocket retires a daemon left listening on the pre-0.13.32 socket
@@ -22,10 +27,10 @@ import (
 // Only runs when this daemon owns the default path — an explicit AGNT_SOCKET or
 // --socket means the caller is managing socket layout themselves.
 func (d *Daemon) migrateLegacySocket() {
-	if d.config.SocketPath != daemonclient.DefaultSocketPath() {
+	if d.config.SocketPath != protocol.DefaultSocketPath() {
 		return
 	}
-	d.migrateLegacySocketFrom(daemonclient.LegacySocketPath())
+	d.migrateLegacySocketFrom(protocol.LegacySocketPath())
 }
 
 // migrateLegacySocketFrom is migrateLegacySocket against an explicit path, so a
@@ -35,9 +40,9 @@ func (d *Daemon) migrateLegacySocketFrom(legacy string) {
 		return // no legacy socket, nothing to migrate
 	}
 
-	if daemonclient.IsRunning(legacy) {
+	if socket.IsRunning(legacy) {
 		debug.Log("daemon", "legacy daemon found at %s, requesting shutdown", legacy)
-		if err := daemonclient.StopDaemon(legacy); err != nil {
+		if err := stopDaemonAt(legacy); err != nil {
 			// Loud, not silent: a surviving legacy daemon holds ports this one
 			// is about to fight over, and the user needs to know which to kill.
 			d.daemonStartupLog("warning", "legacy_socket_migration",
@@ -52,4 +57,19 @@ func (d *Daemon) migrateLegacySocketFrom(legacy string) {
 	if err := os.Remove(legacy); err != nil && !os.IsNotExist(err) {
 		debug.Warn("daemon", "could not remove legacy socket %s: %v", legacy, err)
 	}
+}
+
+// stopDaemonAt asks the daemon at socketPath to shut down via the protocol,
+// using the daemon's own Conn wrapper rather than the client package (the
+// server must not depend on its own client). A missing daemon is success.
+func stopDaemonAt(socketPath string) error {
+	conn := NewConn(socketPath)
+	if err := conn.EnsureConnected(); err != nil {
+		if errors.Is(err, socket.ErrSocketNotFound) {
+			return nil // Daemon not running, nothing to stop
+		}
+		return err
+	}
+	defer conn.Close()
+	return conn.Request("SHUTDOWN").OK()
 }
