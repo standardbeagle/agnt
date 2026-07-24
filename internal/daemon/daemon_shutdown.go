@@ -587,6 +587,9 @@ func (d *Daemon) StopProjectResources(ctx context.Context, projectPath string) {
 			d.daemonStartupLog("warning", "proxy_stop_failed",
 				fmt.Sprintf("error stopping proxies for project %s: %v", projectPath, err))
 		}
+		for _, id := range stoppedIDs {
+			d.retireIncidentProxyOwner(id)
+		}
 		if d.stateMgr != nil {
 			for _, id := range stoppedIDs {
 				d.stateMgr.RemoveProxy(id)

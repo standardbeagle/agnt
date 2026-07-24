@@ -149,6 +149,9 @@ type ChaosEngine struct {
 	// chaos_state updates to connected browser clients regardless of which
 	// control surface (MCP, hub, browser panel) made the change.
 	onChange atomic.Pointer[func()]
+	// notifyPending coalesces bursts of mutations onto a single in-flight
+	// notification goroutine instead of one unbounded goroutine per change.
+	notifyPending atomic.Bool
 }
 
 // chaosRuleState holds a rule with atomic enabled state
@@ -216,13 +219,25 @@ func (ce *ChaosEngine) SetOnChange(fn func()) {
 	ce.onChange.Store(&fn)
 }
 
-// notifyChange fires the onChange callback in a fresh goroutine. Async so
-// callers may invoke it while holding ce.mu without deadlocking callbacks
-// that read engine state.
+// notifyChange fires the onChange callback on a single coalesced goroutine.
+// Async so callers may invoke it while holding ce.mu without deadlocking
+// callbacks that read engine state. A burst of mutations (e.g. rapid rule
+// toggles) collapses into one in-flight notification rather than spawning an
+// unbounded goroutine per change; state pushes are idempotent, so the
+// intermediate states need no individual broadcast.
 func (ce *ChaosEngine) notifyChange() {
-	if fn := ce.onChange.Load(); fn != nil && *fn != nil {
-		go (*fn)()
+	if ce.onChange.Load() == nil {
+		return
 	}
+	if !ce.notifyPending.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer ce.notifyPending.Store(false)
+		if fn := ce.onChange.Load(); fn != nil && *fn != nil {
+			(*fn)()
+		}
+	}()
 }
 
 // Enable enables chaos injection

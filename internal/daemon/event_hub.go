@@ -17,14 +17,18 @@ import (
 
 // proxyPathRegistry maps proxyID → project path for stream event routing.
 // Populated by RegisterProxyPath when a proxy is wired to the alert hub;
-// entries are never removed because proxyIDs are unique and stopped proxies
-// cannot generate new events.
+// entries are removed by UnregisterProxyPath when the proxy stops so a
+// long-lived daemon does not accumulate one entry per proxy ever created.
 type proxyPathRegistry struct {
 	m sync.Map // map[string]string
 }
 
 func (r *proxyPathRegistry) set(proxyID, path string) {
 	r.m.Store(proxyID, path)
+}
+
+func (r *proxyPathRegistry) remove(proxyID string) {
+	r.m.Delete(proxyID)
 }
 
 func (r *proxyPathRegistry) get(proxyID string) string {
@@ -293,12 +297,20 @@ func (h *EventHub) RemoveStreamSink(sink *StreamSink) {
 // RegisterProxyPath records the project directory for a proxy so that
 // project-scoped stream filters (projectPath != "") can exclude events
 // from proxies belonging to other projects. Call once from wireProxyLogger.
-// Entries are never removed because proxyIDs are unique and a stopped proxy
-// cannot generate new LogEntry events.
+// Paired with UnregisterProxyPath on proxy stop: without removal a
+// long-lived daemon accumulates one entry per proxy ever created.
 func (h *EventHub) RegisterProxyPath(proxyID, projectPath string) {
 	if proxyID != "" {
 		h.proxyPaths.set(proxyID, projectPath)
 	}
+}
+
+// UnregisterProxyPath drops a proxy's path mapping when the proxy is
+// stopped. A stopped proxy cannot generate new LogEntry events, so removal
+// is race-safe against in-flight broadcasts (a stale path read only
+// mis-scopes an event for a proxy that is already gone).
+func (h *EventHub) UnregisterProxyPath(proxyID string) {
+	h.proxyPaths.remove(proxyID)
 }
 
 // BroadcastLogEntry sends a log entry to all matching stream sinks.

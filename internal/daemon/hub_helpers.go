@@ -381,8 +381,14 @@ func (d *Daemon) registerIncidentProcessOwner(processID, sessionCode string) {
 
 // retireIncidentProxyOwner ends the ownership binding with the proxy lifetime.
 // A later proxy reusing the same ID must be able to establish a fresh owner.
+// retireIncidentProxyOwner drops all per-proxy tracking: the incident owner
+// stamp and the event-hub path mapping. Both are keyed by proxyID and die
+// with the proxy, so they are retired together at every proxy-stop site.
 func (d *Daemon) retireIncidentProxyOwner(proxyID string) {
 	d.incidentProxyOwner.Delete(proxyID)
+	if d.eventHub != nil {
+		d.eventHub.UnregisterProxyPath(proxyID)
+	}
 }
 
 func (d *Daemon) retireIncidentProcessOwner(processID string) {
