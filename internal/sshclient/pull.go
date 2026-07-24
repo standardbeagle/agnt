@@ -11,12 +11,12 @@ import (
 	"time"
 
 	"github.com/pkg/sftp"
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
 )
 
-// pullEventStream is the part of daemon.Client used by RemotePullManager.
+// pullEventStream is the part of daemonclient.Client used by RemotePullManager.
 // Keeping the boundary narrow also lets tests drive the same LogEntry shape
 // produced by the real forwarded STREAM-EVENTS connection.
 type pullEventStream interface {
@@ -65,7 +65,7 @@ func (m *RemotePullManager) Start(ctx context.Context) {
 
 // Resume swaps in the event and SFTP connections established after an SSH
 // reconnect, then starts a fresh subscription.
-func (m *RemotePullManager) Resume(ctx context.Context, events *daemon.Client, sc *sftp.Client) {
+func (m *RemotePullManager) Resume(ctx context.Context, events *daemonclient.Client, sc *sftp.Client) {
 	m.resume(ctx, events, sc)
 }
 

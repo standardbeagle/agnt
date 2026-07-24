@@ -12,7 +12,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/selflog"
 )
 
@@ -201,10 +201,10 @@ func runHookInternal(opts hookInvocation) int {
 
 	// Dial the daemon. Any connect error → silent exit 0. We
 	// deliberately do NOT create a new client with a custom dialer
-	// here: the daemon.Client's Connect() already handles both Unix
+	// here: the daemonclient.Client's Connect() already handles both Unix
 	// and Windows transports correctly, and HookSend opens its own
 	// dedicated short-lived socket for the actual write.
-	client := daemon.NewClient(daemon.WithSocketPath(opts.socketPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(opts.socketPath))
 	if err := client.Connect(); err != nil {
 		return 0
 	}
@@ -225,7 +225,7 @@ func runHookInternal(opts hookInvocation) int {
 	// Daemon down → silent exit 0, no drop-log. This is the "agnt is
 	// not running" case and the user is explicitly opting out of hook
 	// routing; spamming a drop-log here would be noise.
-	if errors.Is(err, daemon.ErrHookDaemonDown) {
+	if errors.Is(err, daemonclient.ErrHookDaemonDown) {
 		return 0
 	}
 

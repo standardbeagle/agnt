@@ -14,6 +14,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/tools"
 	"github.com/standardbeagle/go-sdk/jsonrpc"
 	"github.com/standardbeagle/go-sdk/mcp"
@@ -448,7 +449,7 @@ func performInitHandshake(t *testing.T, ctx context.Context, ct *mcp.InMemoryTra
 // TestRegisterChannelSession_DisabledReturnsNil verifies that
 // RegisterChannelSession returns nil when channel is disabled.
 func TestRegisterChannelSession_DisabledReturnsNil(t *testing.T) {
-	dt := tools.NewDaemonTools(daemon.AutoStartConfig{}, "test")
+	dt := tools.NewDaemonTools(daemonclient.AutoStartConfig{}, "test")
 	// DaemonTools owns a resilient daemon client whose reconnect loop runs for
 	// the life of the process; without Close it outlives the test.
 	t.Cleanup(func() { _ = dt.Close() })
@@ -492,7 +493,7 @@ func TestRegisterChannelSession_SetsSessionCode(t *testing.T) {
 		d.Stop(ctx)
 	}()
 
-	dt := tools.NewDaemonTools(daemon.AutoStartConfig{
+	dt := tools.NewDaemonTools(daemonclient.AutoStartConfig{
 		SocketPath:    sockPath,
 		StartTimeout:  2 * time.Second,
 		RetryInterval: 50 * time.Millisecond,
@@ -547,7 +548,7 @@ func TestRegisterChannelSession_CloseIdempotent(t *testing.T) {
 		d.Stop(ctx)
 	}()
 
-	dt := tools.NewDaemonTools(daemon.AutoStartConfig{
+	dt := tools.NewDaemonTools(daemonclient.AutoStartConfig{
 		SocketPath:    sockPath,
 		StartTimeout:  2 * time.Second,
 		RetryInterval: 50 * time.Millisecond,
@@ -611,7 +612,7 @@ func TestChannelSession_ConcurrentCloseAndHeartbeat(t *testing.T) {
 		d.Stop(ctx)
 	}()
 
-	dt := tools.NewDaemonTools(daemon.AutoStartConfig{
+	dt := tools.NewDaemonTools(daemonclient.AutoStartConfig{
 		SocketPath:    sockPath,
 		StartTimeout:  2 * time.Second,
 		RetryInterval: 50 * time.Millisecond,

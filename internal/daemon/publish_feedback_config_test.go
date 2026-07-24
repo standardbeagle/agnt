@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/stretchr/testify/require"
@@ -35,7 +37,7 @@ func TestPublicPlaneHonorsConfiguredMaxBodyBytes(t *testing.T) {
 	addr := d.PublicPlaneAddr()
 	require.NotEmpty(t, addr, "public plane must be mounted")
 
-	c := NewClient(WithSocketPath(sockPath))
+	c := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, c.Connect())
 	t.Cleanup(func() { _ = c.Close() })
 	_, err := c.SessionRegister("sess-a", "/tmp/a.sock", "/proj-a", "test", nil)
@@ -75,7 +77,7 @@ func TestPublicPlaneHonorsConfiguredBurst(t *testing.T) {
 	addr := d.PublicPlaneAddr()
 	require.NotEmpty(t, addr, "public plane must be mounted")
 
-	c := NewClient(WithSocketPath(sockPath))
+	c := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, c.Connect())
 	t.Cleanup(func() { _ = c.Close() })
 	_, err := c.SessionRegister("sess-a", "/tmp/a.sock", "/proj-a", "test", nil)

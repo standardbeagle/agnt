@@ -1,5 +1,3 @@
-//go:build unix
-
 package daemon
 
 import (
@@ -7,134 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/protocol"
 )
-
-func TestDefaultResilientClientConfig(t *testing.T) {
-	config := DefaultResilientClientConfig()
-
-	if config.HeartbeatInterval == 0 {
-		t.Error("Expected non-zero HeartbeatInterval")
-	}
-	if config.HeartbeatTimeout == 0 {
-		t.Error("Expected non-zero HeartbeatTimeout")
-	}
-	if config.ReconnectBackoffMin == 0 {
-		t.Error("Expected non-zero ReconnectBackoffMin")
-	}
-	if config.ReconnectBackoffMax == 0 {
-		t.Error("Expected non-zero ReconnectBackoffMax")
-	}
-	// MaxReconnectAttempts should be 0 (unlimited)
-	if config.MaxReconnectAttempts != 0 {
-		t.Errorf("Expected MaxReconnectAttempts=0, got %d", config.MaxReconnectAttempts)
-	}
-}
-
-func TestNewResilientClient(t *testing.T) {
-	config := ResilientClientConfig{
-		AutoStartConfig: AutoStartConfig{
-			SocketPath:   "/tmp/test-resilient.sock",
-			DaemonPath:   "test-daemon",
-			StartTimeout: 5 * time.Second,
-		},
-		HeartbeatInterval:   5 * time.Second,
-		HeartbeatTimeout:    3 * time.Second,
-		ReconnectBackoffMin: 100 * time.Millisecond,
-		ReconnectBackoffMax: 10 * time.Second,
-	}
-
-	rc := NewResilientClient(config)
-	if rc == nil {
-		t.Fatal("Expected non-nil ResilientClient")
-	}
-
-	// Not connected yet
-	if rc.IsConnected() {
-		t.Error("Expected not connected before Connect()")
-	}
-	if rc.IsReconnecting() {
-		t.Error("Expected not reconnecting before Connect()")
-	}
-
-	// Client should be nil when not connected
-	if rc.Client() != nil {
-		t.Error("Expected nil Client when not connected")
-	}
-}
-
-func TestNewResilientClient_WithVersionCheck(t *testing.T) {
-	versionMismatchCalled := false
-
-	config := ResilientClientConfig{
-		AutoStartConfig: AutoStartConfig{
-			SocketPath: "/tmp/test-resilient-version.sock",
-		},
-		ClientVersion: "1.0.0",
-		OnVersionMismatch: func(clientVer, daemonVer string) error {
-			versionMismatchCalled = true
-			return nil
-		},
-	}
-
-	rc := NewResilientClient(config)
-	if rc == nil {
-		t.Fatal("Expected non-nil ResilientClient")
-	}
-
-	// Version mismatch won't be called until Connect()
-	if versionMismatchCalled {
-		t.Error("Version mismatch should not be called before connect")
-	}
-}
-
-func TestNewResilientClient_WithCallbacks(t *testing.T) {
-	disconnectCalled := false
-	reconnectFailedCalled := false
-	reconnectCalled := false
-
-	config := ResilientClientConfig{
-		AutoStartConfig: AutoStartConfig{
-			SocketPath: "/tmp/test-resilient-callbacks.sock",
-		},
-		OnDisconnect: func(err error) {
-			disconnectCalled = true
-		},
-		OnReconnectFailed: func(err error) {
-			reconnectFailedCalled = true
-		},
-		OnReconnect: func(client *Client) error {
-			reconnectCalled = true
-			return nil
-		},
-	}
-
-	rc := NewResilientClient(config)
-	if rc == nil {
-		t.Fatal("Expected non-nil ResilientClient")
-	}
-
-	// Callbacks won't be called without actual connection
-	if disconnectCalled || reconnectFailedCalled || reconnectCalled {
-		t.Error("Callbacks should not be called before any connection activity")
-	}
-}
-
-func TestResilientClient_Stats(t *testing.T) {
-	config := ResilientClientConfig{
-		AutoStartConfig: AutoStartConfig{
-			SocketPath: "/tmp/test-resilient-stats.sock",
-		},
-	}
-
-	rc := NewResilientClient(config)
-	stats := rc.Stats()
-	if stats == nil {
-		t.Error("Expected non-nil stats")
-	}
-
-	t.Logf("Stats: %+v", stats)
-}
 
 // TestResilientClient_WrapperMethods tests the ResilientClient wrapper methods with a running daemon.
 func TestResilientClient_WrapperMethods(t *testing.T) {
@@ -149,8 +22,8 @@ func TestResilientClient_WrapperMethods(t *testing.T) {
 	})
 
 	// Create a resilient client
-	config := ResilientClientConfig{
-		AutoStartConfig: AutoStartConfig{
+	config := daemonclient.ResilientClientConfig{
+		AutoStartConfig: daemonclient.AutoStartConfig{
 			SocketPath:    sockPath,
 			StartTimeout:  5 * time.Second,
 			RetryInterval: 100 * time.Millisecond,
@@ -162,7 +35,7 @@ func TestResilientClient_WrapperMethods(t *testing.T) {
 		ReconnectBackoffMax: 1 * time.Second,
 	}
 
-	rc := NewResilientClient(config)
+	rc := daemonclient.NewResilientClient(config)
 	if err := rc.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -182,8 +55,8 @@ func TestResilientClient_WrapperMethods(t *testing.T) {
 		}
 	})
 
-	// Test Client accessor
-	t.Run("Client", func(t *testing.T) {
+	// Test daemonclient.Client accessor
+	t.Run("daemonclient.Client", func(t *testing.T) {
 		client := rc.Client()
 		if client == nil {
 			t.Error("Expected non-nil client")
@@ -301,8 +174,8 @@ func TestResilientClient_WrapperMethods(t *testing.T) {
 
 	// Test WithClient
 	t.Run("WithClient", func(t *testing.T) {
-		var info *DaemonInfo
-		err := rc.WithClient(func(c *Client) error {
+		var info *daemonclient.DaemonInfo
+		err := rc.WithClient(func(c *daemonclient.Client) error {
 			var e error
 			info, e = c.Info()
 			return e
@@ -336,8 +209,8 @@ func TestResilientClient_ProxyExtendedMethods(t *testing.T) {
 		WriteTimeout: 5 * time.Second,
 	})
 
-	config := ResilientClientConfig{
-		AutoStartConfig: AutoStartConfig{
+	config := daemonclient.ResilientClientConfig{
+		AutoStartConfig: daemonclient.AutoStartConfig{
 			SocketPath:    sockPath,
 			StartTimeout:  5 * time.Second,
 			RetryInterval: 100 * time.Millisecond,
@@ -345,7 +218,7 @@ func TestResilientClient_ProxyExtendedMethods(t *testing.T) {
 		},
 	}
 
-	rc := NewResilientClient(config)
+	rc := daemonclient.NewResilientClient(config)
 	if err := rc.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -360,7 +233,7 @@ func TestResilientClient_ProxyExtendedMethods(t *testing.T) {
 
 	// Test ProxyStartWithConfig
 	t.Run("ProxyStartWithConfig", func(t *testing.T) {
-		result, err := rc.ProxyStartWithConfig("rc-config-proxy", "http://localhost:18889", 0, 100, ProxyStartConfig{
+		result, err := rc.ProxyStartWithConfig("rc-config-proxy", "http://localhost:18889", 0, 100, daemonclient.ProxyStartConfig{
 			Path: ".",
 		})
 		if err != nil {
@@ -461,8 +334,8 @@ func TestResilientClient_SessionMethods(t *testing.T) {
 		WriteTimeout: 5 * time.Second,
 	})
 
-	config := ResilientClientConfig{
-		AutoStartConfig: AutoStartConfig{
+	config := daemonclient.ResilientClientConfig{
+		AutoStartConfig: daemonclient.AutoStartConfig{
 			SocketPath:    sockPath,
 			StartTimeout:  5 * time.Second,
 			RetryInterval: 100 * time.Millisecond,
@@ -470,7 +343,7 @@ func TestResilientClient_SessionMethods(t *testing.T) {
 		},
 	}
 
-	rc := NewResilientClient(config)
+	rc := daemonclient.NewResilientClient(config)
 	if err := rc.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -569,8 +442,8 @@ func TestResilientClient_TunnelMethods(t *testing.T) {
 		WriteTimeout: 5 * time.Second,
 	})
 
-	config := ResilientClientConfig{
-		AutoStartConfig: AutoStartConfig{
+	config := daemonclient.ResilientClientConfig{
+		AutoStartConfig: daemonclient.AutoStartConfig{
 			SocketPath:    sockPath,
 			StartTimeout:  5 * time.Second,
 			RetryInterval: 100 * time.Millisecond,
@@ -578,7 +451,7 @@ func TestResilientClient_TunnelMethods(t *testing.T) {
 		},
 	}
 
-	rc := NewResilientClient(config)
+	rc := daemonclient.NewResilientClient(config)
 	if err := rc.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -623,8 +496,8 @@ func TestResilientClient_ChaosMethods(t *testing.T) {
 		WriteTimeout: 5 * time.Second,
 	})
 
-	config := ResilientClientConfig{
-		AutoStartConfig: AutoStartConfig{
+	config := daemonclient.ResilientClientConfig{
+		AutoStartConfig: daemonclient.AutoStartConfig{
 			SocketPath:    sockPath,
 			StartTimeout:  5 * time.Second,
 			RetryInterval: 100 * time.Millisecond,
@@ -632,7 +505,7 @@ func TestResilientClient_ChaosMethods(t *testing.T) {
 		},
 	}
 
-	rc := NewResilientClient(config)
+	rc := daemonclient.NewResilientClient(config)
 	if err := rc.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -767,8 +640,8 @@ func TestResilientClient_AdditionalMethods(t *testing.T) {
 		WriteTimeout: 5 * time.Second,
 	})
 
-	config := ResilientClientConfig{
-		AutoStartConfig: AutoStartConfig{
+	config := daemonclient.ResilientClientConfig{
+		AutoStartConfig: daemonclient.AutoStartConfig{
 			SocketPath:    sockPath,
 			StartTimeout:  5 * time.Second,
 			RetryInterval: 100 * time.Millisecond,
@@ -776,7 +649,7 @@ func TestResilientClient_AdditionalMethods(t *testing.T) {
 		},
 	}
 
-	rc := NewResilientClient(config)
+	rc := daemonclient.NewResilientClient(config)
 	if err := rc.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}

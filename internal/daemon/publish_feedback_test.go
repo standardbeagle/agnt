@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
@@ -42,12 +44,12 @@ func getPublic(t *testing.T, url string) (int, string) {
 
 // bootPublicPlaneSession boots a daemon with the public listener mounted plus a
 // session-registered client for the given project.
-func bootPublicPlaneSession(t *testing.T, projectPath string) (*Daemon, *Client) {
+func bootPublicPlaneSession(t *testing.T, projectPath string) (*Daemon, *daemonclient.Client) {
 	t.Helper()
 	sockPath := shortSockPath(t)
 	d := newBootedDaemonWithConfig(t, DaemonConfig{SocketPath: sockPath, PublicListenAddr: "127.0.0.1:0"})
 	require.NotEmpty(t, d.PublicPlaneAddr(), "public plane must be mounted on a real listener")
-	c := NewClient(WithSocketPath(sockPath))
+	c := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, c.Connect())
 	t.Cleanup(func() { _ = c.Close() })
 	_, err := c.SessionRegister("sess-"+strings.ReplaceAll(projectPath, "/", "_"), "/tmp/pub.sock", projectPath, "test", nil)
@@ -99,13 +101,13 @@ func TestFeedbackReadOwnerScoped(t *testing.T) {
 	d := newBootedDaemonWithConfig(t, DaemonConfig{SocketPath: sockPath, PublicListenAddr: "127.0.0.1:0"})
 	addr := d.PublicPlaneAddr()
 
-	ca := NewClient(WithSocketPath(sockPath))
+	ca := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, ca.Connect())
 	t.Cleanup(func() { _ = ca.Close() })
 	_, err := ca.SessionRegister("sess-a", "/tmp/a.sock", "/proj-a", "test", nil)
 	require.NoError(t, err)
 
-	cb := NewClient(WithSocketPath(sockPath))
+	cb := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, cb.Connect())
 	t.Cleanup(func() { _ = cb.Close() })
 	_, err = cb.SessionRegister("sess-b", "/tmp/b.sock", "/proj-b", "test", nil)
@@ -136,13 +138,13 @@ func TestFeedbackReadCollidingDigestNoCrossProjectLeak(t *testing.T) {
 	d := newBootedDaemonWithConfig(t, DaemonConfig{SocketPath: sockPath, PublicListenAddr: "127.0.0.1:0"})
 	addr := d.PublicPlaneAddr()
 
-	ca := NewClient(WithSocketPath(sockPath))
+	ca := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, ca.Connect())
 	t.Cleanup(func() { _ = ca.Close() })
 	_, err := ca.SessionRegister("sess-a", "/tmp/a.sock", "/proj-a", "test", nil)
 	require.NoError(t, err)
 
-	cb := NewClient(WithSocketPath(sockPath))
+	cb := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, cb.Connect())
 	t.Cleanup(func() { _ = cb.Close() })
 	_, err = cb.SessionRegister("sess-b", "/tmp/b.sock", "/proj-b", "test", nil)
@@ -282,7 +284,7 @@ func TestFeedbackDroppedCountObservable(t *testing.T) {
 	})
 	addr := d.PublicPlaneAddr()
 
-	c := NewClient(WithSocketPath(sockPath))
+	c := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, c.Connect())
 	t.Cleanup(func() { _ = c.Close() })
 	_, err := c.SessionRegister("sess-a", "/tmp/a.sock", "/proj-a", "test", nil)
@@ -315,12 +317,12 @@ func TestFeedbackDroppedCountShareScoped(t *testing.T) {
 	})
 	addr := d.PublicPlaneAddr()
 
-	ca := NewClient(WithSocketPath(sockPath))
+	ca := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, ca.Connect())
 	t.Cleanup(func() { _ = ca.Close() })
 	_, err := ca.SessionRegister("sess-a", "/tmp/a.sock", "/proj-a", "test", nil)
 	require.NoError(t, err)
-	cb := NewClient(WithSocketPath(sockPath))
+	cb := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, cb.Connect())
 	t.Cleanup(func() { _ = cb.Close() })
 	_, err = cb.SessionRegister("sess-b", "/tmp/b.sock", "/proj-b", "test", nil)

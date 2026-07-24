@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/go-cli-server/script"
@@ -351,7 +353,7 @@ scripts {
 	daemon.RunAutostart(ctx, tmpDir)
 
 	// Verify daemon is still running
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -387,7 +389,7 @@ proxies {
 	daemon.RunAutostart(ctx, tmpDir)
 
 	// Verify proxy was created
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}

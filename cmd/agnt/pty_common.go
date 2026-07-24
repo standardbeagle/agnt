@@ -21,6 +21,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/aichannel"
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/overlay"
 	"github.com/standardbeagle/agnt/internal/pathutil"
@@ -46,7 +47,7 @@ type daemonSessionHandle struct {
 	mu     sync.Mutex
 	closed bool
 
-	client            *daemon.ResilientClient
+	client            *daemonclient.ResilientClient
 	heartbeatOnce     sync.Once
 	heartbeatStop     chan struct{}
 	sessionCode       string
@@ -73,7 +74,7 @@ type daemonSessionHandle struct {
 // reports false when the handle is already closed, in which case the caller owns
 // the client and must close it: Close ran before the client existed, so it saw
 // nothing to close, and nothing else ever will.
-func (h *daemonSessionHandle) adoptClient(c *daemon.ResilientClient) bool {
+func (h *daemonSessionHandle) adoptClient(c *daemonclient.ResilientClient) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.closed {
@@ -85,7 +86,7 @@ func (h *daemonSessionHandle) adoptClient(c *daemon.ResilientClient) bool {
 
 // takeClient claims the client for shutdown, marking the handle closed so a
 // registration goroutine still in flight closes its own client instead.
-func (h *daemonSessionHandle) takeClient() *daemon.ResilientClient {
+func (h *daemonSessionHandle) takeClient() *daemonclient.ResilientClient {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.closed = true
@@ -124,7 +125,7 @@ func (h *daemonSessionHandle) Close() {
 }
 
 // currentClient returns the live client, or nil once Close has taken it.
-func (h *daemonSessionHandle) currentClient() *daemon.ResilientClient {
+func (h *daemonSessionHandle) currentClient() *daemonclient.ResilientClient {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return h.client
@@ -214,7 +215,7 @@ type daemonSessionConfig struct {
 // the daemon so shutdown/session-end/watcher cleanup can find it. Best-
 // effort: a daemon without the SHIM verb (older binary) just errors and
 // the shims still work via fail-open passthrough.
-func registerShims(client *daemon.Client, cfg daemonSessionConfig) {
+func registerShims(client *daemonclient.Client, cfg daemonSessionConfig) {
 	binDir, err := shims.Ensure(cfg.ProjectPath)
 	if err != nil || binDir == "" {
 		return
@@ -238,20 +239,20 @@ func startDaemonSession(ctx context.Context, cfg daemonSessionConfig) *daemonSes
 	go func() {
 		defer close(handle.registrationDone)
 
-		config := daemon.DefaultResilientClientConfig()
+		config := daemonclient.DefaultResilientClientConfig()
 		if cfg.SocketPath != "" {
 			config.AutoStartConfig.SocketPath = cfg.SocketPath
 		}
 
 		// Re-register session when connection is restored after daemon restart.
 		// Session registration handles per-project overlay endpoint scoping.
-		config.OnReconnect = func(client *daemon.Client) error {
+		config.OnReconnect = func(client *daemonclient.Client) error {
 			_, _ = client.SessionRegisterWithContainment(cfg.SessionCode, cfg.OverlayEndpoint, cfg.ProjectPath, cfg.Command, cfg.CmdArgs, cfg.SessionPGID, cfg.SessionJobHandle)
 			registerShims(client, cfg)
 			return nil
 		}
 
-		client := daemon.NewResilientClient(config)
+		client := daemonclient.NewResilientClient(config)
 		if !handle.adoptClient(client) {
 			// Close beat us here; nobody else will ever close this client.
 			client.Close()
@@ -509,7 +510,7 @@ func displayAutostartResults(ctx context.Context, handle *daemonSessionHandle, o
 			fmt.Fprintf(w, "\r\n\x1b[2m[agnt] proceeding without killing -- scripts may fail to bind\x1b[0m\r\n")
 			if hc := handle.currentClient(); hc != nil && handle.IsConnected() {
 				var result map[string]interface{}
-				_ = hc.WithClient(func(c *daemon.Client) error {
+				_ = hc.WithClient(func(c *daemonclient.Client) error {
 					var err error
 					result, err = c.AutostartContinue(handle.projectPath)
 					return err
@@ -520,7 +521,7 @@ func displayAutostartResults(ctx context.Context, handle *daemonSessionHandle, o
 			fmt.Fprintf(w, "\r\n")
 			if hc := handle.currentClient(); hc != nil && handle.IsConnected() {
 				var result map[string]interface{}
-				_ = hc.WithClient(func(c *daemon.Client) error {
+				_ = hc.WithClient(func(c *daemonclient.Client) error {
 					var err error
 					result, err = c.AutostartClearPorts(handle.projectPath)
 					return err
@@ -740,16 +741,16 @@ func (c *daemonConnector) Connect() error {
 	socketPath := c.conn.SocketPath()
 
 	// First clean up any zombie daemons
-	daemon.CleanupZombieDaemons(socketPath)
+	daemonclient.CleanupZombieDaemons(socketPath)
 
 	// Use auto-start client to ensure daemon is running
-	config := daemon.AutoStartConfig{
+	config := daemonclient.AutoStartConfig{
 		SocketPath:    socketPath,
 		StartTimeout:  5 * time.Second,
 		RetryInterval: 100 * time.Millisecond,
 		MaxRetries:    50,
 	}
-	autoClient := daemon.NewAutoStartClient(config)
+	autoClient := daemonclient.NewAutoStartClient(config)
 
 	if err := autoClient.Connect(); err != nil {
 		return err
@@ -1065,10 +1066,10 @@ func generateSessionCode(command string) string {
 	// Connect to daemon to get a unique sequence number
 	socketPath, _ := rootCmd.Flags().GetString("socket")
 	if socketPath == "" {
-		socketPath = daemon.DefaultSocketPath()
+		socketPath = daemonclient.DefaultSocketPath()
 	}
 
-	client := daemon.NewClient(daemon.WithSocketPath(socketPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(socketPath))
 	if err := client.Connect(); err == nil {
 		defer client.Close()
 		// Use the daemon's session registry to generate a unique code
@@ -1302,7 +1303,7 @@ func firstRunOrCoding(projectPath string, args []string,
 
 func buildAgntSystemPrompt(socketPath string) string {
 	if socketPath == "" {
-		socketPath = daemon.DefaultSocketPath()
+		socketPath = daemonclient.DefaultSocketPath()
 	}
 
 	// Load agnt config from current directory.
@@ -1335,7 +1336,7 @@ func buildAgntSystemPrompt(socketPath string) string {
 	// running (e.g. a previous session left processes alive) we get their
 	// state. If not, the config-based prompt is sufficient — startDaemonSession
 	// will start the daemon and trigger autostart after the PTY launches.
-	client := daemon.NewClient(daemon.WithSocketPath(socketPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(socketPath))
 	if err := client.Connect(); err != nil {
 		return basePrompt
 	}

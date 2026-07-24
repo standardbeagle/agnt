@@ -14,6 +14,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/go-cli-server/process"
 
 	"github.com/spf13/cobra"
@@ -77,7 +78,7 @@ or crashed sessions. Skips the current active daemon.`,
 var daemonSocketPathCmd = &cobra.Command{
 	Use:   "socket-path",
 	Short: "Print the daemon's default unix socket path",
-	Long: `Print daemon.DefaultSocketPath() to stdout, one line, nothing else.
+	Long: `Print daemonclient.DefaultSocketPath() to stdout, one line, nothing else.
 
 Used by 'agnt ssh' to discover the remote daemon's socket path over an
 existing SSH connection (exec'd on the remote side) before opening a
@@ -96,13 +97,13 @@ func init() {
 }
 
 func runDaemonSocketPath(cmd *cobra.Command, args []string) {
-	fmt.Println(daemon.DefaultSocketPath())
+	fmt.Println(daemonclient.DefaultSocketPath())
 }
 
 func getSocketPath(cmd *cobra.Command) string {
 	socketPath, _ := cmd.Root().PersistentFlags().GetString("socket")
 	if socketPath == "" {
-		socketPath = daemon.DefaultSocketPath()
+		socketPath = daemonclient.DefaultSocketPath()
 	}
 	return socketPath
 }
@@ -198,7 +199,7 @@ func runDaemonStart(cmd *cobra.Command, args []string) {
 func runDaemonStop(cmd *cobra.Command, args []string) {
 	socketPath := getSocketPath(cmd)
 
-	client := daemon.NewClient(daemon.WithSocketPath(socketPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(socketPath))
 	if err := client.Connect(); err != nil {
 		fmt.Fprintf(os.Stderr, "Daemon is not running: %v\n", err)
 		os.Exit(1)
@@ -216,7 +217,7 @@ func runDaemonStop(cmd *cobra.Command, args []string) {
 	// are not delivered and the process could linger.
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
-		if !daemon.IsRunning(socketPath) {
+		if !daemonclient.IsRunning(socketPath) {
 			fmt.Println("Daemon stopped")
 			return
 		}
@@ -231,14 +232,14 @@ func runDaemonRestart(cmd *cobra.Command, args []string) {
 	socketPath := getSocketPath(cmd)
 
 	// Try to stop existing daemon
-	client := daemon.NewClient(daemon.WithSocketPath(socketPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(socketPath))
 	if err := client.Connect(); err == nil {
 		_ = client.Shutdown()
 		client.Close()
 		// Wait for the daemon to actually stop
 		deadline := time.Now().Add(5 * time.Second)
 		for time.Now().Before(deadline) {
-			if !daemon.IsRunning(socketPath) {
+			if !daemonclient.IsRunning(socketPath) {
 				break
 			}
 			time.Sleep(100 * time.Millisecond)
@@ -252,7 +253,7 @@ func runDaemonRestart(cmd *cobra.Command, args []string) {
 func runDaemonStatus(cmd *cobra.Command, args []string) {
 	socketPath := getSocketPath(cmd)
 
-	if daemon.IsRunning(socketPath) {
+	if daemonclient.IsRunning(socketPath) {
 		fmt.Println("Daemon is running")
 		fmt.Printf("Socket: %s\n", socketPath)
 		os.Exit(0)
@@ -265,7 +266,7 @@ func runDaemonStatus(cmd *cobra.Command, args []string) {
 func runDaemonInfo(cmd *cobra.Command, args []string) {
 	socketPath := getSocketPath(cmd)
 
-	client := daemon.NewClient(daemon.WithSocketPath(socketPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(socketPath))
 	if err := client.Connect(); err != nil {
 		fmt.Fprintf(os.Stderr, "Daemon is not running: %v\n", err)
 		os.Exit(1)
@@ -319,7 +320,7 @@ func runDaemonCleanup(cmd *cobra.Command, args []string) {
 
 		// Still check for general zombie daemons via socket library
 		socketPath := getSocketPath(cmd)
-		cleaned := daemon.CleanupZombieDaemons(socketPath)
+		cleaned := daemonclient.CleanupZombieDaemons(socketPath)
 		if cleaned > 0 {
 			fmt.Printf("Cleaned up %d stale socket(s).\n", cleaned)
 		}
@@ -368,7 +369,7 @@ func runDaemonCleanup(cmd *cobra.Command, args []string) {
 
 	// Also clean up stale sockets via socket library
 	socketPath := getSocketPath(cmd)
-	cleaned := daemon.CleanupZombieDaemons(socketPath)
+	cleaned := daemonclient.CleanupZombieDaemons(socketPath)
 	if cleaned > 0 {
 		fmt.Printf("Cleaned up %d stale socket(s).\n", cleaned)
 	}

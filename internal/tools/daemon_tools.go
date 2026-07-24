@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
@@ -20,8 +20,8 @@ import (
 
 // DaemonTools wraps a daemon client for MCP tool handlers.
 type DaemonTools struct {
-	client  *daemon.ResilientClient
-	config  daemon.AutoStartConfig
+	client  *daemonclient.ResilientClient
+	config  daemonclient.AutoStartConfig
 	version string // Client version for validation
 
 	// Session management
@@ -46,7 +46,7 @@ type DaemonTools struct {
 
 // NewDaemonTools creates a new daemon tools wrapper with auto-start and version checking.
 // The version parameter should be the current binary version (e.g., "0.6.5").
-func NewDaemonTools(config daemon.AutoStartConfig, version string) *DaemonTools {
+func NewDaemonTools(config daemonclient.AutoStartConfig, version string) *DaemonTools {
 	return &DaemonTools{
 		config:  config,
 		version: version,
@@ -126,7 +126,7 @@ func (dt *DaemonTools) ensureConnected() error {
 	}
 
 	// Create ResilientClient with version checking and auto-upgrade
-	resilientConfig := daemon.DefaultResilientClientConfig()
+	resilientConfig := daemonclient.DefaultResilientClientConfig()
 	resilientConfig.AutoStartConfig = dt.config
 	resilientConfig.ClientVersion = dt.version
 
@@ -136,7 +136,7 @@ func (dt *DaemonTools) ensureConnected() error {
 		fmt.Fprintf(os.Stderr, "[agnt] Triggering automatic daemon upgrade...\n")
 
 		// Create upgrader
-		upgrader := daemon.NewDaemonUpgrader(daemon.UpgradeConfig{
+		upgrader := daemonclient.NewDaemonUpgrader(daemonclient.UpgradeConfig{
 			SocketPath:      dt.config.SocketPath,
 			Timeout:         30 * time.Second,
 			GracefulTimeout: 5 * time.Second,
@@ -156,7 +156,7 @@ func (dt *DaemonTools) ensureConnected() error {
 	}
 
 	// Create and connect ResilientClient
-	client := daemon.NewResilientClient(resilientConfig)
+	client := daemonclient.NewResilientClient(resilientConfig)
 	if err := client.Connect(); err != nil {
 		return fmt.Errorf("failed to connect to daemon: %w", err)
 	}
@@ -189,7 +189,7 @@ func (dt *DaemonTools) RunAutostart(projectDir string) (map[string]interface{}, 
 
 // ReplaytestLogClient lazily resolves a connected daemon client for the
 // replaytest record/stop actions, ensuring the daemon connection is live before
-// returning it. The returned *daemon.Client satisfies replaytestLogClient.
+// returning it. The returned *daemonclient.Client satisfies replaytestLogClient.
 func (dt *DaemonTools) ReplaytestLogClient() (replaytestLogClient, error) {
 	if err := dt.ensureConnected(); err != nil {
 		return nil, err
@@ -238,7 +238,7 @@ func (dt *DaemonTools) StartChannelSink(server *mcp.Server, cfg *config.ChannelC
 				return
 			}
 			// Create a raw client for streaming (dedicated socket per stream).
-			client := daemon.NewClient(daemon.WithSocketPath(dt.config.SocketPath))
+			client := daemonclient.NewClient(daemonclient.WithSocketPath(dt.config.SocketPath))
 			err := client.StreamEvents(ctx, filter, func(entry proxy.LogEntry) error {
 				sink.HandleEntry(ctx, entry)
 				return nil
@@ -279,7 +279,7 @@ func (dt *DaemonTools) StartIncidentDigestSink(server *mcp.Server) context.Cance
 			if ctx.Err() != nil {
 				return
 			}
-			client := daemon.NewClient(daemon.WithSocketPath(dt.config.SocketPath))
+			client := daemonclient.NewClient(daemonclient.WithSocketPath(dt.config.SocketPath))
 			err := client.StreamEvents(ctx, filter, func(entry proxy.LogEntry) error {
 				if entry.Type != proxy.LogTypeIncidentDigest || entry.Custom == nil {
 					return nil

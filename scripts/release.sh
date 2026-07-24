@@ -61,9 +61,10 @@ fi
 echo "Updating cmd/agnt/main.go..."
 sed -i "s/appVersion = \".*\"/appVersion = \"$NEW_VERSION\"/" cmd/agnt/main.go
 
-# Update Go version (daemon.go)
+# Update Go version (daemon.go + daemonclient/upgrade.go — kept in sync deliberately)
 echo "Updating internal/daemon/daemon.go..."
 sed -i "s/var Version = \".*\"/var Version = \"$NEW_VERSION\"/" internal/daemon/daemon.go
+sed -i "s/var Version = \".*\"/var Version = \"$NEW_VERSION\"/" internal/daemonclient/upgrade.go
 
 # Update npm package version
 echo "Updating npm/agnt/package.json..."
@@ -98,6 +99,7 @@ echo ""
 echo "Version files updated:"
 grep 'appVersion = ' cmd/agnt/main.go
 grep 'var Version = ' internal/daemon/daemon.go
+grep 'var Version = ' internal/daemonclient/upgrade.go
 grep '"version"' npm/agnt/package.json
 grep '^version = ' python/agnt/pyproject.toml
 grep '__version__ = ' python/agnt/src/agnt/__init__.py

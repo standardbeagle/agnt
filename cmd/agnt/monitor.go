@@ -12,7 +12,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/spf13/cobra"
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
 )
@@ -62,7 +62,7 @@ func runMonitor(cmd *cobra.Command, args []string) error {
 	defer cancel()
 
 	socketPath := getSocketPath(cmd)
-	client := daemon.NewClient(daemon.WithSocketPath(socketPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(socketPath))
 
 	reconnectDelay := 2 * time.Second
 	for {
@@ -131,7 +131,7 @@ func (c *mutationCoalescer) flush() string {
 }
 
 // streamOnce connects to the daemon and streams events until an error or cancellation.
-func streamOnce(ctx context.Context, client *daemon.Client, filter protocol.StreamEventFilter) error {
+func streamOnce(ctx context.Context, client *daemonclient.Client, filter protocol.StreamEventFilter) error {
 	if err := client.Connect(); err != nil {
 		return fmt.Errorf("connect failed: %w", err)
 	}

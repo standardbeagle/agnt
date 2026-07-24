@@ -8,6 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -529,7 +531,7 @@ func TestStateManager_PathTraversal_ProxyID(t *testing.T) {
 func TestDefaultSocketPath_NoTraversal(t *testing.T) {
 	t.Parallel()
 	// Socket path should be under a controlled directory
-	path := DefaultSocketPath()
+	path := daemonclient.DefaultSocketPath()
 	assert.NotEmpty(t, path)
 	// Should not contain unresolved traversal
 	assert.NotContains(t, filepath.Clean(path), "..")

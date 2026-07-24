@@ -12,6 +12,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/standardbeagle/go-cli-server/process"
 	"github.com/stretchr/testify/require"
 )
@@ -23,7 +25,7 @@ func cleanupTestDaemon(t *testing.T, sockPath string) {
 	t.Helper()
 
 	// Try graceful shutdown first
-	_ = StopDaemon(sockPath)
+	_ = daemonclient.StopDaemon(sockPath)
 	time.Sleep(200 * time.Millisecond)
 
 	// Force kill any process still using this socket path
@@ -111,11 +113,11 @@ func TestDaemonUpgrade_FullCycle(t *testing.T) {
 	defer func() { cleanupTestDaemon(t, sockPath) }()
 
 	// Wait for daemon to be ready
-	require.Eventually(t, func() bool { return IsRunning(sockPath) },
+	require.Eventually(t, func() bool { return daemonclient.IsRunning(sockPath) },
 		5*time.Second, 20*time.Millisecond, "daemon not running after start")
 
 	// Get daemon info
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
 		t.Fatalf("Failed to connect to daemon: %v", err)
 	}
@@ -131,7 +133,7 @@ func TestDaemonUpgrade_FullCycle(t *testing.T) {
 	initialUptime := info.Uptime
 
 	// Create upgrader
-	upgrader := NewDaemonUpgrader(UpgradeConfig{
+	upgrader := daemonclient.NewDaemonUpgrader(daemonclient.UpgradeConfig{
 		SocketPath:      sockPath,
 		NewBinaryPath:   daemonPath, // Use actual agnt binary
 		Timeout:         10 * time.Second,
@@ -150,12 +152,12 @@ func TestDaemonUpgrade_FullCycle(t *testing.T) {
 	}
 
 	// Verify new daemon is running
-	if !IsRunning(sockPath) {
+	if !daemonclient.IsRunning(sockPath) {
 		t.Fatal("Daemon not running after upgrade")
 	}
 
 	// Connect to new daemon
-	client2 := NewClient(WithSocketPath(sockPath))
+	client2 := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	if err := client2.Connect(); err != nil {
 		t.Fatalf("Failed to connect to new daemon: %v", err)
 	}
@@ -169,14 +171,14 @@ func TestDaemonUpgrade_FullCycle(t *testing.T) {
 
 	t.Logf("Post-upgrade daemon version: %s", info2.Version)
 
-	// Version should match the binary version (not the initial in-memory daemon version)
+	// daemonclient.Version should match the binary version (not the initial in-memory daemon version)
 	// During development, the in-memory daemon may have a different version than the binary
 	if info2.Version != binaryVersion {
 		t.Errorf("Version mismatch after upgrade: expected %s (from binary), got %s",
 			binaryVersion, info2.Version)
 	}
 
-	// Version change already proves restart; uptime comparison is racy
+	// daemonclient.Version change already proves restart; uptime comparison is racy
 	// (initial daemon may be measured at very low uptime, new daemon may exceed it
 	// depending on upgrade duration). Log for observability only.
 	t.Logf("Uptime after upgrade: %v (initial was %v)", info2.Uptime, initialUptime)
@@ -209,11 +211,11 @@ func TestUpgradeLock_ConcurrentAttempts(t *testing.T) {
 	})
 	defer func() { cleanupTestDaemon(t, sockPath) }()
 
-	require.Eventually(t, func() bool { return IsRunning(sockPath) },
+	require.Eventually(t, func() bool { return daemonclient.IsRunning(sockPath) },
 		5*time.Second, 20*time.Millisecond, "daemon not running after start")
 
 	// Create two upgraders
-	upgrader1 := NewDaemonUpgrader(UpgradeConfig{
+	upgrader1 := daemonclient.NewDaemonUpgrader(daemonclient.UpgradeConfig{
 		SocketPath:      sockPath,
 		NewBinaryPath:   daemonPath, // Use actual agnt binary
 		Timeout:         10 * time.Second,
@@ -222,7 +224,7 @@ func TestUpgradeLock_ConcurrentAttempts(t *testing.T) {
 		Verbose:         false,
 	})
 
-	upgrader2 := NewDaemonUpgrader(UpgradeConfig{
+	upgrader2 := daemonclient.NewDaemonUpgrader(daemonclient.UpgradeConfig{
 		SocketPath:      sockPath,
 		NewBinaryPath:   daemonPath, // Use actual agnt binary
 		Timeout:         10 * time.Second,
@@ -286,14 +288,14 @@ func TestUpgradeStaleSocket(t *testing.T) {
 	listener.Close()
 
 	// Verify daemon is not running
-	if IsRunning(sockPath) {
+	if daemonclient.IsRunning(sockPath) {
 		t.Fatal("Daemon should not be running with stale socket")
 	}
 
 	defer func() { cleanupTestDaemon(t, sockPath) }()
 
 	// Create upgrader
-	upgrader := NewDaemonUpgrader(UpgradeConfig{
+	upgrader := daemonclient.NewDaemonUpgrader(daemonclient.UpgradeConfig{
 		SocketPath:      sockPath,
 		NewBinaryPath:   daemonPath, // Use actual agnt binary
 		Timeout:         10 * time.Second,
@@ -312,7 +314,7 @@ func TestUpgradeStaleSocket(t *testing.T) {
 	}
 
 	// Verify new daemon is running
-	if !IsRunning(sockPath) {
+	if !daemonclient.IsRunning(sockPath) {
 		t.Fatal("Daemon not running after upgrade")
 	}
 	// Cleanup is handled by defer
@@ -344,11 +346,11 @@ func TestUpgradeVersionCheck(t *testing.T) {
 	})
 	defer func() { cleanupTestDaemon(t, sockPath) }()
 
-	require.Eventually(t, func() bool { return IsRunning(sockPath) },
+	require.Eventually(t, func() bool { return daemonclient.IsRunning(sockPath) },
 		5*time.Second, 20*time.Millisecond, "daemon not running after start")
 
 	// Create upgrader WITHOUT force flag
-	upgrader := NewDaemonUpgrader(UpgradeConfig{
+	upgrader := daemonclient.NewDaemonUpgrader(daemonclient.UpgradeConfig{
 		SocketPath:      sockPath,
 		NewBinaryPath:   daemonPath, // Use actual agnt binary
 		Timeout:         10 * time.Second,
@@ -367,7 +369,7 @@ func TestUpgradeVersionCheck(t *testing.T) {
 	}
 
 	// Daemon should still be running
-	if !IsRunning(sockPath) {
+	if !daemonclient.IsRunning(sockPath) {
 		t.Fatal("Daemon not running after upgrade")
 	}
 

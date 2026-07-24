@@ -11,6 +11,7 @@ import (
 	"github.com/creack/pty"
 	"github.com/spf13/cobra"
 	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/protocol"
 )
 
@@ -52,7 +53,7 @@ func TestAttachAndSessionHostsCommandsExposeRemoteSurface(t *testing.T) {
 	project := t.TempDir()
 	socketPath := filepath.Join(t.TempDir(), "ssh-fixture-host.sock")
 	_ = daemon.NewForTest(t, daemon.DaemonConfig{SocketPath: socketPath})
-	client := daemon.NewClient(daemon.WithSocketPath(socketPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(socketPath))
 	if err := client.Connect(); err != nil {
 		t.Fatal(err)
 	}

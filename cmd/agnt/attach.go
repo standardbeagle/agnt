@@ -15,7 +15,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/standardbeagle/agnt/internal/config"
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/sessionhost"
 )
@@ -23,7 +23,7 @@ import (
 // Platform-specific entry point, implemented in attach_unix.go (real raw-mode
 // relay) and attach_windows.go (clear stub — see task Scope note on native
 // Windows attach being deferred).
-type attachTerminal func(client *daemon.Client, sessionID string, detachChord []byte) error
+type attachTerminal func(client *daemonclient.Client, sessionID string, detachChord []byte) error
 
 var runAttachTerminal attachTerminal
 
@@ -116,7 +116,7 @@ func parseCtrlToken(tok string) (byte, error) {
 func runAttach(cmd *cobra.Command, args []string) error {
 	target := args[0]
 	socketPath := getSocketPath(cmd)
-	client := daemon.NewClient(daemon.WithSocketPath(socketPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(socketPath))
 	if err := client.Connect(); err != nil {
 		return fmt.Errorf("daemon is not running: %v", err)
 	}
@@ -146,7 +146,7 @@ func attachTerminalTitle(session string) string {
 // match among project-scoped sessions, falling back to a global search
 // (a detachable session outlives the attaching client's own directory, so
 // it may have been created from elsewhere).
-func resolveSessionHostID(client *daemon.Client, cwd, target string) (string, error) {
+func resolveSessionHostID(client *daemonclient.Client, cwd, target string) (string, error) {
 	result, err := client.SessionHostList(protocol.DirectoryFilter{Directory: cwd})
 	if err != nil {
 		return "", fmt.Errorf("failed to list session-host sessions: %v", err)
@@ -292,7 +292,7 @@ func panicSafeRestore(restore func(), fn func()) {
 
 // relayAttachInput is platform-neutral: console preparation is owned by the
 // platform entry point, while byte/chord behavior is identical everywhere.
-func relayAttachInput(in io.Reader, client *daemon.Client, sessionID, attachID string, isPrimary bool, chord []byte) error {
+func relayAttachInput(in io.Reader, client *daemonclient.Client, sessionID, attachID string, isPrimary bool, chord []byte) error {
 	scanner := newChordCarryScanner(chord)
 	buf := make([]byte, 4096)
 	for {
@@ -326,7 +326,7 @@ type attachInfo struct {
 // leaves the daemon-owned session running. A server/frame error wins whenever
 // it is already observable, and context cancellation is normalized to clean
 // exit after local EOF/detach.
-func runAttachedSession(client *daemon.Client, sessionID string, detachChord []byte, input io.Reader, restore func(), interruptInput func() error, watchResize func(context.Context, func(int, int)) func()) error {
+func runAttachedSession(client *daemonclient.Client, sessionID string, detachChord []byte, input io.Reader, restore func(), interruptInput func() error, watchResize func(context.Context, func(int, int)) func()) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	attachedCh := make(chan attachInfo, 1)

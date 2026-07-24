@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -668,14 +669,14 @@ func (e errReader) Read(_ []byte) (int, error) { return 0, e.err }
 // --- probe HookSend sentinels from this package ----------------------------
 
 // TestHook_UsesDaemonSentinels double-checks that this package really
-// imports daemon.ErrHookDaemonDown / daemon.ErrHookDeadline so a phase-3
+// imports daemonclient.ErrHookDaemonDown / daemonclient.ErrHookDeadline so a phase-3
 // refactor cannot silently drop the wiring.
 func TestHook_UsesDaemonSentinels(t *testing.T) {
-	require.NotNil(t, daemon.ErrHookDaemonDown)
-	require.NotNil(t, daemon.ErrHookDeadline)
+	require.NotNil(t, daemonclient.ErrHookDaemonDown)
+	require.NotNil(t, daemonclient.ErrHookDeadline)
 	assert.True(t, errors.Is(
-		fmt.Errorf("wrap: %w", daemon.ErrHookDaemonDown),
-		daemon.ErrHookDaemonDown,
+		fmt.Errorf("wrap: %w", daemonclient.ErrHookDaemonDown),
+		daemonclient.ErrHookDaemonDown,
 	))
 }
 

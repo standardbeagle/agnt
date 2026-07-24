@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/standardbeagle/agnt/internal/incident"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/stretchr/testify/assert"
@@ -18,7 +20,7 @@ func TestHubIncidents_NoSession_ReturnsError(t *testing.T) {
 	t.Parallel()
 	client := newBootedClient(t)
 
-	_, err := client.conn.Request(protocol.VerbIncidents, protocol.SubVerbQuery).WithJSON(protocol.IncidentQueryFilter{}).JSON()
+	_, err := client.Conn().Request(protocol.VerbIncidents, protocol.SubVerbQuery).WithJSON(protocol.IncidentQueryFilter{}).JSON()
 	assert.Error(t, err, "INCIDENTS QUERY with no session must fail")
 }
 
@@ -29,12 +31,12 @@ func TestHubIncidents_EmptyInbox(t *testing.T) {
 	_, client, tmpDir := newBootedDaemonWithClient(t)
 
 	// Attach to a session.
-	_, err := client.conn.Request("SESSION", "REGISTER", "inc-empty", tmpDir).WithJSON(map[string]interface{}{
+	_, err := client.Conn().Request("SESSION", "REGISTER", "inc-empty", tmpDir).WithJSON(map[string]interface{}{
 		"project_path": tmpDir,
 	}).JSON()
 	require.NoError(t, err)
 
-	result, err := client.conn.Request(protocol.VerbIncidents, protocol.SubVerbQuery).WithJSON(protocol.IncidentQueryFilter{}).JSON()
+	result, err := client.Conn().Request(protocol.VerbIncidents, protocol.SubVerbQuery).WithJSON(protocol.IncidentQueryFilter{}).JSON()
 	require.NoError(t, err)
 
 	incs, _ := result["incidents"].([]interface{})
@@ -48,7 +50,7 @@ func TestHubIncidents_QueryReturnsPublishedEvents(t *testing.T) {
 	d, client, tmpDir := newBootedDaemonWithClient(t)
 
 	// Register a session so conn.SessionCode() is set.
-	_, err := client.conn.Request("SESSION", "REGISTER", "inc-query", tmpDir).WithJSON(map[string]interface{}{
+	_, err := client.Conn().Request("SESSION", "REGISTER", "inc-query", tmpDir).WithJSON(map[string]interface{}{
 		"project_path": tmpDir,
 	}).JSON()
 	require.NoError(t, err)
@@ -75,7 +77,7 @@ func TestHubIncidents_QueryReturnsPublishedEvents(t *testing.T) {
 	}, 2*time.Second, 20*time.Millisecond, "incident never landed in inbox")
 
 	// Query via protocol.
-	result, err := client.conn.Request(protocol.VerbIncidents, protocol.SubVerbQuery).WithJSON(protocol.IncidentQueryFilter{}).JSON()
+	result, err := client.Conn().Request(protocol.VerbIncidents, protocol.SubVerbQuery).WithJSON(protocol.IncidentQueryFilter{}).JSON()
 	require.NoError(t, err)
 
 	incs, ok := result["incidents"].([]interface{})
@@ -93,7 +95,7 @@ func TestHubIncidents_SeverityFilter(t *testing.T) {
 	t.Parallel()
 	d, client, tmpDir := newBootedDaemonWithClient(t)
 
-	_, err := client.conn.Request("SESSION", "REGISTER", "inc-sev", tmpDir).WithJSON(map[string]interface{}{
+	_, err := client.Conn().Request("SESSION", "REGISTER", "inc-sev", tmpDir).WithJSON(map[string]interface{}{
 		"project_path": tmpDir,
 	}).JSON()
 	require.NoError(t, err)
@@ -119,7 +121,7 @@ func TestHubIncidents_SeverityFilter(t *testing.T) {
 	}, 2*time.Second, 20*time.Millisecond, "waiting for both incidents")
 
 	// Filter to errors only via protocol.
-	result, err := client.conn.Request(protocol.VerbIncidents, protocol.SubVerbQuery).WithJSON(protocol.IncidentQueryFilter{
+	result, err := client.Conn().Request(protocol.VerbIncidents, protocol.SubVerbQuery).WithJSON(protocol.IncidentQueryFilter{
 		Severities: []string{"error"},
 	}).JSON()
 	require.NoError(t, err)
@@ -140,7 +142,7 @@ func TestHubIncidents_InboxStatsNewReflectsUnread(t *testing.T) {
 	t.Parallel()
 	d, client, tmpDir := newBootedDaemonWithClient(t)
 
-	_, err := client.conn.Request("SESSION", "REGISTER", "inc-new", tmpDir).WithJSON(map[string]interface{}{
+	_, err := client.Conn().Request("SESSION", "REGISTER", "inc-new", tmpDir).WithJSON(map[string]interface{}{
 		"project_path": tmpDir,
 	}).JSON()
 	require.NoError(t, err)
@@ -171,15 +173,15 @@ func TestHubIncidents_InboxStatsNewReflectsUnread(t *testing.T) {
 	}
 
 	// Unread: new must reflect the 2 unread entries, not 0.
-	res, err := client.conn.Request(protocol.VerbIncidents, protocol.SubVerbQuery).WithJSON(protocol.IncidentQueryFilter{}).JSON()
+	res, err := client.Conn().Request(protocol.VerbIncidents, protocol.SubVerbQuery).WithJSON(protocol.IncidentQueryFilter{}).JSON()
 	require.NoError(t, err)
 	assert.Equal(t, float64(2), statsNew(res), "inbox_stats.new must equal unread count")
 
 	// Drain via a mark_read pull, then re-query: new must drop to 0.
-	_, err = client.conn.Request(protocol.VerbIncidents, protocol.SubVerbQuery).WithJSON(protocol.IncidentQueryFilter{MarkRead: true}).JSON()
+	_, err = client.Conn().Request(protocol.VerbIncidents, protocol.SubVerbQuery).WithJSON(protocol.IncidentQueryFilter{MarkRead: true}).JSON()
 	require.NoError(t, err)
 
-	res, err = client.conn.Request(protocol.VerbIncidents, protocol.SubVerbQuery).WithJSON(protocol.IncidentQueryFilter{}).JSON()
+	res, err = client.Conn().Request(protocol.VerbIncidents, protocol.SubVerbQuery).WithJSON(protocol.IncidentQueryFilter{}).JSON()
 	require.NoError(t, err)
 	assert.Equal(t, float64(0), statsNew(res), "inbox_stats.new must be 0 after inbox drained")
 }
@@ -190,7 +192,7 @@ func TestHubIncidents_SessionLifecycle_AddOnRegister(t *testing.T) {
 	t.Parallel()
 	d, client, tmpDir := newBootedDaemonWithClient(t)
 
-	_, err := client.conn.Request("SESSION", "REGISTER", "inc-reg", tmpDir).WithJSON(map[string]interface{}{
+	_, err := client.Conn().Request("SESSION", "REGISTER", "inc-reg", tmpDir).WithJSON(map[string]interface{}{
 		"project_path": tmpDir,
 	}).JSON()
 	require.NoError(t, err)
@@ -212,17 +214,17 @@ func TestHubIncidents_SessionLifecycle_AttachAddsSession(t *testing.T) {
 	d, client, tmpDir := newBootedDaemonWithClient(t)
 
 	// Register via first client to create the session.
-	_, err := client.conn.Request("SESSION", "REGISTER", "inc-attach", tmpDir).WithJSON(map[string]interface{}{
+	_, err := client.Conn().Request("SESSION", "REGISTER", "inc-attach", tmpDir).WithJSON(map[string]interface{}{
 		"project_path": tmpDir,
 	}).JSON()
 	require.NoError(t, err)
 
 	// Connect a second client and ATTACH.
-	client2 := NewClient(WithSocketPath(d.config.SocketPath))
+	client2 := daemonclient.NewClient(daemonclient.WithSocketPath(d.config.SocketPath))
 	require.NoError(t, client2.Connect())
 	t.Cleanup(func() { _ = client2.Close() })
 
-	_, err = client2.conn.Request("SESSION", "ATTACH", tmpDir).JSON()
+	_, err = client2.Conn().Request("SESSION", "ATTACH", tmpDir).JSON()
 	require.NoError(t, err)
 
 	// Attach is idempotent on the bus — session pipeline still present.

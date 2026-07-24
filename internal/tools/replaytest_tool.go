@@ -18,7 +18,7 @@ import (
 
 // replaytestLogClient is the minimal daemon-client surface record/stop need:
 // a full-fidelity proxy log pull (response bodies intact) and a proxy status
-// lookup (to derive the scenario BaseURL). *daemon.Client satisfies it; tests
+// lookup (to derive the scenario BaseURL). *daemonclient.Client satisfies it; tests
 // inject a fake.
 type replaytestLogClient interface {
 	ProxyLogQueryFull(proxyID string, filter protocol.LogQueryFilter) ([]proxy.LogEntry, int64, int64, error)

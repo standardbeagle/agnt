@@ -7,7 +7,7 @@ import (
 	"testing"
 
 	"github.com/standardbeagle/agnt/internal/config"
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 )
 
 // TestNewDaemonConfig_ThreadsFeedbackLimits pins the config→daemon seam: the
@@ -44,7 +44,7 @@ func TestNewDaemonConfig_ThreadsFeedbackLimits(t *testing.T) {
 // socket path, one line, no decoration, so the caller can use it verbatim
 // as the remote endpoint for a direct-streamlocal channel.
 func TestRunDaemonSocketPath_PrintsDefaultSocketPathOneLine(t *testing.T) {
-	want := daemon.DefaultSocketPath()
+	want := daemonclient.DefaultSocketPath()
 
 	r, w, err := os.Pipe()
 	if err != nil {

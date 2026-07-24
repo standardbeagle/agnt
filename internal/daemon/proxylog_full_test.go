@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/stretchr/testify/require"
@@ -57,7 +59,7 @@ func TestProxyLogQueryFull_PreservesResponseBody(t *testing.T) {
 		ResponseBody:    `{"ok":true}`,
 	})
 
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, client.Connect())
 	defer client.Close()
 	attachProjectSession(t, client, tmpDir)

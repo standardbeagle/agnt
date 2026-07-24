@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
@@ -81,7 +83,7 @@ func TestHubIntegration_CommandDispatch(t *testing.T) {
 	// Test OVERLAY commands through Hub
 	t.Run("OVERLAY", func(t *testing.T) {
 		// GET
-		result, err := client.conn.Request(protocol.VerbOverlay, protocol.SubVerbGet).JSON()
+		result, err := client.Conn().Request(protocol.VerbOverlay, protocol.SubVerbGet).JSON()
 		if err != nil {
 			t.Fatalf("Overlay GET failed: %v", err)
 		}
@@ -94,7 +96,7 @@ func TestHubIntegration_CommandDispatch(t *testing.T) {
 	// Test SESSION commands through Hub
 	t.Run("SESSION", func(t *testing.T) {
 		// LIST (no sessions yet)
-		result, err := client.conn.Request(protocol.VerbSession, protocol.SubVerbList).WithJSON(protocol.DirectoryFilter{Global: true}).JSON()
+		result, err := client.Conn().Request(protocol.VerbSession, protocol.SubVerbList).WithJSON(protocol.DirectoryFilter{Global: true}).JSON()
 		if err != nil {
 			t.Fatalf("Session LIST failed: %v", err)
 		}
@@ -198,7 +200,7 @@ func TestHubIntegration_TunnelCommands(t *testing.T) {
 	// global override now that TUNNEL LIST routes through the session-scope
 	// chokepoint — an unscoped non-global call is rejected fail-loud.
 	t.Run("LIST", func(t *testing.T) {
-		result, err := client.conn.Request("TUNNEL", "LIST").WithJSON(map[string]interface{}{"global": true}).JSON()
+		result, err := client.Conn().Request("TUNNEL", "LIST").WithJSON(map[string]interface{}{"global": true}).JSON()
 		if err != nil {
 			t.Fatalf("Tunnel LIST failed: %v", err)
 		}
@@ -209,7 +211,7 @@ func TestHubIntegration_TunnelCommands(t *testing.T) {
 
 	// Status for non-existent tunnel
 	t.Run("STATUS_NotFound", func(t *testing.T) {
-		_, err := client.conn.Request("TUNNEL", "STATUS", "nonexistent").JSON()
+		_, err := client.Conn().Request("TUNNEL", "STATUS", "nonexistent").JSON()
 		if err == nil {
 			t.Error("Expected error for nonexistent tunnel")
 		}
@@ -217,7 +219,7 @@ func TestHubIntegration_TunnelCommands(t *testing.T) {
 
 	// Stop non-existent tunnel
 	t.Run("STOP_NotFound", func(t *testing.T) {
-		err := client.conn.Request("TUNNEL", "STOP", "nonexistent").OK()
+		err := client.Conn().Request("TUNNEL", "STOP", "nonexistent").OK()
 		if err == nil {
 			t.Error("Expected error for nonexistent tunnel")
 		}
@@ -239,7 +241,7 @@ func TestHubIntegration_ChaosCommands(t *testing.T) {
 
 	// Test CHAOS STATUS
 	t.Run("STATUS", func(t *testing.T) {
-		result, err := client.conn.Request("CHAOS", "STATUS", proxyID).JSON()
+		result, err := client.Conn().Request("CHAOS", "STATUS", proxyID).JSON()
 		if err != nil {
 			t.Fatalf("Chaos STATUS failed: %v", err)
 		}
@@ -250,7 +252,7 @@ func TestHubIntegration_ChaosCommands(t *testing.T) {
 
 	// Test CHAOS ENABLE
 	t.Run("ENABLE", func(t *testing.T) {
-		err := client.conn.Request("CHAOS", "ENABLE", proxyID).OK()
+		err := client.Conn().Request("CHAOS", "ENABLE", proxyID).OK()
 		if err != nil {
 			t.Fatalf("Chaos ENABLE failed: %v", err)
 		}
@@ -258,7 +260,7 @@ func TestHubIntegration_ChaosCommands(t *testing.T) {
 
 	// Verify enabled
 	t.Run("VERIFY_ENABLED", func(t *testing.T) {
-		result, err := client.conn.Request("CHAOS", "STATUS", proxyID).JSON()
+		result, err := client.Conn().Request("CHAOS", "STATUS", proxyID).JSON()
 		if err != nil {
 			t.Fatalf("Chaos STATUS failed: %v", err)
 		}
@@ -269,7 +271,7 @@ func TestHubIntegration_ChaosCommands(t *testing.T) {
 
 	// Test CHAOS DISABLE
 	t.Run("DISABLE", func(t *testing.T) {
-		err := client.conn.Request("CHAOS", "DISABLE", proxyID).OK()
+		err := client.Conn().Request("CHAOS", "DISABLE", proxyID).OK()
 		if err != nil {
 			t.Fatalf("Chaos DISABLE failed: %v", err)
 		}
@@ -277,7 +279,7 @@ func TestHubIntegration_ChaosCommands(t *testing.T) {
 
 	// Test CHAOS LIST-PRESETS
 	t.Run("LIST_PRESETS", func(t *testing.T) {
-		result, err := client.conn.Request("CHAOS", "LIST-PRESETS").JSON()
+		result, err := client.Conn().Request("CHAOS", "LIST-PRESETS").JSON()
 		if err != nil {
 			t.Fatalf("Chaos LIST-PRESETS failed: %v", err)
 		}
@@ -288,7 +290,7 @@ func TestHubIntegration_ChaosCommands(t *testing.T) {
 
 	// Test CHAOS STATS
 	t.Run("STATS", func(t *testing.T) {
-		result, err := client.conn.Request("CHAOS", "STATS", proxyID).JSON()
+		result, err := client.Conn().Request("CHAOS", "STATS", proxyID).JSON()
 		if err != nil {
 			t.Fatalf("Chaos STATS failed: %v", err)
 		}
@@ -300,7 +302,7 @@ func TestHubIntegration_ChaosCommands(t *testing.T) {
 
 	// Test CHAOS LIST-RULES
 	t.Run("LIST_RULES", func(t *testing.T) {
-		result, err := client.conn.Request("CHAOS", "LIST-RULES", proxyID).JSON()
+		result, err := client.Conn().Request("CHAOS", "LIST-RULES", proxyID).JSON()
 		if err != nil {
 			t.Fatalf("Chaos LIST-RULES failed: %v", err)
 		}
@@ -311,7 +313,7 @@ func TestHubIntegration_ChaosCommands(t *testing.T) {
 
 	// Test CHAOS CLEAR
 	t.Run("CLEAR", func(t *testing.T) {
-		err := client.conn.Request("CHAOS", "CLEAR", proxyID).OK()
+		err := client.Conn().Request("CHAOS", "CLEAR", proxyID).OK()
 		if err != nil {
 			t.Fatalf("Chaos CLEAR failed: %v", err)
 		}
@@ -325,7 +327,7 @@ func TestHubIntegration_OverlayCommands(t *testing.T) {
 
 	// Test OVERLAY GET (initially empty)
 	t.Run("GET", func(t *testing.T) {
-		result, err := client.conn.Request("OVERLAY", "GET").JSON()
+		result, err := client.Conn().Request("OVERLAY", "GET").JSON()
 		if err != nil {
 			t.Fatalf("Overlay GET failed: %v", err)
 		}
@@ -334,7 +336,7 @@ func TestHubIntegration_OverlayCommands(t *testing.T) {
 
 	// Test OVERLAY SET (requires JSON data with endpoint field)
 	t.Run("SET", func(t *testing.T) {
-		err := client.conn.Request("OVERLAY", "SET").WithJSON(map[string]interface{}{
+		err := client.Conn().Request("OVERLAY", "SET").WithJSON(map[string]interface{}{
 			"endpoint": "http://localhost:19191",
 		}).OK()
 		if err != nil {
@@ -344,7 +346,7 @@ func TestHubIntegration_OverlayCommands(t *testing.T) {
 
 	// Verify SET worked
 	t.Run("VERIFY_SET", func(t *testing.T) {
-		result, err := client.conn.Request("OVERLAY", "GET").JSON()
+		result, err := client.Conn().Request("OVERLAY", "GET").JSON()
 		if err != nil {
 			t.Fatalf("Overlay GET failed: %v", err)
 		}
@@ -355,7 +357,7 @@ func TestHubIntegration_OverlayCommands(t *testing.T) {
 
 	// Test OVERLAY CLEAR
 	t.Run("CLEAR", func(t *testing.T) {
-		err := client.conn.Request("OVERLAY", "CLEAR").OK()
+		err := client.Conn().Request("OVERLAY", "CLEAR").OK()
 		if err != nil {
 			t.Fatalf("Overlay CLEAR failed: %v", err)
 		}
@@ -367,17 +369,17 @@ func TestHubIntegration_OverlayCommands(t *testing.T) {
 	// otherwise — never fan activity across every project).
 	t.Run("ACTIVITY", func(t *testing.T) {
 		tmpDir := t.TempDir()
-		if _, err := client.conn.Request("SESSION", "REGISTER", "overlay-activity-session", tmpDir).WithJSON(map[string]interface{}{
+		if _, err := client.Conn().Request("SESSION", "REGISTER", "overlay-activity-session", tmpDir).WithJSON(map[string]interface{}{
 			"project_path": tmpDir,
 			"command":      "test-cmd",
 		}).JSON(); err != nil {
 			t.Fatalf("SESSION REGISTER failed: %v", err)
 		}
-		if _, err := client.conn.Request("SESSION", "ATTACH", tmpDir).JSON(); err != nil {
+		if _, err := client.Conn().Request("SESSION", "ATTACH", tmpDir).JSON(); err != nil {
 			t.Fatalf("SESSION ATTACH failed: %v", err)
 		}
 
-		result, err := client.conn.Request("OVERLAY", "ACTIVITY", "true").JSON()
+		result, err := client.Conn().Request("OVERLAY", "ACTIVITY", "true").JSON()
 		if err != nil {
 			t.Fatalf("Overlay ACTIVITY failed: %v", err)
 		}
@@ -458,7 +460,7 @@ func TestHubIntegration_SessionCommands(t *testing.T) {
 
 	// Register a test session (SESSION REGISTER <code> <overlay_path>)
 	t.Run("REGISTER", func(t *testing.T) {
-		result, err := client.conn.Request("SESSION", "REGISTER", "test-session", tmpDir).WithJSON(map[string]interface{}{
+		result, err := client.Conn().Request("SESSION", "REGISTER", "test-session", tmpDir).WithJSON(map[string]interface{}{
 			"project_path": tmpDir,
 			"command":      "test",
 		}).JSON()
@@ -473,7 +475,7 @@ func TestHubIntegration_SessionCommands(t *testing.T) {
 
 	// List sessions
 	t.Run("LIST", func(t *testing.T) {
-		result, err := client.conn.Request("SESSION", "LIST").WithJSON(map[string]interface{}{
+		result, err := client.Conn().Request("SESSION", "LIST").WithJSON(map[string]interface{}{
 			"global": true,
 		}).JSON()
 		if err != nil {
@@ -486,7 +488,7 @@ func TestHubIntegration_SessionCommands(t *testing.T) {
 
 	// Test TASKS (no scheduled tasks)
 	t.Run("TASKS", func(t *testing.T) {
-		result, err := client.conn.Request("SESSION", "TASKS").JSON()
+		result, err := client.Conn().Request("SESSION", "TASKS").JSON()
 		if err != nil {
 			t.Fatalf("Session TASKS failed: %v", err)
 		}
@@ -501,7 +503,7 @@ func TestHubIntegration_CurrentPageCommands(t *testing.T) {
 
 	// List (no proxy)
 	t.Run("LIST_NoProxy", func(t *testing.T) {
-		_, err := client.conn.Request("CURRENTPAGE", "LIST", "nonexistent-proxy").JSON()
+		_, err := client.Conn().Request("CURRENTPAGE", "LIST", "nonexistent-proxy").JSON()
 		// Should fail with proxy not found
 		if err == nil {
 			t.Log("CurrentPage LIST succeeded for nonexistent proxy (unexpected)")
@@ -510,7 +512,7 @@ func TestHubIntegration_CurrentPageCommands(t *testing.T) {
 
 	// Test CLEAR (no pages to clear)
 	t.Run("CLEAR_NoProxy", func(t *testing.T) {
-		err := client.conn.Request("CURRENTPAGE", "CLEAR", "nonexistent-proxy").OK()
+		err := client.Conn().Request("CURRENTPAGE", "CLEAR", "nonexistent-proxy").OK()
 		// Should fail with proxy not found
 		if err != nil {
 			t.Logf("CurrentPage CLEAR error (expected): %v", err)
@@ -538,7 +540,7 @@ func TestHubIntegration_SessionScopedProxyLookup(t *testing.T) {
 		WriteTimeout: 5 * time.Second,
 	})
 
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -562,7 +564,7 @@ func TestHubIntegration_SessionScopedProxyLookup(t *testing.T) {
 
 	// Register a session for project A
 	sessionCode := "test-session-a"
-	_, err = client.conn.Request("SESSION", "REGISTER", sessionCode, projectA).WithJSON(map[string]interface{}{
+	_, err = client.Conn().Request("SESSION", "REGISTER", sessionCode, projectA).WithJSON(map[string]interface{}{
 		"project_path": projectA,
 		"command":      "test",
 	}).JSON()
@@ -571,7 +573,7 @@ func TestHubIntegration_SessionScopedProxyLookup(t *testing.T) {
 	}
 
 	// Attach to the session (sets connection's session code) - uses directory to find session
-	_, err = client.conn.Request("SESSION", "ATTACH", projectA).JSON()
+	_, err = client.Conn().Request("SESSION", "ATTACH", projectA).JSON()
 	if err != nil {
 		t.Fatalf("Session attach failed: %v", err)
 	}
@@ -579,7 +581,7 @@ func TestHubIntegration_SessionScopedProxyLookup(t *testing.T) {
 	// Now lookup with fuzzy "dev" should find only the proxy in project A's path
 	// (not fail with ambiguous error)
 	t.Run("FuzzyLookup_SessionScoped", func(t *testing.T) {
-		result, err := client.conn.Request("CURRENTPAGE", "LIST", "dev").JSON()
+		result, err := client.Conn().Request("CURRENTPAGE", "LIST", "dev").JSON()
 		if err != nil {
 			t.Errorf("Fuzzy lookup 'dev' failed (should be session-scoped): %v", err)
 		} else {
@@ -590,13 +592,13 @@ func TestHubIntegration_SessionScopedProxyLookup(t *testing.T) {
 	// Global lookup with "dev" should still fail with ambiguous
 	t.Run("FuzzyLookup_GlobalAmbiguous", func(t *testing.T) {
 		// Use a fresh client without session attachment
-		client2 := NewClient(WithSocketPath(sockPath))
+		client2 := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 		if err := client2.Connect(); err != nil {
 			t.Fatalf("Failed to connect client2: %v", err)
 		}
 		defer client2.Close()
 
-		_, err := client2.conn.Request("CURRENTPAGE", "LIST", "dev").JSON()
+		_, err := client2.Conn().Request("CURRENTPAGE", "LIST", "dev").JSON()
 		if err == nil {
 			t.Error("Expected ambiguous error for global 'dev' lookup")
 		} else if !strings.Contains(err.Error(), "ambiguous") {
@@ -636,14 +638,14 @@ func TestHubIntegration_ProcErrorPaths(t *testing.T) {
 
 	// Missing action - PROC without sub-verb should return error
 	t.Run("MissingAction", func(t *testing.T) {
-		_, err := client.conn.Request("PROC").JSON()
+		_, err := client.Conn().Request("PROC").JSON()
 		// Hub may return structured error or JSON - just test that we don't panic
 		t.Logf("PROC with no action: err=%v", err)
 	})
 
 	// Invalid action
 	t.Run("InvalidAction", func(t *testing.T) {
-		_, err := client.conn.Request("PROC", "INVALID").JSON()
+		_, err := client.Conn().Request("PROC", "INVALID").JSON()
 		// Hub may return structured error or JSON - just test that we don't panic
 		t.Logf("PROC INVALID: err=%v", err)
 	})
@@ -672,7 +674,7 @@ func TestHubIntegration_ProxyErrorPaths(t *testing.T) {
 
 	// EXEC without proxy ID
 	t.Run("EXEC_MissingID", func(t *testing.T) {
-		_, err := client.conn.Request("PROXY", "EXEC").JSON()
+		_, err := client.Conn().Request("PROXY", "EXEC").JSON()
 		if err == nil {
 			t.Error("Expected error for missing proxy ID")
 		}
@@ -680,7 +682,7 @@ func TestHubIntegration_ProxyErrorPaths(t *testing.T) {
 
 	// TOAST without proxy ID
 	t.Run("TOAST_MissingID", func(t *testing.T) {
-		err := client.conn.Request("PROXY", "TOAST").OK()
+		err := client.Conn().Request("PROXY", "TOAST").OK()
 		if err == nil {
 			t.Error("Expected error for missing proxy ID")
 		}
@@ -688,7 +690,7 @@ func TestHubIntegration_ProxyErrorPaths(t *testing.T) {
 
 	// Invalid action
 	t.Run("InvalidAction", func(t *testing.T) {
-		_, err := client.conn.Request("PROXY", "INVALID").JSON()
+		_, err := client.Conn().Request("PROXY", "INVALID").JSON()
 		// Hub may return structured error or JSON - just test that we don't panic
 		t.Logf("PROXY INVALID: err=%v", err)
 	})
@@ -728,7 +730,7 @@ func TestHubIntegration_ProxyLogCommands(t *testing.T) {
 
 	// SUMMARY
 	t.Run("SUMMARY", func(t *testing.T) {
-		result, err := client.conn.Request("PROXYLOG", "SUMMARY", "test-proxy").JSON()
+		result, err := client.Conn().Request("PROXYLOG", "SUMMARY", "test-proxy").JSON()
 		if err != nil {
 			t.Fatalf("ProxyLog SUMMARY failed: %v", err)
 		}
@@ -737,7 +739,7 @@ func TestHubIntegration_ProxyLogCommands(t *testing.T) {
 
 	// CLEAR
 	t.Run("CLEAR", func(t *testing.T) {
-		err := client.conn.Request("PROXYLOG", "CLEAR", "test-proxy").OK()
+		err := client.Conn().Request("PROXYLOG", "CLEAR", "test-proxy").OK()
 		if err != nil {
 			t.Fatalf("ProxyLog CLEAR failed: %v", err)
 		}
@@ -816,7 +818,7 @@ func TestHubIntegration_ClientMethods(t *testing.T) {
 
 	// Test OverlaySet - use raw request with JSON (client API mismatch)
 	t.Run("OverlaySet", func(t *testing.T) {
-		err := client.conn.Request("OVERLAY", "SET").WithJSON(map[string]interface{}{
+		err := client.Conn().Request("OVERLAY", "SET").WithJSON(map[string]interface{}{
 			"endpoint": "http://localhost:19191",
 		}).OK()
 		if err != nil {
@@ -929,7 +931,7 @@ func TestHubIntegration_ChaosClientMethods(t *testing.T) {
 	_, sockPath := newBootedDaemon(t)
 
 	// Start a proxy first (chaos operations require a proxy)
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -953,7 +955,7 @@ func TestHubIntegration_ChaosClientMethods(t *testing.T) {
 
 	// Test ChaosEnable - handler returns OK
 	t.Run("ChaosEnable", func(t *testing.T) {
-		err := client.conn.Request("CHAOS", "ENABLE", "chaos-test").OK()
+		err := client.Conn().Request("CHAOS", "ENABLE", "chaos-test").OK()
 		if err != nil {
 			t.Fatalf("ChaosEnable failed: %v", err)
 		}
@@ -961,7 +963,7 @@ func TestHubIntegration_ChaosClientMethods(t *testing.T) {
 
 	// Test ChaosDisable - handler returns OK
 	t.Run("ChaosDisable", func(t *testing.T) {
-		err := client.conn.Request("CHAOS", "DISABLE", "chaos-test").OK()
+		err := client.Conn().Request("CHAOS", "DISABLE", "chaos-test").OK()
 		if err != nil {
 			t.Fatalf("ChaosDisable failed: %v", err)
 		}
@@ -996,7 +998,7 @@ func TestHubIntegration_ChaosClientMethods(t *testing.T) {
 
 	// Test ChaosClear - handler returns OK
 	t.Run("ChaosClear", func(t *testing.T) {
-		err := client.conn.Request("CHAOS", "CLEAR", "chaos-test").OK()
+		err := client.Conn().Request("CHAOS", "CLEAR", "chaos-test").OK()
 		if err != nil {
 			t.Fatalf("ChaosClear failed: %v", err)
 		}
@@ -1119,13 +1121,13 @@ func TestHubIntegration_ProxyClientMethods(t *testing.T) {
 	})
 }
 
-// TestHubIntegration_NewClientWithPath tests NewClientWithPath.
+// TestHubIntegration_NewClientWithPath tests daemonclient.NewClientWithPath.
 func TestNewClientWithPath(t *testing.T) {
 	t.Parallel()
 	_, sockPath := newBootedDaemon(t)
 
-	// Test NewClientWithPath
-	client := NewClientWithPath(sockPath)
+	// Test daemonclient.NewClientWithPath
+	client := daemonclient.NewClientWithPath(sockPath)
 	if client == nil {
 		t.Fatal("Expected non-nil client")
 	}
@@ -1273,7 +1275,7 @@ func TestHubIntegration_ChaosExtendedCommands(t *testing.T) {
 
 	// Test CHAOS PRESET
 	t.Run("PRESET", func(t *testing.T) {
-		err := client.conn.Request("CHAOS", "PRESET", proxyID).WithJSON(map[string]interface{}{
+		err := client.Conn().Request("CHAOS", "PRESET", proxyID).WithJSON(map[string]interface{}{
 			"chaos_preset": "mobile-3g",
 		}).OK()
 		if err != nil {
@@ -1283,7 +1285,7 @@ func TestHubIntegration_ChaosExtendedCommands(t *testing.T) {
 
 	// Test CHAOS PRESET with invalid preset
 	t.Run("PRESET_Invalid", func(t *testing.T) {
-		err := client.conn.Request("CHAOS", "PRESET", proxyID).WithJSON(map[string]interface{}{
+		err := client.Conn().Request("CHAOS", "PRESET", proxyID).WithJSON(map[string]interface{}{
 			"chaos_preset": "invalid-preset",
 		}).OK()
 		if err == nil {
@@ -1293,7 +1295,7 @@ func TestHubIntegration_ChaosExtendedCommands(t *testing.T) {
 
 	// Test CHAOS PRESET without chaos_preset field
 	t.Run("PRESET_MissingField", func(t *testing.T) {
-		err := client.conn.Request("CHAOS", "PRESET", proxyID).OK()
+		err := client.Conn().Request("CHAOS", "PRESET", proxyID).OK()
 		if err == nil {
 			t.Error("Expected error for missing chaos_preset")
 		}
@@ -1301,7 +1303,7 @@ func TestHubIntegration_ChaosExtendedCommands(t *testing.T) {
 
 	// Test CHAOS SET
 	t.Run("SET", func(t *testing.T) {
-		err := client.conn.Request("CHAOS", "SET", proxyID).WithJSON(map[string]interface{}{
+		err := client.Conn().Request("CHAOS", "SET", proxyID).WithJSON(map[string]interface{}{
 			"enabled":     true,
 			"global_odds": 0.5,
 		}).OK()
@@ -1312,7 +1314,7 @@ func TestHubIntegration_ChaosExtendedCommands(t *testing.T) {
 
 	// Test CHAOS ADD-RULE
 	t.Run("ADD_RULE", func(t *testing.T) {
-		err := client.conn.Request("CHAOS", "ADD-RULE", proxyID).WithJSON(map[string]interface{}{
+		err := client.Conn().Request("CHAOS", "ADD-RULE", proxyID).WithJSON(map[string]interface{}{
 			"chaos_rule": map[string]interface{}{
 				"id":          "test-rule-1",
 				"type":        "latency",
@@ -1327,7 +1329,7 @@ func TestHubIntegration_ChaosExtendedCommands(t *testing.T) {
 
 	// Test CHAOS ADD-RULE without rule id
 	t.Run("ADD_RULE_MissingID", func(t *testing.T) {
-		err := client.conn.Request("CHAOS", "ADD-RULE", proxyID).WithJSON(map[string]interface{}{
+		err := client.Conn().Request("CHAOS", "ADD-RULE", proxyID).WithJSON(map[string]interface{}{
 			"chaos_rule": map[string]interface{}{
 				"type":    "latency",
 				"enabled": true,
@@ -1340,7 +1342,7 @@ func TestHubIntegration_ChaosExtendedCommands(t *testing.T) {
 
 	// Verify rule was added
 	t.Run("VERIFY_RULE", func(t *testing.T) {
-		result, err := client.conn.Request("CHAOS", "LIST-RULES", proxyID).JSON()
+		result, err := client.Conn().Request("CHAOS", "LIST-RULES", proxyID).JSON()
 		if err != nil {
 			t.Fatalf("Chaos LIST-RULES failed: %v", err)
 		}
@@ -1349,7 +1351,7 @@ func TestHubIntegration_ChaosExtendedCommands(t *testing.T) {
 
 	// Test CHAOS REMOVE-RULE
 	t.Run("REMOVE_RULE", func(t *testing.T) {
-		err := client.conn.Request("CHAOS", "REMOVE-RULE", proxyID).WithJSON(map[string]interface{}{
+		err := client.Conn().Request("CHAOS", "REMOVE-RULE", proxyID).WithJSON(map[string]interface{}{
 			"chaos_rule_id": "test-rule-1",
 		}).OK()
 		if err != nil {
@@ -1359,7 +1361,7 @@ func TestHubIntegration_ChaosExtendedCommands(t *testing.T) {
 
 	// Test CHAOS REMOVE-RULE without rule id
 	t.Run("REMOVE_RULE_MissingID", func(t *testing.T) {
-		err := client.conn.Request("CHAOS", "REMOVE-RULE", proxyID).OK()
+		err := client.Conn().Request("CHAOS", "REMOVE-RULE", proxyID).OK()
 		if err == nil {
 			t.Error("Expected error for missing chaos_rule_id")
 		}
@@ -1367,7 +1369,7 @@ func TestHubIntegration_ChaosExtendedCommands(t *testing.T) {
 
 	// Test CHAOS without proxy id
 	t.Run("PRESET_MissingProxyID", func(t *testing.T) {
-		err := client.conn.Request("CHAOS", "PRESET").OK()
+		err := client.Conn().Request("CHAOS", "PRESET").OK()
 		if err == nil {
 			t.Error("Expected error for missing proxy id")
 		}
@@ -1392,7 +1394,7 @@ func TestHubIntegration_SessionExtendedCommands(t *testing.T) {
 
 	// Test SESSION SEND (will fail because no overlay is running, but exercises the handler)
 	t.Run("SEND", func(t *testing.T) {
-		_, err := client.conn.Request("SESSION", "SEND", sessionCode).WithData([]byte("Test message")).JSON()
+		_, err := client.Conn().Request("SESSION", "SEND", sessionCode).WithData([]byte("Test message")).JSON()
 		// Expected to fail because no overlay is running
 		if err != nil {
 			t.Logf("Session SEND error (expected - no overlay): %v", err)
@@ -1401,7 +1403,7 @@ func TestHubIntegration_SessionExtendedCommands(t *testing.T) {
 
 	// Test SESSION SEND without code
 	t.Run("SEND_MissingCode", func(t *testing.T) {
-		_, err := client.conn.Request("SESSION", "SEND").JSON()
+		_, err := client.Conn().Request("SESSION", "SEND").JSON()
 		if err == nil {
 			t.Error("Expected error for missing session code")
 		}
@@ -1409,7 +1411,7 @@ func TestHubIntegration_SessionExtendedCommands(t *testing.T) {
 
 	// Test SESSION SEND without message
 	t.Run("SEND_MissingMessage", func(t *testing.T) {
-		_, err := client.conn.Request("SESSION", "SEND", sessionCode).JSON()
+		_, err := client.Conn().Request("SESSION", "SEND", sessionCode).JSON()
 		if err == nil {
 			t.Error("Expected error for missing message")
 		}
@@ -1417,7 +1419,7 @@ func TestHubIntegration_SessionExtendedCommands(t *testing.T) {
 
 	// Test SESSION SCHEDULE
 	t.Run("SCHEDULE", func(t *testing.T) {
-		result, err := client.conn.Request("SESSION", "SCHEDULE", sessionCode, "1h").WithData([]byte("Scheduled message")).JSON()
+		result, err := client.Conn().Request("SESSION", "SCHEDULE", sessionCode, "1h").WithData([]byte("Scheduled message")).JSON()
 		if err != nil {
 			t.Fatalf("Session SCHEDULE failed: %v", err)
 		}
@@ -1429,7 +1431,7 @@ func TestHubIntegration_SessionExtendedCommands(t *testing.T) {
 
 	// Test SESSION SCHEDULE with invalid duration
 	t.Run("SCHEDULE_InvalidDuration", func(t *testing.T) {
-		_, err := client.conn.Request("SESSION", "SCHEDULE", sessionCode, "invalid").WithData([]byte("Message")).JSON()
+		_, err := client.Conn().Request("SESSION", "SCHEDULE", sessionCode, "invalid").WithData([]byte("Message")).JSON()
 		if err == nil {
 			t.Error("Expected error for invalid duration")
 		}
@@ -1437,7 +1439,7 @@ func TestHubIntegration_SessionExtendedCommands(t *testing.T) {
 
 	// Test SESSION SCHEDULE without code
 	t.Run("SCHEDULE_MissingCode", func(t *testing.T) {
-		_, err := client.conn.Request("SESSION", "SCHEDULE").JSON()
+		_, err := client.Conn().Request("SESSION", "SCHEDULE").JSON()
 		if err == nil {
 			t.Error("Expected error for missing args")
 		}
@@ -1445,7 +1447,7 @@ func TestHubIntegration_SessionExtendedCommands(t *testing.T) {
 
 	// Test SESSION SCHEDULE without message
 	t.Run("SCHEDULE_MissingMessage", func(t *testing.T) {
-		_, err := client.conn.Request("SESSION", "SCHEDULE", sessionCode, "1h").JSON()
+		_, err := client.Conn().Request("SESSION", "SCHEDULE", sessionCode, "1h").JSON()
 		if err == nil {
 			t.Error("Expected error for missing message")
 		}
@@ -1453,7 +1455,7 @@ func TestHubIntegration_SessionExtendedCommands(t *testing.T) {
 
 	// Get tasks to find a task_id for cancel
 	t.Run("GET_TASKS", func(t *testing.T) {
-		result, err := client.conn.Request("SESSION", "TASKS").JSON()
+		result, err := client.Conn().Request("SESSION", "TASKS").JSON()
 		if err != nil {
 			t.Fatalf("Session TASKS failed: %v", err)
 		}
@@ -1463,7 +1465,7 @@ func TestHubIntegration_SessionExtendedCommands(t *testing.T) {
 	// Test SESSION CANCEL (with a task we just scheduled)
 	t.Run("CANCEL", func(t *testing.T) {
 		// First get the task list
-		result, err := client.conn.Request("SESSION", "TASKS").JSON()
+		result, err := client.Conn().Request("SESSION", "TASKS").JSON()
 		if err != nil {
 			t.Fatalf("Session TASKS failed: %v", err)
 		}
@@ -1471,7 +1473,7 @@ func TestHubIntegration_SessionExtendedCommands(t *testing.T) {
 		if ok && len(tasks) > 0 {
 			task := tasks[0].(map[string]interface{})
 			taskID := task["id"].(string)
-			err := client.conn.Request("SESSION", "CANCEL", taskID).OK()
+			err := client.Conn().Request("SESSION", "CANCEL", taskID).OK()
 			if err != nil {
 				t.Fatalf("Session CANCEL failed: %v", err)
 			}
@@ -1482,7 +1484,7 @@ func TestHubIntegration_SessionExtendedCommands(t *testing.T) {
 
 	// Test SESSION CANCEL without task_id
 	t.Run("CANCEL_MissingTaskID", func(t *testing.T) {
-		err := client.conn.Request("SESSION", "CANCEL").OK()
+		err := client.Conn().Request("SESSION", "CANCEL").OK()
 		if err == nil {
 			t.Error("Expected error for missing task_id")
 		}
@@ -1490,7 +1492,7 @@ func TestHubIntegration_SessionExtendedCommands(t *testing.T) {
 
 	// Test SESSION CANCEL with nonexistent task
 	t.Run("CANCEL_NotFound", func(t *testing.T) {
-		err := client.conn.Request("SESSION", "CANCEL", "nonexistent-task-id").OK()
+		err := client.Conn().Request("SESSION", "CANCEL", "nonexistent-task-id").OK()
 		if err == nil {
 			t.Error("Expected error for nonexistent task")
 		}
@@ -1498,7 +1500,7 @@ func TestHubIntegration_SessionExtendedCommands(t *testing.T) {
 
 	// Test SESSION ATTACH
 	t.Run("ATTACH", func(t *testing.T) {
-		result, err := client.conn.Request("SESSION", "ATTACH", tmpDir).JSON()
+		result, err := client.Conn().Request("SESSION", "ATTACH", tmpDir).JSON()
 		if err != nil {
 			t.Fatalf("Session ATTACH failed: %v", err)
 		}
@@ -1510,7 +1512,7 @@ func TestHubIntegration_SessionExtendedCommands(t *testing.T) {
 
 	// Test SESSION ATTACH without directory
 	t.Run("ATTACH_MissingDir", func(t *testing.T) {
-		_, err := client.conn.Request("SESSION", "ATTACH").JSON()
+		_, err := client.Conn().Request("SESSION", "ATTACH").JSON()
 		if err == nil {
 			t.Error("Expected error for missing directory")
 		}
@@ -1518,7 +1520,7 @@ func TestHubIntegration_SessionExtendedCommands(t *testing.T) {
 
 	// Test SESSION ATTACH with nonexistent session directory
 	t.Run("ATTACH_NotFound", func(t *testing.T) {
-		_, err := client.conn.Request("SESSION", "ATTACH", "/nonexistent/directory").JSON()
+		_, err := client.Conn().Request("SESSION", "ATTACH", "/nonexistent/directory").JSON()
 		if err == nil {
 			t.Error("Expected error for nonexistent session")
 		}
@@ -1548,7 +1550,7 @@ func TestHubIntegration_CurrentPageSummary(t *testing.T) {
 
 	// Test CURRENTPAGE SUMMARY without args
 	t.Run("SUMMARY_MissingArgs", func(t *testing.T) {
-		_, err := client.conn.Request("CURRENTPAGE", "SUMMARY").JSON()
+		_, err := client.Conn().Request("CURRENTPAGE", "SUMMARY").JSON()
 		if err == nil {
 			t.Error("Expected error for missing args")
 		}
@@ -1556,7 +1558,7 @@ func TestHubIntegration_CurrentPageSummary(t *testing.T) {
 
 	// Test CURRENTPAGE SUMMARY with only proxy_id
 	t.Run("SUMMARY_MissingSessionID", func(t *testing.T) {
-		_, err := client.conn.Request("CURRENTPAGE", "SUMMARY", proxyID).JSON()
+		_, err := client.Conn().Request("CURRENTPAGE", "SUMMARY", proxyID).JSON()
 		if err == nil {
 			t.Error("Expected error for missing session_id")
 		}
@@ -1564,7 +1566,7 @@ func TestHubIntegration_CurrentPageSummary(t *testing.T) {
 
 	// Test CURRENTPAGE SUMMARY with nonexistent session
 	t.Run("SUMMARY_NotFound", func(t *testing.T) {
-		_, err := client.conn.Request("CURRENTPAGE", "SUMMARY", proxyID, "nonexistent-session").JSON()
+		_, err := client.Conn().Request("CURRENTPAGE", "SUMMARY", proxyID, "nonexistent-session").JSON()
 		if err == nil {
 			t.Error("Expected error for nonexistent session")
 		}
@@ -1572,7 +1574,7 @@ func TestHubIntegration_CurrentPageSummary(t *testing.T) {
 
 	// Test CURRENTPAGE LIST
 	t.Run("LIST", func(t *testing.T) {
-		result, err := client.conn.Request("CURRENTPAGE", "LIST", proxyID).JSON()
+		result, err := client.Conn().Request("CURRENTPAGE", "LIST", proxyID).JSON()
 		if err != nil {
 			t.Fatalf("CurrentPage LIST failed: %v", err)
 		}
@@ -1581,7 +1583,7 @@ func TestHubIntegration_CurrentPageSummary(t *testing.T) {
 
 	// Test CURRENTPAGE GET without session
 	t.Run("GET_MissingSession", func(t *testing.T) {
-		_, err := client.conn.Request("CURRENTPAGE", "GET", proxyID).JSON()
+		_, err := client.Conn().Request("CURRENTPAGE", "GET", proxyID).JSON()
 		if err == nil {
 			t.Error("Expected error for missing session_id")
 		}
@@ -1603,7 +1605,7 @@ func TestHubIntegration_ProxyLogSummary(t *testing.T) {
 
 	// Test PROXYLOG SUMMARY
 	t.Run("SUMMARY", func(t *testing.T) {
-		result, err := client.conn.Request("PROXYLOG", "SUMMARY", proxyID).JSON()
+		result, err := client.Conn().Request("PROXYLOG", "SUMMARY", proxyID).JSON()
 		if err != nil {
 			t.Fatalf("ProxyLog SUMMARY failed: %v", err)
 		}
@@ -1612,7 +1614,7 @@ func TestHubIntegration_ProxyLogSummary(t *testing.T) {
 
 	// Test PROXYLOG SUMMARY with detail filter
 	t.Run("SUMMARY_WithDetail", func(t *testing.T) {
-		result, err := client.conn.Request("PROXYLOG", "SUMMARY", proxyID).WithJSON(map[string]interface{}{
+		result, err := client.Conn().Request("PROXYLOG", "SUMMARY", proxyID).WithJSON(map[string]interface{}{
 			"detail": []string{"errors", "http"},
 			"limit":  10,
 		}).JSON()
@@ -1630,7 +1632,7 @@ func TestHubIntegration_TunnelValidation(t *testing.T) {
 
 	// Test TUNNEL START (will fail without cloudflared, but exercises error path)
 	t.Run("START_MissingBinary", func(t *testing.T) {
-		_, err := client.conn.Request("TUNNEL", "START", "val-test-tunnel").WithJSON(map[string]interface{}{
+		_, err := client.Conn().Request("TUNNEL", "START", "val-test-tunnel").WithJSON(map[string]interface{}{
 			"provider":   "cloudflare",
 			"local_port": 8080,
 		}).JSON()
@@ -1642,7 +1644,7 @@ func TestHubIntegration_TunnelValidation(t *testing.T) {
 
 	// Test TUNNEL START missing provider
 	t.Run("START_MissingProvider", func(t *testing.T) {
-		_, err := client.conn.Request("TUNNEL", "START", "val-test-tunnel").WithJSON(map[string]interface{}{
+		_, err := client.Conn().Request("TUNNEL", "START", "val-test-tunnel").WithJSON(map[string]interface{}{
 			"local_port": 8080,
 		}).JSON()
 		if err == nil {
@@ -1652,7 +1654,7 @@ func TestHubIntegration_TunnelValidation(t *testing.T) {
 
 	// Test TUNNEL START missing port
 	t.Run("START_MissingPort", func(t *testing.T) {
-		_, err := client.conn.Request("TUNNEL", "START", "val-test-tunnel").WithJSON(map[string]interface{}{
+		_, err := client.Conn().Request("TUNNEL", "START", "val-test-tunnel").WithJSON(map[string]interface{}{
 			"provider": "cloudflare",
 		}).JSON()
 		if err == nil {
@@ -1683,7 +1685,7 @@ func TestHubIntegration_ProcListFilters(t *testing.T) {
 		WriteTimeout: 5 * time.Second,
 	})
 
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -1718,7 +1720,7 @@ func TestHubIntegration_ProcListFilters(t *testing.T) {
 
 	// Test LIST with global flag
 	t.Run("LIST_Global", func(t *testing.T) {
-		result, err := client.conn.Request("PROC", "LIST").WithJSON(map[string]interface{}{
+		result, err := client.Conn().Request("PROC", "LIST").WithJSON(map[string]interface{}{
 			"global": true,
 		}).JSON()
 		if err != nil {
@@ -1732,7 +1734,7 @@ func TestHubIntegration_ProcListFilters(t *testing.T) {
 
 	// Test LIST with directory filter
 	t.Run("LIST_DirectoryFilter", func(t *testing.T) {
-		result, err := client.conn.Request("PROC", "LIST").WithJSON(map[string]interface{}{
+		result, err := client.Conn().Request("PROC", "LIST").WithJSON(map[string]interface{}{
 			"directory": project1,
 		}).JSON()
 		if err != nil {
@@ -1757,7 +1759,7 @@ func TestHubIntegration_ProcListFilters(t *testing.T) {
 	// can't resolve a project, so the call is rejected fail-loud rather than
 	// silently listing every project's processes.
 	t.Run("LIST_NoFilter_RejectsSessionless", func(t *testing.T) {
-		_, err := client.conn.Request("PROC", "LIST").JSON()
+		_, err := client.Conn().Request("PROC", "LIST").JSON()
 		if err == nil {
 			t.Fatal("expected PROC LIST to reject a session-less non-global call")
 		}
@@ -1769,7 +1771,7 @@ func TestHubIntegration_ProcListFilters(t *testing.T) {
 	// The same call with an explicit directory resolves AND scopes: it must
 	// include the directory's own process and exclude the other project's.
 	t.Run("LIST_NoFilter_DirectoryResolves", func(t *testing.T) {
-		result, err := client.conn.Request("PROC", "LIST").WithJSON(map[string]interface{}{
+		result, err := client.Conn().Request("PROC", "LIST").WithJSON(map[string]interface{}{
 			"directory": project1,
 		}).JSON()
 		if err != nil {
@@ -1837,7 +1839,7 @@ func TestDaemon_RestoreProxies(t *testing.T) {
 	d.restoreProxies()
 
 	// Verify proxy was restored
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -1885,7 +1887,7 @@ func TestHubIntegration_ProxyExecErrorPaths(t *testing.T) {
 
 	// Test PROXY EXEC with missing code (empty data)
 	t.Run("EXEC_MissingCode", func(t *testing.T) {
-		_, err := client.conn.Request("PROXY", "EXEC", "exec-test").JSON()
+		_, err := client.Conn().Request("PROXY", "EXEC", "exec-test").JSON()
 		if err == nil {
 			t.Error("Expected error for missing code")
 		} else {
@@ -1895,7 +1897,7 @@ func TestHubIntegration_ProxyExecErrorPaths(t *testing.T) {
 
 	// Test PROXY EXEC for nonexistent proxy
 	t.Run("EXEC_NotFound", func(t *testing.T) {
-		_, err := client.conn.Request("PROXY", "EXEC", "nonexistent").WithData([]byte("1+1")).JSON()
+		_, err := client.Conn().Request("PROXY", "EXEC", "nonexistent").WithData([]byte("1+1")).JSON()
 		if err == nil {
 			t.Error("Expected error for nonexistent proxy")
 		} else {
@@ -1905,7 +1907,7 @@ func TestHubIntegration_ProxyExecErrorPaths(t *testing.T) {
 
 	// Test PROXY TOAST with missing message
 	t.Run("TOAST_MissingMessage", func(t *testing.T) {
-		err := client.conn.Request("PROXY", "TOAST", "exec-test").WithJSON(map[string]interface{}{
+		err := client.Conn().Request("PROXY", "TOAST", "exec-test").WithJSON(map[string]interface{}{
 			"toast_type": "info",
 		}).OK()
 		if err == nil {
@@ -1917,7 +1919,7 @@ func TestHubIntegration_ProxyExecErrorPaths(t *testing.T) {
 
 	// Test PROXY TOAST with invalid JSON
 	t.Run("TOAST_InvalidJSON", func(t *testing.T) {
-		err := client.conn.Request("PROXY", "TOAST", "exec-test").WithData([]byte("invalid json")).OK()
+		err := client.Conn().Request("PROXY", "TOAST", "exec-test").WithData([]byte("invalid json")).OK()
 		if err == nil {
 			t.Error("Expected error for invalid JSON")
 		} else {
@@ -1999,7 +2001,7 @@ func TestDaemon_RunAutostart(t *testing.T) {
 	daemon.RunAutostart(context.Background(), tmpDir)
 
 	// Verify daemon is still running
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
 		t.Fatalf("Failed to connect after RunAutostart: %v", err)
 	}
@@ -2249,7 +2251,7 @@ func TestDaemon_RestoreProxies_ErrorPaths(t *testing.T) {
 	// Proxy should not be restored due to invalid URL.
 	// restoreProxies runs synchronously during Start(), so by the time we
 	// connect the restoration attempt is already done.
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -2456,7 +2458,7 @@ func TestHubIntegration_SessionOverlayScoping(t *testing.T) {
 		WriteTimeout: 5 * time.Second,
 	})
 
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -2502,7 +2504,7 @@ func TestHubIntegration_SessionOverlayScoping(t *testing.T) {
 
 	// Now register session for project B with a different overlay
 	overlayB := "/tmp/overlay-b.sock"
-	client2 := NewClient(WithSocketPath(sockPath))
+	client2 := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	if err := client2.Connect(); err != nil {
 		t.Fatalf("Failed to connect client2: %v", err)
 	}

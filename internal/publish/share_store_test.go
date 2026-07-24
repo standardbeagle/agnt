@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
 )
 
 // fixedClock returns a deterministic, injected clock (no wall-clock sleeps).

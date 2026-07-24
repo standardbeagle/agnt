@@ -662,8 +662,8 @@ type procRunGroupPayload struct {
 	// DependsOnTimeout applies to every process in the group as the
 	// per-process default when a process doesn't override it. Zero
 	// means use DefaultDependsOnTimeout.
-	DependsOnTimeout int            `json:"depends_on_timeout,omitempty"`
-	Processes        []GroupProcess `json:"processes"`
+	DependsOnTimeout int                     `json:"depends_on_timeout,omitempty"`
+	Processes        []protocol.GroupProcess `json:"processes"`
 }
 
 // hubHandleProcRun handles PROC RUN <name>.

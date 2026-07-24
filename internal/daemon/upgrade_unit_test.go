@@ -3,11 +3,13 @@ package daemon
 import (
 	"testing"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 )
 
 func TestDefaultUpgradeConfig(t *testing.T) {
 	t.Parallel()
-	config := DefaultUpgradeConfig()
+	config := daemonclient.DefaultUpgradeConfig()
 
 	if config.SocketPath == "" {
 		t.Error("Expected non-empty socket path")
@@ -32,13 +34,13 @@ func TestDefaultUpgradeConfig(t *testing.T) {
 
 func TestNewDaemonUpgrader(t *testing.T) {
 	t.Parallel()
-	config := UpgradeConfig{
+	config := daemonclient.UpgradeConfig{
 		SocketPath:      "/tmp/test-upgrade.sock",
 		Timeout:         10 * time.Second,
 		GracefulTimeout: 2 * time.Second,
 	}
 
-	upgrader := NewDaemonUpgrader(config)
+	upgrader := daemonclient.NewDaemonUpgrader(config)
 	if upgrader == nil {
 		t.Fatal("Expected non-nil upgrader")
 	}
@@ -47,9 +49,9 @@ func TestNewDaemonUpgrader(t *testing.T) {
 func TestNewDaemonUpgrader_Defaults(t *testing.T) {
 	t.Parallel()
 	// Test that empty config gets defaults filled in
-	config := UpgradeConfig{}
+	config := daemonclient.UpgradeConfig{}
 
-	upgrader := NewDaemonUpgrader(config)
+	upgrader := daemonclient.NewDaemonUpgrader(config)
 	if upgrader == nil {
 		t.Fatal("Expected non-nil upgrader")
 	}

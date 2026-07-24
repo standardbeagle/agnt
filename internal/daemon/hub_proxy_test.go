@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/stretchr/testify/require"
@@ -23,7 +25,7 @@ import (
 // bookkeeping, overlay wiring, and response-shape assertions all depend on a
 // live daemon + live proxym. Defers teardown via t.Cleanup so each test is
 // self-contained.
-func newHubProxyTestDaemon(t *testing.T) (*Daemon, *Client, *httptest.Server, string) {
+func newHubProxyTestDaemon(t *testing.T) (*Daemon, *daemonclient.Client, *httptest.Server, string) {
 	t.Helper()
 	tmpDir := shortTempDir(t)
 	sockPath := shortSockPath(t)
@@ -48,7 +50,7 @@ func newHubProxyTestDaemon(t *testing.T) (*Daemon, *Client, *httptest.Server, st
 	}))
 	t.Cleanup(backend.Close)
 
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
 		t.Fatalf("Failed to connect client: %v", err)
 	}
@@ -73,7 +75,7 @@ func TestHubHandleProxyStart(t *testing.T) {
 	// status bar or SCRIPT LIST. T3 unifies the paths.
 	t.Run("RegistersAdminEntry", func(t *testing.T) {
 		proxyID := "admin-entry"
-		if _, err := client.ProxyStartWithConfig(proxyID, backend.URL, 0, 100, ProxyStartConfig{
+		if _, err := client.ProxyStartWithConfig(proxyID, backend.URL, 0, 100, daemonclient.ProxyStartConfig{
 			Path: tmpDir,
 		}); err != nil {
 			t.Fatalf("ProxyStart failed: %v", err)
@@ -104,7 +106,7 @@ func TestHubHandleProxyStart(t *testing.T) {
 	// collapses it into handleExplicitStart, the behavior must remain.
 	t.Run("PersistsToStateManager", func(t *testing.T) {
 		proxyID := "persisted"
-		if _, err := client.ProxyStartWithConfig(proxyID, backend.URL, 0, 250, ProxyStartConfig{
+		if _, err := client.ProxyStartWithConfig(proxyID, backend.URL, 0, 250, daemonclient.ProxyStartConfig{
 			Path: tmpDir,
 		}); err != nil {
 			t.Fatalf("ProxyStart failed: %v", err)
@@ -133,7 +135,7 @@ func TestHubHandleProxyStart(t *testing.T) {
 	// keys; prevents silent contract breakage across the T3 refactor.
 	t.Run("ResponseShape", func(t *testing.T) {
 		proxyID := "shape"
-		resp, err := client.ProxyStartWithConfig(proxyID, backend.URL, 0, 100, ProxyStartConfig{
+		resp, err := client.ProxyStartWithConfig(proxyID, backend.URL, 0, 100, daemonclient.ProxyStartConfig{
 			Path: tmpDir,
 		})
 		if err != nil {
@@ -161,7 +163,7 @@ func TestHubHandleProxyStart(t *testing.T) {
 	// BindAddressInResponse: when the MCP caller supplies a bind_address,
 	// it appears in the response (the optional field in the JSON contract).
 	t.Run("BindAddressInResponse", func(t *testing.T) {
-		resp, err := client.ProxyStartWithConfig("bind-test", backend.URL, 0, 100, ProxyStartConfig{
+		resp, err := client.ProxyStartWithConfig("bind-test", backend.URL, 0, 100, daemonclient.ProxyStartConfig{
 			Path:        tmpDir,
 			BindAddress: "127.0.0.1",
 		})
@@ -184,7 +186,7 @@ func TestHubHandleProxyStart(t *testing.T) {
 	// handleExplicitStart so the autostart path also surfaces it.
 	t.Run("NoOverlayEmitsWarning", func(t *testing.T) {
 		proxyID := "no-overlay"
-		if _, err := client.ProxyStartWithConfig(proxyID, backend.URL, 0, 100, ProxyStartConfig{
+		if _, err := client.ProxyStartWithConfig(proxyID, backend.URL, 0, 100, daemonclient.ProxyStartConfig{
 			Path: tmpDir,
 		}); err != nil {
 			t.Fatalf("ProxyStart failed: %v", err)
@@ -242,7 +244,7 @@ func TestHubHandleProxyStats(t *testing.T) {
 	// agent — the exact bug haam-prod surfaced.
 	t.Run("StatusReturnsUptimeAndTotalRequests_MCPPath", func(t *testing.T) {
 		proxyID := "stats-mcp"
-		startResp, err := client.ProxyStartWithConfig(proxyID, backend.URL, 0, 100, ProxyStartConfig{
+		startResp, err := client.ProxyStartWithConfig(proxyID, backend.URL, 0, 100, daemonclient.ProxyStartConfig{
 			Path: tmpDir,
 		})
 		if err != nil {
@@ -297,7 +299,7 @@ func TestHubHandleProxyStats(t *testing.T) {
 	// value bug (e.g. formatting with Truncate(0)) would fail this.
 	t.Run("UptimeMonotonicallyIncreases", func(t *testing.T) {
 		proxyID := "stats-mono"
-		if _, err := client.ProxyStartWithConfig(proxyID, backend.URL, 0, 100, ProxyStartConfig{
+		if _, err := client.ProxyStartWithConfig(proxyID, backend.URL, 0, 100, daemonclient.ProxyStartConfig{
 			Path: tmpDir,
 		}); err != nil {
 			t.Fatalf("ProxyStart failed: %v", err)
@@ -340,7 +342,7 @@ func TestHubHandleProxyStats(t *testing.T) {
 	// report showed.
 	t.Run("ListReturnsUptimeAndTotalRequests_MCPPath", func(t *testing.T) {
 		proxyID := "stats-list-mcp"
-		startResp, err := client.ProxyStartWithConfig(proxyID, backend.URL, 0, 100, ProxyStartConfig{
+		startResp, err := client.ProxyStartWithConfig(proxyID, backend.URL, 0, 100, daemonclient.ProxyStartConfig{
 			Path: tmpDir,
 		})
 		if err != nil {
@@ -471,7 +473,7 @@ func TestHubHandleProxyStart_FailureInlinesCause(t *testing.T) {
 	// Binding to 0.0.0.0 without allow_external makes NewProxyServer (via
 	// handleExplicitStart -> Create) fail with a deterministic error that is
 	// recorded as proxy_creation_failed.
-	_, err := client.ProxyStartWithConfig("fail-proxy", backend.URL, 0, 100, ProxyStartConfig{
+	_, err := client.ProxyStartWithConfig("fail-proxy", backend.URL, 0, 100, daemonclient.ProxyStartConfig{
 		Path:          tmpDir,
 		BindAddress:   "0.0.0.0",
 		AllowExternal: false,

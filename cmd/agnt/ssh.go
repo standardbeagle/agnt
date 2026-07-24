@@ -17,7 +17,7 @@ import (
 
 	"github.com/pkg/sftp"
 	"github.com/spf13/cobra"
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/sshclient"
 	"golang.org/x/term"
@@ -324,11 +324,11 @@ type reconnectForwarding struct {
 	project     string
 	daemonFwd   *sshclient.Forwarder
 	ports       *sshclient.PortForwardManager
-	dclient     *daemon.Client
+	dclient     *daemonclient.Client
 	drops       *sshclient.DropWatcher
 	dropSFTP    *sftp.Client
 	pull        reversePullLifecycle
-	reportEvent func(*daemon.Client, protocol.DeveloperEvent) error
+	reportEvent func(*daemonclient.Client, protocol.DeveloperEvent) error
 	status      *sshclient.StatusTracker
 	control     *reconnectControl
 	onResume    func()
@@ -336,11 +336,11 @@ type reconnectForwarding struct {
 
 type reversePullLifecycle interface {
 	Start(context.Context)
-	Resume(context.Context, *daemon.Client, *sftp.Client)
+	Resume(context.Context, *daemonclient.Client, *sftp.Client)
 	Stop()
 }
 
-var newReversePullManager = func(dclient *daemon.Client, sc *sftp.Client, host string, notify func(string)) reversePullLifecycle {
+var newReversePullManager = func(dclient *daemonclient.Client, sc *sftp.Client, host string, notify func(string)) reversePullLifecycle {
 	return sshclient.NewRemotePullManager(dclient, sc, host, "", notify)
 }
 
@@ -356,7 +356,7 @@ func initializeReconnectForwarding(host, projectRoot string, status *sshclient.S
 		project: projectRoot,
 		status:  status,
 		control: control,
-		reportEvent: func(c *daemon.Client, e protocol.DeveloperEvent) error {
+		reportEvent: func(c *daemonclient.Client, e protocol.DeveloperEvent) error {
 			return c.ReportDeveloperEvent(e)
 		},
 	}
@@ -418,7 +418,7 @@ func (r *reconnectForwarding) connectDrops(client *sshclient.Client) {
 }
 
 func (r *reconnectForwarding) connectPorts(client *sshclient.Client) {
-	dclient := daemon.NewClientWithPath(sshclient.LocalForwardSocketPath(r.host))
+	dclient := daemonclient.NewClientWithPath(sshclient.LocalForwardSocketPath(r.host))
 	if err := dclient.Connect(); err != nil {
 		fmt.Fprintf(os.Stderr, "agnt ssh: could not connect to forwarded daemon socket for port forwarding/reverse capture pull (%v)\n", err)
 		return
@@ -456,7 +456,7 @@ func (r *reconnectForwarding) publishForwardMappings(mappings []sshclient.Mappin
 	_ = dclient.SetForwardMappings(protocol.ForwardSet{Mappings: wire})
 }
 
-func (r *reconnectForwarding) connectPull(dclient *daemon.Client) {
+func (r *reconnectForwarding) connectPull(dclient *daemonclient.Client) {
 	if r.dropSFTP == nil {
 		fmt.Fprintln(os.Stderr, "agnt ssh: could not start reverse capture pull (SFTP unavailable)")
 		return
@@ -507,7 +507,7 @@ func (r *reconnectForwarding) renderStatusTo(w io.Writer, supplied ...[]sshclien
 	fmt.Fprint(w, sshclient.FormatClientStatus(r.status.Snapshot(mappings, queued)))
 }
 
-func (r *reconnectForwarding) daemonClient() *daemon.Client {
+func (r *reconnectForwarding) daemonClient() *daemonclient.Client {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	return r.dclient
@@ -644,7 +644,7 @@ func ensureRemoteSessionAttachable(host string, client *sshclient.Client, name, 
 	defer fw.Close()
 	go fw.Serve()
 
-	dclient := daemon.NewClientWithPath(localPath)
+	dclient := daemonclient.NewClientWithPath(localPath)
 	var connectErr error
 	for i := 0; i < 20; i++ {
 		if connectErr = dclient.Connect(); connectErr == nil {

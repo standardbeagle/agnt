@@ -250,7 +250,7 @@ func (d *Daemon) shimRunOneShot(ctx context.Context, req *protocol.ShimExecReque
 	select {
 	case <-proc.Done():
 	case <-ctx.Done():
-		// Client gave up while the command still runs — stop and
+		// daemonclient.Client gave up while the command still runs — stop and
 		// deregister so the managed copy can't outlive the request (see
 		// the doc comment for the double-run hazard).
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)

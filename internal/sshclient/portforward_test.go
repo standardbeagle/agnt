@@ -18,6 +18,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
@@ -25,7 +26,7 @@ import (
 
 // newTestDaemonClient spins up a real *daemon.Daemon via NewForTest (see
 // daemon-architecture.md "Test startup contract") on an ephemeral unix
-// socket and returns a connected *daemon.Client pointed at it. This is the
+// socket and returns a connected *daemonclient.Client pointed at it. This is the
 // "remote daemon" side of the fixture — real PROXY LIST / STREAM-EVENTS
 // wiring, not a stub, so the test exercises the actual proxy_started /
 // proxy_stopped diagnostics added in server.go / proxy_handler.go.
@@ -43,7 +44,7 @@ import (
 // The goroutine/listener-leak test below does not depend on event delivery
 // (it only exercises reconcile-on-connect + explicit Stop) so it is free to
 // spin up its own daemon per cycle.
-func newTestDaemonClient(t *testing.T) (*daemon.Daemon, *daemon.Client) {
+func newTestDaemonClient(t *testing.T) (*daemon.Daemon, *daemonclient.Client) {
 	t.Helper()
 	sockPath := filepath.Join(t.TempDir(), "daemon.sock")
 	d := daemon.NewForTest(t, daemon.DaemonConfig{
@@ -53,7 +54,7 @@ func newTestDaemonClient(t *testing.T) (*daemon.Daemon, *daemon.Client) {
 		OrphanScanEnabled: false,
 		StatePath:         t.TempDir(),
 	})
-	c := daemon.NewClientWithPath(sockPath)
+	c := daemonclient.NewClientWithPath(sockPath)
 	require.NoError(t, c.Connect())
 	t.Cleanup(func() { c.Close() })
 	return d, c

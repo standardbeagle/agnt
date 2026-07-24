@@ -11,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 )
 
 // ErrSessionExists is returned by SessionRegistry.Register when a session with
@@ -358,16 +360,9 @@ func (r *SessionRegistry) GenerateSessionCode(command string) string {
 	return fmt.Sprintf("%s-%d", command, maxNum+1)
 }
 
-// SessionInfo contains statistics about the session registry.
-type SessionInfo struct {
-	ActiveCount       int64 `json:"active_count"`
-	TotalRegistered   int64 `json:"total_registered"`
-	TotalUnregistered int64 `json:"total_unregistered"`
-}
-
 // Info returns statistics about the session registry.
-func (r *SessionRegistry) Info() SessionInfo {
-	return SessionInfo{
+func (r *SessionRegistry) Info() daemonclient.SessionInfo {
+	return daemonclient.SessionInfo{
 		ActiveCount:       r.ActiveCount(),
 		TotalRegistered:   r.totalRegistered.Load(),
 		TotalUnregistered: r.totalUnregistered.Load(),

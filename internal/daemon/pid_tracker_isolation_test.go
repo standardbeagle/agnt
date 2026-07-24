@@ -4,6 +4,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/stretchr/testify/assert"
 )
 
@@ -24,7 +26,7 @@ func TestPIDTrackerPath_IsPerDaemon(t *testing.T) {
 // A daemon on the default socket keeps the historical, AppName-derived path, so
 // an upgraded daemon still finds the orphans its predecessor left behind.
 func TestPIDTrackerPath_DefaultSocketKeepsLibraryDefault(t *testing.T) {
-	assert.Empty(t, pidTrackerPathFor(DefaultSocketPath()),
+	assert.Empty(t, pidTrackerPathFor(daemonclient.DefaultSocketPath()),
 		"default socket should defer to the library's XDG-derived path")
 	assert.Empty(t, pidTrackerPathFor(""), "an unset socket path should defer too")
 }

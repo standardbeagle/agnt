@@ -68,7 +68,7 @@ func TestHubHandlePortsCleanOrphans_ScopeGatesForeignPGID(t *testing.T) {
 
 	client := registerSessionClient(t, sockPath, "sess-owned", ownedProject)
 
-	raw, err := client.conn.Request(protocol.VerbPorts, protocol.SubVerbCleanOrphans).
+	raw, err := client.Conn().Request(protocol.VerbPorts, protocol.SubVerbCleanOrphans).
 		WithJSON(protocol.DirectoryFilter{}).JSON()
 	require.NoError(t, err)
 
@@ -122,7 +122,7 @@ func TestHubHandlePortsCleanOrphans_ScopeSwitchesEligibility(t *testing.T) {
 	// A session scoped to project A only reaps pgidA, never pgidB — even
 	// though pgidB carries the exact same cmdline evidence.
 	clientA := registerSessionClient(t, sockPath, "sess-a-switch", projA)
-	rawA, err := clientA.conn.Request(protocol.VerbPorts, protocol.SubVerbCleanOrphans).
+	rawA, err := clientA.Conn().Request(protocol.VerbPorts, protocol.SubVerbCleanOrphans).
 		WithJSON(protocol.DirectoryFilter{}).JSON()
 	require.NoError(t, err)
 	reapedA := toIntSlice(t, rawA["reaped_pgids"])

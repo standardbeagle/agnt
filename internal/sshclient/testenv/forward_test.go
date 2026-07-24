@@ -19,6 +19,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/sshclient"
 	"github.com/standardbeagle/agnt/internal/sshclient/testenv"
 	"go.uber.org/goleak"
@@ -166,10 +167,10 @@ func dialForwardClient(t *testing.T, auth *testenv.Auth, addr string) *sshclient
 
 // newForwardDaemon spins up a real *daemon.Daemon (NewForTest — see
 // daemon-architecture.md "Test startup contract") and returns a connected
-// *daemon.Client: PortForwardManager's reconcile loop is driven entirely by
+// *daemonclient.Client: PortForwardManager's reconcile loop is driven entirely by
 // real PROXY LIST calls against it, matching the "cache is never trusted
 // alone" doctrine the manager itself documents.
-func newForwardDaemon(t *testing.T) *daemon.Client {
+func newForwardDaemon(t *testing.T) *daemonclient.Client {
 	t.Helper()
 	sockPath := filepath.Join(t.TempDir(), "daemon.sock")
 	daemon.NewForTest(t, daemon.DaemonConfig{
@@ -179,7 +180,7 @@ func newForwardDaemon(t *testing.T) *daemon.Client {
 		OrphanScanEnabled: false,
 		StatePath:         t.TempDir(),
 	})
-	c := daemon.NewClientWithPath(sockPath)
+	c := daemonclient.NewClientWithPath(sockPath)
 	if err := c.Connect(); err != nil {
 		t.Fatalf("connecting to test daemon: %v", err)
 	}

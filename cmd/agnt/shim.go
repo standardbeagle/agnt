@@ -8,7 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/standardbeagle/agnt/internal/config"
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/hookrules"
 	"github.com/standardbeagle/agnt/internal/protocol"
@@ -67,12 +67,12 @@ func runShimExec(command string, args []string) int {
 		return shimPassthrough(command, args)
 	}
 
-	socketPath := daemon.DefaultSocketPath()
-	if !daemon.IsRunning(socketPath) {
+	socketPath := daemonclient.DefaultSocketPath()
+	if !daemonclient.IsRunning(socketPath) {
 		return shimPassthrough(command, args)
 	}
 
-	client := daemon.NewClient(daemon.WithSocketPath(socketPath), daemon.WithTimeout(daemon.ShimExecTimeout))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(socketPath), daemonclient.WithTimeout(daemonclient.ShimExecTimeout))
 	if err := client.Connect(); err != nil {
 		debug.Log("shim", "connect failed: %v (passthrough)", err)
 		return shimPassthrough(command, args)
@@ -162,7 +162,7 @@ func shimPassthrough(command string, args []string) int {
 // every registered bin dir itself.
 func runShimWatch(socketPath string) int {
 	if socketPath == "" {
-		socketPath = daemon.DefaultSocketPath()
+		socketPath = daemonclient.DefaultSocketPath()
 	}
 	const (
 		pollInterval = 5 * time.Second
@@ -170,7 +170,7 @@ func runShimWatch(socketPath string) int {
 	)
 	var deadSince time.Time
 	for {
-		alive := daemon.IsRunning(socketPath)
+		alive := daemonclient.IsRunning(socketPath)
 		if alive {
 			deadSince = time.Time{}
 		} else if deadSince.IsZero() {
@@ -192,7 +192,7 @@ func runShimWatch(socketPath string) int {
 		if !deadSince.IsZero() && time.Since(deadSince) > deadGrace {
 			// Final probe before tearing down: a daemon that came back
 			// during the grace window resets the clock instead.
-			if daemon.IsRunning(socketPath) {
+			if daemonclient.IsRunning(socketPath) {
 				deadSince = time.Time{}
 				continue
 			}

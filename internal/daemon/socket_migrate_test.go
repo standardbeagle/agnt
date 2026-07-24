@@ -6,6 +6,8 @@ import (
 	"strconv"
 	"testing"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -46,9 +48,9 @@ func TestMigrateLegacySocket_SkippedForCustomSocketPath(t *testing.T) {
 	// irrelevant: the assertion is that nothing panics and nothing is created.
 	d.migrateLegacySocket()
 
-	_, err := os.Stat(LegacySocketPath())
+	_, err := os.Stat(daemonclient.LegacySocketPath())
 	if err == nil {
-		t.Skipf("a real legacy socket exists at %s; cannot assert absence", LegacySocketPath())
+		t.Skipf("a real legacy socket exists at %s; cannot assert absence", daemonclient.LegacySocketPath())
 	}
 	assert.True(t, os.IsNotExist(err))
 }
@@ -61,21 +63,21 @@ func TestMigrateLegacySocket_StopsLiveLegacyDaemon(t *testing.T) {
 
 	// NewForTest boots the hub, so this daemon is already listening on `legacy`.
 	_ = NewForTest(t, DaemonConfig{SocketPath: legacy})
-	require.True(t, IsRunning(legacy), "legacy daemon should be listening")
+	require.True(t, daemonclient.IsRunning(legacy), "legacy daemon should be listening")
 
 	newer := NewForTest(t, DaemonConfig{SocketPath: filepath.Join(dir, "new.sock")})
 	newer.migrateLegacySocketFrom(legacy)
 
-	assert.False(t, IsRunning(legacy), "legacy daemon still listening after migration")
+	assert.False(t, daemonclient.IsRunning(legacy), "legacy daemon still listening after migration")
 	_, err := os.Stat(legacy)
 	assert.True(t, os.IsNotExist(err), "legacy socket file left behind")
 }
 
-// LegacySocketPath must be the pre-0.13.32 form: the socket directly in /tmp,
+// daemonclient.LegacySocketPath must be the pre-0.13.32 form: the socket directly in /tmp,
 // not inside the per-uid directory the hardened bind now requires.
 func TestLegacySocketPath_IsTheOldFlatForm(t *testing.T) {
-	legacy := LegacySocketPath()
+	legacy := daemonclient.LegacySocketPath()
 	assert.Equal(t, "/tmp", filepath.Dir(legacy), "legacy socket lived directly in /tmp")
-	assert.NotEqual(t, DefaultSocketPath(), legacy, "legacy and current paths must differ")
-	assert.Equal(t, filepath.Join("/tmp", SocketName+"-"+strconv.Itoa(os.Getuid())+".sock"), legacy)
+	assert.NotEqual(t, daemonclient.DefaultSocketPath(), legacy, "legacy and current paths must differ")
+	assert.Equal(t, filepath.Join("/tmp", daemonclient.SocketName+"-"+strconv.Itoa(os.Getuid())+".sock"), legacy)
 }

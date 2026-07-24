@@ -38,6 +38,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/protocol"
+
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/go-cli-server/script"
@@ -258,21 +260,6 @@ func resolveCommandString(scriptCfg *config.ScriptConfig) string {
 	return ""
 }
 
-// GroupProcess describes a single process inside a PROC RUN-GROUP
-// payload. Mirrors procRunPayload but adds Name (which PROC RUN takes
-// as a positional verb arg).
-type GroupProcess struct {
-	Name        string            `json:"name"`
-	Run         string            `json:"run,omitempty"`
-	Command     string            `json:"command,omitempty"`
-	Args        []string          `json:"args,omitempty"`
-	Cwd         string            `json:"cwd,omitempty"`
-	Env         map[string]string `json:"env,omitempty"`
-	URLMatchers []string          `json:"url_matchers,omitempty"`
-	AutoRestart bool              `json:"auto_restart,omitempty"`
-	DependsOn   []string          `json:"depends_on,omitempty"`
-}
-
 // GroupResult captures the outcome of a PROC RUN-GROUP launch.
 type GroupResult struct {
 	// Processes lists per-process kickoff results, in declaration order.
@@ -296,12 +283,12 @@ type GroupResult struct {
 // observed via PROC STATUS polling.
 //
 // timeout applies as the per-process default depends-on timeout when a
-// GroupProcess does not specify its own. Pass 0 to use
+// protocol.GroupProcess does not specify its own. Pass 0 to use
 // DefaultDependsOnTimeout.
 func (d *Daemon) StartProcessGroup(
 	ctx context.Context,
 	projectPath string,
-	processes []GroupProcess,
+	processes []protocol.GroupProcess,
 	timeout time.Duration,
 ) GroupResult {
 	if len(processes) == 0 {
@@ -309,7 +296,7 @@ func (d *Daemon) StartProcessGroup(
 	}
 
 	// Build a name → ScriptConfig map for cycle detection. The map is
-	// keyed by the GroupProcess.Name field, which is what `depends_on`
+	// keyed by the protocol.GroupProcess.Name field, which is what `depends_on`
 	// references.
 	scripts := make(map[string]*config.ScriptConfig, len(processes))
 	for i := range processes {

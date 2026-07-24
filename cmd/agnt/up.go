@@ -5,7 +5,7 @@ import (
 	"os"
 	"os/exec"
 
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 
 	"github.com/spf13/cobra"
 )
@@ -29,7 +29,7 @@ func runUp(cmd *cobra.Command, args []string) {
 	socketPath := getSocketPath(cmd)
 
 	// Check if daemon is already running
-	if daemon.IsRunning(socketPath) {
+	if daemonclient.IsRunning(socketPath) {
 		fmt.Println("Daemon is already running")
 		return
 	}
@@ -44,7 +44,7 @@ func runUp(cmd *cobra.Command, args []string) {
 	// Provision/refresh the dedicated daemon binary (avoids fork restrictions
 	// in sandboxes and keeps the copy in lockstep with this CLI). Falls back to
 	// self when provisioning is unavailable.
-	daemonPath := daemon.ResolveDaemonBinary()
+	daemonPath := daemonclient.ResolveDaemonBinary()
 	if daemonPath == "" {
 		daemonPath = execPath
 	}
@@ -67,9 +67,9 @@ func runUp(cmd *cobra.Command, args []string) {
 	go daemonCmd.Wait() //nolint:errcheck
 
 	// Wait briefly for daemon to be ready
-	config := daemon.DefaultAutoStartConfig()
+	config := daemonclient.DefaultAutoStartConfig()
 	config.SocketPath = socketPath
-	client := daemon.NewAutoStartClient(config)
+	client := daemonclient.NewAutoStartClient(config)
 
 	if err := client.Connect(); err != nil {
 		fmt.Fprintf(os.Stderr, "Daemon started but failed to connect: %v\n", err)

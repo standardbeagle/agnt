@@ -209,6 +209,21 @@ type LogQueryFilter struct {
 	OmitBodies bool `json:"omit_bodies,omitempty"`
 }
 
+// GroupProcess describes a single process inside a PROC RUN-GROUP
+// payload. Mirrors procRunPayload but adds Name (which PROC RUN takes
+// as a positional verb arg).
+type GroupProcess struct {
+	Name        string            `json:"name"`
+	Run         string            `json:"run,omitempty"`
+	Command     string            `json:"command,omitempty"`
+	Args        []string          `json:"args,omitempty"`
+	Cwd         string            `json:"cwd,omitempty"`
+	Env         map[string]string `json:"env,omitempty"`
+	URLMatchers []string          `json:"url_matchers,omitempty"`
+	AutoRestart bool              `json:"auto_restart,omitempty"`
+	DependsOn   []string          `json:"depends_on,omitempty"`
+}
+
 // ToastConfig represents configuration for a PROXY TOAST command.
 type ToastConfig struct {
 	Type     string `json:"type"`               // success, error, warning, info

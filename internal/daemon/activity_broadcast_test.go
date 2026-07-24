@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/gorilla/websocket"
 	"github.com/stretchr/testify/require"
 )
@@ -21,7 +23,7 @@ import (
 // attached session they fail loud (never fan out across every project), so
 // these end-to-end tests must establish one and create their proxies under the
 // same project path.
-func attachProjectSession(t *testing.T, c *Client, projectDir string) {
+func attachProjectSession(t *testing.T, c *daemonclient.Client, projectDir string) {
 	t.Helper()
 	if _, err := c.SessionRegister("sess-"+sanitizeSessionCode(projectDir), projectDir, projectDir, "test-cmd", nil); err != nil {
 		t.Fatalf("SessionRegister failed: %v", err)
@@ -71,7 +73,7 @@ func awaitBroadcast[T any](t *testing.T, send func() error, recv <-chan T, want 
 }
 
 // TestActivityBroadcast_EndToEnd tests the complete activity broadcast pipeline:
-// ActivityMonitor -> Client.BroadcastActivity -> Daemon -> Proxy -> WebSocket -> Browser
+// ActivityMonitor -> daemonclient.Client.BroadcastActivity -> Daemon -> Proxy -> WebSocket -> Browser
 func TestActivityBroadcast_EndToEnd(t *testing.T) {
 	t.Parallel()
 	_, client, projectDir := newBootedDaemonWithClient(t)

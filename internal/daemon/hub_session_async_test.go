@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/standardbeagle/agnt/internal/incident"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -53,7 +55,7 @@ scripts {
 		d.Stop(stopCtx)
 	}()
 
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, client.Connect())
 	defer client.Close()
 
@@ -92,7 +94,7 @@ scripts {
 		_ = d.Stop(ctx)
 	})
 
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, client.Connect())
 	t.Cleanup(func() { _ = client.Close() })
 	_, err := client.SessionRegister("console-owner", "/tmp/overlay.sock", tmpDir, "test", nil)
@@ -139,11 +141,11 @@ scripts {
 		d.Stop(stopCtx)
 	}()
 
-	c1 := NewClient(WithSocketPath(sockPath))
+	c1 := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, c1.Connect())
 	defer c1.Close()
 
-	c2 := NewClient(WithSocketPath(sockPath))
+	c2 := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, c2.Connect())
 	defer c2.Close()
 
@@ -190,7 +192,7 @@ func TestSessionRegister_EmptyConfigReturnsDone(t *testing.T) {
 		d.Stop(stopCtx)
 	}()
 
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, client.Connect())
 	defer client.Close()
 
@@ -234,7 +236,7 @@ func TestSessionRegister_ReconnectPreservesStartedAt(t *testing.T) {
 		d.Stop(stopCtx)
 	}()
 
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, client.Connect())
 	defer client.Close()
 
@@ -300,7 +302,7 @@ scripts {
 		d.Stop(stopCtx)
 	}()
 
-	c1 := NewClient(WithSocketPath(sockPath))
+	c1 := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, c1.Connect())
 	defer c1.Close()
 
@@ -324,7 +326,7 @@ scripts {
 	}
 	require.NotEmpty(t, handle.Progress(), "handle should have at least one progress event")
 
-	c2 := NewClient(WithSocketPath(sockPath))
+	c2 := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, c2.Connect())
 	defer c2.Close()
 
@@ -376,10 +378,10 @@ scripts {
 		d.Stop(stopCtx)
 	}()
 
-	c1 := NewClient(WithSocketPath(sockPath))
+	c1 := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, c1.Connect())
 	defer c1.Close()
-	c2 := NewClient(WithSocketPath(sockPath))
+	c2 := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, c2.Connect())
 	defer c2.Close()
 
@@ -526,7 +528,7 @@ func TestSessionRegister_ReconnectInheritsUnsuppliedFields(t *testing.T) {
 			seedStartedAt := seed.StartedAt
 
 			// Reconnect over the real client with the case's fields.
-			client := NewClient(WithSocketPath(sockPath))
+			client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 			require.NoError(t, client.Connect())
 			defer client.Close()
 
@@ -602,7 +604,7 @@ func TestSessionRegister_RejectsSessionHostOwnedCode(t *testing.T) {
 	}
 	require.NoError(t, d.sessionRegistry.Register(seed))
 
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, client.Connect())
 	defer client.Close()
 

@@ -6,18 +6,20 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // newRoutableTestClient starts a daemon on an ephemeral socket and returns a
 // connected client.
-func newRoutableTestClient(t *testing.T) (*Daemon, *Client) {
+func newRoutableTestClient(t *testing.T) (*Daemon, *daemonclient.Client) {
 	t.Helper()
 	sock := shortSockPath(t)
 	d := NewForTest(t, DaemonConfig{SocketPath: sock, MaxClients: 4, WriteTimeout: 5 * time.Second})
 
-	c := NewClient(WithSocketPath(sock))
+	c := daemonclient.NewClient(daemonclient.WithSocketPath(sock))
 	require.NoError(t, c.Connect())
 	t.Cleanup(func() { _ = c.Close() })
 	return d, c

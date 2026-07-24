@@ -5,7 +5,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/proxy/scripts"
 	"golang.org/x/term"
@@ -105,7 +105,7 @@ func getVersionString() string {
 	version := fmt.Sprintf("%s v%s\n", appName, appVersion)
 
 	// Try to get daemon version
-	client := daemon.NewClient()
+	client := daemonclient.NewClient()
 	if err := client.Connect(); err == nil {
 		defer client.Close()
 		if info, err := client.Info(); err == nil {

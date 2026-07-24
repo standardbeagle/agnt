@@ -3,7 +3,7 @@ package tools
 import (
 	"testing"
 
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/go-sdk/mcp"
 )
 
@@ -23,7 +23,7 @@ import (
 // never touches the daemon connection or handler dependencies — a nil ProxyManager
 // is fine here, the handlers are never invoked.
 func TestRegisterMCPTools_NoSchemaPanic(t *testing.T) {
-	dt := NewDaemonTools(daemon.AutoStartConfig{}, "test")
+	dt := NewDaemonTools(daemonclient.AutoStartConfig{}, "test")
 
 	regs := []struct {
 		name string

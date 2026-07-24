@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/go-cli-server/script"
 )
@@ -13,7 +15,7 @@ import (
 // Shared across T4 PROC RUN / StartScriptExplicit tests. Mirrors
 // newHubProxyTestDaemon in hub_proxy_test.go but without the HTTP backend
 // (PROC RUN tests exercise script registry + process manager, not proxies).
-func newHubProcTestDaemon(t *testing.T) (*Daemon, *Client, string) {
+func newHubProcTestDaemon(t *testing.T) (*Daemon, *daemonclient.Client, string) {
 	t.Helper()
 	tmpDir := shortTempDir(t)
 	sockPath := shortSockPath(t)
@@ -24,7 +26,7 @@ func newHubProcTestDaemon(t *testing.T) (*Daemon, *Client, string) {
 		WriteTimeout: 5 * time.Second,
 	})
 
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
 		t.Fatalf("client.Connect: %v", err)
 	}
@@ -208,7 +210,7 @@ func TestHubHandleProcRun(t *testing.T) {
 	// entries. A PROC-RUN-started process must appear with kind=process.
 	t.Run("CreatesProcessKindRow", func(t *testing.T) {
 		name := "mcp-run"
-		resp, err := client.ProcRun(name, ProcRunConfig{
+		resp, err := client.ProcRun(name, daemonclient.ProcRunConfig{
 			Run:         longRunningCmd(),
 			ProjectPath: tmpDir,
 		})
@@ -261,8 +263,8 @@ func TestHubHandleProcRun(t *testing.T) {
 		// ErrMissingParam. A raw empty string arg passes through CommandArgs
 		// untouched, so the daemon-side check fires. Drive the client's
 		// lower-level Request to send an empty name.
-		_, err := client.conn.Request("PROC", "RUN", "").
-			WithJSON(ProcRunConfig{Run: longRunningCmd(), ProjectPath: tmpDir}).
+		_, err := client.Conn().Request("PROC", "RUN", "").
+			WithJSON(daemonclient.ProcRunConfig{Run: longRunningCmd(), ProjectPath: tmpDir}).
 			JSON()
 		if err == nil {
 			t.Fatalf("expected error for empty name, got nil")
@@ -271,7 +273,7 @@ func TestHubHandleProcRun(t *testing.T) {
 
 	// MissingCommand: payload without `run` or `command` → missing param.
 	t.Run("MissingCommand", func(t *testing.T) {
-		_, err := client.ProcRun("no-cmd", ProcRunConfig{
+		_, err := client.ProcRun("no-cmd", daemonclient.ProcRunConfig{
 			ProjectPath: tmpDir,
 		})
 		if err == nil {
@@ -282,7 +284,7 @@ func TestHubHandleProcRun(t *testing.T) {
 	// MissingProjectPath: unbound session and no ProjectPath override →
 	// missing param error.
 	t.Run("MissingProjectPath", func(t *testing.T) {
-		_, err := client.ProcRun("no-path", ProcRunConfig{
+		_, err := client.ProcRun("no-path", daemonclient.ProcRunConfig{
 			Run: longRunningCmd(),
 		})
 		if err == nil {

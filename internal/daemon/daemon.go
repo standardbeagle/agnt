@@ -49,6 +49,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/standardbeagle/agnt/internal/alert"
 	"github.com/standardbeagle/agnt/internal/automation"
 	"github.com/standardbeagle/agnt/internal/browser"
@@ -169,7 +171,7 @@ type DaemonConfig struct {
 	UpdateCheckInterval time.Duration
 
 	// CleanupGracePeriod is how long to wait before cleaning up session
-	// resources after a connection drops. Allows ResilientClient reconnects
+	// resources after a connection drops. Allows daemonclient.ResilientClient reconnects
 	// to cancel the cleanup. Set to 0 for immediate cleanup (tests).
 	// Default: 5s
 	CleanupGracePeriod time.Duration
@@ -210,7 +212,7 @@ type DaemonConfig struct {
 // DefaultDaemonConfig returns sensible defaults.
 func DefaultDaemonConfig() DaemonConfig {
 	return DaemonConfig{
-		SocketPath:             DefaultSocketPath(),
+		SocketPath:             daemonclient.DefaultSocketPath(),
 		ProcessConfig:          process.DefaultManagerConfig(),
 		MaxClients:             100,
 		ReadTimeout:            0, // No timeout for long-running commands
@@ -442,7 +444,7 @@ type Daemon struct {
 // finds the orphans a previous run left behind. Any other socket gets its own
 // file beside it.
 func pidTrackerPathFor(socketPath string) string {
-	if socketPath == "" || socketPath == DefaultSocketPath() {
+	if socketPath == "" || socketPath == daemonclient.DefaultSocketPath() {
 		return "" // library default: XDG state dir, AppName-derived
 	}
 	return socketPath + ".pids.json"
@@ -799,7 +801,7 @@ func (d *Daemon) bootstrap() error {
 	d.daemonStartupLog("info", "daemon_commands_registered", "daemon hub commands registered")
 
 	// Register session cleanup callback with Hub
-	// Uses deferred cleanup so ResilientClient reconnects don't kill processes.
+	// Uses deferred cleanup so daemonclient.ResilientClient reconnects don't kill processes.
 	d.hub.SetSessionCleanup(func(sessionCode string) {
 		d.CleanupSessionResourcesDeferred(sessionCode)
 	})
@@ -914,27 +916,27 @@ func (d *Daemon) Start() error {
 }
 
 // Info returns daemon information.
-func (d *Daemon) Info() DaemonInfo {
-	info := DaemonInfo{
+func (d *Daemon) Info() daemonclient.DaemonInfo {
+	info := daemonclient.DaemonInfo{
 		Version:     Version,
 		BuildTime:   BuildTime,
 		GitCommit:   GitCommit,
 		SocketPath:  d.hub.SocketPath(),
 		Uptime:      time.Since(d.started),
 		ClientCount: d.hub.ClientCount(),
-		ProcessInfo: ProcessInfo{
+		ProcessInfo: daemonclient.ProcessInfo{
 			Active:       d.hub.ProcessManager().ActiveCount(),
 			TotalStarted: d.hub.ProcessManager().TotalStarted(),
 			TotalFailed:  d.hub.ProcessManager().TotalFailed(),
 		},
-		ProxyInfo: ProxyInfo{
+		ProxyInfo: daemonclient.ProxyInfo{
 			Active:       d.proxym.ActiveCount(),
 			TotalStarted: d.proxym.TotalStarted(),
 		},
-		TunnelInfo: TunnelInfo{
+		TunnelInfo: daemonclient.TunnelInfo{
 			Active: int64(d.tunnelm.ActiveCount()),
 		},
-		BrowserInfo: BrowserInfo{
+		BrowserInfo: daemonclient.BrowserInfo{
 			Active:       int64(d.browserm.ActiveCount()),
 			TotalStarted: d.browserm.TotalStarted(),
 		},
@@ -1213,47 +1215,3 @@ func (d *Daemon) OverlayEndpoint() string {
 
 // LoadURLMatchersForProcess loads URL matchers from agnt.kdl for a process and sets them on the URL tracker.
 // Process ID format: {basename}:{scriptName} (e.g., "my-project:dev")
-
-// DaemonInfo holds daemon status information.
-type DaemonInfo struct {
-	Version       string              `json:"version"`
-	BuildTime     string              `json:"build_time,omitempty"`
-	GitCommit     string              `json:"git_commit,omitempty"`
-	SocketPath    string              `json:"socket_path"`
-	Uptime        time.Duration       `json:"uptime"`
-	ClientCount   int64               `json:"client_count"`
-	ProcessInfo   ProcessInfo         `json:"process_info"`
-	ProxyInfo     ProxyInfo           `json:"proxy_info"`
-	TunnelInfo    TunnelInfo          `json:"tunnel_info"`
-	BrowserInfo   BrowserInfo         `json:"browser_info"`
-	SessionInfo   SessionInfo         `json:"session_info"`
-	SchedulerInfo SchedulerInfo       `json:"scheduler_info"`
-	UpdateInfo    *updater.UpdateInfo `json:"update_info,omitempty"`
-}
-
-// ProcessInfo holds process manager statistics.
-type ProcessInfo struct {
-	Active       int64 `json:"active"`
-	TotalStarted int64 `json:"total_started"`
-	TotalFailed  int64 `json:"total_failed"`
-}
-
-// ProxyInfo holds proxy manager statistics.
-type ProxyInfo struct {
-	Active       int64 `json:"active"`
-	TotalStarted int64 `json:"total_started"`
-}
-
-// TunnelInfo holds tunnel manager statistics.
-type TunnelInfo struct {
-	Active int64 `json:"active"`
-}
-
-// BrowserInfo holds browser manager statistics.
-type BrowserInfo struct {
-	Active       int64 `json:"active"`
-	TotalStarted int64 `json:"total_started"`
-}
-
-// Note: SessionInfo is defined in session.go
-// Note: SchedulerInfo is defined in scheduler.go

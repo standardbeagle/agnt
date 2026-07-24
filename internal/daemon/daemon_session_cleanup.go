@@ -284,7 +284,7 @@ func (d *Daemon) CleanupSessionResources(sessionCode string) {
 }
 
 // CleanupSessionResourcesDeferred schedules resource cleanup with a grace period.
-// Called when a connection drops unexpectedly. The ResilientClient may reconnect
+// Called when a connection drops unexpectedly. The daemonclient.ResilientClient may reconnect
 // and re-register the same session within seconds — the grace period prevents
 // killing processes during that window. If the session is re-registered before
 // the timer fires, the cleanup is cancelled entirely.
@@ -367,7 +367,7 @@ func (d *Daemon) CleanupSessionResourcesDeferred(sessionCode string) {
 	d.cancelPendingCleanup(sessionCode)
 
 	// Schedule the actual cleanup. If the session is re-registered before the
-	// timer fires (ResilientClient reconnect → OnReconnect → SessionRegister),
+	// timer fires (daemonclient.ResilientClient reconnect → OnReconnect → SessionRegister),
 	// cancelPendingCleanup will cancel this timer and processes stay alive.
 	timer := time.AfterFunc(grace, func() {
 		d.pendingCleanups.Delete(sessionCode)

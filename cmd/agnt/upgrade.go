@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/updater"
 )
 
@@ -98,19 +98,19 @@ func runUpgrade(cmd *cobra.Command, args []string) {
 
 	// Stop the daemon first - critical on Windows to avoid EBUSY errors
 	fmt.Println("\nStopping daemon...")
-	if daemon.IsDaemonRunning(socketPath) {
-		if err := daemon.StopDaemon(socketPath); err != nil {
+	if daemonclient.IsDaemonRunning(socketPath) {
+		if err := daemonclient.StopDaemon(socketPath); err != nil {
 			fmt.Fprintf(os.Stderr, "Warning: failed to stop daemon: %v\n", err)
 		}
 		// Wait for daemon to fully exit with retry
 		for i := 0; i < 10; i++ {
 			time.Sleep(500 * time.Millisecond)
-			if !daemon.IsDaemonRunning(socketPath) {
+			if !daemonclient.IsDaemonRunning(socketPath) {
 				break
 			}
 		}
 		// Final check
-		if daemon.IsDaemonRunning(socketPath) {
+		if daemonclient.IsDaemonRunning(socketPath) {
 			fmt.Fprintf(os.Stderr, "Error: daemon is still running after stop request.\n")
 			fmt.Fprintf(os.Stderr, "Please close any applications using agnt and try again.\n")
 			os.Exit(1)
@@ -212,7 +212,7 @@ func detectInstallMethod() (installMethod, string) {
 
 func checkLatestVersion() (string, error) {
 	// Use the updater to check for latest version
-	client := daemon.NewClient(daemon.WithSocketPath(daemon.DefaultSocketPath()))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(daemonclient.DefaultSocketPath()))
 	if err := client.Connect(); err == nil {
 		defer client.Close()
 		info, err := client.Info()

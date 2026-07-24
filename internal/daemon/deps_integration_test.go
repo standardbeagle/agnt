@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -52,7 +54,7 @@ scripts {
 }
 `, serverPort))
 
-		client := NewClient(WithSocketPath(sockPath))
+		client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 		require.NoError(t, client.Connect())
 		defer client.Close()
 
@@ -81,7 +83,7 @@ scripts {
 		t.Logf("Server status: %v", serverStatus)
 
 		clientStatus := waitForProcessState(t, client, clientID, "running", 3*time.Second)
-		t.Logf("Client status: %v", clientStatus)
+		t.Logf("daemonclient.Client status: %v", clientStatus)
 
 		// The server started first so its runtime must exceed the client's by at
 		// least ~1s (the server's sleep before printing the URL).
@@ -89,7 +91,7 @@ scripts {
 		clientRuntimeMs, ok2 := clientStatus["runtime_ms"].(float64)
 		if ok1 && ok2 {
 			gapMs := serverRuntimeMs - clientRuntimeMs
-			t.Logf("Server runtime: %.0fms, Client runtime: %.0fms, Gap: %.0fms",
+			t.Logf("Server runtime: %.0fms, daemonclient.Client runtime: %.0fms, Gap: %.0fms",
 				serverRuntimeMs, clientRuntimeMs, gapMs)
 			assert.GreaterOrEqual(t, gapMs, 800.0,
 				"server should have been running at least ~1s longer than client")
@@ -121,7 +123,7 @@ scripts {
 }
 `)
 
-		client := NewClient(WithSocketPath(sockPath))
+		client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 		require.NoError(t, client.Connect())
 		defer client.Close()
 

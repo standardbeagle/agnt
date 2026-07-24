@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -38,9 +40,9 @@ func decodeAlerts(t *testing.T, raw map[string]interface{}) []*AlertEntry {
 // to a session rooted at projectPath. The returned client's connection
 // carries the session code, so subsequent ALERTS QUERY calls are the
 // exact surface the scope gate must filter.
-func registerSessionClient(t *testing.T, sockPath, code, projectPath string) *Client {
+func registerSessionClient(t *testing.T, sockPath, code, projectPath string) *daemonclient.Client {
 	t.Helper()
-	c := NewClient(WithSocketPath(sockPath))
+	c := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, c.Connect())
 	t.Cleanup(func() { _ = c.Close() })
 	_, err := c.SessionRegister(code, "/tmp/"+code+".sock", projectPath, "test", nil)
@@ -51,7 +53,7 @@ func registerSessionClient(t *testing.T, sockPath, code, projectPath string) *Cl
 // reportAlert stores one alert tagged with the owning project path via
 // the ALERTS REPORT path (which, unlike the scanner ingest path, already
 // stamps ProjectPath from the payload).
-func reportAlert(t *testing.T, c *Client, projectPath, line, severity string) {
+func reportAlert(t *testing.T, c *daemonclient.Client, projectPath, line, severity string) {
 	t.Helper()
 	require.NoError(t, c.AlertReport(protocol.AlertReportPayload{
 		PatternID:   "test-pattern",
@@ -79,7 +81,7 @@ func TestSessionScope_GetErrorsLeaksAcrossProjects(t *testing.T) {
 
 	// A neutral reporter seeds the global ring with alerts for both
 	// projects. Ownership is carried by the payload ProjectPath.
-	reporter := NewClient(WithSocketPath(sockPath))
+	reporter := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, reporter.Connect())
 	t.Cleanup(func() { _ = reporter.Close() })
 	reportAlert(t, reporter, projA, "alpha-error-A", "error")
@@ -130,14 +132,14 @@ func TestSessionScope_GlobalOverrideAndSessionlessRejected(t *testing.T) {
 	projA := normalizePath(t.TempDir())
 	projB := normalizePath(t.TempDir())
 
-	reporter := NewClient(WithSocketPath(sockPath))
+	reporter := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, reporter.Connect())
 	t.Cleanup(func() { _ = reporter.Close() })
 	reportAlert(t, reporter, projA, "err-A", "error")
 	reportAlert(t, reporter, projB, "err-B", "error")
 
 	// Session-less + non-global → rejected fail-loud (no implicit global).
-	anon := NewClient(WithSocketPath(sockPath))
+	anon := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, anon.Connect())
 	t.Cleanup(func() { _ = anon.Close() })
 	_, err := anon.AlertQuery(protocol.AlertQueryFilter{})
@@ -173,7 +175,7 @@ func TestSessionScope_NonDebugQueryVerbsRejectCrossProject(t *testing.T) {
 	projOwn := normalizePath(t.TempDir())
 	projForeign := normalizePath(t.TempDir())
 
-	reporter := NewClient(WithSocketPath(sockPath))
+	reporter := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, reporter.Connect())
 	t.Cleanup(func() { _ = reporter.Close() })
 
@@ -228,7 +230,7 @@ func TestSessionScope_AllGatedVerbsUniformContract(t *testing.T) {
 	// No t.Parallel(): boots a daemon and shares its registries.
 	_, sockPath := newBootedDaemon(t)
 
-	anon := NewClient(WithSocketPath(sockPath))
+	anon := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, anon.Connect())
 	t.Cleanup(func() { _ = anon.Close() })
 

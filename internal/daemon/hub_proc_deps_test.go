@@ -7,6 +7,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/stretchr/testify/assert"
@@ -147,24 +149,24 @@ func TestStartProcessGroup_CycleDetection(t *testing.T) {
 
 	cases := []struct {
 		name      string
-		processes []GroupProcess
+		processes []protocol.GroupProcess
 	}{
 		{
 			name: "self_loop",
-			processes: []GroupProcess{
+			processes: []protocol.GroupProcess{
 				{Name: "a", Run: longRunningCmd(), DependsOn: []string{"a"}},
 			},
 		},
 		{
 			name: "two_way_cycle",
-			processes: []GroupProcess{
+			processes: []protocol.GroupProcess{
 				{Name: "a", Run: longRunningCmd(), DependsOn: []string{"b"}},
 				{Name: "b", Run: longRunningCmd(), DependsOn: []string{"a"}},
 			},
 		},
 		{
 			name: "three_way_cycle",
-			processes: []GroupProcess{
+			processes: []protocol.GroupProcess{
 				{Name: "a", Run: longRunningCmd(), DependsOn: []string{"c"}},
 				{Name: "b", Run: longRunningCmd(), DependsOn: []string{"a"}},
 				{Name: "c", Run: longRunningCmd(), DependsOn: []string{"b"}},
@@ -199,7 +201,7 @@ func TestStartProcessGroup_UnknownDep(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := daemon.StartProcessGroup(ctx, tmpDir, []GroupProcess{
+	result := daemon.StartProcessGroup(ctx, tmpDir, []protocol.GroupProcess{
 		{Name: "api", Run: longRunningCmd(), DependsOn: []string{"missing"}},
 	}, 0)
 	require.Error(t, result.Err)
@@ -215,7 +217,7 @@ func TestStartProcessGroup_DuplicateName(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := daemon.StartProcessGroup(ctx, tmpDir, []GroupProcess{
+	result := daemon.StartProcessGroup(ctx, tmpDir, []protocol.GroupProcess{
 		{Name: "a", Run: longRunningCmd()},
 		{Name: "a", Run: longRunningCmd()},
 	}, 0)
@@ -236,7 +238,7 @@ func TestStartProcessGroup_FiveProcessStack(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	result := daemon.StartProcessGroup(ctx, tmpDir, []GroupProcess{
+	result := daemon.StartProcessGroup(ctx, tmpDir, []protocol.GroupProcess{
 		{Name: "db", Run: longRunningCmd()},
 		{Name: "redis", Run: longRunningCmd()},
 		{Name: "api", Run: longRunningCmd(), DependsOn: []string{"db", "redis"}},
@@ -314,7 +316,7 @@ func TestStartProcessGroup_MissingCommand(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	defer cancel()
 
-	result := daemon.StartProcessGroup(ctx, tmpDir, []GroupProcess{
+	result := daemon.StartProcessGroup(ctx, tmpDir, []protocol.GroupProcess{
 		{Name: "broken"},
 	}, 0)
 	require.Error(t, result.Err)
@@ -329,7 +331,7 @@ func TestHubHandleProcRun_WithDepsExposesWaitingFor(t *testing.T) {
 	// signal; PID-reuse kills it under high concurrency.
 	daemon, client, tmpDir := newHubProcTestDaemon(t)
 
-	resp, err := client.ProcRun("api", ProcRunConfig{
+	resp, err := client.ProcRun("api", daemonclient.ProcRunConfig{
 		Run:              longRunningCmd(),
 		ProjectPath:      tmpDir,
 		DependsOn:        []string{"db"},
@@ -376,9 +378,9 @@ func TestHubHandleProcRunGroup_CycleReturnsError(t *testing.T) {
 	t.Parallel()
 	daemon, client, tmpDir := newHubProcTestDaemon(t)
 
-	resp, err := client.ProcRunGroup(ProcRunGroupConfig{
+	resp, err := client.ProcRunGroup(daemonclient.ProcRunGroupConfig{
 		ProjectPath: tmpDir,
-		Processes: []GroupProcess{
+		Processes: []protocol.GroupProcess{
 			{Name: "a", Run: longRunningCmd(), DependsOn: []string{"b"}},
 			{Name: "b", Run: longRunningCmd(), DependsOn: []string{"a"}},
 		},

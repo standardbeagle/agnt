@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"golang.org/x/term"
 )
 
@@ -17,7 +17,7 @@ func init() {
 	runAttachTerminal = runAttachTerminalWindows
 }
 
-func runAttachTerminalWindows(client *daemon.Client, sessionID string, detachChord []byte) error {
+func runAttachTerminalWindows(client *daemonclient.Client, sessionID string, detachChord []byte) error {
 	fd := int(os.Stdin.Fd())
 	return runPreparedConsole(func() bool { return term.IsTerminal(fd) }, func() (func(), error) {
 		consoleState, err := enterConsoleRawMode()

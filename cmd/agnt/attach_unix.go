@@ -10,7 +10,7 @@ import (
 	"sync"
 	"syscall"
 
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"golang.org/x/term"
 )
 
@@ -82,7 +82,7 @@ func attachWatchResize(ctx context.Context, onResize func(cols, rows int)) func(
 // mode, bidirectional byte relay over SESSION-HOST, SIGWINCH forwarding, and
 // guaranteed termios restore on every exit path (normal return, detach,
 // panic, SIGINT/SIGTERM).
-func runAttachTerminalUnix(client *daemon.Client, sessionID string, detachChord []byte) error {
+func runAttachTerminalUnix(client *daemonclient.Client, sessionID string, detachChord []byte) error {
 	fd := int(os.Stdin.Fd())
 	if !term.IsTerminal(fd) {
 		return fmt.Errorf("agnt attach: stdin is not a terminal")

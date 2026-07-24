@@ -11,25 +11,27 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/sessionhost"
 	"github.com/stretchr/testify/require"
 )
 
-// TestClientSessionHost_FullCycle exercises the daemon.Client SESSION-HOST
+// TestClientSessionHost_FullCycle exercises the daemonclient.Client SESSION-HOST
 // wrapper methods (added for `agnt attach` / `agnt session hosts|kill`) end
 // to end: create a real PTY session, attach and observe the replay+live
 // frame stream, send primary stdin, detach without killing, re-attach, then
 // kill and confirm the still-open attach observes the exit frame. This is
 // the client-side counterpart to hub_sessionhost_test.go's server-side
-// coverage — it pins the *daemon.Client wrapper's wire format, not the hub
+// coverage — it pins the *daemonclient.Client wrapper's wire format, not the hub
 // dispatch logic.
 func TestClientSessionHost_FullCycle(t *testing.T) {
 	// No t.Parallel(): spawns a real `sh` PTY child reaped via killpg — see
 	// AGENTS.md prohibition on parallel tests that start real OS processes.
 	_, sockPath := newSessionHostTestDaemon(t)
 
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, client.Connect())
 	defer client.Close()
 

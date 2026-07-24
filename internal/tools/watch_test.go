@@ -4,11 +4,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 )
 
 func TestBuildWatchCommand_AllTarget(t *testing.T) {
-	dt := NewDaemonTools(daemon.AutoStartConfig{
+	dt := NewDaemonTools(daemonclient.AutoStartConfig{
 		SocketPath: "/run/user/1000/agnt.sock",
 	}, "0.12.35")
 
@@ -36,7 +36,7 @@ func TestBuildWatchCommand_AllTarget(t *testing.T) {
 }
 
 func TestBuildWatchCommand_ErrorsTarget(t *testing.T) {
-	dt := NewDaemonTools(daemon.AutoStartConfig{
+	dt := NewDaemonTools(daemonclient.AutoStartConfig{
 		SocketPath: "/run/user/1000/agnt.sock",
 	}, "0.12.35")
 
@@ -61,7 +61,7 @@ func TestBuildWatchCommand_ErrorsTarget(t *testing.T) {
 }
 
 func TestBuildWatchCommand_InteractionsTarget(t *testing.T) {
-	dt := NewDaemonTools(daemon.AutoStartConfig{
+	dt := NewDaemonTools(daemonclient.AutoStartConfig{
 		SocketPath: "/run/user/1000/agnt.sock",
 	}, "0.12.35")
 
@@ -83,7 +83,7 @@ func TestBuildWatchCommand_InteractionsTarget(t *testing.T) {
 }
 
 func TestBuildWatchCommand_ProcessTarget(t *testing.T) {
-	dt := NewDaemonTools(daemon.AutoStartConfig{
+	dt := NewDaemonTools(daemonclient.AutoStartConfig{
 		SocketPath: "/run/user/1000/agnt.sock",
 	}, "0.12.35")
 
@@ -105,7 +105,7 @@ func TestBuildWatchCommand_ProcessTarget(t *testing.T) {
 }
 
 func TestBuildWatchCommand_InvalidTarget(t *testing.T) {
-	dt := NewDaemonTools(daemon.AutoStartConfig{
+	dt := NewDaemonTools(daemonclient.AutoStartConfig{
 		SocketPath: "/run/user/1000/agnt.sock",
 	}, "0.12.35")
 
@@ -117,7 +117,7 @@ func TestBuildWatchCommand_InvalidTarget(t *testing.T) {
 }
 
 func TestBuildWatchCommand_ErrorsWithoutProxyID(t *testing.T) {
-	dt := NewDaemonTools(daemon.AutoStartConfig{
+	dt := NewDaemonTools(daemonclient.AutoStartConfig{
 		SocketPath: "/run/user/1000/agnt.sock",
 	}, "0.12.35")
 
@@ -136,7 +136,7 @@ func TestBuildWatchCommand_ErrorsWithoutProxyID(t *testing.T) {
 }
 
 func TestBuildWatchCommand_InteractionsWithoutProxyID(t *testing.T) {
-	dt := NewDaemonTools(daemon.AutoStartConfig{
+	dt := NewDaemonTools(daemonclient.AutoStartConfig{
 		SocketPath: "/run/user/1000/agnt.sock",
 	}, "0.12.35")
 
@@ -155,7 +155,7 @@ func TestBuildWatchCommand_InteractionsWithoutProxyID(t *testing.T) {
 }
 
 func TestBuildWatchCommand_ProcessWithoutProcessID(t *testing.T) {
-	dt := NewDaemonTools(daemon.AutoStartConfig{
+	dt := NewDaemonTools(daemonclient.AutoStartConfig{
 		SocketPath: "/run/user/1000/agnt.sock",
 	}, "0.12.35")
 
@@ -167,7 +167,7 @@ func TestBuildWatchCommand_ProcessWithoutProcessID(t *testing.T) {
 }
 
 func TestBuildWatchCommand_DefaultTarget(t *testing.T) {
-	dt := NewDaemonTools(daemon.AutoStartConfig{
+	dt := NewDaemonTools(daemonclient.AutoStartConfig{
 		SocketPath: "/run/user/1000/agnt.sock",
 	}, "0.12.35")
 
@@ -183,7 +183,7 @@ func TestBuildWatchCommand_DefaultTarget(t *testing.T) {
 }
 
 func TestBuildWatchCommand_BinaryPathResolution(t *testing.T) {
-	dt := NewDaemonTools(daemon.AutoStartConfig{
+	dt := NewDaemonTools(daemonclient.AutoStartConfig{
 		SocketPath: "/tmp/test.sock",
 	}, "0.12.35")
 

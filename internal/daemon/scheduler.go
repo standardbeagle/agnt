@@ -14,6 +14,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/standardbeagle/agnt/internal/debug"
 	"golang.org/x/sync/semaphore"
 )
@@ -674,17 +676,8 @@ func (s *Scheduler) ListPendingTasks(projectPath string, global bool) []*Schedul
 	return result
 }
 
-// SchedulerInfo contains statistics about the scheduler.
-type SchedulerInfo struct {
-	TotalScheduled int64 `json:"total_scheduled"`
-	TotalDelivered int64 `json:"total_delivered"`
-	TotalFailed    int64 `json:"total_failed"`
-	TotalCancelled int64 `json:"total_cancelled"`
-	PendingCount   int64 `json:"pending_count"`
-}
-
 // Info returns statistics about the scheduler.
-func (s *Scheduler) Info() SchedulerInfo {
+func (s *Scheduler) Info() daemonclient.SchedulerInfo {
 	// Count pending tasks
 	var pendingCount int64
 	s.tasks.Range(func(key, value interface{}) bool {
@@ -695,7 +688,7 @@ func (s *Scheduler) Info() SchedulerInfo {
 		return true
 	})
 
-	return SchedulerInfo{
+	return daemonclient.SchedulerInfo{
 		TotalScheduled: s.totalScheduled.Load(),
 		TotalDelivered: s.totalDelivered.Load(),
 		TotalFailed:    s.totalFailed.Load(),

@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/standardbeagle/go-cli-server/process"
 	"github.com/stretchr/testify/require"
 )
@@ -37,7 +39,7 @@ func TestResilientClient_VersionValidation(t *testing.T) {
 		if err := d.Start(); err != nil {
 			t.Fatalf("Failed to start daemon: %v", err)
 		}
-		require.Eventually(t, func() bool { return IsRunning(sockPath) },
+		require.Eventually(t, func() bool { return daemonclient.IsRunning(sockPath) },
 			3*time.Second, 10*time.Millisecond, "daemon should be running after start")
 		return d
 	}
@@ -47,7 +49,7 @@ func TestResilientClient_VersionValidation(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		d.Stop(ctx)
-		require.Eventually(t, func() bool { return !IsRunning(sockPath) },
+		require.Eventually(t, func() bool { return !daemonclient.IsRunning(sockPath) },
 			3*time.Second, 10*time.Millisecond, "daemon should stop")
 	}
 
@@ -55,7 +57,7 @@ func TestResilientClient_VersionValidation(t *testing.T) {
 	daemon := startDaemon()
 
 	// Get daemon version
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -71,8 +73,8 @@ func TestResilientClient_VersionValidation(t *testing.T) {
 
 	// Test 1: Matching versions (should succeed)
 	t.Run("MatchingVersions", func(t *testing.T) {
-		config := DefaultResilientClientConfig()
-		config.AutoStartConfig = AutoStartConfig{
+		config := daemonclient.DefaultResilientClientConfig()
+		config.AutoStartConfig = daemonclient.AutoStartConfig{
 			SocketPath:    sockPath,
 			StartTimeout:  5 * time.Second,
 			RetryInterval: 100 * time.Millisecond,
@@ -81,7 +83,7 @@ func TestResilientClient_VersionValidation(t *testing.T) {
 		config.ClientVersion = daemonVersion // Same version
 		config.OnVersionMismatch = nil       // Should not be called
 
-		rc := NewResilientClient(config)
+		rc := daemonclient.NewResilientClient(config)
 		defer rc.Close()
 
 		if err := rc.Connect(); err != nil {
@@ -89,14 +91,14 @@ func TestResilientClient_VersionValidation(t *testing.T) {
 		}
 
 		if !rc.IsConnected() {
-			t.Error("Client not connected after successful connect")
+			t.Error("daemonclient.Client not connected after successful connect")
 		}
 	})
 
 	// Test 2: Mismatched versions without callback (should fail and stop daemon)
 	t.Run("MismatchedVersionsNoCallback", func(t *testing.T) {
-		config := DefaultResilientClientConfig()
-		config.AutoStartConfig = AutoStartConfig{
+		config := daemonclient.DefaultResilientClientConfig()
+		config.AutoStartConfig = daemonclient.AutoStartConfig{
 			SocketPath:    sockPath,
 			StartTimeout:  5 * time.Second,
 			RetryInterval: 100 * time.Millisecond,
@@ -105,7 +107,7 @@ func TestResilientClient_VersionValidation(t *testing.T) {
 		config.ClientVersion = "99.99.99" // Different version
 		config.OnVersionMismatch = nil    // No callback
 
-		rc := NewResilientClient(config)
+		rc := daemonclient.NewResilientClient(config)
 		defer rc.Close()
 
 		err := rc.Connect()
@@ -130,8 +132,8 @@ func TestResilientClient_VersionValidation(t *testing.T) {
 		callbackInvoked := false
 		var callbackClientVer, callbackDaemonVer string
 
-		config := DefaultResilientClientConfig()
-		config.AutoStartConfig = AutoStartConfig{
+		config := daemonclient.DefaultResilientClientConfig()
+		config.AutoStartConfig = daemonclient.AutoStartConfig{
 			SocketPath:    sockPath,
 			StartTimeout:  5 * time.Second,
 			RetryInterval: 100 * time.Millisecond,
@@ -145,7 +147,7 @@ func TestResilientClient_VersionValidation(t *testing.T) {
 			return nil // Return nil to allow connection
 		}
 
-		rc := NewResilientClient(config)
+		rc := daemonclient.NewResilientClient(config)
 		defer rc.Close()
 
 		// Connect should succeed because callback returns nil
@@ -171,8 +173,8 @@ func TestResilientClient_VersionValidation(t *testing.T) {
 
 	// Test 4: No version checking (ClientVersion empty)
 	t.Run("NoVersionCheck", func(t *testing.T) {
-		config := DefaultResilientClientConfig()
-		config.AutoStartConfig = AutoStartConfig{
+		config := daemonclient.DefaultResilientClientConfig()
+		config.AutoStartConfig = daemonclient.AutoStartConfig{
 			SocketPath:    sockPath,
 			StartTimeout:  5 * time.Second,
 			RetryInterval: 100 * time.Millisecond,
@@ -184,7 +186,7 @@ func TestResilientClient_VersionValidation(t *testing.T) {
 			return nil
 		}
 
-		rc := NewResilientClient(config)
+		rc := daemonclient.NewResilientClient(config)
 		defer rc.Close()
 
 		if err := rc.Connect(); err != nil {
@@ -192,7 +194,7 @@ func TestResilientClient_VersionValidation(t *testing.T) {
 		}
 
 		if !rc.IsConnected() {
-			t.Error("Client not connected")
+			t.Error("daemonclient.Client not connected")
 		}
 	})
 }
@@ -219,11 +221,11 @@ func TestResilientClient_VersionCheckAfterReconnect(t *testing.T) {
 		WriteTimeout: 5 * time.Second,
 	})
 
-	require.Eventually(t, func() bool { return IsRunning(sockPath) },
+	require.Eventually(t, func() bool { return daemonclient.IsRunning(sockPath) },
 		5*time.Second, 20*time.Millisecond, "daemon not running after start")
 
 	// Get daemon version
-	basicClient := NewClient(WithSocketPath(sockPath))
+	basicClient := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	if err := basicClient.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -238,8 +240,8 @@ func TestResilientClient_VersionCheckAfterReconnect(t *testing.T) {
 	t.Logf("Daemon version: %s", daemonVersion)
 
 	// Create resilient client with matching version
-	config := DefaultResilientClientConfig()
-	config.AutoStartConfig = AutoStartConfig{
+	config := daemonclient.DefaultResilientClientConfig()
+	config.AutoStartConfig = daemonclient.AutoStartConfig{
 		SocketPath:    sockPath,
 		DaemonPath:    "", // Will auto-start if needed
 		StartTimeout:  5 * time.Second,
@@ -253,7 +255,7 @@ func TestResilientClient_VersionCheckAfterReconnect(t *testing.T) {
 		return nil
 	}
 
-	rc := NewResilientClient(config)
+	rc := daemonclient.NewResilientClient(config)
 	defer rc.Close()
 
 	// Initial connect
@@ -270,11 +272,11 @@ func TestResilientClient_VersionCheckAfterReconnect(t *testing.T) {
 	}
 	cancel()
 
-	require.Eventually(t, func() bool { return !IsRunning(sockPath) },
+	require.Eventually(t, func() bool { return !daemonclient.IsRunning(sockPath) },
 		5*time.Second, 20*time.Millisecond, "daemon should stop after Stop()")
 
 	// Verify daemon is stopped
-	if IsRunning(sockPath) {
+	if daemonclient.IsRunning(sockPath) {
 		t.Fatal("Daemon still running after stop")
 	}
 
@@ -282,7 +284,7 @@ func TestResilientClient_VersionCheckAfterReconnect(t *testing.T) {
 
 	// Try to use client - should trigger reconnect
 	// (Note: This may fail because we don't have auto-start configured properly for tests)
-	err = rc.WithClient(func(c *Client) error {
+	err = rc.WithClient(func(c *daemonclient.Client) error {
 		_, err := c.Info()
 		return err
 	})

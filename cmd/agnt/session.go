@@ -8,7 +8,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/protocol"
 
 	"github.com/spf13/cobra"
@@ -222,9 +222,9 @@ func runSessionKill(cmd *cobra.Command, args []string) {
 	fmt.Printf("Session %s killed\n", target)
 }
 
-func getSessionClient(cmd *cobra.Command) (*daemon.Client, error) {
+func getSessionClient(cmd *cobra.Command) (*daemonclient.Client, error) {
 	socketPath := getSocketPath(cmd)
-	client := daemon.NewClient(daemon.WithSocketPath(socketPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(socketPath))
 	if err := client.Connect(); err != nil {
 		return nil, fmt.Errorf("daemon is not running: %v", err)
 	}

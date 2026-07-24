@@ -8,7 +8,7 @@ import (
 	"sync"
 
 	"github.com/standardbeagle/agnt/internal/config"
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/project"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/go-sdk/mcp"
@@ -133,9 +133,9 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 			// finish its send after we've returned.
 			socketPath := dt.config.SocketPath
 			if socketPath == "" {
-				socketPath = daemon.DefaultSocketPath()
+				socketPath = daemonclient.DefaultSocketPath()
 			}
-			runClient := daemon.NewClientWithPath(socketPath)
+			runClient := daemonclient.NewClientWithPath(socketPath)
 			if err := runClient.Connect(); err != nil {
 				return formatDaemonError(err, "run"), RunOutput{}, nil
 			}
@@ -574,9 +574,9 @@ func (dt *DaemonTools) handleProcAutoRestart(input ProcInput) (*mcp.CallToolResu
 	}
 
 	// Build config if enabling
-	var config *daemon.ProcAutoRestartConfig
+	var config *daemonclient.ProcAutoRestartConfig
 	if action == "enable" {
-		config = &daemon.ProcAutoRestartConfig{
+		config = &daemonclient.ProcAutoRestartConfig{
 			MaxRestarts: input.MaxRestarts,
 			OnlyOnError: input.OnlyOnError,
 		}
@@ -710,7 +710,7 @@ func (dt *DaemonTools) handleProcRun(input ProcInput) (*mcp.CallToolResult, Proc
 		return errorResult(fmt.Sprintf("proc run: failed to resolve path: %v", err)), ProcOutput{}, nil
 	}
 
-	cfg := daemon.ProcRunConfig{
+	cfg := daemonclient.ProcRunConfig{
 		Run:              input.Run,
 		Command:          input.Command,
 		Args:             input.Args,
@@ -760,7 +760,7 @@ func (dt *DaemonTools) handleProcRunGroup(input ProcInput) (*mcp.CallToolResult,
 		return errorResult(fmt.Sprintf("proc run_group: failed to resolve path: %v", err)), ProcOutput{}, nil
 	}
 
-	groupProcs := make([]daemon.GroupProcess, 0, len(input.Processes))
+	groupProcs := make([]protocol.GroupProcess, 0, len(input.Processes))
 	for i, gp := range input.Processes {
 		if gp.ID == "" {
 			return errorResult(fmt.Sprintf("proc run_group: process[%d] missing id", i)), ProcOutput{}, nil
@@ -768,7 +768,7 @@ func (dt *DaemonTools) handleProcRunGroup(input ProcInput) (*mcp.CallToolResult,
 		if gp.Run == "" && gp.Command == "" {
 			return errorResult(fmt.Sprintf("proc run_group: process %q requires `run` or `command`", gp.ID)), ProcOutput{}, nil
 		}
-		groupProcs = append(groupProcs, daemon.GroupProcess{
+		groupProcs = append(groupProcs, protocol.GroupProcess{
 			Name:        gp.ID,
 			Run:         gp.Run,
 			Command:     gp.Command,
@@ -781,7 +781,7 @@ func (dt *DaemonTools) handleProcRunGroup(input ProcInput) (*mcp.CallToolResult,
 		})
 	}
 
-	cfg := daemon.ProcRunGroupConfig{
+	cfg := daemonclient.ProcRunGroupConfig{
 		ProjectPath:      absPath,
 		DependsOnTimeout: input.DependsOnTimeout,
 		Processes:        groupProcs,

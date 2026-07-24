@@ -15,6 +15,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	goprocess "github.com/standardbeagle/go-cli-server/process"
 )
 
@@ -49,7 +50,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	// socket whose handler goroutine races with the real doctor connect, so
 	// clientCount briefly reads both connections and makes the output say
 	// "2 client(s)" when only the doctor is really connected.
-	client := daemon.NewClient(daemon.WithSocketPath(socketPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(socketPath))
 	if err := client.Connect(); err != nil {
 		// Daemon not available — run standalone OS-level checks.
 		return runDoctorStandalone(projectPath)
@@ -60,7 +61,7 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 // runDoctorViaDaemon runs the daemon-side checks via an already-connected
 // client and prints the report. The caller owns the client and must provide
 // one that is already Connect()'d.
-func runDoctorViaDaemon(client *daemon.Client, projectPath string) error {
+func runDoctorViaDaemon(client *daemonclient.Client, projectPath string) error {
 	defer client.Close()
 
 	result, err := client.Doctor(projectPath)

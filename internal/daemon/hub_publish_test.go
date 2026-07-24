@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/stretchr/testify/require"
 )
@@ -29,11 +31,11 @@ func publishTestWalkthrough(t *testing.T) json.RawMessage {
 
 // bootPublishSession boots a daemon + a session-registered client so control-plane
 // PUBLISH verbs resolve a project scope.
-func bootPublishSession(t *testing.T, projectPath string) (*Daemon, *Client) {
+func bootPublishSession(t *testing.T, projectPath string) (*Daemon, *daemonclient.Client) {
 	t.Helper()
 	sockPath := shortSockPath(t)
 	d := newBootedDaemonWithConfig(t, DaemonConfig{SocketPath: sockPath})
-	c := NewClient(WithSocketPath(sockPath))
+	c := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, c.Connect())
 	t.Cleanup(func() { _ = c.Close() })
 	_, err := c.SessionRegister("sess-"+strings.ReplaceAll(projectPath, "/", "_"), "/tmp/pub.sock", projectPath, "test", nil)
@@ -117,13 +119,13 @@ func TestPublishControlPlaneProjectScoped(t *testing.T) {
 	d := newBootedDaemonWithConfig(t, DaemonConfig{SocketPath: sockPath})
 	_ = d
 
-	ca := NewClient(WithSocketPath(sockPath))
+	ca := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, ca.Connect())
 	t.Cleanup(func() { _ = ca.Close() })
 	_, err := ca.SessionRegister("sess-a", "/tmp/a.sock", "/proj-a", "test", nil)
 	require.NoError(t, err)
 
-	cb := NewClient(WithSocketPath(sockPath))
+	cb := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, cb.Connect())
 	t.Cleanup(func() { _ = cb.Close() })
 	_, err = cb.SessionRegister("sess-b", "/tmp/b.sock", "/proj-b", "test", nil)

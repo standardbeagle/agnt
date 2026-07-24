@@ -20,7 +20,7 @@ import (
 )
 
 // rawConn is a minimal test-only client that speaks the wire protocol
-// directly, bypassing the daemon.Client convenience wrapper (which has no
+// directly, bypassing the daemonclient.Client convenience wrapper (which has no
 // generic streaming-read primitive). It lets a test send a command, then
 // read chunk-by-chunk — needed to capture the attach_id from SESSION-HOST
 // ATTACH's first frame before issuing a DETACH from a second connection.

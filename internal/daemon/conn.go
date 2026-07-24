@@ -3,6 +3,8 @@ package daemon
 import (
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	goclient "github.com/standardbeagle/go-cli-server/client"
 )
 
@@ -41,7 +43,7 @@ type Conn struct {
 // The connection is not established until the first request or EnsureConnected().
 func NewConn(socketPath string) *Conn {
 	if socketPath == "" {
-		socketPath = DefaultSocketPath()
+		socketPath = daemonclient.DefaultSocketPath()
 	}
 	return &Conn{
 		conn: goclient.NewConn(
@@ -153,7 +155,7 @@ func (r *RequestBuilder) JSON() (map[string]interface{}, error) {
 
 // JSONInto executes the request and unmarshals the response into v.
 //
-//	var info DaemonInfo
+//	var info daemonclient.DaemonInfo
 //	err := conn.Request("INFO").JSONInto(&info)
 func (r *RequestBuilder) JSONInto(v interface{}) error {
 	return r.builder.JSONInto(v)

@@ -1,10 +1,9 @@
 //go:build !windows
 
-package daemon
+package daemonclient
 
 import (
 	"fmt"
-	"github.com/standardbeagle/agnt/internal/debug"
 	"net"
 	"os"
 	"strings"
@@ -162,50 +161,4 @@ func isAgntDaemonProcess(pid int) bool {
 	return (strings.Contains(cmd, "daemon") && strings.Contains(cmd, "start")) ||
 		strings.Contains(cmd, "agnt") ||
 		strings.Contains(cmd, "devtool-mcp")
-}
-
-// migrateLegacySocket retires a daemon left listening on the pre-0.13.32 socket
-// path (/tmp/<name>-<uid>.sock, before the hardened bind forced a per-uid
-// subdirectory).
-//
-// After an in-place upgrade the old daemon keeps running, unreachable: the new
-// client looks only at the new path, autostarts a second daemon, and the old one
-// lingers holding its managed processes and their ports. Nothing ever reaps it,
-// because nothing can still find it.
-//
-// A live legacy daemon is asked to shut down gracefully, which stops the
-// processes it owns rather than orphaning them. A stale socket file is removed.
-// Only runs when this daemon owns the default path — an explicit AGNT_SOCKET or
-// --socket means the caller is managing socket layout themselves.
-func (d *Daemon) migrateLegacySocket() {
-	if d.config.SocketPath != DefaultSocketPath() {
-		return
-	}
-	d.migrateLegacySocketFrom(LegacySocketPath())
-}
-
-// migrateLegacySocketFrom is migrateLegacySocket against an explicit path, so a
-// test can exercise it without a daemon on the machine's real default socket.
-func (d *Daemon) migrateLegacySocketFrom(legacy string) {
-	if _, err := os.Stat(legacy); err != nil {
-		return // no legacy socket, nothing to migrate
-	}
-
-	if IsRunning(legacy) {
-		debug.Log("daemon", "legacy daemon found at %s, requesting shutdown", legacy)
-		if err := StopDaemon(legacy); err != nil {
-			// Loud, not silent: a surviving legacy daemon holds ports this one
-			// is about to fight over, and the user needs to know which to kill.
-			d.daemonStartupLog("warning", "legacy_socket_migration",
-				fmt.Sprintf("a daemon from an older agnt is still running at %s and could not be stopped (%v); "+
-					"stop it manually or its processes will keep holding their ports", legacy, err))
-			return
-		}
-		d.daemonStartupLog("info", "legacy_socket_migration",
-			fmt.Sprintf("stopped the daemon left at the pre-0.13.32 socket path %s", legacy))
-	}
-
-	if err := os.Remove(legacy); err != nil && !os.IsNotExist(err) {
-		debug.Warn("daemon", "could not remove legacy socket %s: %v", legacy, err)
-	}
 }

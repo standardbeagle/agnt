@@ -10,12 +10,14 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/stretchr/testify/require"
 )
 
 // waitForProcessState polls until the process reaches the expected state or times out.
-func waitForProcessState(t *testing.T, client *Client, processID, wantState string, timeout time.Duration) map[string]interface{} {
+func waitForProcessState(t *testing.T, client *daemonclient.Client, processID, wantState string, timeout time.Duration) map[string]interface{} {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
@@ -33,7 +35,7 @@ func waitForProcessState(t *testing.T, client *Client, processID, wantState stri
 
 // restartProcessWithRetry retries ProcRestart on transient startup failures
 // caused by the PID-reuse race in Go's exec.CommandContext.
-func restartProcessWithRetry(t *testing.T, client *Client, processID string) map[string]interface{} {
+func restartProcessWithRetry(t *testing.T, client *daemonclient.Client, processID string) map[string]interface{} {
 	t.Helper()
 	const maxAttempts = 3
 	var result map[string]interface{}
@@ -70,7 +72,7 @@ func TestRestartIntegration_ProcRestart(t *testing.T) {
 		WriteTimeout: 5 * time.Second,
 	})
 
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -136,7 +138,7 @@ func TestRestartIntegration_ProcRestart_NonExistent(t *testing.T) {
 		WriteTimeout: 5 * time.Second,
 	})
 
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -165,7 +167,7 @@ func TestRestartIntegration_ProxyRestart(t *testing.T) {
 		WriteTimeout: 5 * time.Second,
 	})
 
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -248,7 +250,7 @@ func TestRestartIntegration_ProxyRestart_NonExistent(t *testing.T) {
 		WriteTimeout: 5 * time.Second,
 	})
 
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -273,7 +275,7 @@ func TestRestartIntegration_StopAll(t *testing.T) {
 		WriteTimeout: 5 * time.Second,
 	})
 
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -370,7 +372,7 @@ func TestRestartIntegration_RestartAll(t *testing.T) {
 		WriteTimeout: 5 * time.Second,
 	})
 
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -495,7 +497,7 @@ func TestRestartIntegration_StopAll_Empty(t *testing.T) {
 		WriteTimeout: 5 * time.Second,
 	})
 
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -539,7 +541,7 @@ func TestRestartIntegration_RestartAll_Empty(t *testing.T) {
 		WriteTimeout: 5 * time.Second,
 	})
 
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	if err := client.Connect(); err != nil {
 		t.Fatalf("Failed to connect: %v", err)
 	}
@@ -596,12 +598,12 @@ func TestRestartIntegration_ProxyRestart_PreservesConfig(t *testing.T) {
 
 	d := NewForTest(t, DaemonConfig{SocketPath: sockPath, MaxClients: 10, WriteTimeout: 5 * time.Second})
 
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, client.Connect())
 	defer client.Close()
 
 	const publicURL = "https://front.example.test:9000"
-	_, err := client.ProxyStartWithConfig("cfg-proxy", backendURL, 0, 1000, ProxyStartConfig{
+	_, err := client.ProxyStartWithConfig("cfg-proxy", backendURL, 0, 1000, daemonclient.ProxyStartConfig{
 		Path:          tmpDir,
 		PublicURL:     publicURL,
 		SkipTLSVerify: true,
@@ -637,11 +639,11 @@ func TestRestartIntegration_ProxyRestart_ReArmsDependencies(t *testing.T) {
 
 	d := NewForTest(t, DaemonConfig{SocketPath: sockPath, MaxClients: 10, WriteTimeout: 5 * time.Second})
 
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, client.Connect())
 	defer client.Close()
 
-	_, err := client.ProxyStartWithConfig("dep-proxy", backendURL, 0, 1000, ProxyStartConfig{Path: tmpDir})
+	_, err := client.ProxyStartWithConfig("dep-proxy", backendURL, 0, 1000, daemonclient.ProxyStartConfig{Path: tmpDir})
 	require.NoError(t, err)
 
 	// Simulate a proxy still gated on a dependency that never signals ready.
@@ -680,11 +682,11 @@ func TestRestartIntegration_ProxyRestart_PersistsActualPort(t *testing.T) {
 	})
 	require.NotNil(t, d.stateMgr, "state persistence must be enabled for this test")
 
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, client.Connect())
 	defer client.Close()
 
-	_, err := client.ProxyStartWithConfig("persist-proxy", backendURL, 0, 1000, ProxyStartConfig{Path: tmpDir})
+	_, err := client.ProxyStartWithConfig("persist-proxy", backendURL, 0, 1000, daemonclient.ProxyStartConfig{Path: tmpDir})
 	require.NoError(t, err)
 
 	_, err = client.ProxyRestart("persist-proxy")
@@ -729,11 +731,11 @@ func TestRestartIntegration_ProxyRestart_RebindsOverlay(t *testing.T) {
 		LastSeen:    time.Now(),
 	}))
 
-	client := NewClient(WithSocketPath(sockPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, client.Connect())
 	defer client.Close()
 
-	_, err := client.ProxyStartWithConfig("overlay-proxy", backendURL, 0, 1000, ProxyStartConfig{Path: tmpDir})
+	_, err := client.ProxyStartWithConfig("overlay-proxy", backendURL, 0, 1000, daemonclient.ProxyStartConfig{Path: tmpDir})
 	require.NoError(t, err)
 
 	_, err = client.ProxyRestart("overlay-proxy")

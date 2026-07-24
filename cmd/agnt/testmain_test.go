@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"go.uber.org/goleak"
 )
 
@@ -17,7 +17,7 @@ func TestMain(m *testing.M) {
 	// mismatch (test binary = "test" vs installed version), trigger an
 	// auto-upgrade of the host daemon, and that churn flakes tests under load
 	// (rare "fork/exec: operation not permitted"). AGNT_SOCKET is honored by
-	// daemon.DefaultSocketPath; the exec'd agnt subprocesses inherit it.
+	// daemonclient.DefaultSocketPath; the exec'd agnt subprocesses inherit it.
 	sock := filepath.Join(os.TempDir(), fmt.Sprintf("agnt-cmdtest-%d.sock", os.Getpid()))
 	_ = os.Setenv("AGNT_SOCKET", sock)
 
@@ -32,7 +32,7 @@ func TestMain(m *testing.M) {
 	// Best-effort: stop the isolated daemon and remove its socket so each
 	// cmd/agnt test process leaves nothing behind (the old shared-socket path
 	// reused the host daemon and never cleaned up).
-	_ = daemon.StopDaemon(sock)
+	_ = daemonclient.StopDaemon(sock)
 	_ = os.Remove(sock)
 
 	// Replicate VerifyTestMain: only check for leaks when tests passed.

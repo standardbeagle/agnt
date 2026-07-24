@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/go-sdk/mcp"
 
 	"github.com/standardbeagle/agnt/internal/protocol"
@@ -88,7 +88,7 @@ func (dt *DaemonTools) handleProxyStart(input ProxyInput) (*mcp.CallToolResult, 
 		port = -1
 	}
 
-	config := daemon.ProxyStartConfig{
+	config := daemonclient.ProxyStartConfig{
 		Path:          cwd,
 		BindAddress:   input.BindAddress,
 		AllowExternal: input.AllowExternal,

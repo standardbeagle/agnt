@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/standardbeagle/agnt/internal/platform"
 	"github.com/stretchr/testify/require"
 )
@@ -94,7 +96,7 @@ func TestSessionRegister_CarriesSessionPGID(t *testing.T) {
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
 	tmpDir := t.TempDir()
 
-	client := NewClientWithPath(d.config.SocketPath)
+	client := daemonclient.NewClientWithPath(d.config.SocketPath)
 	defer client.Close()
 
 	const wantPGID = 424242
@@ -152,7 +154,7 @@ func TestSessionRegister_CarriesSessionJobHandle(t *testing.T) {
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
 	tmpDir := t.TempDir()
 
-	client := NewClientWithPath(d.config.SocketPath)
+	client := daemonclient.NewClientWithPath(d.config.SocketPath)
 	defer client.Close()
 
 	const wantHandle uint64 = 0xDEADBEEFCAFEBABE

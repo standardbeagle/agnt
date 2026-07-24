@@ -16,7 +16,7 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/protocol"
 )
 
@@ -240,7 +240,7 @@ func reportExternalError(cmd *cobra.Command, line string) error {
 		ProjectPath: projectPath,
 		Timestamp:   time.Now().Format(time.RFC3339),
 	}
-	client := daemon.NewClient(daemon.WithSocketPath(getSocketPath(cmd)))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(getSocketPath(cmd)))
 	if err := client.Connect(); err != nil {
 		return err
 	}

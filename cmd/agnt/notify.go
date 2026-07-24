@@ -8,7 +8,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
@@ -103,7 +103,7 @@ func dispatchNotifyHook(socketPath, kind, title, message string) int {
 		return 0
 	}
 
-	client := daemon.NewClient(daemon.WithSocketPath(socketPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(socketPath))
 	if err := client.Connect(); err != nil {
 		// Daemon not running — silent exit 0 keeps hook scripts fast
 		// and prevents broken pipes from cascading into agent failures.
@@ -120,8 +120,8 @@ func dispatchNotifyHook(socketPath, kind, title, message string) int {
 		// daemon error) is also swallowed by design — this command
 		// must never fail loudly.
 		switch {
-		case errors.Is(err, daemon.ErrHookDaemonDown):
-		case errors.Is(err, daemon.ErrHookDeadline):
+		case errors.Is(err, daemonclient.ErrHookDaemonDown):
+		case errors.Is(err, daemonclient.ErrHookDeadline):
 		default:
 		}
 		return 0

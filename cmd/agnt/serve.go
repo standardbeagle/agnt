@@ -15,7 +15,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/license"
 	"github.com/standardbeagle/agnt/internal/selflog"
 	"github.com/standardbeagle/agnt/internal/snapshot"
@@ -55,7 +55,7 @@ func init() {
 func runServe(cmd *cobra.Command, args []string) {
 	socketPath, _ := cmd.Flags().GetString("socket")
 	if socketPath == "" {
-		socketPath = daemon.DefaultSocketPath()
+		socketPath = daemonclient.DefaultSocketPath()
 	}
 
 	runDaemonClient(socketPath)
@@ -64,7 +64,7 @@ func runServe(cmd *cobra.Command, args []string) {
 func runMCP(cmd *cobra.Command, args []string) {
 	socketPath, _ := cmd.Flags().GetString("socket")
 	if socketPath == "" {
-		socketPath = daemon.DefaultSocketPath()
+		socketPath = daemonclient.DefaultSocketPath()
 	}
 
 	runDaemonClient(socketPath, mcpNoAttach)
@@ -80,7 +80,7 @@ func runDaemonClient(socketPath string, noAttach ...bool) {
 	defer cancel()
 
 	// Configure daemon tools with auto-start
-	daemonCfg := daemon.AutoStartConfig{
+	daemonCfg := daemonclient.AutoStartConfig{
 		SocketPath:    socketPath,
 		StartTimeout:  5 * time.Second,
 		RetryInterval: 100 * time.Millisecond,

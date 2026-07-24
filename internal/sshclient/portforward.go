@@ -12,7 +12,7 @@ import (
 
 	"context"
 
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
 )
@@ -45,7 +45,7 @@ const nearestPortSearchLimit = 1000
 type PortForwardManager struct {
 	lifecycleMu sync.Mutex
 	sshClient   *Client
-	dclient     *daemon.Client
+	dclient     *daemonclient.Client
 	notify      func(string)
 	onChange    func([]Mapping)
 
@@ -89,12 +89,12 @@ type portForward struct {
 }
 
 // NewPortForwardManager builds a manager for the proxies visible on dclient
-// (a daemon.Client already connected to the remote daemon, typically over
+// (a daemonclient.Client already connected to the remote daemon, typically over
 // the forwarded unix socket set up by startDaemonSocketForwarding), dialing
 // new streams through sshClient. notify receives one-line human-readable
 // status messages (collision remaps, forward up/down) for the caller to
 // print or toast — this package never writes to stdout/stderr directly.
-func NewPortForwardManager(sshClient *Client, dclient *daemon.Client, notify func(string)) *PortForwardManager {
+func NewPortForwardManager(sshClient *Client, dclient *daemonclient.Client, notify func(string)) *PortForwardManager {
 	return &PortForwardManager{
 		sshClient:  sshClient,
 		dclient:    dclient,
@@ -161,7 +161,7 @@ func (m *PortForwardManager) Pause() {
 
 // Resume supplies fresh transport clients, enables the retained listeners,
 // then performs an authoritative PROXY LIST reconciliation before returning.
-func (m *PortForwardManager) Resume(ctx context.Context, sshClient *Client, dclient *daemon.Client) {
+func (m *PortForwardManager) Resume(ctx context.Context, sshClient *Client, dclient *daemonclient.Client) {
 	m.lifecycleMu.Lock()
 	defer m.lifecycleMu.Unlock()
 	m.mu.Lock()
@@ -301,7 +301,7 @@ func (m *PortForwardManager) reconcileLoop(ctx context.Context) {
 // Ownership). StreamEvents returning (daemon restart, socket drop) is
 // non-fatal here — the periodic ticker in reconcileLoop keeps reconciling
 // even with events unavailable; it retries via a short backoff loop.
-func (m *PortForwardManager) watchEvents(ctx context.Context, dclient *daemon.Client, signal chan<- struct{}) {
+func (m *PortForwardManager) watchEvents(ctx context.Context, dclient *daemonclient.Client, signal chan<- struct{}) {
 	for {
 		if ctx.Err() != nil {
 			return

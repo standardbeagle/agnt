@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -362,7 +364,7 @@ func TestShimExecProtocolRoundTrip(t *testing.T) {
 `)
 	activeSession(t, d.sessionRegistry, "shim-rt", project, "")
 
-	client := NewClient(WithSocketPath(d.config.SocketPath), WithTimeout(10*time.Second))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(d.config.SocketPath), daemonclient.WithTimeout(10*time.Second))
 	require.NoError(t, client.Connect())
 	defer client.Close()
 
@@ -392,7 +394,7 @@ func TestShimRegisterProtocolRoundTrip(t *testing.T) {
 	d := shimTestDaemon(t)
 	project := t.TempDir()
 
-	client := NewClient(WithSocketPath(d.config.SocketPath), WithTimeout(10*time.Second))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(d.config.SocketPath), daemonclient.WithTimeout(10*time.Second))
 	require.NoError(t, client.Connect())
 	defer client.Close()
 

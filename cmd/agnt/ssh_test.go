@@ -17,6 +17,7 @@ import (
 	"github.com/pkg/sftp"
 	"github.com/spf13/cobra"
 	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/sshclient"
 	"github.com/standardbeagle/agnt/internal/sshclient/testenv"
@@ -27,12 +28,12 @@ type fakeReversePull struct {
 	starts  int
 	resumes int
 	stops   int
-	client  *daemon.Client
+	client  *daemonclient.Client
 	sftp    *sftp.Client
 }
 
 func (f *fakeReversePull) Start(context.Context) { f.starts++ }
-func (f *fakeReversePull) Resume(_ context.Context, client *daemon.Client, sc *sftp.Client) {
+func (f *fakeReversePull) Resume(_ context.Context, client *daemonclient.Client, sc *sftp.Client) {
 	f.resumes++
 	f.client = client
 	f.sftp = sc
@@ -43,13 +44,13 @@ func TestReconnectForwarding_ReversePullFollowsProductionLifecycle(t *testing.T)
 	originalFactory := newReversePullManager
 	defer func() { newReversePullManager = originalFactory }()
 
-	firstDaemon := &daemon.Client{}
-	secondDaemon := &daemon.Client{}
+	firstDaemon := &daemonclient.Client{}
+	secondDaemon := &daemonclient.Client{}
 	firstSFTP := &sftp.Client{}
 	secondSFTP := &sftp.Client{}
 	fake := &fakeReversePull{}
 	var constructedHost string
-	newReversePullManager = func(client *daemon.Client, sc *sftp.Client, host string, _ func(string)) reversePullLifecycle {
+	newReversePullManager = func(client *daemonclient.Client, sc *sftp.Client, host string, _ func(string)) reversePullLifecycle {
 		fake.client, fake.sftp, constructedHost = client, sc, host
 		return fake
 	}
@@ -131,8 +132,8 @@ func TestLocalSSHUser_PreservesUnixAndSupportsNativeWindows(t *testing.T) {
 
 func TestReconnectForwarding_RecoveryCallbacksUseNewestDurableDaemonClient(t *testing.T) {
 	owner := &reconnectForwarding{host: "fixture"} // initial forwarding failed
-	first := &daemon.Client{}
-	newest := &daemon.Client{}
+	first := &daemonclient.Client{}
+	newest := &daemonclient.Client{}
 	owner.mu.Lock()
 	owner.dclient = first // first recovery
 	owner.mu.Unlock()
@@ -140,10 +141,10 @@ func TestReconnectForwarding_RecoveryCallbacksUseNewestDurableDaemonClient(t *te
 	owner.dclient = newest // subsequent reconnect
 	owner.mu.Unlock()
 
-	var gotClient *daemon.Client
+	var gotClient *daemonclient.Client
 	var gotEvent protocol.DeveloperEvent
 	owner.project = "/remote/project"
-	owner.reportEvent = func(client *daemon.Client, event protocol.DeveloperEvent) error {
+	owner.reportEvent = func(client *daemonclient.Client, event protocol.DeveloperEvent) error {
 		gotClient, gotEvent = client, event
 		return nil
 	}
@@ -162,9 +163,9 @@ func TestReconnectForwarding_RecoveryCallbacksUseNewestDurableDaemonClient(t *te
 func TestReconnectForwarding_DefaultPathCollisionUsesResolvedProjectRoot(t *testing.T) {
 	resolved := "/home/fixture/project"
 	owner := initializeReconnectForwarding("fixture", resolved, nil, nil, func(*reconnectForwarding) {})
-	owner.dclient = &daemon.Client{}
+	owner.dclient = &daemonclient.Client{}
 	var got protocol.DeveloperEvent
-	owner.reportEvent = func(_ *daemon.Client, event protocol.DeveloperEvent) error { got = event; return nil }
+	owner.reportEvent = func(_ *daemonclient.Client, event protocol.DeveloperEvent) error { got = event; return nil }
 	owner.reportPortForward("port 5173 in use locally", []sshclient.Mapping{{ProxyID: "web", RemotePort: 5173, LocalPort: 5174, Remapped: true}})
 	if got.ProjectPath != resolved || got.ProxyID != "web" {
 		t.Fatalf("default-path collision event = %+v, want resolved project %q", got, resolved)
@@ -274,7 +275,7 @@ func TestSSHClientSurfaces_WithRealSSHFixture(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = forwarder.Close() })
 	go func() { _ = forwarder.Serve() }()
-	dclient := daemon.NewClientWithPath(localSocket)
+	dclient := daemonclient.NewClientWithPath(localSocket)
 	if err := dclient.Connect(); err != nil {
 		t.Fatal(err)
 	}

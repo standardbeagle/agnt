@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 )
 
 func TestGetProjectPath_FromEnvironment(t *testing.T) {
@@ -379,8 +379,8 @@ func TestDaemonTools_SessionCode_ConcurrentAccess(t *testing.T) {
 }
 
 // dummyAutoStartConfig returns a minimal config for testing.
-func dummyAutoStartConfig() daemon.AutoStartConfig {
-	return daemon.AutoStartConfig{
+func dummyAutoStartConfig() daemonclient.AutoStartConfig {
+	return daemonclient.AutoStartConfig{
 		SocketPath: "/tmp/test.sock",
 	}
 }

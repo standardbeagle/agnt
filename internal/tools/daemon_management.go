@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 
 	"github.com/standardbeagle/go-sdk/mcp"
 )
@@ -121,10 +121,10 @@ func makeDaemonHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolReque
 func handleDaemonStatus(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, error) {
 	socketPath := dt.config.SocketPath
 	if socketPath == "" {
-		socketPath = daemon.DefaultSocketPath()
+		socketPath = daemonclient.DefaultSocketPath()
 	}
 
-	running := daemon.IsDaemonRunning(socketPath)
+	running := daemonclient.IsDaemonRunning(socketPath)
 
 	return nil, DaemonOutput{
 		Running:    running,
@@ -166,11 +166,11 @@ func handleDaemonInfo(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, error
 func handleDaemonStart(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, error) {
 	socketPath := dt.config.SocketPath
 	if socketPath == "" {
-		socketPath = daemon.DefaultSocketPath()
+		socketPath = daemonclient.DefaultSocketPath()
 	}
 
 	// Check if already running
-	if daemon.IsDaemonRunning(socketPath) {
+	if daemonclient.IsDaemonRunning(socketPath) {
 		return nil, DaemonOutput{
 			Running:    true,
 			SocketPath: socketPath,
@@ -195,11 +195,11 @@ func handleDaemonStart(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, erro
 func handleDaemonStop(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, error) {
 	socketPath := dt.config.SocketPath
 	if socketPath == "" {
-		socketPath = daemon.DefaultSocketPath()
+		socketPath = daemonclient.DefaultSocketPath()
 	}
 
 	// Check if running
-	if !daemon.IsDaemonRunning(socketPath) {
+	if !daemonclient.IsDaemonRunning(socketPath) {
 		return nil, DaemonOutput{
 			Running:    false,
 			SocketPath: socketPath,
@@ -209,7 +209,7 @@ func handleDaemonStop(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, error
 	}
 
 	// Stop the daemon
-	if err := daemon.StopDaemon(socketPath); err != nil {
+	if err := daemonclient.StopDaemon(socketPath); err != nil {
 		return errorResult(fmt.Sprintf("failed to stop daemon: %v", err)), DaemonOutput{}, nil
 	}
 
@@ -230,12 +230,12 @@ func handleDaemonStop(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, error
 func handleDaemonRestart(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, error) {
 	socketPath := dt.config.SocketPath
 	if socketPath == "" {
-		socketPath = daemon.DefaultSocketPath()
+		socketPath = daemonclient.DefaultSocketPath()
 	}
 
 	// Stop if running
-	if daemon.IsDaemonRunning(socketPath) {
-		if err := daemon.StopDaemon(socketPath); err != nil {
+	if daemonclient.IsDaemonRunning(socketPath) {
+		if err := daemonclient.StopDaemon(socketPath); err != nil {
 			return errorResult(fmt.Sprintf("failed to stop daemon: %v", err)), DaemonOutput{}, nil
 		}
 

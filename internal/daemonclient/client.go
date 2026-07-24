@@ -1,4 +1,4 @@
-package daemon
+package daemonclient
 
 import (
 	"context"
@@ -97,6 +97,12 @@ func NewClientWithPath(socketPath string) *Client {
 			client.WithTimeout(30*time.Second),
 		),
 	}
+}
+
+// Conn returns the underlying hub connection for raw verb requests. Tests
+// and advanced callers use it for verbs without a typed wrapper.
+func (c *Client) Conn() *client.Conn {
+	return c.conn
 }
 
 // Connect connects to the daemon.
@@ -242,9 +248,9 @@ func (c *Client) ProcRun(name string, cfg ProcRunConfig) (map[string]interface{}
 // ProcRunGroupConfig holds the JSON payload for PROC RUN-GROUP. Mirrors
 // the procRunGroupPayload struct in hub_proc.go.
 type ProcRunGroupConfig struct {
-	ProjectPath      string         `json:"project_path,omitempty"`
-	DependsOnTimeout int            `json:"depends_on_timeout,omitempty"`
-	Processes        []GroupProcess `json:"processes"`
+	ProjectPath      string                  `json:"project_path,omitempty"`
+	DependsOnTimeout int                     `json:"depends_on_timeout,omitempty"`
+	Processes        []protocol.GroupProcess `json:"processes"`
 }
 
 // ProcRunGroup launches a multi-process startup group via PROC RUN-GROUP.

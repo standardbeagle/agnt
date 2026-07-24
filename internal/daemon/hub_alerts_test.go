@@ -5,6 +5,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/stretchr/testify/assert"
@@ -82,7 +84,7 @@ func TestStartupLog_NoDefaultTimeWindow(t *testing.T) {
 		Timestamp:  time.Now().Add(-2 * time.Hour),
 	})
 
-	c := NewClient(WithSocketPath(sockPath))
+	c := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, c.Connect())
 	t.Cleanup(func() { _ = c.Close() })
 
@@ -125,7 +127,7 @@ func TestStartupLog_IncludesNotices(t *testing.T) {
 		Timestamp: time.Now(),
 	})
 
-	c := NewClient(WithSocketPath(sockPath))
+	c := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, c.Connect())
 	t.Cleanup(func() { _ = c.Close() })
 

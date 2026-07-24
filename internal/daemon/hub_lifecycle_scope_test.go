@@ -120,7 +120,7 @@ func TestStopAll_ExplicitGlobalStopsEverythingAndClearsOverlay(t *testing.T) {
 	createProxy(t, d, "proxy-a", dirA)
 	createProxy(t, d, "proxy-b", dirB)
 
-	resp, err := c.conn.Request("STOP-ALL").WithJSON(map[string]interface{}{"global": true}).JSON()
+	resp, err := c.Conn().Request("STOP-ALL").WithJSON(map[string]interface{}{"global": true}).JSON()
 	require.NoError(t, err)
 
 	assert.Equal(t, float64(2), resp["processes_stopped"])

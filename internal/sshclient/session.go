@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"golang.org/x/crypto/ssh"
 )
@@ -106,7 +106,7 @@ func ensureRemoteSessionCreated(client *ssh.Client, name, cwd string, size TermS
 	defer fw.Close()
 	go fw.Serve()
 
-	dclient := daemon.NewClientWithPath(localPath)
+	dclient := daemonclient.NewClientWithPath(localPath)
 	var connectErr error
 	for i := 0; i < 20; i++ {
 		if connectErr = dclient.Connect(); connectErr == nil {

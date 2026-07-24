@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/stretchr/testify/require"
 )
 
@@ -130,16 +132,16 @@ func newBootedDaemonWithConfig(t *testing.T, cfg DaemonConfig) *Daemon {
 	return NewForTest(t, cfg)
 }
 
-// newBootedDaemonWithClient boots a daemon and a connected Client. Used by
+// newBootedDaemonWithClient boots a daemon and a connected daemonclient.Client. Used by
 // hub-integration tests that drive the daemon through its protocol. The
 // tmpDir return value is the working directory used for the socket — tests
 // that write config files under it can reuse the same dir.
-func newBootedDaemonWithClient(t *testing.T) (*Daemon, *Client, string) {
+func newBootedDaemonWithClient(t *testing.T) (*Daemon, *daemonclient.Client, string) {
 	t.Helper()
 	sockPath := shortSockPath(t)
 	tmpDir := filepath.Dir(sockPath)
 	d := newBootedDaemonWithConfig(t, DaemonConfig{SocketPath: sockPath})
-	c := NewClient(WithSocketPath(sockPath))
+	c := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, c.Connect())
 	t.Cleanup(func() { _ = c.Close() })
 	return d, c, tmpDir
@@ -148,7 +150,7 @@ func newBootedDaemonWithClient(t *testing.T) (*Daemon, *Client, string) {
 // newBootedClient is the zero-ceremony variant of newBootedDaemonWithClient
 // for tests that only need a client. The daemon is still booted (required
 // for the client to talk to) and is stopped via t.Cleanup.
-func newBootedClient(t *testing.T) *Client {
+func newBootedClient(t *testing.T) *daemonclient.Client {
 	t.Helper()
 	_, c, _ := newBootedDaemonWithClient(t)
 	return c

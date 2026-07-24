@@ -4,13 +4,13 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 )
 
 // newTestDaemonTools constructs a DaemonTools with a fixed socket path so
 // buildWatchCommand tests can assert against the embedded path.
 func newTestDaemonTools() *DaemonTools {
-	return NewDaemonTools(daemon.AutoStartConfig{
+	return NewDaemonTools(daemonclient.AutoStartConfig{
 		SocketPath: "/run/user/1000/agnt.sock",
 	}, "0.13.4")
 }

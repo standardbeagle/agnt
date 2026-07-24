@@ -14,7 +14,7 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 
-	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/shims"
 )
@@ -202,11 +202,11 @@ func registerShimsOnce(projectPath, binDir string) {
 	if _, loaded := shimRegistrations.LoadOrStore(projectPath, struct{}{}); loaded {
 		return
 	}
-	socketPath := daemon.DefaultSocketPath()
-	if !daemon.IsRunning(socketPath) {
+	socketPath := daemonclient.DefaultSocketPath()
+	if !daemonclient.IsRunning(socketPath) {
 		return
 	}
-	client := daemon.NewClient(daemon.WithSocketPath(socketPath))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(socketPath))
 	if err := client.Connect(); err != nil {
 		return
 	}

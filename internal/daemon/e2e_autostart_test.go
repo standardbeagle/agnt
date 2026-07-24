@@ -19,6 +19,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/daemonclient"
+
 	"github.com/standardbeagle/agnt/internal/scope"
 	"github.com/standardbeagle/go-cli-server/process"
 	"github.com/standardbeagle/go-cli-server/script"
@@ -2890,7 +2892,7 @@ func TestE2E_CleanupPort_KillsOrphan(t *testing.T) {
 	t.Logf("orphan PID=%d on port %d", holderPID, port)
 
 	// Connect a client to the daemon and call cleanup_port
-	client := NewClientWithPath(env.SocketPath)
+	client := daemonclient.NewClientWithPath(env.SocketPath)
 	require.NoError(t, client.Connect())
 	defer client.Close()
 
@@ -2922,7 +2924,7 @@ func TestE2E_CleanupPort_NoEffect_WhenFree(t *testing.T) {
 	require.Error(t, err, "port %d should be free before test", port)
 
 	// Connect a client and call cleanup_port on the free port
-	client := NewClientWithPath(env.SocketPath)
+	client := daemonclient.NewClientWithPath(env.SocketPath)
 	require.NoError(t, client.Connect())
 	defer client.Close()
 
@@ -2957,7 +2959,7 @@ func TestE2E_CleanupPort_KillsBadProcess(t *testing.T) {
 	t.Logf("bad-sigterm-trap PID=%d on port %d", badPID, port)
 
 	// Connect a client and call cleanup_port
-	client := NewClientWithPath(env.SocketPath)
+	client := daemonclient.NewClientWithPath(env.SocketPath)
 	require.NoError(t, client.Connect())
 	defer client.Close()
 
