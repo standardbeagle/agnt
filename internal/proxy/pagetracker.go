@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -12,6 +13,10 @@ import (
 const (
 	MaxInteractionsPerSession = 200
 	MaxMutationsPerSession    = 100
+	// MaxResourcesPerSession bounds per-session resource entries (each up to
+	// 10KB of captured body). Unbounded growth let a long-lived SPA tab
+	// accumulate every resource request forever.
+	MaxResourcesPerSession = 500
 )
 
 // appendBounded appends an item to a slice while maintaining a maximum length.
@@ -499,7 +504,7 @@ func (pt *PageTracker) addResourceToSession(entry HTTPLogEntry) {
 		return
 	}
 
-	session.Resources = append(session.Resources, entry)
+	session.Resources = appendBounded(session.Resources, entry, MaxResourcesPerSession)
 	session.LastActivity = time.Now()
 }
 
@@ -574,18 +579,14 @@ func (pt *PageTracker) cleanupOldSessions() {
 		allSessions = append(allSessions, sessionWithTime{id: id, time: session.StartTime})
 	}
 
-	// Sort by start time and remove oldest
+	// Sort by start time and remove oldest (single O(n log n) pass; the
+	// previous selection-min loop was O(n²) on every insert once over cap).
+	sort.Slice(allSessions, func(i, j int) bool {
+		return allSessions[i].time.Before(allSessions[j].time)
+	})
+
 	toRemove := len(pt.sessions) - pt.maxSessions
 	for i := 0; i < toRemove && i < len(allSessions); i++ {
-		// Find oldest
-		oldest := i
-		for j := i + 1; j < len(allSessions); j++ {
-			if allSessions[j].time.Before(allSessions[oldest].time) {
-				oldest = j
-			}
-		}
-		allSessions[i], allSessions[oldest] = allSessions[oldest], allSessions[i]
-
 		victim := allSessions[i].id
 		if session, ok := pt.sessions[victim]; ok {
 			delete(pt.urlToSession, normalizeURL(session.URL))
