@@ -170,7 +170,10 @@ func (pe *PingEmitter) handleDelta(delta InboxDelta) {
 }
 
 func (pe *PingEmitter) emit() {
-	entries, stats := pe.inbox.Query(QueryFilter{})
+	// Top must mirror Stats' unread-only semantics: re-surfacing entries the
+	// agent already marked read makes every ping "shout" about acknowledged
+	// incidents until they age out of the inbox.
+	entries, stats := pe.inbox.Query(QueryFilter{UnreadOnly: true})
 	payload := pe.buildPayload(stats, entries)
 	pe.fanOut(payload)
 }

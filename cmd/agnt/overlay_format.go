@@ -920,14 +920,12 @@ func extractHTTPErrorMessage(body string) string {
 		}
 	}
 
-	// Return first line of body, truncated
+	// Return first line of body, truncated on a rune boundary — a byte cut
+	// can split a multibyte UTF-8 sequence and emit invalid UTF-8 into the
+	// agent's PTY.
 	lines := strings.Split(strings.TrimSpace(body), "\n")
 	if len(lines) > 0 {
-		first := strings.TrimSpace(lines[0])
-		if len(first) > 200 {
-			return first[:200] + "..."
-		}
-		return first
+		return overlay.TruncateRunes(strings.TrimSpace(lines[0]), 200, "...")
 	}
 
 	return ""

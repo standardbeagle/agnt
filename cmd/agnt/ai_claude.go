@@ -410,7 +410,13 @@ func runAiClaudeLegacy(ctx context.Context, opts *claude.AgentOptions, daemonHan
 					return nil
 				}
 				prompt = line
-			case msg := <-msgCh:
+			case msg, ok := <-msgCh:
+				if !ok {
+					// Channel closed: disable this case (nil channel blocks
+					// forever) instead of hot-spinning on empty receives.
+					msgCh = nil
+					continue
+				}
 				fmt.Fprint(os.Stderr, "\r\033[K")
 				fmt.Fprintf(os.Stderr, "[message] %s\n", msg)
 				prompt = msg
@@ -471,7 +477,10 @@ func runAiClaudeLegacy(ctx context.Context, opts *claude.AgentOptions, daemonHan
 		if msgCh != nil {
 			for {
 				select {
-				case msg := <-msgCh:
+				case msg, ok := <-msgCh:
+					if !ok {
+						goto nextPrompt
+					}
 					fmt.Fprintf(os.Stderr, "[queued message] %s\n", msg)
 					opts.Resume = sessionID
 					if interactive {
@@ -729,7 +738,11 @@ func runAiClaudeOverlay(ctx context.Context, opts *claude.AgentOptions, daemonHa
 			draining := true
 			for draining {
 				select {
-				case msg := <-msgCh:
+				case msg, ok := <-msgCh:
+					if !ok {
+						draining = false
+						break
+					}
 					fmt.Fprintf(rawWriter, "[queued message] %s\n", msg)
 					opts.Resume = sessionID
 					spin = newStderrSpinner("Processing message...", rawWriter)
