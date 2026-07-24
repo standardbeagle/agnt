@@ -5,7 +5,8 @@ package shims
 import (
 	"fmt"
 	"path/filepath"
-	"strings"
+
+	"github.com/standardbeagle/agnt/internal/platform"
 )
 
 // scriptFiles renders the POSIX shell wrapper for one command. The script
@@ -14,14 +15,10 @@ import (
 // spaces in project/user dirs safe.
 func scriptFiles(dir, name, agntPath string) []shimFile {
 	content := fmt.Sprintf("#!/bin/sh\n# %s — managed by agnt, do not edit\nexec %s shim exec %s \"$@\"\n",
-		shimMarker, shellQuote(agntPath), shellQuote(name))
+		shimMarker, platform.ShellQuote(agntPath), platform.ShellQuote(name))
 	return []shimFile{{
 		path:    filepath.Join(dir, name),
 		content: content,
 		mode:    0o755,
 	}}
-}
-
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }

@@ -7,12 +7,10 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/overlay"
-	"github.com/standardbeagle/agnt/internal/pathutil"
 )
 
 // AIOverlay is a lightweight overlay server for agnt ai claude.
@@ -28,7 +26,7 @@ type AIOverlay struct {
 
 // newAIOverlay creates an AI overlay with a session-specific socket path.
 func newAIOverlay(sessionCode string) *AIOverlay {
-	socketPath := aiOverlaySocketPath(sessionCode)
+	socketPath := overlaySessionSocketPath(sessionCode)
 
 	summarizer := overlay.NewAuditSummarizer(overlay.AuditSummarizerConfig{
 		UseAPI:  true,
@@ -40,17 +38,6 @@ func newAIOverlay(sessionCode string) *AIOverlay {
 		messages:        make(chan string, 64),
 		auditSummarizer: summarizer,
 	}
-}
-
-// aiOverlaySocketPath returns a session-specific socket path for the AI overlay.
-func aiOverlaySocketPath(sessionCode string) string {
-	defaultPath := DefaultOverlaySocketPath()
-	if defaultPath == "" {
-		return ""
-	}
-	dir := filepath.Dir(defaultPath)
-	safeCode := pathutil.SafePathComponent(sessionCode)
-	return filepath.Join(dir, fmt.Sprintf("devtool-overlay-%s.sock", safeCode))
 }
 
 // Start begins listening on the Unix socket.

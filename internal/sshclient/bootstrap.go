@@ -3,6 +3,7 @@ package sshclient
 import (
 	"bytes"
 	"fmt"
+	"github.com/standardbeagle/agnt/internal/platform"
 	"os"
 	"path"
 	"runtime"
@@ -163,7 +164,7 @@ func remoteGoInstall(client *ssh.Client, finalPath string) error {
 
 	dir := path.Dir(finalPath)
 	cmd := fmt.Sprintf("mkdir -p %s && GOBIN=%s go install github.com/standardbeagle/agnt/cmd/agnt@latest",
-		shellQuote(dir), shellQuote(dir))
+		platform.ShellQuote(dir), platform.ShellQuote(dir))
 	if err := session.Run(cmd); err != nil {
 		return fmt.Errorf("sshclient: remote go install failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
 	}
@@ -189,7 +190,7 @@ func remoteDownloadInstall(client *ssh.Client, url, finalPath string) error {
 	session.Stderr = &stderr
 
 	cmd := fmt.Sprintf("mkdir -p %s && curl -fsSL %s -o %s && chmod 755 %s && mv %s %s",
-		shellQuote(dir), shellQuote(url), shellQuote(tmpPath), shellQuote(tmpPath), shellQuote(tmpPath), shellQuote(finalPath))
+		platform.ShellQuote(dir), platform.ShellQuote(url), platform.ShellQuote(tmpPath), platform.ShellQuote(tmpPath), platform.ShellQuote(tmpPath), platform.ShellQuote(finalPath))
 	if err := session.Run(cmd); err != nil {
 		cleanupRemotePath(client, tmpPath)
 		return fmt.Errorf("sshclient: remote release download failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))

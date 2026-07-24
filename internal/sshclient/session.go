@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"strings"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/daemonclient"
+	"github.com/standardbeagle/agnt/internal/platform"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"golang.org/x/crypto/ssh"
 )
@@ -39,12 +39,6 @@ func RemoteAttachCommand(name, cwd string) string {
 	return RemoteReattachCommand(name)
 }
 
-// shellQuote wraps s in single quotes for POSIX sh, escaping any embedded
-// single quote as '\” (close quote, escaped literal quote, reopen quote).
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
 // RemoteReattachCommand builds the bare `agnt attach <name>` command used by
 // the reconnect state machine (task 09c): NO --create-if-missing and no
 // --cwd. This is deliberate, not an oversight — spec invariant 24 requires
@@ -54,7 +48,7 @@ func shellQuote(s string) string {
 // / --new opt-in, via the daemon protocol directly) before ever reaching
 // this exec, so this command can safely assume attach-only semantics.
 func RemoteReattachCommand(name string) string {
-	return "agnt attach " + shellQuote(name)
+	return "agnt attach " + platform.ShellQuote(name)
 }
 
 // PTYSession is an open "session" channel with a PTY attached, running the

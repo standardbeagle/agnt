@@ -94,9 +94,9 @@ func TestShellQuote(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			result := shellQuote(tt.input)
+			result := shellQuoteIfNeeded(tt.input)
 			if result != tt.expected {
-				t.Errorf("shellQuote(%q) = %q, want %q", tt.input, result, tt.expected)
+				t.Errorf("shellQuoteIfNeeded(%q) = %q, want %q", tt.input, result, tt.expected)
 			}
 		})
 	}

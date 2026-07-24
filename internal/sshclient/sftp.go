@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/standardbeagle/agnt/internal/platform"
 	"io"
 	"os"
 	"path"
@@ -326,7 +327,7 @@ func ResolveRemoteProjectRoot(client *ssh.Client, remotePath string) (string, er
 	if remotePath == "" {
 		cmd = "cd && pwd"
 	} else {
-		cmd = "cd " + shellQuote(remotePath) + " && pwd"
+		cmd = "cd " + platform.ShellQuote(remotePath) + " && pwd"
 	}
 
 	out, err := session.Output(cmd)

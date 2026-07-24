@@ -27,9 +27,9 @@ func wrapInShell(name string, args ...string) *execCmd {
 	}
 
 	var cmdParts []string
-	cmdParts = append(cmdParts, shellQuote(name))
+	cmdParts = append(cmdParts, shellQuoteIfNeeded(name))
 	for _, arg := range args {
-		cmdParts = append(cmdParts, shellQuote(arg))
+		cmdParts = append(cmdParts, shellQuoteIfNeeded(arg))
 	}
 	fullCmd := strings.Join(cmdParts, " ")
 
@@ -40,7 +40,11 @@ func wrapInShell(name string, args ...string) *execCmd {
 
 // shellQuote quotes a string for safe use in shell commands.
 // It uses single quotes and handles embedded single quotes.
-func shellQuote(s string) string {
+// shellQuoteIfNeeded single-quotes s only when it contains shell-significant
+// characters, keeping logged command lines readable. Deliberately NOT
+// platform.ShellQuote: that one always quotes (the safe default for remote
+// and generated commands), while resolver output is shown to the user.
+func shellQuoteIfNeeded(s string) string {
 	if !strings.ContainsAny(s, " \t\n'\"\\$`!*?[]{}();<>&|") {
 		return s
 	}

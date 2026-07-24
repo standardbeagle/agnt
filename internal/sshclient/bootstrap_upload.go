@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"github.com/standardbeagle/agnt/internal/platform"
 	"io"
 	"os"
 	"path"
@@ -40,7 +41,7 @@ func UploadFile(client *ssh.Client, src io.Reader, remotePath string, mode os.Fi
 		return fmt.Errorf("sshclient: opening upload session: %w", err)
 	}
 	localSum, writeStderr, err := writeUploadTemp(&sshUploadWriteSession{Session: writeSession}, src,
-		fmt.Sprintf("mkdir -p %s && cat > %s", shellQuote(remoteDir), shellQuote(tmpPath)))
+		fmt.Sprintf("mkdir -p %s && cat > %s", platform.ShellQuote(remoteDir), platform.ShellQuote(tmpPath)))
 	if err != nil {
 		cleanupRemotePath(client, tmpPath)
 		if strings.Contains(err.Error(), "remote write failed") {
@@ -71,7 +72,7 @@ func UploadFile(client *ssh.Client, src io.Reader, remotePath string, mode os.Fi
 	finalizeSession.Stderr = &finalizeStderr
 
 	finalizeCmd := fmt.Sprintf("chmod %s %s && mv %s %s",
-		modeOctal(mode), shellQuote(tmpPath), shellQuote(tmpPath), shellQuote(remotePath))
+		modeOctal(mode), platform.ShellQuote(tmpPath), platform.ShellQuote(tmpPath), platform.ShellQuote(remotePath))
 	if err := finalizeSession.Run(finalizeCmd); err != nil {
 		cleanupRemotePath(client, tmpPath)
 		return fmt.Errorf("sshclient: finalizing upload (chmod+rename): %w (stderr: %s)", err, strings.TrimSpace(finalizeStderr.String()))
@@ -128,7 +129,7 @@ func remoteSHA256(client *ssh.Client, remotePath string) (string, error) {
 	var stdout, stderr bytes.Buffer
 	session.Stdout = &stdout
 	session.Stderr = &stderr
-	if err := session.Run("sha256sum " + shellQuote(remotePath)); err != nil {
+	if err := session.Run("sha256sum " + platform.ShellQuote(remotePath)); err != nil {
 		return "", fmt.Errorf("%w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
 	}
 
@@ -148,7 +149,7 @@ func cleanupRemotePath(client *ssh.Client, remotePath string) {
 		return
 	}
 	defer session.Close()
-	_ = session.Run("rm -f " + shellQuote(remotePath))
+	_ = session.Run("rm -f " + platform.ShellQuote(remotePath))
 }
 
 // modeOctal formats a permission mode as the 3-digit octal string chmod
