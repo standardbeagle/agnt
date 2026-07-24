@@ -6,7 +6,6 @@ import (
 	"errors"
 	"time"
 
-	"github.com/standardbeagle/agnt/internal/daemon/publishstore"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/publish"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
@@ -15,7 +14,7 @@ import (
 
 // publishActions maps the PUBLISH sub-verbs to their handlers. All five are
 // control-plane, session-scoped (spec §2a): the public share-verify path
-// (publishstore.VerifyToken) is deliberately NOT reachable here — it belongs to
+// (publish.VerifyToken) is deliberately NOT reachable here — it belongs to
 // the separate public plane (P7) and carries no project scope (INV-1).
 func (d *Daemon) publishActions() map[string]handlerFn {
 	return map[string]handlerFn{
@@ -45,7 +44,7 @@ func (d *Daemon) hubHandlePublish(ctx context.Context, conn *hubpkg.Connection, 
 // requirePublishStore returns the store or writes a loud error. A nil store means
 // the persisted store failed to load loud on boot (corruption): we surface that
 // rather than silently serving an empty store.
-func (d *Daemon) requirePublishStore(conn *hubpkg.Connection) (*publishstore.Store, bool) {
+func (d *Daemon) requirePublishStore(conn *hubpkg.Connection) (*publish.Store, bool) {
 	if d.publishStore == nil {
 		_ = conn.WriteErr(hubproto.ErrInvalidState, "publish store unavailable (failed to load on boot); check daemon startup log")
 		return nil, false
@@ -188,7 +187,7 @@ func (d *Daemon) hubHandlePublishList(conn *hubpkg.Connection, cmd *hubproto.Com
 // writes the appropriate error to conn and returns false (a share belonging to
 // another project is reported as not-found — no cross-project leak of existence).
 // It returns false, not an error, because conn.WriteErr itself returns nil.
-func (d *Daemon) shareOwned(conn *hubpkg.Connection, store *publishstore.Store, id string) bool {
+func (d *Daemon) shareOwned(conn *hubpkg.Connection, store *publish.Store, id string) bool {
 	projectPath := d.getSessionProjectPath(conn)
 	if projectPath == "" {
 		_ = conn.WriteErr(hubproto.ErrInvalidState, "no active session with project path")
@@ -263,9 +262,9 @@ func (d *Daemon) hubHandlePublishFeedback(conn *hubpkg.Connection, cmd *hubproto
 
 func publishErr(conn *hubpkg.Connection, err error) error {
 	switch {
-	case errors.Is(err, publishstore.ErrNotFound):
+	case errors.Is(err, publish.ErrNotFound):
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
-	case errors.Is(err, publishstore.ErrRevoked):
+	case errors.Is(err, publish.ErrRevoked):
 		return conn.WriteErr(hubproto.ErrInvalidState, err.Error())
 	default:
 		return conn.WriteErr(hubproto.ErrInternal, err.Error())
@@ -279,7 +278,7 @@ func rfc3339Ptr(t *time.Time) string {
 	return t.Format(time.RFC3339)
 }
 
-func shareInfoToWire(info publishstore.ShareInfo) protocol.PublishShareInfo {
+func shareInfoToWire(info publish.ShareInfo) protocol.PublishShareInfo {
 	return protocol.PublishShareInfo{
 		ID:              info.ID,
 		Title:           info.Title,

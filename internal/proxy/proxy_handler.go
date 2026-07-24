@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/standardbeagle/agnt/internal/daemon/publishstore"
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/publish"
 )
 
 // Stop gracefully stops the proxy server.
@@ -561,7 +561,7 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		ID:              reqID,
 		Timestamp:       startTime,
 		Method:          r.Method,
-		URL:             publishstore.ScrubSharePath(r.URL.String()),
+		URL:             publish.ScrubSharePath(r.URL.String()),
 		RequestHeaders:  reqHeaders,
 		RequestBody:     reqBody,
 		StatusCode:      recorder.statusCode,

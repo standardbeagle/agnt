@@ -54,7 +54,6 @@ import (
 	"github.com/standardbeagle/agnt/internal/browser"
 	"github.com/standardbeagle/agnt/internal/chromedp"
 	"github.com/standardbeagle/agnt/internal/config"
-	"github.com/standardbeagle/agnt/internal/daemon/publishstore"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/incident"
 	"github.com/standardbeagle/agnt/internal/overlay"
@@ -294,7 +293,7 @@ type Daemon struct {
 	// record IS the source of truth and outlives the session — the documented
 	// daemon-architecture.md exception. Constructed in bootstrap(); nil (verbs
 	// error) if the persisted store failed to load loud on boot.
-	publishStore *publishstore.Store
+	publishStore *publish.Store
 
 	// feedbackStore is the durable public-plane feedback sink (P8): anonymous
 	// viewer feedback rows, rate-limited and retention-bounded. Like publishStore
@@ -777,7 +776,7 @@ func (d *Daemon) bootstrap() error {
 	if publishDir == "" {
 		publishDir = DefaultPublishDir()
 	}
-	if store, err := publishstore.New(publishDir, nil); err != nil {
+	if store, err := publish.New(publishDir, nil); err != nil {
 		d.daemonStartupLog("error", "publish_store_load_failed",
 			fmt.Sprintf("publish store failed to load (shares unavailable until resolved): %v", err))
 	} else {

@@ -1,4 +1,4 @@
-package publishstore
+package publish
 
 import (
 	"encoding/base64"
@@ -8,20 +8,19 @@ import (
 	"testing"
 	"time"
 
-	"github.com/standardbeagle/agnt/internal/publish"
 )
 
 // fixedClock returns a deterministic, injected clock (no wall-clock sleeps).
 func fixedClock(t time.Time) func() time.Time { return func() time.Time { return t } }
 
 // validWalkthrough builds a minimal valid published walkthrough for tests.
-func validWalkthrough(id string) *publish.PublishedWalkthrough {
-	return &publish.PublishedWalkthrough{
-		Version: publish.SchemaV1,
+func validWalkthrough(id string) *PublishedWalkthrough {
+	return &PublishedWalkthrough{
+		Version: SchemaV1,
 		ID:      id,
 		Title:   "Test Walkthrough",
-		Steps: []publish.Step{
-			{ID: "s1", Title: "Step one", Body: "hello", Advance: publish.Advance{Type: "auto", MS: 1000}},
+		Steps: []Step{
+			{ID: "s1", Title: "Step one", Body: "hello", Advance: Advance{Type: "auto", MS: 1000}},
 		},
 	}
 }

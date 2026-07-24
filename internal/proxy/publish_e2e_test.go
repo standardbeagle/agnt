@@ -3,7 +3,7 @@ package proxy
 // publish_e2e_test.go is the P10 capstone: the end-to-end SECURITY, RESTART, and
 // REVOKE gate for the whole walkthrough-publish stack. It proves the shipped
 // stack is safe by driving the REAL mounted public plane — a real
-// proxy.PublicHandler constructed over a real publishstore.Store and a real
+// proxy.PublicHandler constructed over a real publish.Store and a real
 // publish.FeedbackStore (both over temp dirs), served on an EPHEMERAL TCP
 // listener (httptest.NewServer) — end to end, with anonymous HTTP requests the
 // way a public viewer's browser would make them. Nothing here is mocked: the
@@ -32,7 +32,6 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/standardbeagle/agnt/internal/daemon/publishstore"
 	"github.com/standardbeagle/agnt/internal/publish"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -47,7 +46,7 @@ const (
 // live ephemeral HTTP listener that serves the real PublicHandler over them.
 type e2ePlane struct {
 	srv      *httptest.Server
-	store    *publishstore.Store
+	store    *publish.Store
 	feedback *publish.FeedbackStore
 	storeDir string
 	fbDir    string
@@ -70,7 +69,7 @@ func newE2EPlane(t *testing.T) *e2ePlane {
 	t.Helper()
 	storeDir := t.TempDir()
 	fbDir := t.TempDir()
-	store, err := publishstore.New(storeDir, nil)
+	store, err := publish.New(storeDir, nil)
 	require.NoError(t, err, "open publish store")
 	feedback, err := publish.NewFeedbackStore(fbDir, e2eLimits(), nil)
 	require.NoError(t, err, "open feedback store")
@@ -157,7 +156,7 @@ func rawGet(t *testing.T, addr, rawPath string) int {
 // the rows share-scoped from the feedback store. Returns ok=false when the
 // project does not own the share (a foreign share is not-found: no cross-project
 // leak, INV-1 / spec §2a).
-func ownerScopedFeedbackRead(store *publishstore.Store, feedback *publish.FeedbackStore, projectPath, shareID string) (rows []publish.FeedbackRecord, ok bool) {
+func ownerScopedFeedbackRead(store *publish.Store, feedback *publish.FeedbackStore, projectPath, shareID string) (rows []publish.FeedbackRecord, ok bool) {
 	owned := false
 	for _, info := range store.List(projectPath) {
 		if info.ID == shareID {
@@ -404,7 +403,7 @@ func TestE2ERestartPersistence(t *testing.T) {
 	require.Equal(t, http.StatusAccepted, code)
 
 	// Simulate a daemon restart: brand-new store objects over the SAME dirs.
-	store2, err := publishstore.New(p.storeDir, nil)
+	store2, err := publish.New(p.storeDir, nil)
 	require.NoError(t, err, "reload publish store from disk")
 	feedback2, err := publish.NewFeedbackStore(p.fbDir, e2eLimits(), nil)
 	require.NoError(t, err, "reload feedback store from disk")
@@ -437,9 +436,9 @@ func TestE2ECrashWriteRecovery(t *testing.T) {
 		rec := filepath.Join(p.storeDir, id+".json")
 		require.NoError(t, os.WriteFile(rec, []byte(`{"id":"x","token_ha`), 0600))
 
-		_, rerr := publishstore.New(p.storeDir, nil)
+		_, rerr := publish.New(p.storeDir, nil)
 		require.Error(t, rerr, "truncated record must not load silently")
-		assert.ErrorIs(t, rerr, publishstore.ErrCorrupt)
+		assert.ErrorIs(t, rerr, publish.ErrCorrupt)
 	})
 
 	t.Run("feedback_store_truncated_ring_fails_loud", func(t *testing.T) {

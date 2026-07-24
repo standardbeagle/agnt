@@ -44,7 +44,7 @@ const (
 )
 
 // PublicTokenVerifier is the constant-time token gate the public plane depends
-// on. It is satisfied by *publishstore.Store (VerifyToken). Kept as a narrow
+// on. It is satisfied by *publish.Store (VerifyToken). Kept as a narrow
 // interface so the boundary is testable without a real on-disk store and so the
 // public handler cannot reach any control-plane method (create/rotate/revoke).
 type PublicTokenVerifier interface {

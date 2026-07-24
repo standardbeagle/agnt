@@ -4,7 +4,7 @@
 // feedback (spec §7, INV-7). Feedback is DATA crossing a trust boundary, never a
 // command: it is size-capped, UTF-8/schema validated, rate-limited per
 // (share, IP), stored inert (raw, never reflected), and evicted by a retention
-// ring. It mirrors the P6 publishstore durability discipline — one JSON file per
+// ring. It mirrors the share_store.go durability discipline — one JSON file per
 // share, written atomically (temp + fsync + rename) with 0600 perms in a 0700
 // dir, reloaded on boot, and failing LOUD on a corrupt/tampered record rather
 // than silently serving a partial or empty store (spec §8, INV-8).
@@ -417,7 +417,7 @@ func (s *FeedbackStore) persist(shareID string, records []FeedbackRecord) error 
 	// Fsync the parent directory so the rename itself is durable: without it a
 	// power loss after a successful rename() can still lose the new dir entry,
 	// leaving the record absent despite the temp-file fsync above. (P6
-	// publishstore.persist currently omits this — it should mirror this fix.)
+	// share_store.go persist currently omits this — it should mirror this fix.)
 	if err := fsyncDir(s.dir); err != nil {
 		return fmt.Errorf("publish: fsync feedback dir: %w", err)
 	}

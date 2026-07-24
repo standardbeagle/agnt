@@ -91,7 +91,7 @@ func DefaultStatePath() string {
 
 // DefaultPublishDir returns the default directory for the durable publish-share
 // store (P6). It sits alongside the daemon state file but is a distinct,
-// authoritative on-disk store (not a cache) — see internal/daemon/publishstore.
+// authoritative on-disk store (not a cache) — see internal/publish/share_store.go.
 func DefaultPublishDir() string {
 	if stateHome := os.Getenv("XDG_STATE_HOME"); stateHome != "" {
 		return filepath.Join(stateHome, "devtool-mcp", "publish")

@@ -1,4 +1,4 @@
-// Package publishstore is the durable, authoritative on-disk store for public
+// share_store.go is the durable, authoritative on-disk store for public
 // walkthrough shares (P6 of the walkthrough-publish epic). It owns the
 // share-token lifecycle — create, status, list, revoke, rotate — and the public
 // constant-time token verification path.
@@ -33,7 +33,7 @@
 //     record makes New FAIL LOUD (returns an error) rather than silently serving a
 //     partial or empty store (Silent Failure Prohibition).
 //   - Revoke and rotate invalidate the old token immediately (no grace window).
-package publishstore
+package publish
 
 import (
 	"bytes"
@@ -52,7 +52,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/standardbeagle/agnt/internal/publish"
 )
 
 const (
@@ -94,7 +93,7 @@ type Share struct {
 	// verify path deliberately ignores it — INV-1).
 	ProjectPath string `json:"project_path"`
 	// Walkthrough is the immutable validated published revision.
-	Walkthrough *publish.PublishedWalkthrough `json:"walkthrough"`
+	Walkthrough *PublishedWalkthrough `json:"walkthrough"`
 	// Digest is the sha256 of the canonical walkthrough encoding — the stable
 	// identity of this immutable revision.
 	Digest string `json:"digest"`
@@ -213,7 +212,7 @@ func decodeRecord(data []byte) (*Share, error) {
 // Create validates the artifact via the P2 validators, mints a fresh 256-bit
 // token, persists the record atomically, and returns the viewer-safe id plus the
 // plaintext token — which is returned ONCE here and never recoverable.
-func (s *Store) Create(pw *publish.PublishedWalkthrough, projectPath string) (id, token string, err error) {
+func (s *Store) Create(pw *PublishedWalkthrough, projectPath string) (id, token string, err error) {
 	if pw == nil {
 		return "", "", errors.New("publishstore: nil walkthrough")
 	}
@@ -222,7 +221,7 @@ func (s *Store) Create(pw *publish.PublishedWalkthrough, projectPath string) (id
 	if err := pw.Validate(); err != nil {
 		return "", "", fmt.Errorf("publishstore: invalid artifact: %w", err)
 	}
-	digest, err := publish.Digest(pw)
+	digest, err := Digest(pw)
 	if err != nil {
 		return "", "", fmt.Errorf("publishstore: digest: %w", err)
 	}
@@ -359,7 +358,7 @@ func (s *Store) List(projectPath string) []ShareInfo {
 // A revoked or unknown token returns ok=false with no timing side-channel of
 // value: the accept decision is gated by subtle.ConstantTimeCompare (INV-3),
 // never a plain == on the hash.
-func (s *Store) VerifyToken(token string) (rev *publish.PublishedWalkthrough, shareID string, ok bool) {
+func (s *Store) VerifyToken(token string) (rev *PublishedWalkthrough, shareID string, ok bool) {
 	hash := hashToken(token)
 	s.mu.RLock()
 	defer s.mu.RUnlock()

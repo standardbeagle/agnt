@@ -1,4 +1,4 @@
-package publishstore
+package publish
 
 import (
 	"os"
@@ -12,9 +12,9 @@ import (
 // be the token source. This is the pinned-primitive style the spec calls for
 // ("unit test asserts the code path calls subtle.ConstantTimeCompare").
 func TestVerifyUsesConstantTimeCompare(t *testing.T) {
-	src, err := os.ReadFile("store.go")
+	src, err := os.ReadFile("share_store.go")
 	if err != nil {
-		t.Fatalf("read store.go: %v", err)
+		t.Fatalf("read share_store.go: %v", err)
 	}
 	s := string(src)
 

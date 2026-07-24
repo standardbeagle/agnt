@@ -10,7 +10,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/publish"
 )
 
-// fakeVerifier is a constant-time-agnostic stand-in for *publishstore.Store on
+// fakeVerifier is a constant-time-agnostic stand-in for *publish.Store on
 // the public plane. It maps a single known token to a revision; every other
 // token (including a revoked one) verifies false.
 type fakeVerifier struct {
