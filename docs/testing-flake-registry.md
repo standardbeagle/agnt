@@ -86,6 +86,20 @@ they do not claim that real Chrome was runtime-validated under CPU
 oversubscription. Running that tier concurrently with `stress` or a full
 suite would contradict the diagnosed renderer-starvation boundary above.
 
+## Observed open flakes (registered 2026-07-24)
+
+Load-dependent failures observed during full-package `-race` runs of
+`internal/daemon` on a busy machine. Both pass repeatedly in isolation
+(`-run <name> -count=1 -race`); the trigger is suite-wide load, not a
+reproduced ordering defect. Root cause not yet chased — if they recur,
+investigate with the repro method in
+`.claude/rules/testing-parallel-package-flakes.md`.
+
+| Test | Signature | Notes |
+|---|---|---|
+| `TestRunAutostartAsync_DependencyWait` (`internal/daemon/autostart_async_test.go`) | `b` never entered dep wait within 15s; `context_cancel_during_dependency_wait` misses `PhaseDependencyWaitStart` | Failed 2/7 full-package runs on 2026-07-24; passes 2/2 isolated. Looks like a fixed-window timing assertion against a nominal schedule (the anti-pattern in `.claude/rules/testing-timing-assertion-flakes.md`). |
+| `TestHubProgressDoesNotContaminateChunkedPayload` (`internal/daemon/hub_progress_test.go:141`) | unix socket read `i/o timeout` | Failed 1/7 full-package runs on 2026-07-24; passes isolated. Socket read deadline too tight under race-instrumented load. |
+
 ## Wall-clock-invariant sweep
 
 Sweep command (re-run this to extend the audit):
