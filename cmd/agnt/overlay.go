@@ -259,6 +259,19 @@ func (o *Overlay) handleHealth(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// WebSocket keepalive/hardening timings for browser overlay connections.
+// A ping is sent every overlayWSPingPeriod; a pong (or any inbound frame)
+// extends the read deadline. Without these a dead browser connection sat in
+// o.clients until process exit.
+const (
+	overlayWSPongWait   = 60 * time.Second
+	overlayWSPingPeriod = (overlayWSPongWait * 9) / 10
+	overlayWSWriteWait  = 10 * time.Second
+	// overlayWSMaxMessage caps inbound frames; overlay messages are small
+	// control payloads, so a large frame indicates a confused peer.
+	overlayWSMaxMessage = 64 << 10
+)
+
 func (o *Overlay) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	conn, err := o.upgrader.Upgrade(w, r, nil)
 	if err != nil {
@@ -269,6 +282,42 @@ func (o *Overlay) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	o.clients.Store(conn, &sync.Mutex{})
 	defer o.clients.Delete(conn)
+
+	conn.SetReadLimit(overlayWSMaxMessage)
+	conn.SetReadDeadline(time.Now().Add(overlayWSPongWait))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(overlayWSPongWait))
+	})
+
+	// Ping the peer so a silently-dead connection (browser tab killed,
+	// network drop without FIN) is detected and reaped instead of leaking.
+	pingDone := make(chan struct{})
+	defer close(pingDone)
+	go func() {
+		ticker := time.NewTicker(overlayWSPingPeriod)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-pingDone:
+				return
+			case <-ticker.C:
+				v, ok := o.clients.Load(conn)
+				if !ok {
+					return
+				}
+				// Writes serialize on the per-conn mutex, same as Broadcast.
+				wmu := v.(*sync.Mutex)
+				wmu.Lock()
+				_ = conn.SetWriteDeadline(time.Now().Add(overlayWSWriteWait))
+				err := conn.WriteMessage(websocket.PingMessage, nil)
+				wmu.Unlock()
+				if err != nil {
+					conn.Close()
+					return
+				}
+			}
+		}
+	}()
 
 	for {
 		_, message, err := conn.ReadMessage()
@@ -941,8 +990,15 @@ func (o *Overlay) Broadcast(msgType string, payload interface{}) {
 		// serialize writes per connection with its dedicated mutex.
 		if wmu, ok := value.(*sync.Mutex); ok {
 			wmu.Lock()
-			_ = conn.WriteMessage(websocket.TextMessage, msg)
+			_ = conn.SetWriteDeadline(time.Now().Add(overlayWSWriteWait))
+			err := conn.WriteMessage(websocket.TextMessage, msg)
 			wmu.Unlock()
+			if err != nil {
+				// Dead conn: evict so later broadcasts skip it and the read
+				// loop unwinds instead of writing to a corpse forever.
+				o.clients.Delete(conn)
+				conn.Close()
+			}
 		} else {
 			_ = conn.WriteMessage(websocket.TextMessage, msg)
 		}
