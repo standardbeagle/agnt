@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"io"
 	"log"
@@ -585,8 +587,10 @@ func displayAutostartResults(ctx context.Context, handle *daemonSessionHandle, o
 func setupAlertScanner(projectPath, sessionCode string, netOverlay *Overlay, daemonHandle *daemonSessionHandle, actState func() overlay.ActivityState) *overlay.AlertScanner {
 	agntCfg, err := loadResolvedConfig(projectPath)
 	if err != nil {
-		debug.Log("alerts", "failed to load config for alert scanner: %v", err)
-		agntCfg = config.DefaultAgntConfig()
+		// No silent default substitution: a broken config must not quietly
+		// change alert behavior. Skip the feature loudly.
+		debug.Warn("alerts", "failed to load config for alert scanner (alerts disabled): %v", err)
+		return nil
 	}
 
 	// Check if alerts are explicitly disabled
@@ -1089,8 +1093,15 @@ func generateSessionCode(command string) string {
 		}
 	}
 
-	// Fallback: use timestamp-based code if daemon unavailable
-	return fmt.Sprintf("%s-%d", base, time.Now().UnixNano()%10000)
+	// Daemon unavailable: derive the suffix from crypto/rand, not a
+	// timestamp — UnixNano()%10000 collides across rapid successive launches.
+	var suffix [2]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		// crypto/rand failure is fatal-worthy nowhere else; surface it.
+		debug.Warn("run", "crypto/rand unavailable for session code: %v", err)
+		return fmt.Sprintf("%s-%d", base, os.Getpid())
+	}
+	return fmt.Sprintf("%s-%04x", base, binary.BigEndian.Uint16(suffix[:]))
 }
 
 // cleanupTerminal resets the terminal state to prevent display corruption on exit.
@@ -1317,11 +1328,12 @@ func buildAgntSystemPrompt(socketPath string) string {
 	}
 
 	// Load agnt config from current directory.
-	// Config was already validated at startup; errors here are unexpected.
+	// Config was already validated at startup; errors here are unexpected, so
+	// they are surfaced loudly rather than silently swapped for defaults.
 	cwd, _ := os.Getwd()
 	agntConfig, err := loadResolvedConfig(cwd)
 	if err != nil {
-		debug.Log("run", "unexpected config load error in buildAgntSystemPrompt: %v", err)
+		debug.Warn("run", "config load failed in buildAgntSystemPrompt (using defaults): %v", err)
 		agntConfig = config.DefaultAgntConfig()
 	}
 
