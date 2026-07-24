@@ -1744,14 +1744,23 @@ func runOverlayPipeline(
 	// Setup mode may need to deliver an inline prompt to stdin-based adapters.
 	// Normal coding sessions keep agnt guidance in the persistent context file
 	// instead, so they do not start with a visible injected user message.
+	// Both goroutines are tracked in rt.wg so Stop()'s wait actually covers
+	// them — untracked, they could still write to a torn-down PTY after Stop
+	// returned.
 	if injectInitialPrompt && adapter != nil {
 		if stdin := adapter.InitialStdin(adapterPrompt); len(stdin) > 0 {
-			go injectInitialStdin(ctx, handle.Backend, stdin, outputPulse, adapter.StdinDelay())
+			rt.wg.Add(1)
+			go func() {
+				defer rt.wg.Done()
+				injectInitialStdin(ctx, handle.Backend, stdin, outputPulse, adapter.StdinDelay())
+			}()
 		}
 	}
 
 	// Forward ctx cancellation to the platform-specific interrupt handler.
+	rt.wg.Add(1)
 	go func() {
+		defer rt.wg.Done()
 		select {
 		case <-ctx.Done():
 			if handle.Interrupt != nil {
