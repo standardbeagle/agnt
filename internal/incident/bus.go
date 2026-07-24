@@ -131,8 +131,6 @@ func (b *MPSCBus) Dropped() int64 {
 // mcpNotify, channelNotify, and ptyInject may all be nil (pinger channels are
 // skipped). pingConfig may be nil; DefaultPingConfig() is used in that case.
 func (b *MPSCBus) AddSession(sessionID string, mcpNotify MCPNotifyFn, channelNotify ChannelNotifyFn, ptyInject PTYInjectFn) {
-	b.RemoveSession(sessionID)
-
 	inbox := NewInbox(sessionID)
 	dedup := NewDeduplicator(30 * time.Second)
 	flow := NewFlowController(DefaultBucketConfigs)
@@ -156,9 +154,18 @@ func (b *MPSCBus) AddSession(sessionID string, mcpNotify MCPNotifyFn, channelNot
 		stopCh: make(chan struct{}),
 	}
 
+	// Remove+insert must be one atomic step: two concurrent AddSession calls
+	// with the same ID would otherwise both build pipelines, and the loser of
+	// the final insert would leak its pinger and blob-store goroutines with a
+	// stopCh nothing ever closes.
 	b.mu.Lock()
+	old, replaced := b.perSession[sessionID]
 	b.perSession[sessionID] = pl
 	b.mu.Unlock()
+
+	if replaced {
+		b.teardownPipeline(old)
+	}
 }
 
 // RemoveSession tears down the session pipeline for sessionID. Delivery runs
@@ -177,6 +184,13 @@ func (b *MPSCBus) RemoveSession(sessionID string) {
 		return
 	}
 
+	b.teardownPipeline(pl)
+}
+
+// teardownPipeline stops a pipeline's goroutines and releases its resources.
+// Called after the pipeline is unlinked from perSession under b.mu, so no new
+// event can be ingested into it.
+func (b *MPSCBus) teardownPipeline(pl *sessionPipeline) {
 	close(pl.stopCh)
 
 	if pl.pinger != nil {

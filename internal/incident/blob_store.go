@@ -128,8 +128,16 @@ func (bs *BlobStore) Write(content []byte, mime string) (BlobRef, error) {
 	case <-bs.done:
 		return BlobRef{}, errors.New("blob store closed")
 	}
-	res := <-req.result
-	return res.ref, res.err
+	// The enqueue above can win the select even after done is closed (both
+	// cases ready → random choice), and a request buffered behind a drain
+	// that has already exited is never answered. Wait on done as well so a
+	// raced enqueue cannot block forever.
+	select {
+	case res := <-req.result:
+		return res.ref, res.err
+	case <-bs.done:
+		return BlobRef{}, errors.New("blob store closed")
+	}
 }
 
 // WriteAsync computes the sha256 hash synchronously and returns a BlobRef

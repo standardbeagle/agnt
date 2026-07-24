@@ -495,15 +495,20 @@ func (inbox *Inbox) ClearAllBefore(before time.Time) int {
 	return removed
 }
 
-// FindByFingerprint returns a copy of the entry with the given fingerprint,
-// or nil when no band holds it.
+// FindByFingerprint returns a deep snapshot of the entry with the given
+// fingerprint, or nil when no band holds it. A shallow copy would share
+// Sample/SampleURLs/urlSeen with the live entry that Ingest mutates under
+// the band lock — a data race for any reader. ingestMu is taken so the
+// result cannot transiently miss an entry mid-escalation.
 func (inbox *Inbox) FindByFingerprint(fp string) *InboxEntry {
+	inbox.ingestMu.Lock()
+	defer inbox.ingestMu.Unlock()
 	for _, b := range inbox.bands {
 		b.mu.RLock()
 		if slot, ok := b.slots[fp]; ok {
-			e := *slot.entry
+			e := snapshotInboxEntry(slot.entry)
 			b.mu.RUnlock()
-			return &e
+			return e
 		}
 		b.mu.RUnlock()
 	}
