@@ -160,18 +160,21 @@ func (vs *VoiceSession) Close() {
 		return
 	}
 	vs.closed = true
+
+	// Send the close message under vs.mu: gorilla forbids concurrent writers,
+	// and SendAudio/keepAlive serialize their deepgramConn writes on it.
+	closeMsg := map[string]string{"type": "CloseStream"}
+	if data, err := json.Marshal(closeMsg); err == nil {
+		if dErr := vs.deepgramConn.SetWriteDeadline(time.Now().Add(deepgramWriteTimeout)); dErr == nil {
+			if wErr := vs.deepgramConn.WriteMessage(websocket.TextMessage, data); wErr != nil {
+				debug.Error("voice", "failed to send close stream: %v", wErr)
+			}
+		}
+	}
 	vs.mu.Unlock()
 
 	// Stop keepalive
 	close(vs.keepAliveDone)
-
-	// Send close message to Deepgram
-	closeMsg := map[string]string{"type": "CloseStream"}
-	if data, err := json.Marshal(closeMsg); err == nil {
-		if wErr := vs.deepgramConn.WriteMessage(websocket.TextMessage, data); wErr != nil {
-			debug.Error("voice", "failed to send close stream: %v", wErr)
-		}
-	}
 
 	vs.deepgramConn.Close()
 }

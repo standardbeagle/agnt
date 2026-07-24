@@ -161,14 +161,19 @@ func (pm *ProxyManager) Stop(ctx context.Context, id string) error {
 		return err
 	}
 
-	if err := proxy.Stop(ctx); err != nil {
-		return err
+	stopErr := proxy.Stop(ctx)
+
+	// Deregister even when Stop fails: a crashed proxy fails Stop with
+	// "not running", and leaving it registered keeps ActiveCount inflated,
+	// IsRegistered true, and makes every StopAll/Shutdown report a spurious
+	// error for the stale entry. LoadAndDelete keeps concurrent Stops of the
+	// same proxy idempotent — only the caller that actually removed the
+	// entry decrements the count.
+	if _, loaded := pm.proxies.LoadAndDelete(id); loaded {
+		pm.activeCount.Add(-1)
 	}
 
-	pm.proxies.Delete(id)
-	pm.activeCount.Add(-1)
-
-	return nil
+	return stopErr
 }
 
 // ListScoped returns the managed proxy servers visible to the given scope.
