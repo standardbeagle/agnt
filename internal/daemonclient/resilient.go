@@ -194,6 +194,21 @@ func (rc *ResilientClient) WithClient(fn func(*Client) error) error {
 	})
 }
 
+// withResult runs fn against the current client (via WithClient, so it routes
+// to the live connection across reconnects) and returns its result. Every
+// single-result wrapper below is one line on top of this — before it, each
+// spelled out the same nine-line capture-the-result closure by hand and the
+// copies had already begun to drift.
+func withResult[T any](rc *ResilientClient, fn func(*Client) (T, error)) (T, error) {
+	var result T
+	err := rc.WithClient(func(c *Client) error {
+		var e error
+		result, e = fn(c)
+		return e
+	})
+	return result, err
+}
+
 // Convenience methods that wrap common client operations with resilience
 
 // Ping sends a ping to the daemon.
@@ -203,224 +218,112 @@ func (rc *ResilientClient) Ping() error {
 
 // Info retrieves daemon information.
 func (rc *ResilientClient) Info() (*DaemonInfo, error) {
-	var info *DaemonInfo
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		info, e = c.Info()
-		return e
-	})
-	return info, err
+	return withResult(rc, (*Client).Info)
 }
 
 // OverlaySet sets the overlay endpoint.
 func (rc *ResilientClient) OverlaySet(endpoint string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.OverlaySet(endpoint)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.OverlaySet(endpoint) })
 }
 
 // ProxyStart starts a reverse proxy.
 func (rc *ResilientClient) ProxyStart(id, targetURL string, port, maxLogSize int, path string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ProxyStart(id, targetURL, port, maxLogSize, path)
-		return e
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) {
+		return c.ProxyStart(id, targetURL, port, maxLogSize, path)
 	})
-	return result, err
 }
 
 // ProxyStop stops a reverse proxy.
 func (rc *ResilientClient) ProxyStop(id string) error {
-	return rc.WithClient(func(c *Client) error {
-		return c.ProxyStop(id)
-	})
+	return rc.WithClient(func(c *Client) error { return c.ProxyStop(id) })
 }
 
 // ProxyList lists all proxies.
 func (rc *ResilientClient) ProxyList(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ProxyList(dirFilter)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ProxyList(dirFilter) })
 }
 
 // Detect detects the project type at the given path.
 func (rc *ResilientClient) Detect(path string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.Detect(path)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.Detect(path) })
 }
 
 // Run starts a process on the daemon.
 // The config is marshaled to JSON and can be protocol.RunConfig or any struct
 // that embeds it (e.g., with additional fields like no_auto_restart).
 func (rc *ResilientClient) Run(config interface{}) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.Run(config)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.Run(config) })
 }
 
 // ProcRun starts an admin-aware process via PROC RUN. Optionally gates
 // on declared dependencies before launching. See Client.ProcRun for the
 // full contract.
 func (rc *ResilientClient) ProcRun(name string, cfg ProcRunConfig) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ProcRun(name, cfg)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ProcRun(name, cfg) })
 }
 
 // ProcRunGroup launches a multi-process startup group via PROC RUN-GROUP.
 // Performs cycle detection before any process launches. See
 // Client.ProcRunGroup for the full contract.
 func (rc *ResilientClient) ProcRunGroup(cfg ProcRunGroupConfig) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ProcRunGroup(cfg)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ProcRunGroup(cfg) })
 }
 
 // ProcStatus gets the status of a process.
 func (rc *ResilientClient) ProcStatus(processID string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ProcStatus(processID)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ProcStatus(processID) })
 }
 
 // ProcOutput gets the output of a process.
 func (rc *ResilientClient) ProcOutput(processID string, filter protocol.OutputFilter) (string, error) {
-	var output string
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		output, e = c.ProcOutput(processID, filter)
-		return e
-	})
-	return output, err
+	return withResult(rc, func(c *Client) (string, error) { return c.ProcOutput(processID, filter) })
 }
 
 // ProcStop stops a process.
 func (rc *ResilientClient) ProcStop(processID string, force bool) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ProcStop(processID, force)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ProcStop(processID, force) })
 }
 
 // ProcList lists all processes.
 func (rc *ResilientClient) ProcList(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ProcList(dirFilter)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ProcList(dirFilter) })
 }
 
 // ResolveQueryScope resolves the effective query scope through the daemon.
 func (rc *ResilientClient) ResolveQueryScope(filter protocol.DirectoryFilter) (bool, error) {
-	var global bool
-	err := rc.WithClient(func(c *Client) error {
-		var err error
-		global, err = c.ResolveQueryScope(filter)
-		return err
-	})
-	return global, err
+	return withResult(rc, func(c *Client) (bool, error) { return c.ResolveQueryScope(filter) })
 }
 
 // ProcCleanupPort kills processes on a specific port.
 func (rc *ResilientClient) ProcCleanupPort(port int) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ProcCleanupPort(port)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ProcCleanupPort(port) })
 }
 
 // ProxyStartWithConfig starts a reverse proxy with extended configuration.
 func (rc *ResilientClient) ProxyStartWithConfig(id, targetURL string, port, maxLogSize int, config ProxyStartConfig) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ProxyStartWithConfig(id, targetURL, port, maxLogSize, config)
-		return e
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) {
+		return c.ProxyStartWithConfig(id, targetURL, port, maxLogSize, config)
 	})
-	return result, err
 }
 
 // ProxyStatus gets the status of a proxy.
 func (rc *ResilientClient) ProxyStatus(id string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ProxyStatus(id)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ProxyStatus(id) })
 }
 
 // ProxyExec executes JavaScript in connected browsers.
 func (rc *ResilientClient) ProxyExec(id, code string, frameID ...string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ProxyExec(id, code, frameID...)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ProxyExec(id, code, frameID...) })
 }
 
 // ProxyToast sends a toast notification to connected browsers.
 func (rc *ResilientClient) ProxyToast(id string, toast protocol.ToastConfig) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ProxyToast(id, toast)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ProxyToast(id, toast) })
 }
 
 // ProxyLogQuery queries proxy logs.
 func (rc *ResilientClient) ProxyLogQuery(proxyID string, filter protocol.LogQueryFilter) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ProxyLogQuery(proxyID, filter)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ProxyLogQuery(proxyID, filter) })
 }
 
 // ProxyLogQueryFull queries proxy logs and decodes typed entries plus the total
@@ -439,353 +342,181 @@ func (rc *ResilientClient) ProxyLogQueryFull(proxyID string, filter protocol.Log
 
 // ProxyLogClear clears proxy logs.
 func (rc *ResilientClient) ProxyLogClear(proxyID string) error {
-	return rc.WithClient(func(c *Client) error {
-		return c.ProxyLogClear(proxyID)
-	})
+	return rc.WithClient(func(c *Client) error { return c.ProxyLogClear(proxyID) })
 }
 
 // ProxyLogStats gets proxy log statistics.
 func (rc *ResilientClient) ProxyLogStats(proxyID string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ProxyLogStats(proxyID)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ProxyLogStats(proxyID) })
 }
 
 // CurrentPageList lists active page sessions.
 func (rc *ResilientClient) CurrentPageList(proxyID string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.CurrentPageList(proxyID)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.CurrentPageList(proxyID) })
 }
 
 // CurrentPageGet gets details for a specific page session.
 func (rc *ResilientClient) CurrentPageGet(proxyID, sessionID string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.CurrentPageGet(proxyID, sessionID)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.CurrentPageGet(proxyID, sessionID) })
 }
 
 // CurrentPageClear clears page sessions.
 func (rc *ResilientClient) CurrentPageClear(proxyID string) error {
-	return rc.WithClient(func(c *Client) error {
-		return c.CurrentPageClear(proxyID)
-	})
+	return rc.WithClient(func(c *Client) error { return c.CurrentPageClear(proxyID) })
 }
 
 // Chaos methods
 
 // ChaosEnable enables chaos injection on a proxy.
 func (rc *ResilientClient) ChaosEnable(proxyID string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ChaosEnable(proxyID)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ChaosEnable(proxyID) })
 }
 
 // ChaosDisable disables chaos injection on a proxy.
 func (rc *ResilientClient) ChaosDisable(proxyID string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ChaosDisable(proxyID)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ChaosDisable(proxyID) })
 }
 
 // ChaosStatus gets the chaos status of a proxy.
 func (rc *ResilientClient) ChaosStatus(proxyID string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ChaosStatus(proxyID)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ChaosStatus(proxyID) })
 }
 
 // ChaosPreset applies a preset chaos configuration to a proxy.
 func (rc *ResilientClient) ChaosPreset(proxyID, preset string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ChaosPreset(proxyID, preset)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ChaosPreset(proxyID, preset) })
 }
 
 // ChaosSet sets the full chaos configuration on a proxy.
 func (rc *ResilientClient) ChaosSet(proxyID string, config protocol.ChaosConfigPayload) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ChaosSet(proxyID, config)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ChaosSet(proxyID, config) })
 }
 
 // ChaosAddRule adds a single rule to a proxy's chaos engine.
 func (rc *ResilientClient) ChaosAddRule(proxyID string, rule protocol.ChaosRuleConfig) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ChaosAddRule(proxyID, rule)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ChaosAddRule(proxyID, rule) })
 }
 
 // ChaosRemoveRule removes a rule from a proxy's chaos engine.
 func (rc *ResilientClient) ChaosRemoveRule(proxyID, ruleID string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ChaosRemoveRule(proxyID, ruleID)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ChaosRemoveRule(proxyID, ruleID) })
 }
 
 // ChaosListRules lists all chaos rules for a proxy.
 func (rc *ResilientClient) ChaosListRules(proxyID string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ChaosListRules(proxyID)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ChaosListRules(proxyID) })
 }
 
 // ChaosStats gets chaos statistics for a proxy.
 func (rc *ResilientClient) ChaosStats(proxyID string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ChaosStats(proxyID)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ChaosStats(proxyID) })
 }
 
 // ChaosClear clears all chaos rules and resets stats for a proxy.
 func (rc *ResilientClient) ChaosClear(proxyID string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ChaosClear(proxyID)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ChaosClear(proxyID) })
 }
 
 // ChaosListPresets returns the list of available chaos presets.
 func (rc *ResilientClient) ChaosListPresets() (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ChaosListPresets()
-		return e
-	})
-	return result, err
+	return withResult(rc, (*Client).ChaosListPresets)
 }
 
 // Tunnel methods
 
 // TunnelStart starts a tunnel for a local port.
 func (rc *ResilientClient) TunnelStart(config protocol.TunnelStartConfig) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.TunnelStart(config)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.TunnelStart(config) })
 }
 
 // TunnelStop stops a running tunnel.
 func (rc *ResilientClient) TunnelStop(id string) error {
-	return rc.WithClient(func(c *Client) error {
-		return c.TunnelStop(id)
-	})
+	return rc.WithClient(func(c *Client) error { return c.TunnelStop(id) })
 }
 
 // TunnelStatus gets the status of a tunnel.
 func (rc *ResilientClient) TunnelStatus(id string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.TunnelStatus(id)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.TunnelStatus(id) })
 }
 
 // TunnelList lists all active tunnels.
 func (rc *ResilientClient) TunnelList(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.TunnelList(dirFilter)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.TunnelList(dirFilter) })
 }
 
 // Browser methods
 
 // BrowserStart starts a browser instance.
 func (rc *ResilientClient) BrowserStart(config protocol.BrowserStartConfig) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.BrowserStart(config)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.BrowserStart(config) })
 }
 
 // BrowserStop stops a running browser instance.
 func (rc *ResilientClient) BrowserStop(id string) error {
-	return rc.WithClient(func(c *Client) error {
-		return c.BrowserStop(id)
-	})
+	return rc.WithClient(func(c *Client) error { return c.BrowserStop(id) })
 }
 
 // BrowserStatus gets the status of a browser instance.
 func (rc *ResilientClient) BrowserStatus(id string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.BrowserStatus(id)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.BrowserStatus(id) })
 }
 
 // BrowserList lists all active browser instances.
 func (rc *ResilientClient) BrowserList(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.BrowserList(dirFilter)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.BrowserList(dirFilter) })
 }
 
 // Automation methods (chromedp sessions)
 
 // AutomationStart starts a chromedp automation session.
 func (rc *ResilientClient) AutomationStart(config protocol.AutomationStartConfig) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.AutomationStart(config)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.AutomationStart(config) })
 }
 
 // AutomationStop stops an automation session.
 func (rc *ResilientClient) AutomationStop(id string) error {
-	return rc.WithClient(func(c *Client) error {
-		return c.AutomationStop(id)
-	})
+	return rc.WithClient(func(c *Client) error { return c.AutomationStop(id) })
 }
 
 // AutomationStatus gets the status of an automation session.
 func (rc *ResilientClient) AutomationStatus(id string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.AutomationStatus(id)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.AutomationStatus(id) })
 }
 
 // AutomationList lists all active automation sessions.
 func (rc *ResilientClient) AutomationList(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.AutomationList(dirFilter)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.AutomationList(dirFilter) })
 }
 
 // AutomationScreenshot takes a screenshot in an automation session.
 func (rc *ResilientClient) AutomationScreenshot(config protocol.AutomationScreenshotConfig) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.AutomationScreenshot(config)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.AutomationScreenshot(config) })
 }
 
 // AutomationNavigate navigates to a URL in an automation session.
 func (rc *ResilientClient) AutomationNavigate(config protocol.AutomationNavigateConfig) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.AutomationNavigate(config)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.AutomationNavigate(config) })
 }
 
 // AutomationEvaluate evaluates JavaScript in an automation session.
 func (rc *ResilientClient) AutomationEvaluate(config protocol.AutomationEvaluateConfig) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.AutomationEvaluate(config)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.AutomationEvaluate(config) })
 }
 
 // BroadcastActivity sends an activity state update to connected browsers via specified proxies.
 // If proxyIDs is empty, broadcasts to all proxies (backward compatibility).
 func (rc *ResilientClient) BroadcastActivity(active bool, proxyIDs ...string) error {
-	return rc.WithClient(func(c *Client) error {
-		return c.BroadcastActivity(active, proxyIDs...)
-	})
+	return rc.WithClient(func(c *Client) error { return c.BroadcastActivity(active, proxyIDs...) })
 }
 
 // SetForwarding pauses/resumes agent-inbound push for this session.
 func (rc *ResilientClient) SetForwarding(paused bool) error {
-	return rc.WithClient(func(c *Client) error {
-		return c.SetForwarding(paused)
-	})
+	return rc.WithClient(func(c *Client) error { return c.SetForwarding(paused) })
 }
 
 // BroadcastOutputPreview sends output preview lines to connected browsers via proxies.
 func (rc *ResilientClient) BroadcastOutputPreview(lines []string, throbber string, proxyIDs ...string) error {
-	return rc.WithClient(func(c *Client) error {
-		return c.BroadcastOutputPreview(lines, throbber, proxyIDs...)
-	})
+	return rc.WithClient(func(c *Client) error { return c.BroadcastOutputPreview(lines, throbber, proxyIDs...) })
 }
 
 // Session methods
@@ -807,213 +538,113 @@ func (rc *ResilientClient) SessionRegisterWithPGID(code, overlayPath, projectPat
 // PTY child subtree. See Client.SessionRegisterWithContainment for
 // platform semantics.
 func (rc *ResilientClient) SessionRegisterWithContainment(code, overlayPath, projectPath, command string, args []string, sessionPGID int, sessionJobHandle uint64) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.SessionRegisterWithContainment(code, overlayPath, projectPath, command, args, sessionPGID, sessionJobHandle)
-		return e
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) {
+		return c.SessionRegisterWithContainment(code, overlayPath, projectPath, command, args, sessionPGID, sessionJobHandle)
 	})
-	return result, err
 }
 
 // SessionUnregister unregisters a session.
 func (rc *ResilientClient) SessionUnregister(code string) error {
-	return rc.WithClient(func(c *Client) error {
-		return c.SessionUnregister(code)
-	})
+	return rc.WithClient(func(c *Client) error { return c.SessionUnregister(code) })
 }
 
 // SessionHeartbeat sends a heartbeat for a session.
 func (rc *ResilientClient) SessionHeartbeat(code string) error {
-	return rc.WithClient(func(c *Client) error {
-		return c.SessionHeartbeat(code)
-	})
+	return rc.WithClient(func(c *Client) error { return c.SessionHeartbeat(code) })
 }
 
 // SessionList lists sessions, optionally filtered by directory.
 func (rc *ResilientClient) SessionList(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.SessionList(dirFilter)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.SessionList(dirFilter) })
 }
 
 // SessionGet retrieves details for a specific session.
 func (rc *ResilientClient) SessionGet(code string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.SessionGet(code)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.SessionGet(code) })
 }
 
 // SessionSend sends a message to a session immediately.
 func (rc *ResilientClient) SessionSend(code, message string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.SessionSend(code, message)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.SessionSend(code, message) })
 }
 
 // SessionSchedule schedules a message for future delivery.
 func (rc *ResilientClient) SessionSchedule(code, duration, message string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.SessionSchedule(code, duration, message)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.SessionSchedule(code, duration, message) })
 }
 
 // SessionCancel cancels a scheduled task.
 func (rc *ResilientClient) SessionCancel(taskID string) error {
-	return rc.WithClient(func(c *Client) error {
-		return c.SessionCancel(taskID)
-	})
+	return rc.WithClient(func(c *Client) error { return c.SessionCancel(taskID) })
 }
 
 // SessionTasks lists scheduled tasks, optionally filtered by directory.
 func (rc *ResilientClient) SessionTasks(dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.SessionTasks(dirFilter)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.SessionTasks(dirFilter) })
 }
 
 // SessionGenerateCode generates a unique session code for a command.
 func (rc *ResilientClient) SessionGenerateCode(command string) (string, error) {
-	var code string
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		code, e = c.SessionGenerateCode(command)
-		return e
-	})
-	return code, err
+	return withResult(rc, func(c *Client) (string, error) { return c.SessionGenerateCode(command) })
 }
 
 // SessionFind finds a session by directory ancestry.
 func (rc *ResilientClient) SessionFind(directory string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.SessionFind(directory)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.SessionFind(directory) })
 }
 
 // SessionAttach attaches to a session found by directory ancestry.
 func (rc *ResilientClient) SessionAttach(directory string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.SessionAttach(directory)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.SessionAttach(directory) })
 }
 
 // Store methods
 
 // StoreGet retrieves a value from the key-value store.
 func (rc *ResilientClient) StoreGet(req protocol.StoreGetRequest) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.StoreGet(req)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.StoreGet(req) })
 }
 
 // StoreSet stores a value in the key-value store.
 func (rc *ResilientClient) StoreSet(req protocol.StoreSetRequest) error {
-	return rc.WithClient(func(c *Client) error {
-		return c.StoreSet(req)
-	})
+	return rc.WithClient(func(c *Client) error { return c.StoreSet(req) })
 }
 
 // StoreDelete deletes a value from the key-value store.
 func (rc *ResilientClient) StoreDelete(req protocol.StoreDeleteRequest) error {
-	return rc.WithClient(func(c *Client) error {
-		return c.StoreDelete(req)
-	})
+	return rc.WithClient(func(c *Client) error { return c.StoreDelete(req) })
 }
 
 // StoreList lists all keys in a scope.
 func (rc *ResilientClient) StoreList(req protocol.StoreListRequest) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.StoreList(req)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.StoreList(req) })
 }
 
 // StoreClear clears all entries in a scope.
 func (rc *ResilientClient) StoreClear(req protocol.StoreClearRequest) error {
-	return rc.WithClient(func(c *Client) error {
-		return c.StoreClear(req)
-	})
+	return rc.WithClient(func(c *Client) error { return c.StoreClear(req) })
 }
 
 // StoreGetAll retrieves all key-value pairs in a scope.
 func (rc *ResilientClient) StoreGetAll(req protocol.StoreGetAllRequest) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.StoreGetAll(req)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.StoreGetAll(req) })
 }
 
 // Restart and StopAll methods
 
 // ProcRestart restarts a process.
 func (rc *ResilientClient) ProcRestart(processID string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ProcRestart(processID)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ProcRestart(processID) })
 }
 
 // ProcAutoRestart enables, disables, or queries auto-restart for a process.
 func (rc *ResilientClient) ProcAutoRestart(processID, action string, config *ProcAutoRestartConfig) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ProcAutoRestart(processID, action, config)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ProcAutoRestart(processID, action, config) })
 }
 
 // ProxyRestart restarts a proxy.
 func (rc *ResilientClient) ProxyRestart(id string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ProxyRestart(id)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ProxyRestart(id) })
 }
 
 // StopAll stops the processes and proxies owned by the connection's bound
@@ -1026,13 +657,7 @@ func (rc *ResilientClient) StopAll() (map[string]interface{}, error) {
 // daemon connection is not session-bound, so it names the project or passes
 // global explicitly).
 func (rc *ResilientClient) StopAllScoped(filter protocol.DirectoryFilter) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.StopAllScoped(filter)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.StopAllScoped(filter) })
 }
 
 // RestartAll restarts the processes and proxies owned by the connection's
@@ -1043,192 +668,96 @@ func (rc *ResilientClient) RestartAll() (map[string]interface{}, error) {
 
 // RestartAllScoped restarts resources for the project resolved by filter.
 func (rc *ResilientClient) RestartAllScoped(filter protocol.DirectoryFilter) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.RestartAllScoped(filter)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.RestartAllScoped(filter) })
 }
 
 // Alert methods
 
 // AlertReport sends an alert report to the daemon.
 func (rc *ResilientClient) AlertReport(payload protocol.AlertReportPayload) error {
-	return rc.WithClient(func(c *Client) error {
-		return c.AlertReport(payload)
-	})
+	return rc.WithClient(func(c *Client) error { return c.AlertReport(payload) })
 }
 
 // AlertQuery queries alerts from the daemon.
 func (rc *ResilientClient) AlertQuery(filter protocol.AlertQueryFilter) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.AlertQuery(filter)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.AlertQuery(filter) })
 }
 
 // IncidentQuery queries the incident inbox for the current session.
 func (rc *ResilientClient) IncidentQuery(filter protocol.IncidentQueryFilter) (*protocol.IncidentQueryResult, error) {
-	var result *protocol.IncidentQueryResult
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.IncidentQuery(filter)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (*protocol.IncidentQueryResult, error) { return c.IncidentQuery(filter) })
 }
 
 // PublishCreate validates + publishes a walkthrough, returning the share id and
 // the plaintext token (returned once).
 func (rc *ResilientClient) PublishCreate(req protocol.PublishCreateRequest) (*protocol.PublishCreateResult, error) {
-	var result *protocol.PublishCreateResult
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.PublishCreate(req)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (*protocol.PublishCreateResult, error) { return c.PublishCreate(req) })
 }
 
 // PublishRotate mints a fresh token for a share (old token dies immediately).
 func (rc *ResilientClient) PublishRotate(id string) (*protocol.PublishRotateResult, error) {
-	var result *protocol.PublishRotateResult
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.PublishRotate(id)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (*protocol.PublishRotateResult, error) { return c.PublishRotate(id) })
 }
 
 // PublishRevoke tombstones a share.
 func (rc *ResilientClient) PublishRevoke(id string) error {
-	return rc.WithClient(func(c *Client) error {
-		return c.PublishRevoke(id)
-	})
+	return rc.WithClient(func(c *Client) error { return c.PublishRevoke(id) })
 }
 
 // PublishStatus returns the redaction-safe status of a share.
 func (rc *ResilientClient) PublishStatus(id string) (*protocol.PublishShareInfo, error) {
-	var result *protocol.PublishShareInfo
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.PublishStatus(id)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (*protocol.PublishShareInfo, error) { return c.PublishStatus(id) })
 }
 
 // PublishList lists the caller's project-scoped shares.
 func (rc *ResilientClient) PublishList() (*protocol.PublishListResult, error) {
-	var result *protocol.PublishListResult
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.PublishList()
-		return e
-	})
-	return result, err
+	return withResult(rc, (*Client).PublishList)
 }
 
 // PublishFeedback reads the owner-scoped feedback rows for a share (never the
 // token). Ownership is enforced daemon-side.
 func (rc *ResilientClient) PublishFeedback(id, cursor string, limit int) (*protocol.PublishFeedbackResult, error) {
-	var result *protocol.PublishFeedbackResult
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.PublishFeedback(id, cursor, limit)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (*protocol.PublishFeedbackResult, error) { return c.PublishFeedback(id, cursor, limit) })
 }
 
 // AlertClear clears alerts, scoped by the filter. Pinned errors are kept.
 func (rc *ResilientClient) AlertClear(filter protocol.AlertClearFilter) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.AlertClear(filter)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.AlertClear(filter) })
 }
 
 // AlertPin pins an error so it survives automatic retention clears.
 func (rc *ResilientClient) AlertPin(payload protocol.AlertPinPayload) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.AlertPin(payload)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.AlertPin(payload) })
 }
 
 // AlertUnpin removes a pin previously created with AlertPin.
 func (rc *ResilientClient) AlertUnpin(payload protocol.AlertPinPayload) error {
-	return rc.WithClient(func(c *Client) error {
-		return c.AlertUnpin(payload)
-	})
+	return rc.WithClient(func(c *Client) error { return c.AlertUnpin(payload) })
 }
 
 // StartupLog queries the startup log from the daemon.
 func (rc *ResilientClient) StartupLog(limit int, dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.StartupLog(limit, dirFilter)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.StartupLog(limit, dirFilter) })
 }
 
 // Script methods
 
 // ScriptList lists all scripts for a project directory.
 func (rc *ResilientClient) ScriptList(projectPath string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ScriptList(projectPath)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ScriptList(projectPath) })
 }
 
 // ScriptGet retrieves full detail for a named script.
 func (rc *ResilientClient) ScriptGet(name, projectPath string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ScriptGet(name, projectPath)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ScriptGet(name, projectPath) })
 }
 
 // ScriptOutput retrieves output history for a named script.
 func (rc *ResilientClient) ScriptOutput(name, projectPath string, tail int) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.ScriptOutput(name, projectPath, tail)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ScriptOutput(name, projectPath, tail) })
 }
 
 // Doctor runs health checks and returns a diagnostic report.
 func (rc *ResilientClient) Doctor(projectPath string) (map[string]interface{}, error) {
-	var result map[string]interface{}
-	err := rc.WithClient(func(c *Client) error {
-		var e error
-		result, e = c.Doctor(projectPath)
-		return e
-	})
-	return result, err
+	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.Doctor(projectPath) })
 }
