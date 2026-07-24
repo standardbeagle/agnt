@@ -609,6 +609,153 @@ type LogEntry struct {
 	Hook              *HookLogEntry       `json:"hook,omitempty"`
 }
 
+// Timestamp returns the entry's event time regardless of payload type —
+// the single place the per-type extraction switch lives, so adding a log
+// type means updating one method instead of every consumer's switch.
+// Hook entries use ReceivedAt; incident digests ride the Custom payload.
+func (e LogEntry) Timestamp() time.Time {
+	switch e.Type {
+	case LogTypeHTTP:
+		if e.HTTP != nil {
+			return e.HTTP.Timestamp
+		}
+	case LogTypeError:
+		if e.Error != nil {
+			return e.Error.Timestamp
+		}
+	case LogTypePerformance:
+		if e.Performance != nil {
+			return e.Performance.Timestamp
+		}
+	case LogTypeCustom:
+		if e.Custom != nil {
+			return e.Custom.Timestamp
+		}
+	case LogTypeScreenshot:
+		if e.Screenshot != nil {
+			return e.Screenshot.Timestamp
+		}
+	case LogTypeExecution:
+		if e.Execution != nil {
+			return e.Execution.Timestamp
+		}
+	case LogTypeResponse:
+		if e.Response != nil {
+			return e.Response.Timestamp
+		}
+	case LogTypeInteraction:
+		if e.Interaction != nil {
+			return e.Interaction.Timestamp
+		}
+	case LogTypeMutation:
+		if e.Mutation != nil {
+			return e.Mutation.Timestamp
+		}
+	case LogTypePanelMessage:
+		if e.PanelMessage != nil {
+			return e.PanelMessage.Timestamp
+		}
+	case LogTypeSketch:
+		if e.Sketch != nil {
+			return e.Sketch.Timestamp
+		}
+	case LogTypeScreenshotCapture:
+		if e.ScreenshotCapture != nil {
+			return e.ScreenshotCapture.Timestamp
+		}
+	case LogTypeElementCapture:
+		if e.ElementCapture != nil {
+			return e.ElementCapture.Timestamp
+		}
+	case LogTypeSketchCapture:
+		if e.SketchCapture != nil {
+			return e.SketchCapture.Timestamp
+		}
+	case LogTypeDesignState:
+		if e.DesignState != nil {
+			return e.DesignState.Timestamp
+		}
+	case LogTypeDesignRequest:
+		if e.DesignRequest != nil {
+			return e.DesignRequest.Timestamp
+		}
+	case LogTypeDesignChat:
+		if e.DesignChat != nil {
+			return e.DesignChat.Timestamp
+		}
+	case LogTypeDesignEdit:
+		if e.DesignEdit != nil {
+			return e.DesignEdit.Timestamp
+		}
+	case LogTypeWalkthrough:
+		if e.Walkthrough != nil {
+			return e.Walkthrough.Timestamp
+		}
+	case LogTypeResponsiveRequest:
+		if e.ResponsiveRequest != nil {
+			return e.ResponsiveRequest.Timestamp
+		}
+	case LogTypeResponsiveState:
+		if e.ResponsiveState != nil {
+			return e.ResponsiveState.Timestamp
+		}
+	case LogTypeDiagnostic:
+		if e.Diagnostic != nil {
+			return e.Diagnostic.Timestamp
+		}
+	case LogTypeProcessOutput:
+		if e.ProcessOutput != nil {
+			return e.ProcessOutput.Timestamp
+		}
+	case LogTypeHook:
+		if e.Hook != nil {
+			return e.Hook.ReceivedAt
+		}
+	case LogTypeIncidentDigest:
+		if e.Custom != nil {
+			return e.Custom.Timestamp
+		}
+	}
+	return time.Time{}
+}
+
+// Message returns the human-readable message for the message-bearing
+// entry types (error, custom, diagnostic); empty for all others.
+func (e LogEntry) Message() string {
+	switch e.Type {
+	case LogTypeError:
+		if e.Error != nil {
+			return e.Error.Message
+		}
+	case LogTypeCustom:
+		if e.Custom != nil {
+			return e.Custom.Message
+		}
+	case LogTypeDiagnostic:
+		if e.Diagnostic != nil {
+			return e.Diagnostic.Message
+		}
+	}
+	return ""
+}
+
+// IsError reports whether the entry represents an error from any source:
+// frontend errors, error-level diagnostics, HTTP 4xx/5xx or transport
+// errors, and error-level custom logs.
+func (e LogEntry) IsError() bool {
+	switch e.Type {
+	case LogTypeError:
+		return true
+	case LogTypeDiagnostic:
+		return e.Diagnostic != nil && e.Diagnostic.Level == DiagnosticError
+	case LogTypeHTTP:
+		return e.HTTP != nil && (e.HTTP.StatusCode >= 400 || e.HTTP.Error != "")
+	case LogTypeCustom:
+		return e.Custom != nil && e.Custom.Level == "error"
+	}
+	return false
+}
+
 // TrafficLogger stores proxy traffic logs with bounded memory.
 type TrafficLogger struct {
 	entries []LogEntry
@@ -1096,110 +1243,7 @@ func (f LogFilter) Matches(entry LogEntry) bool {
 	}
 
 	// Time range filter
-	var timestamp time.Time
-	switch entry.Type {
-	case LogTypeHTTP:
-		if entry.HTTP != nil {
-			timestamp = entry.HTTP.Timestamp
-		}
-	case LogTypeError:
-		if entry.Error != nil {
-			timestamp = entry.Error.Timestamp
-		}
-	case LogTypePerformance:
-		if entry.Performance != nil {
-			timestamp = entry.Performance.Timestamp
-		}
-	case LogTypeCustom:
-		if entry.Custom != nil {
-			timestamp = entry.Custom.Timestamp
-		}
-	case LogTypeScreenshot:
-		if entry.Screenshot != nil {
-			timestamp = entry.Screenshot.Timestamp
-		}
-	case LogTypeExecution:
-		if entry.Execution != nil {
-			timestamp = entry.Execution.Timestamp
-		}
-	case LogTypeResponse:
-		if entry.Response != nil {
-			timestamp = entry.Response.Timestamp
-		}
-	case LogTypeInteraction:
-		if entry.Interaction != nil {
-			timestamp = entry.Interaction.Timestamp
-		}
-	case LogTypeMutation:
-		if entry.Mutation != nil {
-			timestamp = entry.Mutation.Timestamp
-		}
-	case LogTypePanelMessage:
-		if entry.PanelMessage != nil {
-			timestamp = entry.PanelMessage.Timestamp
-		}
-	case LogTypeSketch:
-		if entry.Sketch != nil {
-			timestamp = entry.Sketch.Timestamp
-		}
-	case LogTypeScreenshotCapture:
-		if entry.ScreenshotCapture != nil {
-			timestamp = entry.ScreenshotCapture.Timestamp
-		}
-	case LogTypeElementCapture:
-		if entry.ElementCapture != nil {
-			timestamp = entry.ElementCapture.Timestamp
-		}
-	case LogTypeSketchCapture:
-		if entry.SketchCapture != nil {
-			timestamp = entry.SketchCapture.Timestamp
-		}
-	case LogTypeDesignState:
-		if entry.DesignState != nil {
-			timestamp = entry.DesignState.Timestamp
-		}
-	case LogTypeDesignRequest:
-		if entry.DesignRequest != nil {
-			timestamp = entry.DesignRequest.Timestamp
-		}
-	case LogTypeDesignChat:
-		if entry.DesignChat != nil {
-			timestamp = entry.DesignChat.Timestamp
-		}
-	case LogTypeDesignEdit:
-		if entry.DesignEdit != nil {
-			timestamp = entry.DesignEdit.Timestamp
-		}
-	case LogTypeWalkthrough:
-		if entry.Walkthrough != nil {
-			timestamp = entry.Walkthrough.Timestamp
-		}
-	case LogTypeResponsiveRequest:
-		if entry.ResponsiveRequest != nil {
-			timestamp = entry.ResponsiveRequest.Timestamp
-		}
-	case LogTypeResponsiveState:
-		if entry.ResponsiveState != nil {
-			timestamp = entry.ResponsiveState.Timestamp
-		}
-	case LogTypeDiagnostic:
-		if entry.Diagnostic != nil {
-			timestamp = entry.Diagnostic.Timestamp
-		}
-	case LogTypeProcessOutput:
-		if entry.ProcessOutput != nil {
-			timestamp = entry.ProcessOutput.Timestamp
-		}
-	case LogTypeHook:
-		if entry.Hook != nil {
-			timestamp = entry.Hook.ReceivedAt
-		}
-	case LogTypeIncidentDigest:
-		// incident_digest rides in the Custom payload (message + level).
-		if entry.Custom != nil {
-			timestamp = entry.Custom.Timestamp
-		}
-	}
+	timestamp := entry.Timestamp()
 
 	if f.Since != nil && timestamp.Before(*f.Since) {
 		return false
@@ -1292,21 +1336,7 @@ func (f LogFilter) Matches(entry LogEntry) bool {
 	// message-bearing entry types. When set, entries without such a message
 	// (or whose message does not contain the pattern) are excluded.
 	if f.MessagePattern != "" {
-		msg := ""
-		switch entry.Type {
-		case LogTypeError:
-			if entry.Error != nil {
-				msg = entry.Error.Message
-			}
-		case LogTypeCustom:
-			if entry.Custom != nil {
-				msg = entry.Custom.Message
-			}
-		case LogTypeDiagnostic:
-			if entry.Diagnostic != nil {
-				msg = entry.Diagnostic.Message
-			}
-		}
+		msg := entry.Message()
 		if msg == "" || !contains(msg, f.MessagePattern) {
 			return false
 		}
@@ -1323,18 +1353,7 @@ func (f LogFilter) Matches(entry LogEntry) bool {
 
 	// ErrorsOnly filter - matches errors from any source
 	if f.ErrorsOnly {
-		isError := false
-		switch entry.Type {
-		case LogTypeError:
-			isError = true
-		case LogTypeDiagnostic:
-			isError = entry.Diagnostic != nil && entry.Diagnostic.Level == DiagnosticError
-		case LogTypeHTTP:
-			isError = entry.HTTP != nil && (entry.HTTP.StatusCode >= 400 || entry.HTTP.Error != "")
-		case LogTypeCustom:
-			isError = entry.Custom != nil && entry.Custom.Level == "error"
-		}
-		if !isError {
+		if !entry.IsError() {
 			return false
 		}
 	}
