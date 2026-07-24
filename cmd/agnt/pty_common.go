@@ -1852,48 +1852,77 @@ func writeIfLive(ctx context.Context, w io.Writer, data []byte) {
 	_, _ = w.Write(data)
 }
 
+// overlayCore bundles the overlay component chain shared by the PTY pipeline
+// (setupTerminalOverlay) and the AI REPL (runAiClaudeOverlay): output gate,
+// terminal overlay, input router, the shared daemon connection with its
+// adapters, the AI summarizer, and the status fetcher (wired into
+// ActionRefreshStatus). Callers own lifecycle (Start/Stop the fetcher,
+// Close the conn) and wire their bespoke bits (output filter, gate
+// callbacks, resize) on top.
+type overlayCore struct {
+	gate          *overlay.OutputGate
+	term          *overlay.Overlay
+	router        *overlay.InputRouter
+	daemonConn    *daemon.Conn
+	statusFetcher *overlay.StatusFetcher
+}
+
+// newOverlayCore builds the shared overlay chain for a backend (PTY handle
+// or REPL adapter — both satisfy overlay.PtyReadWriter). The gate is a
+// parameter (not created inside) because the AI REPL's backend wraps a line
+// editor that itself wraps the gate, so the gate must exist first.
+func newOverlayCore(backend overlay.PtyReadWriter, width, height int, showIndicator bool, gate *overlay.OutputGate) *overlayCore {
+	c := &overlayCore{gate: gate}
+
+	cfg := overlay.DefaultConfig()
+	cfg.ShowIndicator = showIndicator
+	cfg.Version = appVersion
+	cfg.OnAction = func(action overlay.Action) error {
+		if action == overlay.ActionRefreshStatus && c.statusFetcher != nil {
+			c.statusFetcher.Refresh()
+		}
+		return nil
+	}
+
+	c.term = overlay.New(backend, width, height, cfg)
+	c.term.SetGate(c.gate)
+	c.router = overlay.NewInputRouter(backend, c.term)
+
+	// Shared daemon connection for all overlay components.
+	c.daemonConn = daemon.NewConn(getSocketPath(rootCmd))
+	daemonClient := newDaemonClientAdapter(c.daemonConn)
+	c.router.SetOutputFetcher(overlay.NewDaemonOutputFetcher(daemonClient))
+	c.router.SetDaemonConnector(newDaemonConnector(c.daemonConn))
+	c.router.SetScriptController(overlay.NewDaemonScriptController(daemonClient))
+
+	// Detect first available AI agent for summarizer.
+	if agent := detectAIAgent(); agent != "" {
+		c.router.SetSummarizer(overlay.NewSummarizer(daemonClient, overlay.SummarizerConfig{
+			Agent:       aichannel.AgentType(agent),
+			Timeout:     2 * time.Minute,
+			ProjectPath: currentProjectPath(),
+		}))
+	}
+
+	c.statusFetcher = overlay.NewStatusFetcher(daemonClient, c.term, 2*time.Second)
+	c.router.SetStatusFetcher(c.statusFetcher)
+
+	return c
+}
+
 // setupTerminalOverlay constructs the overlay components (gate, filter,
 // indicator, input router, status fetcher, daemon adapters) and stores
 // them on the pipelineRuntime. Extracted from runOverlayPipeline so the
 // outer flow stays readable.
 func setupTerminalOverlay(ctx context.Context, handle *ptyHandle, rt *pipelineRuntime) {
-	cfg := overlay.DefaultConfig()
-	cfg.ShowIndicator = showIndicator
-	cfg.Version = appVersion
-	cfg.OnAction = func(action overlay.Action) error {
-		switch action {
-		case overlay.ActionRefreshStatus:
-			if rt.statusFetcher != nil {
-				rt.statusFetcher.Refresh()
-			}
-		}
-		return nil
-	}
-
 	// Gate is the final stage before stdout — when the menu is open it
-	// freezes (discards) PTY output to prevent corruption.
-	rt.outputGate = overlay.NewOutputGate(os.Stdout)
-	rt.termOverlay = overlay.New(handle.Backend, handle.Width, handle.Height, cfg)
-	rt.termOverlay.SetGate(rt.outputGate)
-	rt.inputRouter = overlay.NewInputRouter(handle.Backend, rt.termOverlay)
-
-	// Shared daemon connection for all overlay components.
-	socketPath := getSocketPath(rootCmd)
-	rt.daemonConn = daemon.NewConn(socketPath)
-	daemonClient := newDaemonClientAdapter(rt.daemonConn)
-	rt.inputRouter.SetOutputFetcher(overlay.NewDaemonOutputFetcher(daemonClient))
-	rt.inputRouter.SetDaemonConnector(newDaemonConnector(rt.daemonConn))
-	rt.inputRouter.SetScriptController(overlay.NewDaemonScriptController(daemonClient))
-
-	// Detect first available AI agent for summarizer.
-	if agent := detectAIAgent(); agent != "" {
-		summarizer := overlay.NewSummarizer(daemonClient, overlay.SummarizerConfig{
-			Agent:       aichannel.AgentType(agent),
-			Timeout:     2 * time.Minute,
-			ProjectPath: currentProjectPath(),
-		})
-		rt.inputRouter.SetSummarizer(summarizer)
-	}
+	// freezes (discards) output to prevent corruption.
+	core := newOverlayCore(handle.Backend, handle.Width, handle.Height, showIndicator, overlay.NewOutputGate(os.Stdout))
+	rt.outputGate = core.gate
+	rt.termOverlay = core.term
+	rt.inputRouter = core.router
+	rt.daemonConn = core.daemonConn
+	rt.statusFetcher = core.statusFetcher
 
 	// Output filter protects the indicator bar. Filter writes to gate
 	// (not directly to stdout) so the gate can freeze for menus.
@@ -1931,7 +1960,6 @@ func setupTerminalOverlay(ctx context.Context, handle *ptyHandle, rt *pipelineRu
 		}
 	})
 
-	rt.statusFetcher = overlay.NewStatusFetcher(daemonClient, rt.termOverlay, 2*time.Second)
 	// Surface the in-process alert-queue depth in the status bar / overview.
 	// Read lazily through the atomic pointer because the scanner is created
 	// by the PTY-output goroutine, which may not have run yet.
@@ -1942,7 +1970,6 @@ func setupTerminalOverlay(ctx context.Context, handle *ptyHandle, rt *pipelineRu
 		return overlay.QueueDepth{}
 	})
 	rt.statusFetcher.Start(ctx)
-	rt.inputRouter.SetStatusFetcher(rt.statusFetcher)
 
 	// Forwarding pause/resume: gate the in-process PTY injection and tell the
 	// daemon to drop incident-digest pings for this session. rt.netOverlay and

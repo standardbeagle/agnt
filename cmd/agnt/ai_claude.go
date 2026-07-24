@@ -17,8 +17,6 @@ import (
 
 	"github.com/charmbracelet/glamour"
 	"github.com/spf13/cobra"
-	"github.com/standardbeagle/agnt/internal/aichannel"
-	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/overlay"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	claude "github.com/standardbeagle/claude-go"
@@ -530,11 +528,12 @@ func runAiClaudeOverlay(ctx context.Context, opts *claude.AgentOptions, daemonHa
 
 	showIndicator := !claudeNoIndicator
 
-	// Build overlay component chain (same pattern as run.go)
-	// OutputGate → ProtectedWriter → overlayWriter (for REPL output)
+	// Gate first: the REPL backend wraps the line editor, which wraps the
+	// gate — so the gate must exist before the shared overlay chain is built.
 	outputGate := overlay.NewOutputGate(os.Stdout)
 
-	// Use a pointer so OnRedraw closure can capture it before overlay exists
+	// Use a pointer so the OnRedraw closure can capture the overlay before
+	// it exists (newOverlayCore creates it below).
 	var termOverlay *overlay.Overlay
 
 	var outputWriter io.Writer = outputGate
@@ -560,25 +559,12 @@ func runAiClaudeOverlay(ctx context.Context, opts *claude.AgentOptions, daemonHa
 	lineEditor := NewLineEditor(rawWriter, "> ")
 	replAdapter := NewREPLAdapter(lineEditor)
 
-	// Use a pointer so OnAction closure can capture statusFetcher before it's created
-	var statusFetcher *overlay.StatusFetcher
-
-	cfg := overlay.DefaultConfig()
-	cfg.ShowIndicator = showIndicator
-	cfg.Version = appVersion
-	cfg.OnAction = func(action overlay.Action) error {
-		if action == overlay.ActionRefreshStatus && statusFetcher != nil {
-			statusFetcher.Refresh()
-		}
-		return nil
-	}
-
-	// Create overlay (uses replAdapter as "ptmx")
-	termOverlay = overlay.New(replAdapter, width, height, cfg)
-	termOverlay.SetGate(outputGate)
-
-	// InputRouter: routes stdin between overlay and line editor
-	inputRouter := overlay.NewInputRouter(replAdapter, termOverlay)
+	// Shared overlay component chain: overlay, input router, daemon
+	// connection + adapters, summarizer, status fetcher.
+	core := newOverlayCore(replAdapter, width, height, showIndicator, outputGate)
+	termOverlay = core.term
+	inputRouter := core.router
+	defer core.daemonConn.Close()
 
 	// OutputGate callbacks for menu open/close
 	outputGate.SetCallbacks(nil, func() {
@@ -588,36 +574,10 @@ func runAiClaudeOverlay(ctx context.Context, opts *claude.AgentOptions, daemonHa
 		lineEditor.Redraw()
 	})
 
-	// Set up shared daemon connection for overlay components
-	daemonSocketPath := getSocketPath(rootCmd)
-	daemonConn := daemon.NewConn(daemonSocketPath)
-	defer daemonConn.Close()
-
-	daemonClient := newDaemonClientAdapter(daemonConn)
-	outputFetcher := overlay.NewDaemonOutputFetcher(daemonClient)
-	inputRouter.SetOutputFetcher(outputFetcher)
-	daemonConnector := newDaemonConnector(daemonConn)
-	inputRouter.SetDaemonConnector(daemonConnector)
-	scriptController := overlay.NewDaemonScriptController(daemonClient)
-	inputRouter.SetScriptController(scriptController)
-
-	// Set up summarizer
-	if agent := detectAIAgent(); agent != "" {
-		projectPath, _ := os.Getwd()
-		summarizer := overlay.NewSummarizer(daemonClient, overlay.SummarizerConfig{
-			Agent:       aichannel.AgentType(agent),
-			Timeout:     2 * time.Minute,
-			ProjectPath: projectPath,
-		})
-		inputRouter.SetSummarizer(summarizer)
-	}
-
 	// Start status fetcher
-	statusFetcher = overlay.NewStatusFetcher(daemonClient, termOverlay, 2*time.Second)
+	statusFetcher := core.statusFetcher
 	statusFetcher.Start(ctx)
 	defer statusFetcher.Stop()
-
-	inputRouter.SetStatusFetcher(statusFetcher)
 
 	// SIGWINCH handler
 	sizeCh := make(chan os.Signal, 1)
