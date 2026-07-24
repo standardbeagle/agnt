@@ -195,26 +195,17 @@ func (pm *ProxyManager) TotalStarted() int64 {
 // maxParallelStops bounds concurrent proxy stop operations to prevent goroutine explosion.
 const maxParallelStops int64 = 20
 
-// StopAll stops all running proxies and removes them from the registry.
-// Unlike Shutdown, this does NOT set shuttingDown flag, allowing new proxies
-// to be started afterward. This is used for cleanup when the last client disconnects.
-// Returns the list of stopped proxy IDs for state persistence cleanup.
-func (pm *ProxyManager) StopAll(ctx context.Context) ([]string, error) {
+// stopProxies stops the given proxy IDs with bounded concurrency, returning
+// the successfully stopped IDs and any joined error. Shared by StopAll,
+// StopByProjectPath, and Shutdown — all three used to carry a copy of this
+// loop.
+func (pm *ProxyManager) stopProxies(ctx context.Context, toStop []string) ([]string, error) {
 	var stopWg sync.WaitGroup
-	var errMu sync.Mutex
+	var mu sync.Mutex
 	var errs []error
 	var stoppedIDs []string
-	var stoppedMu sync.Mutex
 	sem := semaphore.NewWeighted(maxParallelStops)
 
-	// Collect all proxy IDs to stop
-	var toStop []string
-	pm.proxies.Range(func(key, value any) bool {
-		toStop = append(toStop, key.(string))
-		return true
-	})
-
-	// Stop proxies with bounded concurrency
 	for _, id := range toStop {
 		if err := sem.Acquire(ctx, 1); err != nil {
 			break // context cancelled
@@ -223,15 +214,14 @@ func (pm *ProxyManager) StopAll(ctx context.Context) ([]string, error) {
 		go func(proxyID string) {
 			defer sem.Release(1)
 			defer stopWg.Done()
-			if err := pm.Stop(ctx, proxyID); err != nil {
-				errMu.Lock()
-				errs = append(errs, err)
-				errMu.Unlock()
+			stopErr := pm.Stop(ctx, proxyID)
+			mu.Lock()
+			if stopErr != nil {
+				errs = append(errs, stopErr)
 			} else {
-				stoppedMu.Lock()
 				stoppedIDs = append(stoppedIDs, proxyID)
-				stoppedMu.Unlock()
 			}
+			mu.Unlock()
 		}(id)
 	}
 
@@ -260,15 +250,28 @@ func (pm *ProxyManager) StopAll(ctx context.Context) ([]string, error) {
 	return stoppedIDs, nil
 }
 
+// StopAll stops all running proxies and removes them from the registry.
+// Unlike Shutdown, this does NOT set shuttingDown flag, allowing new proxies
+// to be started afterward. This is used for cleanup when the last client disconnects.
+// Returns the list of stopped proxy IDs for state persistence cleanup.
+func (pm *ProxyManager) StopAll(ctx context.Context) ([]string, error) {
+	var toStop []string
+	pm.proxies.Range(func(key, value any) bool {
+		toStop = append(toStop, key.(string))
+		return true
+	})
+	return pm.stopProxies(ctx, toStop)
+}
+
 // StopByProjectPath stops all running proxies for a specific project path and removes them.
 // This is used for session-scoped cleanup when a client disconnects.
 // Returns the list of stopped proxy IDs.
 func (pm *ProxyManager) StopByProjectPath(ctx context.Context, projectPath string) ([]string, error) {
-	var toStop []*ProxyServer
+	var toStop []string
 	pm.proxies.Range(func(key, value any) bool {
 		proxy := value.(*ProxyServer)
 		if proxy.Path == projectPath {
-			toStop = append(toStop, proxy)
+			toStop = append(toStop, key.(string))
 		}
 		return true
 	})
@@ -276,54 +279,7 @@ func (pm *ProxyManager) StopByProjectPath(ctx context.Context, projectPath strin
 	if len(toStop) == 0 {
 		return nil, nil
 	}
-
-	var stopWg sync.WaitGroup
-	var errMu sync.Mutex
-	var errs []error
-	var stoppedIDs []string
-	var stoppedMu sync.Mutex
-	sem := semaphore.NewWeighted(maxParallelStops)
-
-	for _, proxy := range toStop {
-		if err := sem.Acquire(ctx, 1); err != nil {
-			break // context cancelled
-		}
-		stopWg.Add(1)
-		go func(p *ProxyServer) {
-			defer sem.Release(1)
-			defer stopWg.Done()
-			if err := pm.Stop(ctx, p.ID); err != nil {
-				errMu.Lock()
-				errs = append(errs, err)
-				errMu.Unlock()
-			} else {
-				stoppedMu.Lock()
-				stoppedIDs = append(stoppedIDs, p.ID)
-				stoppedMu.Unlock()
-			}
-		}(proxy)
-	}
-
-	done := make(chan struct{})
-	go func() {
-		stopWg.Wait()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-ctx.Done():
-		if len(errs) > 0 {
-			errs = append(errs, ctx.Err())
-		} else {
-			return stoppedIDs, ctx.Err()
-		}
-	}
-
-	if len(errs) > 0 {
-		return stoppedIDs, errors.Join(errs...)
-	}
-	return stoppedIDs, nil
+	return pm.stopProxies(ctx, toStop)
 }
 
 // Shutdown stops all managed proxies.
@@ -332,11 +288,6 @@ func (pm *ProxyManager) Shutdown(ctx context.Context) error {
 
 	pm.shutdownOnce.Do(func() {
 		pm.shuttingDown.Store(true)
-
-		var stopWg sync.WaitGroup
-		var errMu sync.Mutex
-		var errs []error
-		sem := semaphore.NewWeighted(maxParallelStops)
 
 		// Collect IDs to stop so we don't hold Range while stopping.
 		var toStop []string
@@ -352,38 +303,7 @@ func (pm *ProxyManager) Shutdown(ctx context.Context) error {
 			return true
 		})
 
-		for _, id := range toStop {
-			if err := sem.Acquire(ctx, 1); err != nil {
-				break // context cancelled
-			}
-			stopWg.Add(1)
-			go func(proxyID string) {
-				defer sem.Release(1)
-				defer stopWg.Done()
-				if err := pm.Stop(ctx, proxyID); err != nil {
-					errMu.Lock()
-					errs = append(errs, err)
-					errMu.Unlock()
-				}
-			}(id)
-		}
-
-		done := make(chan struct{})
-		go func() {
-			stopWg.Wait()
-			close(done)
-		}()
-
-		select {
-		case <-done:
-			// All proxies stopped
-		case <-ctx.Done():
-			shutdownErr = ctx.Err()
-		}
-
-		if len(errs) > 0 {
-			shutdownErr = errors.Join(errs...)
-		}
+		_, shutdownErr = pm.stopProxies(ctx, toStop)
 	})
 
 	return shutdownErr
