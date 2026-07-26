@@ -51,7 +51,7 @@ proxy — not the dev proxy with auth bolted on. Concretely:
 | | Dev proxy / tunnel | Public publish plane |
 |---|---|---|
 | Handler | `internal/proxy/server.go` mux | `internal/proxy/public_routes.go` (`PublicHandler`) |
-| Injected bundle | full dev instrumentation (`__devtool` API, WS, exec, audits) | **stripped `RolePublic` bundle** — player + variant cycler + feedback widget, nothing else |
+| Injected bundle | full dev instrumentation (`__devtool` API, WS, exec, audits) | **stripped `RolePublic` bundle** — player + variant cycler + feedback widget + boot glue, nothing else |
 | Control surface | present (metrics WS, proxy exec, `__devtool/*`) | **absent** — never registered, `403`/`404` |
 | Session scope | resolves a project scope | resolves **no** scope; a token maps to an immutable revision, never a project (INV-1) |
 | Listener | dev proxy port(s) | separate, **opt-in** listener (`AGNT_PUBLIC_ADDR`) |
@@ -212,7 +212,20 @@ wholesale-replace and SSRF concerns.
 **self-contained shell**: the `PublishedWalkthrough` schema has no upstream-URL
 field. `serveArtifact` (`internal/proxy/public_routes.go`) emits a small HTML shell
 that loads only the `RolePublic` bundle and reads the steps + variant set from the
-immutable published revision. Consequences:
+immutable published revision.
+
+The shell carries **no inline script** (the CSP forbids one) and inlines neither
+the token nor the walkthrough. Startup is therefore owned by `public-boot.js`, the
+fourth `RolePublic` member: it reads the share token from `window.location`,
+fetches `/s/{token}/walkthrough.json` same-origin, and calls
+`__walkthroughViewer.create(...).start()`. It is double-gated — on the
+`RolePublic`-only version marker and on the `/s/{token}` route shape — so it ships
+inert in every dev bundle. A revoked/unknown token, a network failure, or a
+step-less artifact renders a plain text notice rather than leaving the visitor on
+a blank page; revoked and unknown are deliberately indistinguishable in that
+message (no existence oracle).
+
+Consequences:
 
 - **No live upstream is proxied, so there is no SSRF surface today.** The public
   plane copies **no** upstream headers; every response header is built wholesale
