@@ -99,6 +99,7 @@ investigate with the repro method in
 |---|---|---|
 | `TestRunAutostartAsync_DependencyWait` (`internal/daemon/autostart_async_test.go`) | `b` never entered dep wait within 15s; `context_cancel_during_dependency_wait` misses `PhaseDependencyWaitStart` | Failed 2/7 full-package runs on 2026-07-24; passes 2/2 isolated. Looks like a fixed-window timing assertion against a nominal schedule (the anti-pattern in `.claude/rules/testing-timing-assertion-flakes.md`). |
 | `TestHubProgressDoesNotContaminateChunkedPayload` (`internal/daemon/hub_progress_test.go:141`) | unix socket read `i/o timeout` | Failed 1/7 full-package runs on 2026-07-24; passes isolated. Socket read deadline too tight under race-instrumented load. |
+| `TestProxy_PageTracking_Integration` (`internal/proxy/integration_test.go:127`) | `Expected 1 resource in session, got 0`; run also logged `bind: address already in use` on an ephemeral port | Failed 1/1 full-package pre-commit run on 2026-07-24 with the live daemon + a concurrent session loading the machine; passes 3/3 isolated (~0.6s). Resource attribution likely races under load, or the bind collision poisoned a sibling test's server. |
 
 ## Wall-clock-invariant sweep
 
