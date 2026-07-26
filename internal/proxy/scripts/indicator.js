@@ -557,11 +557,13 @@
     // Inject CSS animation for pulse effect
     injectActivityAnimation();
 
-    // Status indicator
+    // Status indicator. Painted through the same applyDotState path the live
+    // updates use, so the initial render can never disagree with a later one.
     var dot = document.createElement('div');
     dot.id = '__devtool-status';
     dot.style.cssText = STYLES.statusDot;
-    dot.style.backgroundColor = core.isConnected() ? TOKENS.colors.success : TOKENS.colors.secondary;
+    dot.setAttribute('role', 'img');
+    applyDotState(dot, currentConnectionState());
     bug.appendChild(dot);
 
     // Entrance animation, then idle breathing
@@ -703,12 +705,29 @@
       '  filter: grayscale(0.75) brightness(0.85);',
       '  transition: filter 0.4s ease;',
       '}',
+      // Disconnected: urgent blink, and it stays inside the dim intensity band
+      // this state owns (base opacity 0.6) so motion and intensity agree.
       '@keyframes __devtool-dot-blink {',
-      '  0%, 100% { opacity: 1; transform: scale(1); }',
-      '  50% { opacity: 0.25; transform: scale(0.82); }',
+      '  0%, 100% { opacity: 0.6; transform: scale(1); }',
+      '  50% { opacity: 0.18; transform: scale(0.82); }',
       '}',
       '.__devtool-dot-lost {',
       '  animation: __devtool-dot-blink 0.9s ease-in-out infinite;',
+      '}',
+      // Reconnecting: slower, gentler pulse in the mid intensity band, so
+      // "still trying" is never mistaken for "gave up".
+      '@keyframes __devtool-dot-retry-pulse {',
+      '  0%, 100% { opacity: 0.82; transform: scale(1); }',
+      '  50% { opacity: 0.5; transform: scale(0.94); }',
+      '}',
+      '.__devtool-dot-retry {',
+      '  animation: __devtool-dot-retry-pulse 1.8s ease-in-out infinite;',
+      '}',
+      // Under prefers-reduced-motion the states must still be distinguishable,
+      // so drop the animation and pin each band's static intensity instead.
+      '@media (prefers-reduced-motion: reduce) {',
+      '  .__devtool-dot-lost { animation: none; opacity: 0.6; }',
+      '  .__devtool-dot-retry { animation: none; opacity: 0.82; }',
       '}',
       // Reconnected - one-shot green shockwave + dot pop
       '@keyframes __devtool-reconnect-flash {',
@@ -3468,29 +3487,107 @@
     document.addEventListener('mouseup', onUp);
   }
 
+  // Connection-state presentation.
+  //
+  // Hue alone is not an accessible signal (red/green is the most common
+  // colour-vision deficiency), so each state also carries a distinct
+  // *intensity* — fill opacity and glow strength step down monotonically —
+  // and a distinct *shape*: connected is a solid disc, connecting is a ring
+  // with a hollow core, disconnected is a hollow ring. Any one of the three
+  // channels is sufficient to tell the states apart.
+  var CONN_STATES = {
+    connected: {
+      color: function() { return TOKENS.colors.success; },
+      opacity: '1',
+      // Solid disc + strong halo.
+      shadow: function() { return '0 0 0 3px ' + rgbaOf(TOKENS.colors.success, 0.35); },
+      label: 'agnt connected'
+    },
+    connecting: {
+      color: function() { return TOKENS.colors.warning; },
+      opacity: '0.82',
+      // Hollow core (inset) => reads as a ring, plus a weaker halo.
+      shadow: function() {
+        return 'inset 0 0 0 3px ' + rgbaOf(TOKENS.colors.warning, 0.95) +
+          ', inset 0 0 0 6px ' + rgbaOf(TOKENS.colors.surface, 0.9) +
+          ', 0 0 0 2px ' + rgbaOf(TOKENS.colors.warning, 0.22);
+      },
+      label: 'agnt reconnecting'
+    },
+    disconnected: {
+      color: function() { return TOKENS.colors.error; },
+      opacity: '0.6',
+      // Fully hollow, no halo — the dimmest, emptiest of the three.
+      shadow: function() {
+        return 'inset 0 0 0 3px ' + rgbaOf(TOKENS.colors.error, 0.9) +
+          ', inset 0 0 0 7px ' + rgbaOf(TOKENS.colors.surface, 0.95);
+      },
+      label: 'agnt disconnected'
+    }
+  };
+
+  // #rgb / #rrggbb -> rgba(). Falls back to the input untouched for any other
+  // notation so a token change cannot break the dot.
+  function rgbaOf(hex, alpha) {
+    if (typeof hex !== 'string' || hex.charAt(0) !== '#') return hex;
+    var h = hex.slice(1);
+    if (h.length === 3) h = h.charAt(0) + h.charAt(0) + h.charAt(1) + h.charAt(1) + h.charAt(2) + h.charAt(2);
+    if (h.length !== 6) return hex;
+    var n = parseInt(h, 16);
+    if (isNaN(n)) return hex;
+    return 'rgba(' + ((n >> 16) & 255) + ',' + ((n >> 8) & 255) + ',' + (n & 255) + ',' + alpha + ')';
+  }
+
+  function currentConnectionState() {
+    try {
+      if (core && typeof core.connectionState === 'function') return core.connectionState();
+      return (core && core.isConnected()) ? 'connected' : 'disconnected';
+    } catch (e) {
+      return 'disconnected';
+    }
+  }
+
+  function applyDotState(dot, stateName) {
+    if (!dot) return;
+    var spec = CONN_STATES[stateName] || CONN_STATES.disconnected;
+    dot.style.backgroundColor = spec.color();
+    dot.style.opacity = spec.opacity;
+    dot.style.boxShadow = spec.shadow();
+    dot.title = spec.label;
+    dot.setAttribute('aria-label', spec.label);
+  }
+
   // Status polling and message handling
   function setupStatusPolling() {
-    var updateDot = function() {
+    var updateDot = function(_connected, stateName) {
       var dot = getInMount('__devtool-status');
       var bug = state.bug;
-      var connected = core.isConnected();
+      // Never trust a cached flag: re-read the transport so a missed edge
+      // self-heals on the next notification instead of latching a stale colour.
+      var conn = stateName || currentConnectionState();
+      var connected = (conn === 'connected');
 
+      applyDotState(dot, conn);
       if (dot) {
-        dot.style.backgroundColor = connected ? TOKENS.colors.success : TOKENS.colors.error;
+        // Retry pulse is distinct from the disconnected blink (slower, gentler)
+        // so "still trying" and "gave up" are not the same animation.
+        dot.classList.toggle('__devtool-dot-retry', conn === 'connecting');
+        // Urgent blink is reserved for "gave up", not for "retrying".
+        dot.classList.toggle('__devtool-dot-lost', conn === 'disconnected');
       }
+      // Bug desaturates for any non-connected state.
+      if (bug) bug.classList.toggle('__devtool-disconnected', !connected);
 
-      // Transition handling: desaturate the bug + blink the dot while the
-      // metrics socket is down; fire a one-shot green shockwave + dot pop
-      // when it comes back.
+      // One-shot transition feedback: green shockwave + dot pop on the way
+      // back up, toast on either edge. Keyed off the connected boolean so
+      // connecting→disconnected churn does not spam the user.
       if (connected !== lastConnected) {
         if (connected) {
           if (bug) {
-            bug.classList.remove('__devtool-disconnected');
             bug.classList.add('__devtool-reconnect-flash');
             setTimeout(function() { bug.classList.remove('__devtool-reconnect-flash'); }, 850);
           }
           if (dot) {
-            dot.classList.remove('__devtool-dot-lost');
             dot.classList.add('__devtool-dot-pop');
             setTimeout(function() { dot.classList.remove('__devtool-dot-pop'); }, 550);
           }
@@ -3499,25 +3596,27 @@
             showMicroToast('● Reconnected', TOKENS.colors.success);
             logHistoryEvent('system', 'Proxy reconnected', '');
           }
-        } else {
-          if (bug) bug.classList.add('__devtool-disconnected');
-          if (dot) dot.classList.add('__devtool-dot-lost');
-          if (lastConnected === true) {
-            showMicroToast('● Connection lost', TOKENS.colors.error);
-            logHistoryEvent('error', 'Proxy connection lost', '');
-          }
+        } else if (lastConnected === true) {
+          showMicroToast('● Connection lost', TOKENS.colors.error);
+          logHistoryEvent('error', 'Proxy connection lost', '');
         }
         lastConnected = connected;
       }
     };
     var lastConnected = null; // null = unknown until first update
     // Connection dot is purely event-driven via core.onConnected — the old
-    // 200ms setInterval(updateDot) poll was redundant and leaked.
+    // 200ms setInterval(updateDot) poll was redundant and leaked. That is only
+    // safe because onConnected fires on every edge (open/close/error) *and*
+    // replays the current state synchronously at registration; without the
+    // replay the indicator misses the open edge core.js fired during its own
+    // init and renders a stale (grey) dot on a live connection.
     core.onConnected(updateDot);
-    core.onConnected(function() {
+    core.onConnected(function(connected) {
       // Sync chaos state on (re)connect so the bug indicator is correct
-      // even if the panel was never opened.
-      refreshChaosData();
+      // even if the panel was never opened. onConnected now also fires on
+      // down edges and replays the current state at registration, so this
+      // must only act when the transport is actually usable.
+      if (connected) refreshChaosData();
     });
     // Inspect button active state is event-driven: style-editor.js calls
     // __devtool_indicator_syncInspect (directly, or via the frame adapter from

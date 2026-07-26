@@ -90,7 +90,10 @@
       'height: 14px',
       'border-radius: ' + TOKENS.radius.full,
       'border: 2.5px solid ' + TOKENS.colors.surface,
-      'transition: ' + IND_MOTION.transition('background-color 0.3s ease')
+      // Connection state changes fill colour, fill opacity, and the inset/halo
+      // shadow together (see CONN_STATES in indicator.js) — all three must
+      // animate or the dot appears to change in two steps.
+      'transition: ' + IND_MOTION.transition('background-color 0.3s ease, opacity 0.3s ease, box-shadow 0.3s ease')
     ].join(';'),
 
     // Activity ring - pulses when AI is working
