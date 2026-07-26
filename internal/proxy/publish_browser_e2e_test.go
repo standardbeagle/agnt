@@ -74,6 +74,34 @@ func TestE2E_PublicPlane_RealBrowser(t *testing.T) {
 	))
 	require.True(t, ready, "the served RolePublic bundle must load and register its primitives")
 
+	// This subtest MUST run first: it asserts what the visitor gets with NO
+	// scripted help, and the later subtests deliberately overwrite document.body
+	// and build their own players. It tears its player down at the end so those
+	// subtests still start from a clean page.
+	t.Run("artifact_auto_boots_the_player_for_a_bare_visitor", func(t *testing.T) {
+		// Nothing below calls create(): navigating to /s/{token} is the entire
+		// visitor journey. public-boot reads the token from window.location,
+		// fetches the artifact same-origin under the real CSP, and starts the
+		// viewer. Before public-boot existed the served page stayed blank.
+		var card, title bool
+		require.NoError(t, cdp.Run(ctx,
+			cdp.Poll(`!!document.getElementById('__wt_player_card')`, &card,
+				cdp.WithPollingTimeout(10*time.Second)),
+			cdp.Evaluate(`document.getElementById('__wt_player_card').textContent.indexOf('Intro') !== -1`, &title),
+		))
+		assert.True(t, card, "a bare visit to /s/{token} must render the step card with no scripted create()")
+		assert.True(t, title, "the auto-booted player must render step 0 of the published walkthrough")
+
+		var idx int
+		require.NoError(t, cdp.Run(ctx,
+			cdp.Evaluate(`window.__agntPublicBoot.player().activeIndex()`, &idx)))
+		assert.Equal(t, 0, idx, "auto-boot must leave the player on step 0")
+
+		// Hand the page back clean for the subtests that follow.
+		require.NoError(t, cdp.Run(ctx,
+			cdp.Evaluate(`window.__agntPublicBoot.player().destroy(); true`, nil)))
+	})
+
 	t.Run("dev_control_surface_absent_in_public_page", func(t *testing.T) {
 		var devtoolAbsent, execAbsent bool
 		require.NoError(t, cdp.Run(ctx,

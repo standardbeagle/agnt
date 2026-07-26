@@ -129,6 +129,9 @@ var (
 	//go:embed feedback-client.js
 	feedbackClientJS string
 
+	//go:embed public-boot.js
+	publicBootJS string
+
 	//go:embed palette.js
 	paletteJS string
 
@@ -209,7 +212,8 @@ const (
 	// plane (P4). Unlike RoleChrome/RoleContent — which are SUBTRACTIVE filters
 	// over the full module set — RolePublic is built from an EXPLICIT ALLOWLIST
 	// (rolePublicModules) and contains ONLY those members: the variant renderer,
-	// the read-only walkthrough viewer, and the feedback client. It carries NONE
+	// the read-only walkthrough viewer, the feedback client, and the boot glue
+	// that starts the viewer from the share token in the URL. It carries NONE
 	// of the dev-control surface (no core WS/exec channel, no __devtool control
 	// API, no audits/capture/inspection/design/indicator/authbreakout), ships no
 	// html2canvas, and runs under `script-src 'self'` with no eval/inline. The
@@ -328,6 +332,13 @@ var moduleOrder = []moduleEntry{
 	// visitor feedback. Dependency-free, no dev-control surface, inert until
 	// window.__feedbackClient.init() is called.
 	{"feedback-client", nil},
+	// public-boot is the fourth public member: the glue that reads the share
+	// token from window.location, fetches /s/{token}/walkthrough.json, and starts
+	// the viewer. It must load AFTER variant-engine + walkthrough-viewer (it
+	// calls both at DOMContentLoaded), and it is the ONE public module that runs
+	// on its own — double-gated on the RolePublic version marker and the
+	// /s/{token} route so it stays inert in every dev bundle.
+	{"public-boot", []string{"variant-engine", "walkthrough-viewer"}},
 	{"palette", []string{"core", "utils"}},
 	{"style-editor", []string{"core", "utils"}},
 	// override-store injects the delta stylesheet; transform renders the
@@ -430,15 +441,17 @@ var moduleRole = map[string]Role{
 // rolePublicModules is the EXPLICIT ALLOWLIST for the public bundle (P4). Unlike
 // moduleRole (a subtractive per-frame classification), this is the complete,
 // closed set of modules permitted in RolePublic: the variant renderer, the
-// read-only walkthrough viewer, and the feedback client — nothing else. Every
-// member is dependency-free, so the public bundle's dependency closure is exactly
-// these three; role_public_test.go pins this set (golden manifest), scans the
+// read-only walkthrough viewer, the feedback client, and the boot glue —
+// nothing else. The first three are dependency-free and public-boot depends only
+// on two of them, so the public bundle's dependency closure is exactly these
+// four; role_public_test.go pins this set (golden manifest), scans the
 // assembled bundle for forbidden dev-surface tokens, and walks the closure so a
 // forbidden module can never enter without failing the build.
 var rolePublicModules = map[string]bool{
 	"variant-engine":     true,
 	"walkthrough-viewer": true,
 	"feedback-client":    true,
+	"public-boot":        true,
 }
 
 // includeInRole reports whether module name ships in the bundle for role.
@@ -494,6 +507,7 @@ var moduleScript = map[string]string{
 	"variant-engine":     variantEngineJS,
 	"walkthrough-viewer": walkthroughViewerJS,
 	"feedback-client":    feedbackClientJS,
+	"public-boot":        publicBootJS,
 	"palette":            paletteJS,
 	"style-editor":       styleEditorJS,
 	"override-store":     overrideStoreJS,

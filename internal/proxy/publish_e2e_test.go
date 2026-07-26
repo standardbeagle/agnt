@@ -230,10 +230,14 @@ func TestE2EPublishGate(t *testing.T) {
 	t.Run("public_asset_serves_only_public_bundle", func(t *testing.T) {
 		code, body, _ := p.get(t, assetPath)
 		require.Equal(t, http.StatusOK, code)
-		// The public bundle exposes the three allowlisted primitives and carries
-		// NONE of the dev control surface.
+		// The public bundle exposes the allowlisted primitives and carries NONE
+		// of the dev control surface.
 		assert.Contains(t, body, "__walkthroughViewer")
 		assert.Contains(t, body, "__variantEngine")
+		// ...including the boot glue: without it the primitives above are inert
+		// on a served share and the visitor gets a blank page.
+		assert.Contains(t, body, "__agntPublicBoot")
+		assert.Contains(t, body, "/walkthrough.json")
 		assert.NotContains(t, body, "__devtool", "public bundle must not carry the dev control surface")
 	})
 

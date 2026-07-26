@@ -10,10 +10,15 @@ import (
 // allowed to contain. It is the tripwire: adding or removing a module from the
 // public allowlist without updating this golden list fails TestRolePublicGoldenManifest.
 // Keep it in module-load order (the order buildCombinedScript emits).
+// public-boot was added deliberately: without it the other three members are
+// inert on a served share (the artifact shell carries no inline script), so a
+// visitor saw a blank page. It is the only public member that runs on its own,
+// double-gated on the RolePublic version marker + the /s/{token} route.
 var rolePublicGoldenManifest = []string{
 	"variant-engine",
 	"walkthrough-viewer",
 	"feedback-client",
+	"public-boot",
 }
 
 // forbiddenPublicTokens are dev-control-surface signatures that MUST NOT appear
