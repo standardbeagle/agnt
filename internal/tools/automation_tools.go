@@ -25,7 +25,8 @@ type AutomationInput struct {
 	Y         float64 `json:"y,omitempty" jsonschema:"Clip Y coordinate"`
 	Width     float64 `json:"width,omitempty" jsonschema:"Clip width"`
 	Height    float64 `json:"height,omitempty" jsonschema:"Clip height"`
-	Script    string  `json:"script,omitempty" jsonschema:"JavaScript to evaluate"`
+	Script    string  `json:"script,omitempty" jsonschema:"JavaScript to evaluate (async is fine — the result promise is awaited)"`
+	Frame     string  `json:"frame,omitempty" jsonschema:"Where evaluate runs: content (the app, default) or top (the proxy chrome shell/overlay)"`
 	SessionID string  `json:"session_id,omitempty" jsonschema:"Session ID for screenshot/navigate/evaluate"`
 }
 
@@ -78,7 +79,14 @@ Actions:
   list: List all active sessions
   screenshot: Take a screenshot (viewport, fullpage, element, or clip)
   navigate: Navigate to a URL
-  evaluate: Execute JavaScript
+  evaluate: Execute JavaScript in the page
+
+evaluate runs against THE APP by default, reaching through the proxy's content
+frame for you — no document.getElementById('__devtool_content_frame').contentWindow
+hop to write. Pass frame:"top" to inspect the proxy chrome shell (overlay,
+indicator, panels) instead. Async scripts are awaited, so you get the resolved
+value rather than a pending promise; write one async script instead of chaining
+sequential calls.
 
 Examples:
   automation {action: "start", url: "http://localhost:3000"}
@@ -88,6 +96,8 @@ Examples:
   automation {action: "screenshot", session_id: "auto-1234", type: "element", selector: "#main"}
   automation {action: "navigate", session_id: "auto-1234", url: "http://example.com"}
   automation {action: "evaluate", session_id: "auto-1234", script: "document.title"}
+  automation {action: "evaluate", session_id: "auto-1234", script: "(async () => { const r = await fetch('/api/health'); return r.status })()"}
+  automation {action: "evaluate", session_id: "auto-1234", script: "!!document.getElementById('__wt_panel')", frame: "top"}
   automation {action: "list"}
   automation {action: "stop", id: "auto-1234"}
 
@@ -359,6 +369,7 @@ func (dt *DaemonTools) handleAutomationEvaluate(input AutomationInput) (*mcp.Cal
 	config := protocol.AutomationEvaluateConfig{
 		SessionID: sessionID,
 		Script:    input.Script,
+		Frame:     input.Frame,
 	}
 
 	result, err := dt.client.AutomationEvaluate(config)

@@ -426,8 +426,9 @@ type AutomationNavigateConfig struct {
 
 // AutomationEvaluateConfig represents configuration for an AUTOMATION EVALUATE command.
 type AutomationEvaluateConfig struct {
-	SessionID string `json:"session_id"` // Session ID (required)
-	Script    string `json:"script"`     // JavaScript to evaluate (required)
+	SessionID string `json:"session_id"`      // Session ID (required)
+	Script    string `json:"script"`          // JavaScript to evaluate (required)
+	Frame     string `json:"frame,omitempty"` // "content" (default, the app) or "top" (the proxy chrome shell)
 }
 
 // AlertReportPayload is sent from agnt run to daemon when alert patterns match.

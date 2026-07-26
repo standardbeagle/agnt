@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/chromedp/cdproto/runtime"
 	cdp "github.com/chromedp/chromedp"
 	"github.com/standardbeagle/agnt/internal/chromedp"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
@@ -342,12 +343,54 @@ func (d *Daemon) hubHandleAutomationNavigate(ctx context.Context, conn *hubpkg.C
 	return conn.WriteJSON(data)
 }
 
+// automationEvalScript scopes a caller's script to the requested frame.
+//
+// The proxy always-wraps a top-level navigation in a chrome shell whose body is
+// a single content iframe (#__devtool_content_frame); the app lives in that
+// iframe. A bare evaluate therefore lands in the SHELL, where the app's DOM does
+// not exist — so callers were reaching through
+// document.getElementById('__devtool_content_frame').contentWindow by hand on
+// every single call, and a forgotten hop looked like a broken selector (empty
+// result) rather than a wrong frame. `proxy exec` has always defaulted to the
+// active content frame; this makes automation agree with it.
+//
+// frame:
+//
+//	"" / "content" — the app (default). Same-origin, so the shell can hand the
+//	                 script to the iframe realm via an indirect eval, which runs
+//	                 it in that realm's global scope: `window`/`document` are the
+//	                 app's, with no wrapper for the caller to write.
+//	"top"          — the shell itself. Needed to inspect proxy chrome (overlay,
+//	                 indicator, panels), which is a real debugging surface — not
+//	                 a fallback for a missing content frame.
+//
+// An unwrapped page (no shell, e.g. a direct non-proxied URL) has no content
+// iframe; there "content" and "top" are the same document, which is exactly what
+// walkthrough.js's own contentWin() concludes for the same case.
+func automationEvalScript(script, frame string) (string, error) {
+	switch frame {
+	case "", "content":
+		lit, err := json.Marshal(script)
+		if err != nil {
+			return "", fmt.Errorf("invalid script: %w", err)
+		}
+		return "(function(){var f=document.getElementById('__devtool_content_frame');" +
+			"var w=(f&&f.contentWindow)?f.contentWindow:window;" +
+			"return w.eval(" + string(lit) + ");})()", nil
+	case "top":
+		return script, nil
+	default:
+		return "", fmt.Errorf("unknown frame %q: use content (the app, default) or top (the proxy chrome shell)", frame)
+	}
+}
+
 // hubHandleAutomationEvaluate handles AUTOMATION EVALUATE command.
 
 func (d *Daemon) hubHandleAutomationEvaluate(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	config, _ := unmarshalCommand[struct {
 		SessionID string `json:"session_id"`
 		Script    string `json:"script"`
+		Frame     string `json:"frame"`
 	}](cmd)
 
 	// Accept session_id from args
@@ -367,8 +410,18 @@ func (d *Daemon) hubHandleAutomationEvaluate(ctx context.Context, conn *hubpkg.C
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
 
+	script, err := automationEvalScript(config.Script, config.Frame)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+	}
+
 	var result interface{}
-	if err := session.Run(cdp.Evaluate(config.Script, &result)); err != nil {
+	// AwaitPromise: an async script resolves to its value instead of handing the
+	// caller a pending promise it cannot unwrap. Without it, every caller has to
+	// decompose async work into a chain of separate synchronous evaluates.
+	if err := session.Run(cdp.Evaluate(script, &result, func(p *runtime.EvaluateParams) *runtime.EvaluateParams {
+		return p.WithAwaitPromise(true)
+	})); err != nil {
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("evaluation failed: %v", err))
 	}
 
