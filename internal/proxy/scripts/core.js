@@ -211,6 +211,39 @@
       }
     }
 
+    // Connection-state fan-out.
+    //
+    // Every UI surface that reflects transport health (the indicator status
+    // dot, panel send button) is driven from here, so the notifier must fire
+    // on *every* edge — open, close, and error — not just on open. A notify
+    // that only fires on open leaves the dot showing whatever colour it had
+    // when it was created, which is the "grey while actually connected" bug.
+    var connectedCallbacks = [];
+
+    // 'connected' | 'connecting' | 'disconnected'. Derived from the live
+    // socket rather than cached, so it cannot go stale behind an edge we
+    // failed to observe.
+    function connectionState() {
+      try {
+        if (ws) {
+          if (ws.readyState === WebSocket.OPEN) return 'connected';
+          if (ws.readyState === WebSocket.CONNECTING) return 'connecting';
+        }
+        // Socket is closed/absent but a retry is armed: still "trying".
+        if (reconnectTimer) return 'connecting';
+        return 'disconnected';
+      } catch (e) {
+        return 'disconnected';
+      }
+    }
+
+    function notifyConnectionState() {
+      var st = connectionState();
+      for (var i = 0; i < connectedCallbacks.length; i++) {
+        try { connectedCallbacks[i](st === 'connected', st); } catch (e) { /* one bad sink must not stop the rest */ }
+      }
+    }
+
     // WebSocket connection
     function connect() {
       if (!hasWebSocket) {
@@ -241,7 +274,7 @@
             console.log('[DevTool] Metrics connection established');
             reconnectAttempts = 0;
             sendPageLoad();
-            connectedCallbacks.forEach(function(cb) { try { cb(); } catch(e) {} });
+            notifyConnectionState();
           } catch (e) {
             reportInternalError('onopen_handler_failed', e);
           }
@@ -279,6 +312,9 @@
             } else {
               console.warn('[DevTool] Max reconnection attempts reached');
             }
+            // After the retry timer is armed, so listeners see "connecting"
+            // rather than a spurious "disconnected" flicker.
+            notifyConnectionState();
           } catch (e) {
             reportInternalError('onclose_handler_failed', e);
           }
@@ -287,6 +323,7 @@
         ws.onerror = function(err) {
           try {
             console.error('[DevTool] Metrics connection error:', err);
+            notifyConnectionState();
           } catch (e) {
             // Ignore - error handler itself failed
           }
@@ -371,9 +408,20 @@
       }
     }
 
-    // Register a callback for WebSocket connection events
-    var connectedCallbacks = [];
-    function onConnected(cb) { connectedCallbacks.push(cb); }
+    // Register a callback for WebSocket connection-state changes. The callback
+    // receives (connected, state) where state is
+    // 'connected' | 'connecting' | 'disconnected'.
+    //
+    // The current state is replayed synchronously at registration: core.js
+    // connects during its own init, so a subscriber that loads later (the
+    // indicator does) would otherwise miss the open edge entirely and render
+    // a permanently stale status.
+    function onConnected(cb) {
+      if (typeof cb !== 'function') return;
+      connectedCallbacks.push(cb);
+      var st = connectionState();
+      try { cb(st === 'connected', st); } catch (e) { /* defensive */ }
+    }
 
     // Register a message handler
     function onMessage(handler) {
@@ -1119,6 +1167,10 @@
             console.log('[DevTool] Metrics connection established');
             reconnectAttempts = 0;
             sendPageLoad();
+            // `connect` is replaced by this function below, so this is the
+            // handler that actually runs in production — it must fan out the
+            // connected edge exactly like the plain implementation does.
+            notifyConnectionState();
           } catch (e) {
             reportInternalError('onopen_handler_failed', e);
           }
@@ -1170,6 +1222,9 @@
               addDiagnostic('websocket', 'reconnect_exhausted', { maxAttempts: MAX_RECONNECT_ATTEMPTS });
               console.warn('[DevTool] Max reconnection attempts reached');
             }
+            // After the retry timer is armed, so listeners see "connecting"
+            // rather than a spurious "disconnected" flicker.
+            notifyConnectionState();
           } catch (e) {
             reportInternalError('onclose_handler_failed', e);
           }
@@ -1183,6 +1238,7 @@
               readyState: ws ? ws.readyState : -1
             });
             console.error('[DevTool] Metrics connection error:', err);
+            notifyConnectionState();
           } catch (e) {
             // Ignore - error handler itself failed
           }
@@ -1303,6 +1359,9 @@
               return false;
             }
           },
+          // 'connected' | 'connecting' | 'disconnected' — three-way state for
+          // UI that must distinguish "retrying" from "given up".
+          connectionState: connectionState,
           getSessionId: getOrCreateSessionId,
           reportError: reportInternalError
         };
