@@ -178,6 +178,17 @@ func (s *Step) Validate() error {
 	if s.Gesture != "" && s.Target == "" {
 		return errf("step %q: gesture requires a target", s.ID)
 	}
+	if s.GestureLabel != "" {
+		if s.Gesture == "" {
+			return errf("step %q: gesture_label requires a gesture", s.ID)
+		}
+		if len(s.GestureLabel) > MaxGestureLabelLength {
+			return errf("step %q: gesture_label exceeds %d bytes", s.ID, MaxGestureLabelLength)
+		}
+		if !noControlChars(s.GestureLabel) {
+			return errf("step %q: gesture_label has control character", s.ID)
+		}
+	}
 	return s.Advance.Validate()
 }
 

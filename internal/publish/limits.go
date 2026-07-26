@@ -36,6 +36,12 @@ const (
 	MaxIDLength    = 128
 	MaxTitleLength = 256
 	MaxBodyLength  = 4096
+	// MaxGestureLabelLength bounds a step's gesture_label. The label renders as
+	// a single white-space:nowrap pill under the affordance, so longer text
+	// runs off the viewport instead of reading as an instruction. Mirrored
+	// client-side by MAX_GESTURE_LABEL in walkthrough.js and
+	// walkthrough-viewer.js — keep the three in lockstep.
+	MaxGestureLabelLength = 64
 	// MaxAttrValueLength bounds a setAttribute value; reuses the text cap.
 	MaxAttrValueLength = MaxTextBytes
 )

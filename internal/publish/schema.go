@@ -89,12 +89,16 @@ type Advance struct {
 
 // Step is one narration step with an optional highlight target selector.
 type Step struct {
-	ID      string  `json:"id"`
-	Title   string  `json:"title"`
-	Body    string  `json:"body"`
-	Target  string  `json:"target,omitempty"`  // selector, validated by the selector grammar
-	Gesture string  `json:"gesture,omitempty"` // hover | click | scroll | drag: animated affordance near the highlight
-	Advance Advance `json:"advance"`
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	Body    string `json:"body"`
+	Target  string `json:"target,omitempty"`  // selector, validated by the selector grammar
+	Gesture string `json:"gesture,omitempty"` // hover | click | scroll | drag: animated affordance near the highlight
+	// GestureLabel names the concrete action for this step ("Click to open
+	// your cart"), replacing the player's generic verb phrase. Requires
+	// Gesture. Rendered as text only; never parsed as markup.
+	GestureLabel string  `json:"gesture_label,omitempty"`
+	Advance      Advance `json:"advance"`
 }
 
 // PublishedWalkthrough is the top-level published artifact: an ordered list of

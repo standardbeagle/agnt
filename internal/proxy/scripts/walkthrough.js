@@ -10,7 +10,9 @@
 // A step may also carry gesture: hover|click|scroll|drag — an animated
 // affordance rendered over the highlight (pure CSS keyframes, static under
 // prefers-reduced-motion) that auto-dismisses when the step advances, and the
-// active card's narration reads through character-by-character.
+// active card's narration reads through character-by-character. The affordance
+// carries a text label naming the action: gesture_label when the step supplies
+// one ("Click to open your cart"), else a generic verb phrase.
 // Panel Next/Prev/restart are always available so the user can step manually.
 //
 // The walkthrough UI lives in the OUTER frame (the always-wrap chrome shell, or
@@ -64,9 +66,20 @@
     var GESTURE_ID = '__devtool_wt_gesture';
     var POLL_MS = 300;
     var VALID_GESTURES = { hover: true, click: true, scroll: true, drag: true };
-    // Verb label rendered under each affordance — without it the animated
-    // shape reads as a control (viewers click the hover dot to "activate" it).
-    var GESTURE_LABELS = { hover: 'Hover', click: 'Click', scroll: 'Scroll', drag: 'Drag' };
+    // Label rendered under each affordance — without it the animated shape
+    // reads as a control (viewers click the hover dot to "activate" it). A step
+    // may override this with gesture_label to name the actual thing being
+    // acted on ("Click to open your cart"); these are the generic fallbacks.
+    var GESTURE_LABELS = {
+      hover: 'Hover here',
+      click: 'Click here',
+      scroll: 'Scroll this area',
+      drag: 'Drag to move'
+    };
+    // Cap on an author-supplied gesture_label. The label pill is a single
+    // white-space:nowrap line; longer text runs off the viewport instead of
+    // reading as an instruction. Mirrors publish.MaxGestureLabelLength.
+    var MAX_GESTURE_LABEL = 64;
 
     function prefersReducedMotion() {
       try {
@@ -139,7 +152,7 @@
         if (g && g.parentNode) { g.parentNode.removeChild(g); }
       } catch (e) {}
     }
-    function highlight(selector, gesture) {
+    function highlight(selector, gesture, gestureLabel) {
       clearHighlight();
       var el = queryTarget(selector);
       var d = contentDoc();
@@ -162,7 +175,7 @@
         box.style.height = rect.height + 'px';
         (d.body || d.documentElement).appendChild(box);
         if (gesture && VALID_GESTURES[gesture]) {
-          renderGesture(d, gesture, top, left, rect.width, rect.height);
+          renderGesture(d, gesture, gestureLabel, top, left, rect.width, rect.height);
         }
         return true;
       } catch (e) { return false; }
@@ -174,7 +187,11 @@
     // click, scroll, drag). Pure CSS keyframes — no JS timers — so the
     // affordance auto-dismisses the moment the advance condition fires and
     // gotoStep → clearHighlight removes it with the highlight.
-    function renderGesture(d, gesture, top, left, width, height) {
+    //
+    // gestureLabel (step.gesture_label) names the concrete action for this
+    // step; it falls back to the generic GESTURE_LABELS verb phrase. Written
+    // with textContent only — author text is never parsed as markup.
+    function renderGesture(d, gesture, gestureLabel, top, left, width, height) {
       var c = d.createElement('div');
       c.id = GESTURE_ID;
       c.className = '__devtool-wt-gesture';
@@ -196,7 +213,7 @@
         c.appendChild(gestureEl(d, '__devtool-wt-g-drag'));
       }
       var lbl = gestureEl(d, '__devtool-wt-g-label');
-      lbl.textContent = GESTURE_LABELS[gesture] || gesture;
+      lbl.textContent = gestureLabel || GESTURE_LABELS[gesture] || gesture;
       c.appendChild(lbl);
       if (prefersReducedMotion()) {
         // Static affordance: keep the shape, drop the motion.
@@ -340,7 +357,7 @@
       }
       run.index = index;
       var step = run.script.steps[index];
-      highlight(step.target, step.gesture);
+      highlight(step.target, step.gesture, step.gesture_label);
       renderPanel();
       startReveal(step);
       emit('step', {
@@ -392,6 +409,18 @@
           }
           if (!s.target) {
             throw new Error('step ' + i + ': gesture requires a target selector');
+          }
+        }
+        if (s.gesture_label !== undefined && s.gesture_label !== null && s.gesture_label !== '') {
+          s.gesture_label = String(s.gesture_label);
+          if (!s.gesture) {
+            throw new Error('step ' + i + ': gesture_label requires a gesture');
+          }
+          if (s.gesture_label.length > MAX_GESTURE_LABEL) {
+            throw new Error('step ' + i + ': gesture_label exceeds ' + MAX_GESTURE_LABEL + ' chars');
+          }
+          if (/[\x00-\x1f\x7f]/.test(s.gesture_label)) {
+            throw new Error('step ' + i + ': gesture_label has a control character');
           }
         }
       });

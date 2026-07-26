@@ -24,7 +24,9 @@ type WalkthroughInput struct {
 	// wait ({when: url-contains|element-present|element-visible, value}).
 	// gesture is one of: hover, click, scroll, drag (needs target) — renders an
 	// animated affordance over the highlight until the step advances.
-	Script   any    `json:"script,omitempty" jsonschema:"Walkthrough script object (load/start): {id,title,steps:[{title,body,target?,gesture?,advance:{type,ms?,when?,value?}}]}"`
+	// gesture_label (needs gesture, <=64 chars) labels that affordance with the
+	// concrete action instead of a generic verb phrase.
+	Script   any    `json:"script,omitempty" jsonschema:"Walkthrough script object (load/start): {id,title,steps:[{title,body,target?,gesture?,gesture_label?,advance:{type,ms?,when?,value?}}]}"`
 	ScriptID string `json:"script_id,omitempty" jsonschema:"For start: id of an already-loaded script to run"`
 	Mode     string `json:"mode,omitempty" jsonschema:"For start: auto (auto-play, default) or manual (user steps with next/prev)"`
 }
@@ -55,7 +57,7 @@ Actions:
 - list:   registered scripts
 
 Script shape:
-  {id, title, steps:[{title, body, target?, gesture?, advance:{type, ...}}]}
+  {id, title, steps:[{title, body, target?, gesture?, gesture_label?, advance:{type, ...}}]}
   advance.type:
     auto         {ms}        show ms then advance (default 5000)
     click-target            advance when the user clicks the highlighted target
@@ -63,10 +65,14 @@ Script shape:
   gesture (optional, needs target): hover | click | scroll | drag
     Renders the matching animated affordance over the highlight; auto-dismisses
     when the step advances. The active step's narration reads through as it lands.
+  gesture_label (optional, needs gesture, <=64 chars)
+    Text under the affordance. Name the concrete action ("Click to open your
+    cart", "Drag the handle to reorder") — omitted, it falls back to a generic
+    verb phrase ("Click here").
 
 Examples:
   walkthrough {action:"start", proxy_id:"dev", script:{id:"demo", title:"New checkout", steps:[
-    {title:"Open cart", body:"Click the cart to begin.", target:"#cart-btn", gesture:"click", advance:{type:"click-target"}},
+    {title:"Open cart", body:"Click the cart to begin.", target:"#cart-btn", gesture:"click", gesture_label:"Click to open your cart", advance:{type:"click-target"}},
     {title:"Totals", body:"Order total updates live.", target:".order-total", advance:{type:"auto", ms:4000}},
     {title:"Confirm", body:"You land on the confirm page.", advance:{type:"wait", when:"url-contains", value:"/confirm"}}
   ]}}

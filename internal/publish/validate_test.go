@@ -156,6 +156,36 @@ func TestStepGestureValidation(t *testing.T) {
 	}
 }
 
+// TestStepGestureLabelValidation pins the author-supplied affordance label: it
+// is optional, bounded, control-char-free, and meaningless without a gesture to
+// label. Length is capped because the label renders as one nowrap pill.
+func TestStepGestureLabelValidation(t *testing.T) {
+	step := func(label string) Step {
+		return Step{ID: "s1", Title: "t", Target: "#el", Gesture: "click", GestureLabel: label, Advance: Advance{Type: "auto"}}
+	}
+	for _, l := range []string{"", "Click to open your cart", strings.Repeat("x", MaxGestureLabelLength)} {
+		s := step(l)
+		if err := s.Validate(); err != nil {
+			t.Errorf("gesture_label %q must be accepted, got: %v", l, err)
+		}
+	}
+	long := step(strings.Repeat("x", MaxGestureLabelLength+1))
+	if err := long.Validate(); err == nil {
+		t.Errorf("gesture_label over %d bytes must be rejected", MaxGestureLabelLength)
+	}
+	for _, l := range []string{"Click\nhere", "Click\x00here", "Click\there"} {
+		s := step(l)
+		if err := s.Validate(); err == nil {
+			t.Errorf("gesture_label %q with a control character must be rejected", l)
+		}
+	}
+	// A label with no gesture has no affordance to attach to.
+	s := Step{ID: "s1", Title: "t", Target: "#el", GestureLabel: "Click here", Advance: Advance{Type: "auto"}}
+	if err := s.Validate(); err == nil {
+		t.Error("gesture_label without a gesture must be rejected")
+	}
+}
+
 // TestValidSelectors / TestInvalidSelectors pin the §5a grammar directly.
 func TestValidSelectors(t *testing.T) {
 	ok := []string{

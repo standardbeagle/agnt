@@ -141,6 +141,45 @@ func TestPlayerGestureAffordances(t *testing.T) {
 	}
 }
 
+// TestPlayerGestureLabel pins the author-supplied affordance label: the player
+// reads gesture_label, clamps it (degrade, never throw — the public plane must
+// not crash a visitor's page), writes it with textContent only, and keys the
+// affordance cache on the label so two consecutive steps sharing a gesture do
+// not reuse the earlier step's label. Both label caps must agree with the Go
+// validator (publish.MaxGestureLabelLength).
+func TestPlayerGestureLabel(t *testing.T) {
+	js := walkthroughViewerJS
+	if !strings.Contains(js, "s.gesture_label") {
+		t.Error("player must read the step's gesture_label")
+	}
+	if !strings.Contains(js, "MAX_GESTURE_LABEL = 64") {
+		t.Error("player must clamp gesture_label at 64 chars (mirrors publish.MaxGestureLabelLength)")
+	}
+	if !strings.Contains(js, "slice(0, MAX_GESTURE_LABEL)") {
+		t.Error("gesture_label must be clamped, not rejected: the public player degrades instead of throwing")
+	}
+	if !strings.Contains(js, "lbl.textContent = gestureLabel") {
+		t.Error("gesture_label must be written with textContent (never parsed as markup)")
+	}
+	if !strings.Contains(js, "renderedGesture !== key") {
+		t.Error("affordance cache must key on gesture+label, else a same-gesture step keeps the stale label")
+	}
+	// The live walkthrough must agree on both the cap and the fallback phrases,
+	// so a script authored against one plane reads identically on the other.
+	live := walkthroughJS
+	if !strings.Contains(live, "MAX_GESTURE_LABEL = 64") {
+		t.Error("live walkthrough must use the same 64-char gesture_label cap")
+	}
+	for _, phrase := range []string{"'Hover here'", "'Click here'", "'Scroll this area'", "'Drag to move'"} {
+		if !strings.Contains(js, phrase) {
+			t.Errorf("player missing fallback label %s", phrase)
+		}
+		if !strings.Contains(live, phrase) {
+			t.Errorf("live walkthrough missing fallback label %s", phrase)
+		}
+	}
+}
+
 // TestPlayerReadThroughReveal pins the narration read-through contract: a
 // tracked interval reveals the body character-by-character, reduced motion
 // shows full text instantly, and the interval self-removes on completion so

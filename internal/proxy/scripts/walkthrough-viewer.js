@@ -11,7 +11,9 @@
 // gesture: hover|click|scroll|drag — the player renders the matching animated
 // affordance over the highlight (Web Animations API, static under reduced
 // motion) and the narration reads through character-by-character; both are
-// removed/reset the instant the step advances.
+// removed/reset the instant the step advances. The affordance carries a text
+// label naming the action: the step's gesture_label when present (clamped,
+// textContent only), else a generic verb phrase.
 //
 // Shared normalization (NOT a fork): the step model this player consumes is the
 // SAME one P2 defines (internal/publish/schema.go Advance/Step) and the live
@@ -68,6 +70,10 @@
     var POLL_MS = 300; // mirrors walkthrough.js wait-condition poll cadence
     var MAX_STEPS = 64;
     var MAX_TEXT = 2048;
+    // Cap on an author-supplied gesture_label; mirrors walkthrough.js
+    // MAX_GESTURE_LABEL and publish.MaxGestureLabelLength. The label pill is a
+    // single nowrap line, so longer text runs off the viewport.
+    var MAX_GESTURE_LABEL = 64;
 
     // Local restricted selector grammar. It is a SUBSET-equivalent fallback for
     // the P2/P3 grammar: when window.__variantEngine.validateSelector is present
@@ -118,11 +124,16 @@
       // decoration rendered near the highlight — never an action source.
       var g = s.gesture;
       var gesture = (g === 'hover' || g === 'click' || g === 'scroll' || g === 'drag') ? g : '';
+      // gesture_label names the concrete action for this step. Degrade (clamp /
+      // drop), never throw: the public plane must not crash a visitor's page.
+      // Written with textContent only — never parsed as markup.
+      var gLabel = (typeof s.gesture_label === 'string') ? s.gesture_label.slice(0, MAX_GESTURE_LABEL) : '';
       return {
         title: clampText(s.title || ''),
         body: clampText(s.body || s.narration || s.text || ''),
         target: target,
         gesture: target ? gesture : '',
+        gestureLabel: (target && gesture) ? gLabel : '',
         advance: { type: type, ms: ms, when: when || '', value: clampText(adv.value || '') }
       };
     }
@@ -256,9 +267,15 @@
         } catch (e) { /* animation unsupported: static affordance */ }
       }
       function positionGesture(r) {
-        var gesture = (index >= 0 && index < steps.length) ? steps[index].gesture : '';
+        var step = (index >= 0 && index < steps.length) ? steps[index] : null;
+        var gesture = step ? step.gesture : '';
+        var gestureLabel = step ? step.gestureLabel : '';
         if (!gesture) { removeGesture(); return; }
-        if (!gestureBox || renderedGesture !== gesture) {
+        // Cache key includes the label: consecutive steps can share a gesture
+        // while naming different actions, and a stale box would keep the
+        // previous step's label.
+        var key = gesture + '\n' + gestureLabel;
+        if (!gestureBox || renderedGesture !== key) {
           removeGesture();
           gestureBox = document.createElement('div');
           gestureBox.id = GESTURE_ID;
@@ -267,19 +284,25 @@
           gs.position = 'fixed';
           gs.pointerEvents = 'none';
           gs.zIndex = '2147483601';
-          buildGestureParts(gesture);
+          buildGestureParts(gesture, gestureLabel);
           (document.body || document.documentElement).appendChild(gestureBox);
-          renderedGesture = gesture;
+          renderedGesture = key;
         }
         gestureBox.style.left = r.left + 'px';
         gestureBox.style.top = r.top + 'px';
         gestureBox.style.width = r.width + 'px';
         gestureBox.style.height = r.height + 'px';
       }
-      function buildGestureParts(gesture) {
-        // Verb label under the affordance so the shape reads as an
-        // instruction, not a clickable control.
-        var labels = { hover: 'Hover', click: 'Click', scroll: 'Scroll', drag: 'Drag' };
+      function buildGestureParts(gesture, gestureLabel) {
+        // Label under the affordance so the shape reads as an instruction, not
+        // a clickable control. The step's own gesture_label wins; these generic
+        // verb phrases are the fallback (mirrors walkthrough.js GESTURE_LABELS).
+        var labels = {
+          hover: 'Hover here',
+          click: 'Click here',
+          scroll: 'Scroll this area',
+          drag: 'Drag to move'
+        };
         var lbl = makeGesturePart(function (s) {
           s.left = '50%'; s.top = 'calc(50% + 32px)'; s.transform = 'translateX(-50%)';
           s.padding = '2px 10px'; s.borderRadius = '10px';
@@ -288,7 +311,7 @@
           s.letterSpacing = '.04em'; s.whiteSpace = 'nowrap';
           s.boxShadow = '0 0 10px rgba(76,139,245,.5)';
         });
-        lbl.textContent = labels[gesture] || gesture;
+        lbl.textContent = gestureLabel || labels[gesture] || gesture;
         gestureBox.appendChild(lbl);
         if (gesture === 'hover') {
           var dot = makeGesturePart(function (s) {
