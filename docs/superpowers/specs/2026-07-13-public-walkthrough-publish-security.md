@@ -53,11 +53,21 @@ restart"*). This spec turns walkthrough mode into a **public webapp**:
 ### Threats in scope
 Token guessing/enumeration; token leakage via logs/referrer/events; a revoked
 share still serving; the public bundle exposing dev-only capabilities (proxy
-exec, `__devtool` control API, audits, WS); a malicious variant op injecting
-JS/HTML/CSS; feedback used as a command channel, XSS reflection, or abuse
+exec, `__devtool` control API, audits, WS); ~~a malicious variant op injecting
+JS/HTML/CSS~~ (**retired 2026-07-27 — see INV-6**; variant content is
+publisher-authored, so it sits on the trusted side of the boundary and its
+containment is CSP's job, not the validator's); an **untrusted upstream origin**
+being used to reach private/link-local/metadata addresses through the proxy
+(INV-13); feedback used as a command channel, XSS reflection, or abuse
 amplifier; PII capture; state loss / silent corruption across daemon restart;
 public traffic satisfying dev **session scope** and leaking another project's
 data (`.claude/rules/daemon-architecture.md` §"Tool session-scoping").
+
+**Not in the threat model:** a publisher deceiving their own viewers. The
+publisher is trusted by construction (they hold the dev session). Deception is
+addressed by disclosure — the always-on demo indicator (INV-14) — not by any
+security control in this spec; see §4a for why the origin allowlist in
+particular must not be mistaken for an anti-phishing measure.
 
 ---
 
@@ -72,7 +82,7 @@ Each is testable. Downstream tasks (§11) must uphold every one.
 | **INV-3** | Share tokens are **CSPRNG, ≥256 bits, returned once, hashed at rest** (sha256, plaintext never persisted), and **constant-time verified** (`subtle.ConstantTimeCompare`). | §3 tests. |
 | **INV-4** | A **revoked** share serves nothing: artifact route, variant API, and feedback API all die (404) atomically. No grace window, no cache that outlives revoke. | Revoke → immediately GET artifact + POST feedback → both 404. |
 | **INV-5** | The public bundle contains **only** RolePublic-allowlisted modules (§9). A forbidden module in the dependency closure **fails the build**, exactly like `TestRoleBundleDependencyClosure` in `internal/proxy/scripts/rolebundle_test.go`. | Build-gate test: add a forbidden dep → test red. |
-| **INV-6** | Variant ops are **declarative only** (§6). No `innerHTML`, `<script>`, event-handler attributes, `javascript:`/`data:` URLs, `eval`, `url()`/`expression`/`@import` in CSS. Renderer has no code path that evaluates author-supplied strings as code or markup. | §5/§6 validator rejects each forbidden form; renderer uses `textContent`/`setAttribute` on an allowlist only. |
+| **INV-6** | **RETIRED 2026-07-27.** *Was:* variant ops are declarative only — no `innerHTML`, `<script>`, event-handler attributes, `javascript:`/`data:` URLs, `eval`, `url()`/`expression`/`@import` in CSS. **Now:** variant ops **may carry raw CSS, raw HTML, and script** sourced from the authored revision (§6). **Rationale:** INV-6 defended against *author-supplied* strings, but the author here is the **publisher — a trusted actor** holding the dev session (§0 Actors), not the anonymous viewer. It was guarding the wrong boundary, and the cost was real: a declarative-only op vocabulary cannot express the visual variants publishing exists to demo. The genuinely untrusted inputs are unaffected — **viewer** feedback stays inert (INV-7) and the **upstream** stays hostile (INV-11/INV-12). Containment of publisher-authored script moves to CSP: it executes only if it matches the authored-revision script hash pinned in `script-src` (INV-12), so nothing the upstream or a viewer injects can run. Size caps and the selector grammar (§5, §5a) survive as parse/abuse bounds and are **not** retired. | *(no invariant test; the retirement is asserted negatively)* §6 raw-content ops round-trip unmodified through the validator, and a script whose hash is absent from `script-src` is refused by the browser — see INV-12. |
 | **INV-7** | Feedback is **anonymous data, never a command.** It enters a write-only sink; it is size-capped, rate-limited, never reflected unescaped, never interpreted as a control message, and captures no PII beyond an opaque anonymous session id. | POST with control-shaped payload has no side effect beyond an appended feedback row; stored body is inert on read-back. |
 | **INV-8** | Published state (variant set, published walkthrough, share token hash, feedback) **survives daemon restart** via a persistent authoritative store — unlike today's in-memory walkthrough/traffic state. Corruption on load **fails loud** (`daemon-architecture.md` §"Silent Failure Prohibition"), never silently serves partial/empty. | Kill+restart daemon → published share still serves; corrupt the store file → load emits a visible error event, does not silently 404. |
 | **INV-9** | The share token is **redacted** from every log, event, incident, and outbound `Referer`/`Referrer-Policy` surface. Only its hash prefix (≤8 hex) may appear for correlation. **`Referrer-Policy` alone does NOT protect the token server-side:** the existing proxy traffic log records the full request path by default (`internal/proxy/proxy_handler.go:532` sets `HTTPLogEntry.URL = r.URL.String()`, emitted via `ps.logger.LogHTTP`), which would capture the raw `/s/{token}` path. Therefore publish routes MUST scrub the `/s/{token}` path segment to `hash[:8]` **before** any request/traffic logging — a **P6/P7 obligation**. | grep test over log/event emitters; traffic-log assertion that a public request's logged URL contains only `hash[:8]`, never the full token; `Referrer-Policy: no-referrer` on artifact responses. |
@@ -168,12 +178,14 @@ P2's validators encode these **verbatim**. Reject (422) anything exceeding a lim
 | Max steps per walkthrough | **50** | Matches the linear-step demo model; bounds payload. |
 | Max selector length | **256** chars | Long enough for real nested selectors, short enough to bound the parser. |
 | Selector charset / grammar | Allowlist grammar in §5a. | Blocks script-y selector tricks. |
-| Max style-patch size | **4096** bytes (per variant) | Bounds CSS parse cost. |
-| Allowed CSS properties | Allowlist (§5b). | Deny-by-default; blocks behavioral CSS. |
-| Forbidden CSS tokens | `url(`, `expression(`, `behavior`, `-moz-binding`, `@import`, `javascript:` | Classic CSS-exfil / CSS-injection vectors. |
+| Max style-patch size | **4096** bytes (per variant) | Bounds CSS parse cost. **Survives INV-6's retirement** — a size bound is an abuse control, not an injection control. |
+| Allowed CSS properties | ~~Allowlist (§5b).~~ **Retired with INV-6** — see §5b. | Was deny-by-default against behavioral CSS from an author now known to be trusted. |
+| Forbidden CSS tokens | ~~`url(`, `expression(`, `behavior`, `-moz-binding`, `@import`, `javascript:`~~ **Retired with INV-6.** Raw CSS is accepted as authored; `url()`/`@import` fetches are bounded by CSP `img-src`/`default-src` instead (§4). | Retired: these blocked publisher-authored styling, while the CSP that actually contains exfil was already required. |
+| Max raw-HTML fragment (setHTML) | **8192** bytes per op | Bounds parse cost + snapshot size for the raw-content ops INV-6's retirement admits (§6). |
+| Max raw-script size (addScript) | **16384** bytes per authored revision | Same; also bounds the hash set `script-src` must carry (INV-12). |
 | Max text length (setText) | **2048** bytes UTF-8 | Bounds DOM text writes. |
 | Max URL length | **2048** chars | Standard practical URL cap. |
-| Allowed URL schemes | **`https:` only** (upstream target + any op-supplied URL). No `http:`, `data:`, `javascript:`, `file:`, `blob:`. | Public webapp; TLS mandatory; blocks JS/data URL injection. |
+| Allowed URL schemes | **`https:` only** (upstream target + any op-supplied URL). No `http:`, `data:`, `javascript:`, `file:`, `blob:`. | Public webapp; TLS mandatory. **Survives INV-6's retirement**, now justified by INV-13 (an op-supplied URL is a proxy-reachable origin, so it inherits the §4a allowlist) rather than by JS-URL injection. |
 | Max feedback body | **4096** bytes | Anti-abuse; a comment, not a document. |
 | Feedback rate | **10 req/min per (token,IP)**, burst **5** | Anti-spam without blocking a real reviewer. |
 | Public read rate | **60 req/min per IP** | Serves a normal browser page load; caps token brute-force + scraping. |
@@ -199,21 +211,34 @@ other than `nth-child(INT)`, comments, `@`-anything, whitespace-smuggled tokens.
 Rationale: `:has()`/`:is()` enable expensive or selector-injection tricks; the
 allowlist is small, auditable, and sufficient for "point at one element."
 
-### 5b. Allowed CSS property allowlist (applyStyle)
+### 5b. Allowed CSS property allowlist (applyStyle) — RETIRED with INV-6
 
-Layout/paint-safe only — `color`, `background-color`, `background`
-(color/gradient values only, **no `url()`**), `border*`, `outline*`, `padding*`,
-`margin*`, `font*`, `text-*`, `line-height`, `letter-spacing`, `opacity`,
-`display`, `visibility`, `width`/`height`/`min-*`/`max-*`, `box-shadow`,
-`border-radius`, `transform`, `transition`. Values re-validated against the
-forbidden-token list in §5. Any property not on the allowlist ⇒ 422.
+**Retired 2026-07-27.** *Was:* layout/paint-safe properties only — `color`,
+`background-color`, `background` (color/gradient values only, **no `url()`**),
+`border*`, `outline*`, `padding*`, `margin*`, `font*`, `text-*`, `line-height`,
+`letter-spacing`, `opacity`, `display`, `visibility`,
+`width`/`height`/`min-*`/`max-*`, `box-shadow`, `border-radius`, `transform`,
+`transition`; any other property ⇒ 422.
+
+**Now:** `applyStyle` accepts any CSS property, and §6's `addStyle` accepts raw
+CSS text. The allowlist is retained here **only as guidance** for what a variant
+typically needs — validators MUST NOT enforce it. Rationale as INV-6: it
+constrained a trusted publisher, and every containment it nominally provided
+(no exfil to third parties, no behavioral CSS reaching the viewer's data) is
+delivered by the wholesale-replaced CSP (§4) instead. The **size cap** (§5,
+4096 B per variant) is unaffected and still enforced.
 
 ---
 
-## 6. No-arbitrary-JS/HTML rule — the declarative op set
+## 6. The op set — declarative core plus raw-content ops
 
-Variant ops are a **closed, declarative vocabulary**. The renderer is a switch over
-these op types; there is **no** op that takes a code or markup string.
+**Amended 2026-07-27 (INV-6 retired).** Variant ops are still a **closed
+vocabulary** — the renderer is a switch over known op types, and an unknown op
+is a 422, not a passthrough. What changed is that the vocabulary now includes
+**raw-content ops** (§6a) that carry authored CSS, HTML, and script strings. The
+declarative ops below are unchanged and remain the preferred form: they are
+cheaper to validate, cheaper to diff between variants, and they do not consume
+`script-src` hash budget.
 
 | Op | Signature | Renderer action | Guards |
 |---|---|---|---|
@@ -224,13 +249,36 @@ these op types; there is **no** op that takes a code or markup string.
 | `applyStyle` | `{op:"applyStyle", selector, props:{...}}` | `el.style[prop]=val` per allowlisted prop | §5b allowlist; forbidden-token re-check |
 | `setImageSrc` | `{op:"setImageSrc", selector, url}` | `img.src = url` | `https:` only, ≤2048 chars |
 
-**Explicitly forbidden (validator rejects; renderer has no path for them):**
-`innerHTML`/`outerHTML`/`insertAdjacentHTML`, `<script>` or any tag string,
-`on*` event-handler attributes, `javascript:`/`data:`/`vbscript:` URLs,
-`eval`/`Function`/`setTimeout(string)`, `style` values containing
-`url()`/`expression`/`@import`, DOM-node insertion from author strings.
-INV-6 pins that the renderer dereferences author input only through
-`textContent`, `setAttribute` (allowlist), `classList`, and `style[prop]`.
+### 6a. Raw-content ops (admitted by INV-6's retirement)
+
+These carry publisher-authored strings verbatim. They are **not** validated for
+"script-ness" — that check guarded the wrong boundary (INV-6 rationale). They
+are bounded by size (§5) and contained by CSP (§4), and every one of them is
+attributed to exactly one **authored revision** (§3a), which is what makes the
+`script-src` hash set computable.
+
+| Op | Signature | Renderer action | Guards |
+|---|---|---|---|
+| `setHTML` | `{op:"setHTML", selector, html}` | `el.innerHTML = html` | ≤8192 B; selector per §5a; inline `on*` handlers and `javascript:` URLs inside the fragment are **inert under CSP** (`script-src` has no `unsafe-inline`) — the validator does not strip them |
+| `addStyle` | `{op:"addStyle", css}` | append `<style>` to the variant root | ≤4096 B per variant; no property allowlist (§5b retired); `url()`/`@import` targets are bounded by CSP `default-src`/`img-src`, not by a token scan |
+| `addScript` | `{op:"addScript", src?, code?}` | append `<script>` to the variant root | ≤16384 B; `code` executes **only** if `sha256(code)` is in the revision's pinned `script-src` hash set (INV-12); `src` must be `https:` and pass §4a (INV-13) |
+
+**Still forbidden (validator rejects — these are not "raw content", they are
+plane-crossing):** any op naming a `__devtool` control API, `proxy exec`, a
+dev WebSocket endpoint, or a daemon verb; any op that would make the public
+plane write a control-plane artifact (INV-10); any op supplying an origin that
+fails §4a (INV-13). The retirement of INV-6 widened what a variant may
+*render*; it widened nothing about what the public plane may *reach*
+(INV-1 unchanged).
+
+**Where the containment now lives.** Previously: a validator that refused
+code-shaped strings. Now: (a) CSP wholesale-replaced and pinned to the
+authored-revision script hash — upstream and viewer script cannot execute even
+though publisher script can (INV-11/INV-12); (b) the public plane's structural
+inability to resolve a `scope.Scope` (INV-1); (c) feedback remaining inert data
+(INV-7). Downstream tasks must not reintroduce the retired string scan as
+"defense in depth" — it produces false rejections of legitimate variants
+while adding nothing the CSP does not already guarantee.
 
 ---
 
@@ -324,7 +372,7 @@ Traceability from invariant/limit to the enforcing P-task.
 
 | Enforces | Invariants / limits | P-task |
 |---|---|---|
-| Variant/walkthrough/op **schemas + validators** (§5, §5a, §5b, §6) | INV-6; all §5 limits | **P2** — schemas & validators |
+| Variant/walkthrough/op **schemas + validators** (§5, §5a, §6, §6a) | ~~INV-6~~ (retired — validators must **not** scan raw content for code-shape); all §5 limits; §5b is guidance only | **P2** — schemas & validators |
 | **RolePublic bundle** split + dependency-closure build gate (§9) | INV-5 | **P4** — public bundle |
 | **Share tokens** — CSPRNG, 256-bit, sha256-at-rest, constant-time verify, rotate/revoke, redaction (§3) | INV-3, INV-9 | **P6** — token store |
 | **Public routes** + endpoint matrix + deny-by-default + header policy + scope isolation (§2, §4) | INV-1, INV-2, INV-10, INV-11, INV-12 | **P7** — public routes |
