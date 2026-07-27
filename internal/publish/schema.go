@@ -28,9 +28,31 @@ var supportedVersions = map[SchemaVersion]bool{
 // isSupportedVersion reports whether v is a version this build can serve.
 func isSupportedVersion(v SchemaVersion) bool { return supportedVersions[v] }
 
-// OpType is the discriminant of the closed declarative op vocabulary (spec §6).
-// The renderer is a switch over these; there is deliberately NO op type that
-// carries a code or markup string (INV-6).
+// Raw-content size caps from spec §5. They belong beside the other limits in
+// limits.go; they are declared here only because this slice's file scope
+// excludes that file — fold them in the next time limits.go is touched.
+const (
+	// MaxRawHTMLBytes caps one setHTML fragment (§5: "Max raw-HTML fragment
+	// (setHTML) = 8192 bytes per op"). A parse-cost bound, not an injection
+	// control.
+	MaxRawHTMLBytes = 8192
+	// MaxRawScriptBytes caps the raw script an authored revision may carry
+	// (§5: "Max raw-script size (addScript) = 16384 bytes per authored
+	// revision"). Also bounds the script-src hash set INV-12 must pin.
+	MaxRawScriptBytes = 16384
+)
+
+// OpType is the discriminant of the closed op vocabulary (spec §6). The renderer
+// is a switch over these and an unknown op is a rejection, never a passthrough.
+//
+// INV-6 RETIRED 2026-07-27: the vocabulary now also carries raw-content ops
+// (§6a) holding publisher-authored CSS/HTML/script strings. INV-6 defended
+// against author-supplied strings, but the author here is the publisher — a
+// trusted actor holding the dev session (§0) — so it guarded the wrong boundary
+// while making the visual variants publishing exists to demo inexpressible.
+// Containment moved to CSP: publisher script runs only because its sha256 is
+// pinned in the served revision's script-src (INV-11/INV-12), so upstream- and
+// viewer-injected script still cannot execute.
 type OpType string
 
 const (
@@ -41,22 +63,39 @@ const (
 	OpRemoveClass  OpType = "removeClass"
 	OpApplyStyle   OpType = "applyStyle"
 	OpSetImageSrc  OpType = "setImageSrc"
+
+	// Raw-content ops (§6a), admitted by INV-6's retirement.
+	OpSetHTML   OpType = "setHTML"
+	OpAddStyle  OpType = "addStyle"
+	OpAddScript OpType = "addScript"
 )
 
-// Op is one declarative DOM/CSS mutation (spec §6). It is a single struct rather
-// than a set of subtypes so the type is closed: every field is a plain
-// string/string-map — none can hold arbitrary HTML or JS. Which fields are
-// meaningful depends on Op; Validate enforces that only the fields legal for the
-// op type are populated and that each is within the spec's allowlists/limits.
+// Op is one DOM/CSS mutation (spec §6/§6a). It is a single struct rather than a
+// set of subtypes so the vocabulary stays closed. Which fields are meaningful
+// depends on Op; Validate enforces that only the fields legal for the op type
+// are populated and that each is within the spec's surviving limits.
 type Op struct {
-	Op       OpType            `json:"op"`
-	Selector string            `json:"selector"`
+	Op OpType `json:"op"`
+	// Selector is required by every element-targeting op and forbidden on the
+	// variant-root ops (addStyle, addScript).
+	Selector string            `json:"selector,omitempty"`
 	Value    string            `json:"value,omitempty"` // setText, addClass, removeClass, setAttribute
 	Name     string            `json:"name,omitempty"`  // setAttribute
 	From     string            `json:"from,omitempty"`  // replaceClass
 	To       string            `json:"to,omitempty"`    // replaceClass
 	URL      string            `json:"url,omitempty"`   // setImageSrc
 	Props    map[string]string `json:"props,omitempty"` // applyStyle
+	HTML     string            `json:"html,omitempty"`  // setHTML: raw fragment, assigned via innerHTML
+	CSS      string            `json:"css,omitempty"`   // addStyle: raw CSS text for a <style> on the variant root
+	Code     string            `json:"code,omitempty"`  // addScript: inline script body
+	// Src is addScript's alternative body source and is a PUBLISH-TIME FETCH
+	// INPUT, never a runtime attribute (§6a): the daemon fetches it once at
+	// publish time under §4a/INV-13 and inlines the bytes, so no <script src>
+	// ever reaches the served DOM and script-src is never widened to a host
+	// source (INV-12). Src and Code are alternatives; supplying both is a
+	// rejection. The fetch itself belongs to the publish pipeline, not to this
+	// package — here Src is validated as an https URL only.
+	Src string `json:"src,omitempty"`
 }
 
 // Variant is one alternative rendering the cycler can switch to. Ops are applied
@@ -101,14 +140,43 @@ type Step struct {
 	Advance      Advance `json:"advance"`
 }
 
+// UpstreamConfig names the live third-party origin a published walkthrough is
+// proxied against (§0, §4a). The origin is publisher-supplied and therefore
+// hostile to us (INV-11/INV-12): the proxy replaces its CSP wholesale rather
+// than merging with it.
+//
+// This package enforces only the scheme gate — https, bounded, control-char
+// free — through the one existing ValidateURL. The §4a deny-list on the
+// *resolved* address (loopback, RFC1918, link-local, cloud metadata), the
+// resolve-pinned dial, and the per-hop redirect re-check (INV-13) need a
+// resolver and a dialer and belong to the publish pipeline, not to a pure
+// schema validator.
+type UpstreamConfig struct {
+	URL string `json:"url"`
+}
+
+// Validate enforces the https-only scheme gate. Nil-safe: an absent upstream is
+// legal (a self-contained artifact names no live origin).
+func (u *UpstreamConfig) Validate() error {
+	if u == nil {
+		return nil
+	}
+	if err := ValidateURL(u.URL); err != nil {
+		return errf("upstream: %w", err)
+	}
+	return nil
+}
+
 // PublishedWalkthrough is the top-level published artifact: an ordered list of
-// steps plus an optional bound variant set.
+// steps, an optional bound variant set, and the optional live upstream origin
+// the steps are demonstrated against.
 type PublishedWalkthrough struct {
-	Version    SchemaVersion `json:"version"`
-	ID         string        `json:"id"`
-	Title      string        `json:"title"`
-	Steps      []Step        `json:"steps"`
-	VariantSet *VariantSet   `json:"variantSet,omitempty"`
+	Version    SchemaVersion   `json:"version"`
+	ID         string          `json:"id"`
+	Title      string          `json:"title"`
+	Upstream   *UpstreamConfig `json:"upstream,omitempty"`
+	Steps      []Step          `json:"steps"`
+	VariantSet *VariantSet     `json:"variantSet,omitempty"`
 }
 
 // validAdvanceTypes / validWaitWhen mirror the walkthrough script model.
