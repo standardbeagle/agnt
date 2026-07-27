@@ -75,6 +75,7 @@ func (v *Variant) Validate() error {
 		return errf("variant %q: label has control character", v.ID)
 	}
 	seen := map[string]bool{}
+	styleBytes := 0
 	for i := range v.Ops {
 		op := &v.Ops[i]
 		if err := op.Validate(); err != nil {
@@ -85,6 +86,13 @@ func (v *Variant) Validate() error {
 			return errf("variant %q: duplicate op %q", v.ID, sig)
 		}
 		seen[sig] = true
+		styleBytes += op.styleBytes()
+	}
+	// §5's style-patch cap is per VARIANT, not per op: applyStyle and addStyle
+	// both spend from it, so a variant cannot dodge the bound by splitting one
+	// oversize patch across several ops.
+	if styleBytes > MaxStylePatchBytes {
+		return errf("variant %q: style patch %d bytes exceeds max %d", v.ID, styleBytes, MaxStylePatchBytes)
 	}
 	return nil
 }
@@ -109,6 +117,7 @@ func (vs *VariantSet) Validate() error {
 		return errf("variant set %q: %d variants exceeds max %d", vs.ID, len(vs.Variants), MaxVariantsPerSet)
 	}
 	seen := map[string]bool{}
+	scriptBytes := 0
 	for i := range vs.Variants {
 		v := &vs.Variants[i]
 		if seen[v.ID] {
@@ -118,6 +127,17 @@ func (vs *VariantSet) Validate() error {
 		if err := v.Validate(); err != nil {
 			return err
 		}
+		for j := range v.Ops {
+			scriptBytes += len(v.Ops[j].Code)
+		}
+	}
+	// §5's raw-script cap is per authored REVISION, not per op — the variant set
+	// is the revision's script-bearing content, and this bound is also what keeps
+	// the script-src hash set INV-12 pins from growing without limit. Bodies
+	// fetched from an addScript src count against the same budget once inlined,
+	// which happens in the publish pipeline, not here.
+	if scriptBytes > MaxRawScriptBytes {
+		return errf("variant set %q: raw script %d bytes exceeds max %d per revision", vs.ID, scriptBytes, MaxRawScriptBytes)
 	}
 	return nil
 }
@@ -203,6 +223,10 @@ func (pw *PublishedWalkthrough) Validate() error {
 	}
 	if pw.Title == "" || len(pw.Title) > MaxTitleLength {
 		return errf("walkthrough %q: title length invalid", pw.ID)
+	}
+	// Nil-safe: an artifact with no live origin is legal.
+	if err := pw.Upstream.Validate(); err != nil {
+		return errf("walkthrough %q: %w", pw.ID, err)
 	}
 	if len(pw.Steps) == 0 {
 		return errf("walkthrough %q: at least one step required", pw.ID)

@@ -35,29 +35,12 @@ func TestMaliciousFixtures(t *testing.T) {
 		name string
 		json string
 	}{
-		{"script-tag-via-unknown-op", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"setHTML","selector":".x","value":"<script>alert(1)</script>"}]}]}`},
 		{"innerHTML-unknown-field", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"setText","selector":".x","innerHTML":"<b>x</b>"}]}]}`},
 		{"javascript-url-image", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"setImageSrc","selector":"img","url":"javascript:alert(1)"}]}]}`},
 		{"http-url-image", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"setImageSrc","selector":"img","url":"http://ex.com/a.png"}]}]}`},
 		{"data-url-image", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"setImageSrc","selector":"img","url":"data:text/html,<script>"}]}]}`},
 		{"file-url-image", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"setImageSrc","selector":"img","url":"file:///etc/passwd"}]}]}`},
 		{"blob-url-image", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"setImageSrc","selector":"img","url":"blob:https://ex.com/uuid"}]}]}`},
-		{"css-url-exfil", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"background":"url(https://evil/x)"}}]}]}`},
-		{"css-expression", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"width":"expression(alert(1))"}}]}]}`},
-		{"css-import", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"color":"@import 'evil'"}}]}]}`},
-		{"css-forbidden-property", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"position":"fixed"}}]}]}`},
-		{"css-breakout-semicolon", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"color":"red;position:fixed"}}]}]}`},
-		// §5b/§6 substring-scan bypasses — URL-bearing CSS function forms not named
-		// `url(` that still fetch a URL when the renderer assigns el.style[prop]=val.
-		{"css-image-set-string", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"background":"image-set(\"https://evil/x\" 1x)"}}]}]}`},
-		{"css-webkit-image-set", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"background":"-webkit-image-set(url(\"https://evil/x\") 1x)"}}]}]}`},
-		{"css-cross-fade", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"background":"cross-fade(url(https://evil/x), red)"}}]}]}`},
-		// §5b/§6 CSS backslash escape — `\75` decodes to `u`, reconstituting url(…)
-		// in the CSSOM after a raw-byte substring check has already passed it.
-		{"css-backslash-escape", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"background":"\\75 rl(https://evil/x)"}}]}]}`},
-		// §5b/§6 case + whitespace tolerance on the existing url() check.
-		{"css-url-uppercase", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"background":"URL(https://evil/x)"}}]}]}`},
-		{"css-url-inner-whitespace", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"background":"url (https://evil/x)"}}]}]}`},
 		{"onclick-attribute", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"setAttribute","selector":".x","name":"onclick","value":"alert(1)"}]}]}`},
 		{"href-attribute-excluded", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"setAttribute","selector":"a","name":"href","value":"https://ex.com"}]}]}`},
 		{"src-attribute-excluded", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"setAttribute","selector":"img","name":"src","value":"https://ex.com/a.png"}]}]}`},
@@ -91,11 +74,138 @@ func TestMaliciousFixtures(t *testing.T) {
 }
 
 // TestAcceptsLegitStyle guards against over-rejection: plain declarative values
-// with no forbidden token / escape must still pass §5b.
+// must pass.
 func TestAcceptsLegitStyle(t *testing.T) {
 	j := `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"color":"#fff","margin":"8px"}}]}]}`
 	if _, err := DecodeVariantSet([]byte(j)); err != nil {
 		t.Fatalf("legit style must be accepted, got: %v", err)
+	}
+}
+
+// TestINV6RetirementAcceptsRawContent is the flipped half of TestMaliciousFixtures.
+// Every row here was REJECTED under INV-6 and must now be ACCEPTED: INV-6 was
+// retired 2026-07-27 because it guarded the wrong boundary — the author of a
+// variant op is the publisher, a trusted actor (spec §0 Actors), not the
+// anonymous viewer. Containment of publisher-authored CSS/HTML/JS moved to the
+// wholesale-replaced CSP pinned to the authored-revision script hash
+// (INV-11/INV-12). §6a forbids reintroducing any of these string scans as
+// "defense in depth" — they produce false rejections and add nothing CSP does
+// not already guarantee. Rows that survive INV-6's retirement (https-only URLs,
+// the selector grammar, the size caps, the attr allowlist) stay in
+// TestMaliciousFixtures.
+func TestINV6RetirementAcceptsRawContent(t *testing.T) {
+	cases := []struct {
+		name string
+		json string
+	}{
+		// Was "script-tag-via-unknown-op": raw markup is now a first-class op.
+		{"raw-html-with-script-tag", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"setHTML","selector":".x","html":"<b>hi</b><script>alert(1)</script>"}]}]}`},
+		{"raw-html-inline-handler", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"setHTML","selector":".x","html":"<div onclick=\"alert(1)\">x</div>"}]}]}`},
+		// Was "css-url-exfil" / "css-expression" / "css-import" — the §5 forbidden
+		// CSS token list is retired.
+		{"css-url", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"background":"url(https://cdn.example.com/x.png)"}}]}]}`},
+		{"css-expression", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"width":"expression(alert(1))"}}]}]}`},
+		{"css-import", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"color":"@import 'x'"}}]}]}`},
+		// Was "css-forbidden-property" — the §5b property allowlist is retired.
+		{"css-any-property", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"position":"fixed","grid-template-columns":"1fr 2fr"}}]}]}`},
+		// Was "css-breakout-semicolon".
+		{"css-semicolon-value", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"color":"red;position:fixed"}}]}]}`},
+		// Was the substring-scan bypass rows (image-set / cross-fade / backslash
+		// escape / case + whitespace tolerance): there is no substring scan left to
+		// bypass.
+		{"css-image-set", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"background":"image-set(\"https://cdn.example.com/x\" 1x)"}}]}]}`},
+		{"css-cross-fade", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"background":"cross-fade(url(https://cdn.example.com/x), red)"}}]}]}`},
+		{"css-backslash-escape", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"background":"\\75 rl(https://cdn.example.com/x)"}}]}]}`},
+		{"css-url-uppercase", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"background":"URL(https://cdn.example.com/x)"}}]}]}`},
+		// §6a raw-content ops proper.
+		{"addStyle-raw-css", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"addStyle","css":"@import url(https://cdn.example.com/t.css); .x{position:fixed}"}]}]}`},
+		{"addScript-inline-code", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"addScript","code":"document.title='demo'"}]}]}`},
+		{"addScript-src-fetch-input", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"addScript","src":"https://cdn.example.com/demo.js"}]}]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := DecodeVariantSet([]byte(tc.json)); err != nil {
+				t.Fatalf("INV-6 is retired: %s must be accepted, got: %v", tc.name, err)
+			}
+		})
+	}
+}
+
+// TestRawOpGuards pins the guards that SURVIVE on the raw-content ops (§6a):
+// size caps, the selector rules, and addScript's src-xor-code contract. These
+// are parse/abuse bounds, not injection controls, so INV-6's retirement leaves
+// them standing.
+func TestRawOpGuards(t *testing.T) {
+	set := func(op string) string {
+		return `{"version":"v1","id":"s","variants":[{"id":"a","ops":[` + op + `]}]}`
+	}
+	reject := []struct {
+		name string
+		json string
+	}{
+		{"setHTML-oversize", set(`{"op":"setHTML","selector":".x","html":"` + strings.Repeat("a", MaxRawHTMLBytes+1) + `"}`)},
+		{"setHTML-requires-selector", set(`{"op":"setHTML","html":"<b>x</b>"}`)},
+		{"setHTML-bad-selector", set(`{"op":"setHTML","selector":"div:has(.x)","html":"<b>x</b>"}`)},
+		{"setHTML-empty", set(`{"op":"setHTML","selector":".x","html":""}`)},
+		{"addStyle-oversize", set(`{"op":"addStyle","css":"` + strings.Repeat("a", MaxStylePatchBytes+1) + `"}`)},
+		{"addStyle-rejects-selector", set(`{"op":"addStyle","selector":".x","css":".a{color:red}"}`)},
+		{"addStyle-empty", set(`{"op":"addStyle","css":""}`)},
+		{"addScript-oversize", set(`{"op":"addScript","code":"` + strings.Repeat("a", MaxRawScriptBytes+1) + `"}`)},
+		{"addScript-src-and-code", set(`{"op":"addScript","src":"https://cdn.example.com/a.js","code":"x=1"}`)},
+		{"addScript-neither", set(`{"op":"addScript"}`)},
+		{"addScript-rejects-selector", set(`{"op":"addScript","selector":".x","code":"x=1"}`)},
+		// src is a publish-time fetch input under §4a/INV-13: https only.
+		{"addScript-http-src", set(`{"op":"addScript","src":"http://cdn.example.com/a.js"}`)},
+		{"addScript-data-src", set(`{"op":"addScript","src":"data:text/javascript,alert(1)"}`)},
+		{"addScript-javascript-src", set(`{"op":"addScript","src":"javascript:alert(1)"}`)},
+		// Raw content does not smuggle in stray declarative fields.
+		{"setHTML-stray-value", set(`{"op":"setHTML","selector":".x","html":"<b/>","value":"y"}`)},
+		{"setText-stray-html", set(`{"op":"setText","selector":".x","value":"y","html":"<b/>"}`)},
+		// §5 caps the raw-script budget per authored revision, not per op: two
+		// under-cap bodies that together exceed it are rejected.
+		{"addScript-revision-budget", `{"version":"v1","id":"s","variants":[` +
+			`{"id":"a","ops":[{"op":"addScript","code":"` + strings.Repeat("a", MaxRawScriptBytes-10) + `"}]},` +
+			`{"id":"b","ops":[{"op":"addScript","code":"` + strings.Repeat("b", 20) + `"}]}]}`},
+		// §5 caps the style patch per VARIANT: applyStyle + addStyle share it.
+		{"style-variant-budget", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[` +
+			`{"op":"addStyle","css":"` + strings.Repeat("a", MaxStylePatchBytes-10) + `"},` +
+			`{"op":"applyStyle","selector":".x","props":{"color":"` + strings.Repeat("b", 20) + `"}}]}]}`},
+	}
+	for _, tc := range reject {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := DecodeVariantSet([]byte(tc.json)); err == nil {
+				t.Fatalf("expected rejection for %s, got nil error", tc.name)
+			}
+		})
+	}
+}
+
+// TestUpstreamValidation pins the publisher-named live origin (§4a): optional,
+// nil-safe, and https-only via the one existing ValidateURL. The §4a resolved-
+// address deny-list (INV-13) needs a resolver and is not this slice's job — the
+// scheme gate is.
+func TestUpstreamValidation(t *testing.T) {
+	base := func(u *UpstreamConfig) *PublishedWalkthrough {
+		return &PublishedWalkthrough{
+			Version: SchemaV1, ID: "wt", Title: "t", Upstream: u,
+			Steps: []Step{{ID: "s1", Title: "One", Advance: Advance{Type: "auto", MS: 1000}}},
+		}
+	}
+	// Absent upstream is legal and must not panic.
+	if err := base(nil).Validate(); err != nil {
+		t.Fatalf("nil upstream must be accepted, got: %v", err)
+	}
+	if err := base(&UpstreamConfig{URL: "https://demo.example.com/app"}).Validate(); err != nil {
+		t.Fatalf("https upstream must be accepted, got: %v", err)
+	}
+	for _, bad := range []string{
+		"", "http://demo.example.com", "data:text/html,<script>",
+		"file:///etc/passwd", "blob:https://x/y", "javascript:alert(1)",
+		"ftp://demo.example.com",
+	} {
+		if err := base(&UpstreamConfig{URL: bad}).Validate(); err == nil {
+			t.Errorf("upstream %q must be rejected (https only)", bad)
+		}
 	}
 }
 

@@ -43,13 +43,33 @@ func noControlChars(s string) bool {
 	return true
 }
 
-// Validate enforces the declarative op contract (spec §6): the op type is known,
-// the selector is in the restricted grammar, only the fields legal for the op
-// type are populated, and each field is within its allowlist/limit. There is no
-// op that accepts markup or code — INV-6 holds structurally.
+// Validate enforces the op contract (spec §6/§6a): the op type is known, the
+// selector is present and in the restricted grammar for element-targeting ops
+// and absent for variant-root ops, only the fields legal for the op type are
+// populated, and each is within its surviving limit.
+//
+// The raw-content ops (setHTML/addStyle/addScript) are deliberately NOT
+// inspected for "script-ness": INV-6 is retired and §6a forbids reintroducing
+// the string scan as defense-in-depth, because it produces false rejections of
+// legitimate publisher variants while adding nothing the wholesale-replaced CSP
+// (INV-11/INV-12) does not already guarantee. What survives is size caps (§5),
+// the selector grammar (§5a), and https-only URLs (§5, now justified by
+// INV-13).
 func (o *Op) Validate() error {
-	if err := ValidateSelector(o.Selector); err != nil {
-		return err
+	switch o.Op {
+	case OpAddStyle, OpAddScript:
+		// Variant-root ops (§6a): they append to the variant root rather than
+		// mutating a matched element, so a selector is meaningless.
+		if o.Selector != "" {
+			return errf("%s: unexpected field 'selector'", o.Op)
+		}
+	case OpSetText, OpSetAttribute, OpReplaceClass, OpAddClass, OpRemoveClass,
+		OpApplyStyle, OpSetImageSrc, OpSetHTML:
+		if err := ValidateSelector(o.Selector); err != nil {
+			return err
+		}
+	default:
+		return errf("unknown op type %q", o.Op)
 	}
 	switch o.Op {
 	case OpSetText:
@@ -103,8 +123,78 @@ func (o *Op) Validate() error {
 			return err
 		}
 		return ValidateURL(o.URL)
+	case OpSetHTML:
+		if err := o.forbidExcept("html"); err != nil {
+			return err
+		}
+		if o.HTML == "" {
+			return errf("setHTML: html is required")
+		}
+		if len(o.HTML) > MaxRawHTMLBytes {
+			return errf("setHTML: html %d bytes exceeds max %d", len(o.HTML), MaxRawHTMLBytes)
+		}
+		return nil
+	case OpAddStyle:
+		if err := o.forbidExcept("css"); err != nil {
+			return err
+		}
+		if o.CSS == "" {
+			return errf("addStyle: css is required")
+		}
+		// The per-variant style budget (§5) is enforced by Variant.Validate,
+		// which sees every applyStyle and addStyle in the variant; this per-op
+		// check only bounds a single op so an oversize one fails at its source.
+		if len(o.CSS) > MaxStylePatchBytes {
+			return errf("addStyle: css %d bytes exceeds max %d", len(o.CSS), MaxStylePatchBytes)
+		}
+		return nil
+	case OpAddScript:
+		if err := o.forbidExcept("code", "src"); err != nil {
+			return err
+		}
+		switch {
+		case o.Src != "" && o.Code != "":
+			// §6a: src and code are alternative sources for ONE body.
+			return errf("addScript: src and code are alternatives; supply exactly one")
+		case o.Src != "":
+			// src is a publish-time fetch input (§6a). Here it is only gated on
+			// scheme/length; the §4a resolved-address checks and the fetch that
+			// inlines the body belong to the publish pipeline.
+			if err := ValidateURL(o.Src); err != nil {
+				return errf("addScript: %w", err)
+			}
+			return nil
+		case o.Code != "":
+			// The per-revision script budget (§5) is enforced by
+			// VariantSet.Validate across every variant.
+			if len(o.Code) > MaxRawScriptBytes {
+				return errf("addScript: code %d bytes exceeds max %d", len(o.Code), MaxRawScriptBytes)
+			}
+			return nil
+		default:
+			return errf("addScript: one of src or code is required")
+		}
 	default:
+		// Unreachable: the selector switch above already rejected unknown types.
 		return errf("unknown op type %q", o.Op)
+	}
+}
+
+// styleBytes reports how much of the variant's §5 style-patch budget this op
+// consumes. applyStyle and addStyle are two spellings of the same thing (a CSS
+// patch on the variant) and therefore share one budget.
+func (o *Op) styleBytes() int {
+	switch o.Op {
+	case OpApplyStyle:
+		n := 0
+		for prop, val := range o.Props {
+			n += len(prop) + len(val)
+		}
+		return n
+	case OpAddStyle:
+		return len(o.CSS)
+	default:
+		return 0
 	}
 }
 
@@ -134,6 +224,18 @@ func (o *Op) forbidExcept(allowed ...string) error {
 	if len(o.Props) > 0 && !ok["props"] {
 		return errf("%s: unexpected field 'props'", o.Op)
 	}
+	if o.HTML != "" && !ok["html"] {
+		return errf("%s: unexpected field 'html'", o.Op)
+	}
+	if o.CSS != "" && !ok["css"] {
+		return errf("%s: unexpected field 'css'", o.Op)
+	}
+	if o.Code != "" && !ok["code"] {
+		return errf("%s: unexpected field 'code'", o.Op)
+	}
+	if o.Src != "" && !ok["src"] {
+		return errf("%s: unexpected field 'src'", o.Op)
+	}
 	return nil
 }
 
@@ -153,5 +255,13 @@ func (o *Op) signature() string {
 	b.WriteString(o.To)
 	b.WriteByte('|')
 	b.WriteString(o.URL)
+	b.WriteByte('|')
+	b.WriteString(o.HTML)
+	b.WriteByte('|')
+	b.WriteString(o.CSS)
+	b.WriteByte('|')
+	b.WriteString(o.Code)
+	b.WriteByte('|')
+	b.WriteString(o.Src)
 	return b.String()
 }
