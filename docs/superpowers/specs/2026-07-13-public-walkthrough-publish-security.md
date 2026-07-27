@@ -149,6 +149,25 @@ credentials, deny-by-default.
 | Revoke | Mark the share dead (tombstone, not delete — so an audit trail of "was published, now revoked" survives). Artifact + variants + walkthrough + feedback routes all 404 (INV-4). |
 | Redaction | Token never appears in `debug.Log`, session log, incident events, proxy traffic log, or `Referer`. Correlation uses `hash[:8]` only (INV-9). **The proxy traffic log logs full request paths by default** (`proxy_handler.go:532` → `HTTPLogEntry.URL = r.URL.String()`), so publish routes MUST scrub the `/s/{token}` path segment to `hash[:8]` **before** the traffic log records it (P6/P7). Artifact responses also set `Referrer-Policy: no-referrer` so the token path never leaks to the upstream's third-party subresource requests — but that header is client-side only and does **not** cover the server-side traffic log. |
 
+### 3a. Token-per-file serve semantics
+
+A publish serves **files**, and each served file carries its **own** `(id, token)`
+pair — publishing is not one token fronting a directory. This keeps §2b's route
+shape (`/s/{token}/…`) but scopes each token to exactly one file.
+
+| Property | Rule |
+|---|---|
+| Key | The pair is keyed by **`(filename, content-digest)`**. `filename` is the publisher-facing identity; `content-digest` is `sha256` of the served bytes, and is what makes a revision addressable and its script hashes computable (INV-12). |
+| `id` | Stable, non-secret, per-file. Safe to log, safe to show in `publish status`. Correlation handle for feedback rows and for the authored revision's pinned `script-src` set. |
+| `token` | The §3 secret: 256-bit CSPRNG, returned once, sha256-at-rest, constant-time verified. All of §3 applies unchanged **per file** — there is no shared or derived token, so compromising one file's token grants nothing about another's. |
+| **Edit keeps the token** | Re-publishing a file changes its `content-digest`, so a **new revision** is recorded under the **same `id` and the same token**. Already-shared URLs keep working and now serve the new revision — the point of publishing a demo is that the link you sent stays live while you iterate. The revision's `script-src` hash set is recomputed on each edit (INV-12); the token is **not** rotated as a side effect. Rotation stays an explicit `publish rotate` (§2a). |
+| **Delete revokes** | Deleting a file **revokes its token** with full INV-4 force: artifact, variants, walkthrough, and feedback routes 404 atomically, the share is tombstoned rather than erased (audit trail), and its feedback is purged (§7 retention). Delete is per-file — it revokes that file's token and **only** that one, leaving sibling files in the same publish serving. |
+| No implicit widening | A token grants its **one** `(filename, content-digest)` lineage and nothing else. There is no path-traversal or sibling-enumeration route from a valid token to another file's bytes; deny-by-default (INV-2) covers the rest of the namespace. |
+
+| # | Invariant | Test shape |
+|---|---|---|
+| **INV-15** | Each served file has its own `(id, token)` keyed by `(filename, content-digest)`. Editing a file preserves its token and serves the new revision; deleting a file revokes that token and no other. A token is never valid for a file it was not minted for. | Publish two files → each token serves only its own file (cross-token GET 404s). Edit file A → same URL serves the new digest, token unchanged, `script-src` hashes recomputed. Delete file A → A's routes 404 (INV-4) while B still serves. |
+
 ---
 
 ## 4. HTTP header policy
@@ -391,6 +410,7 @@ declared dependency closure pulls in a forbidden module, the build gate goes red
 | `variant-cycler` (**new**) | the public variant-switch UI |
 | `walkthrough-view` (**new**) | read-only player — narration cards + highlight; **no** MCP/exec forwarding (unlike chrome-only `walkthrough.js` / `walkthrough-proxy.js`) |
 | `feedback-client` (**new**) | posts to `POST /s/{token}/feedback`; `connect-src 'self'` only |
+| `demo-indicator` (**new**) | the always-on disclosure badge (§9c, INV-14) — **mandatory**, not an opt-in module |
 | `ui-tokens`, `toast` (public subset) | styling + inert notices |
 
 ### 9b. Forbidden from RolePublic (build-gate fails if pulled in)
@@ -410,6 +430,23 @@ reclassifying fails CI (the `TestUnscopedCallSites`-style pinned-set pattern
 from `daemon-architecture.md`). The public bundle is served content-addressed at
 `/__devtool/inject.<hash>.js` for `RolePublic` (its own hash flavour, per
 `injector.go`'s per-role cached asset map).
+
+### 9c. Always-on demo indicator
+
+Every published artifact renders a **persistent, non-dismissible indicator**
+identifying it as an `agnt` demo of a proxied site — not the site itself.
+
+| Property | Rule |
+|---|---|
+| Always on | Rendered on **every** public artifact response. There is **no** publisher setting, URL parameter, config key, or variant op that removes, hides, or empties it. A `.agnt.kdl` key that appeared to disable it would be a Config Authority bug (`daemon-architecture.md`) — the correct behaviour is that no such key exists. |
+| Non-dismissible | No close affordance. It may collapse to a compact form, but a collapsed state still shows the disclosure text and is re-expandable. |
+| Tamper-resistant | Mounted in a **closed shadow root** at a top z-layer, styled from the RolePublic `ui-tokens` scale, so neither upstream CSS nor a variant op (§6a — which may now carry raw CSS/HTML, INV-6 retired) can hide, cover, or restyle it out of legibility. A variant that visually obscures it is a defect in the renderer's layering, not a supported effect. |
+| Content | Names `agnt`, states the page is a **demo of a proxied site**, and links to the publisher-visible share identity (`id`, §3a — never the token, INV-9). |
+| Why | This is the **honest** mitigation for publisher-side deception, which §4a's origin allowlist explicitly cannot and does not address. A proxied lookalike is indistinguishable from the real site to a viewer *unless something on the page says otherwise*; the indicator is that something. It is a disclosure control, so its value is entirely in being unconditional — an indicator that can be turned off protects exactly the viewers who most need it least. |
+
+| # | Invariant | Test shape |
+|---|---|---|
+| **INV-14** | Every public artifact response renders the demo indicator, and no publisher-reachable input (config, op, query param, feedback) can remove, hide, or blank it. | Serve an artifact → indicator present in the DOM with non-empty disclosure text. Publish a variant whose raw CSS/HTML targets the indicator (`display:none`, overlay, removal) → indicator still present and visible. Fuzz publish inputs for a disable path → none exists. |
 
 ---
 
@@ -441,6 +478,8 @@ Traceability from invariant/limit to the enforcing P-task.
 | Variant/walkthrough/op **schemas + validators** (§5, §5a, §6, §6a) | ~~INV-6~~ (retired — validators must **not** scan raw content for code-shape); all §5 limits; §5b is guidance only | **P2** — schemas & validators |
 | **RolePublic bundle** split + dependency-closure build gate (§9) | INV-5 | **P4** — public bundle |
 | **Share tokens** — CSPRNG, 256-bit, sha256-at-rest, constant-time verify, rotate/revoke, redaction (§3) | INV-3, INV-9 | **P6** — token store |
+| **Token-per-file serve semantics** — `(id, token)` keyed by `(filename, content-digest)`; edit keeps token, delete revokes (§3a) | INV-15, INV-4 | **P6** (store/keying) / **P7** (routes) |
+| **Always-on demo indicator** — mandatory RolePublic module, non-dismissible, tamper-resistant (§9c) | INV-14 | **P4** (module) / **P10** (variant-cannot-hide-it e2e) |
 | **Public routes** + endpoint matrix + deny-by-default + header policy + scope isolation (§2, §4) | INV-1, INV-2, INV-10, INV-11, INV-12 | **P7** — public routes |
 | **Public-plane CSP wholesale replace** — `Header.Del` upstream `Content-Security-Policy` + `Content-Security-Policy-Report-Only`, then `Header.Set` agnt policy; **no strip-merge reuse** of `stripFrameDenyHeaders` (§4) | INV-11, INV-12 | **P7** (rule) / **P10** (upstream-`unsafe-inline` e2e assertion) |
 | **Token log-scrub** — scrub `/s/{token}` to `hash[:8]` before traffic/request logging (§3, §9) | INV-9 | **P6/P7** |
