@@ -4,6 +4,27 @@ Date: 2026-07-13
 Status: Normative (keystone of the walkthrough-publish epic)
 Kind: Security design spec (contract). Downstream P-tasks encode these numbers and tables verbatim.
 
+## Amendment log
+
+Invariant numbers are **never reused or renumbered** — a retired invariant keeps
+its row and states why it was retired, so downstream tasks that already encode a
+number keep resolving it.
+
+| Date | Change | Sections touched |
+|---|---|---|
+| 2026-07-13 | Original spec. | all |
+| 2026-07-27 | **INV-6 retired** (variant ops may carry raw CSS/HTML/JS from the authored revision). **INV-11/INV-12 activated** (live upstream is now genuinely proxied); `script-src` widens to the authored-revision script hash. **INV-13** upstream-origin allowlist (SSRF/open-relay hygiene). **INV-14** always-on demo indicator. **INV-15** token-per-file serve semantics. | §0, §1, §3a, §4, §4a, §5, §5b, §6, §9a, §9c, §11 |
+
+**Explicitly unchanged by the 2026-07-27 amendment:**
+
+- **INV-1 (public traffic never satisfies dev session scope)** stands verbatim.
+  Widening what a *variant op* may carry does not widen what the *public plane*
+  may reach. Public traffic still resolves to no `scope.Scope` and still cannot
+  touch `proc`/`proxy`/`proxylog`/`get_errors`/`get_incidents`/`exec`.
+- **INV-4 (a revoked share serves nothing)** stands verbatim. Revoke remains
+  atomic, grace-window-free, and cache-proof; §3a's per-file revoke is an
+  *additional* revoke trigger, not a relaxation of this one.
+
 ## 0. Scope and threat model
 
 This spec adds **publishing** to walkthrough mode. The existing walkthrough demo
