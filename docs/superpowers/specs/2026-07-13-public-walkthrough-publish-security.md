@@ -176,6 +176,64 @@ and strips only `frame-ancestors`, *preserving all other upstream CSP directives
 
 ---
 
+## 4a. Upstream origin allowlist (SSRF / open-relay hygiene)
+
+Proxying a **publisher-named** live origin (§0) turns the daemon into a fetcher
+that will retrieve an arbitrary URL and return the bytes. Without a constraint
+that is an **open relay into whatever network the daemon can see** — a developer
+laptop's LAN, a CI runner's VPC, a cloud instance's metadata service. This
+section exists to close that, and **only** that.
+
+### What this is NOT
+
+**This is not an anti-phishing control, and must never be described as one.**
+A publisher may proxy any legitimate public site and dress it up with variant
+ops; nothing here prevents that, and nothing here is intended to. Deception by
+the publisher is out of the threat model (§0) — the publisher is trusted, and
+the honest mitigation is **disclosure**, i.e. the always-on demo indicator
+(INV-14, §9c). Do not reach for this allowlist to solve a deception problem: it
+would not work (attackers use public origins, which are exactly what the
+allowlist permits) and the attempt would cost real functionality.
+
+### Deny-list (deny-by-default after resolution)
+
+The publisher-supplied origin is resolved to IPs; **every** resolved address must
+pass, or the origin is rejected at `publish create`/`rotate` time with a loud,
+actionable error (never a silent fallback — `daemon-architecture.md` §"Silent
+Failure Prohibition").
+
+| Denied | Range / value |
+|---|---|
+| Loopback | `127.0.0.0/8`, `::1` |
+| RFC1918 private | `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16` |
+| Link-local | `169.254.0.0/16`, `fe80::/10` |
+| **Cloud metadata** | **`169.254.169.254`** (AWS/Azure/GCP/OpenStack), `fd00:ec2::254`, `100.100.100.200` (Alibaba), `169.254.170.2` (ECS task metadata), and any host resolving to one of them (`metadata.google.internal`, `metadata.goog`) |
+| Unique-local / IPv6 private | `fc00::/7` |
+| Carrier-grade NAT / shared | `100.64.0.0/10` |
+| Unspecified / broadcast / reserved | `0.0.0.0/8`, `::`, `255.255.255.255`, `240.0.0.0/4`, multicast `224.0.0.0/4` + `ff00::/8` |
+| Non-`https:` schemes | anything but `https:` (§5) |
+
+**Evasion handling — all required, the list alone is insufficient:**
+
+- **IPv4-mapped/compatible IPv6** (`::ffff:169.254.169.254`) and non-dotted-quad
+  encodings (decimal, octal, hex) are normalized **before** the check, not after.
+- **Check the resolved IP, not the hostname.** A hostname is attacker-chosen
+  text; only what it resolves to matters.
+- **DNS rebinding:** pin the resolved address and dial **that IP**, so the
+  address validated is the address connected to. A re-resolve between check and
+  dial is a TOCTOU hole.
+- **Redirects:** re-run the full check on **every** hop; a public origin that
+  302s to `169.254.169.254` is the canonical bypass. Cap redirect depth and fail
+  closed on the cap, never truncate the chain silently.
+- Applies equally to **op-supplied URLs** (§6a `addScript src`, `setImageSrc`),
+  not just the top-level upstream.
+
+| # | Invariant | Test shape |
+|---|---|---|
+| **INV-13** | Every origin the daemon fetches on behalf of a publish — the upstream target, every redirect hop, and every op-supplied URL — resolves **only** to addresses outside the deny-list above, is `https:`, and is dialed at the **same** address that was validated. Failure is a loud rejection, never a silent skip or an unproxied fallback. | Table test over the deny-list with decimal/octal/hex/IPv4-mapped encodings of each entry; a redirect chain ending at `169.254.169.254` is refused at the hop, not at the origin; a rebinding resolver (first answer public, second private) cannot cause a private dial. |
+
+---
+
 ## 5. Concrete limits table
 
 P2's validators encode these **verbatim**. Reject (422) anything exceeding a limit; never truncate silently.
@@ -386,6 +444,7 @@ Traceability from invariant/limit to the enforcing P-task.
 | **Public routes** + endpoint matrix + deny-by-default + header policy + scope isolation (§2, §4) | INV-1, INV-2, INV-10, INV-11, INV-12 | **P7** — public routes |
 | **Public-plane CSP wholesale replace** — `Header.Del` upstream `Content-Security-Policy` + `Content-Security-Policy-Report-Only`, then `Header.Set` agnt policy; **no strip-merge reuse** of `stripFrameDenyHeaders` (§4) | INV-11, INV-12 | **P7** (rule) / **P10** (upstream-`unsafe-inline` e2e assertion) |
 | **Token log-scrub** — scrub `/s/{token}` to `hash[:8]` before traffic/request logging (§3, §9) | INV-9 | **P6/P7** |
+| **Upstream origin allowlist** — deny-list + normalization + resolve-pinned dial + per-hop redirect re-check (§4a) | INV-13 | **P7** (rule) / **P10** (redirect + rebinding e2e) |
 | **Feedback** sink — anonymous, rate-limited, size-capped, inert, retention (§7) | INV-7 | **P8** — feedback |
 | **Persistence + revoke/restart** — authoritative store, atomic revoke, corruption-fails-loud (§8) | INV-4, INV-8 | **P6/P9** — publish store |
 | **End-to-end**: token guess, revoke-kills-all, forbidden-module build fail, XSS/JS-injection attempts, **upstream `unsafe-inline` CSP stripped** (INV-12), restart survival | INV-1…INV-12 (integration) | **P10** — e2e |
