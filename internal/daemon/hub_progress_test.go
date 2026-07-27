@@ -4,6 +4,7 @@ import (
 	"context"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -13,22 +14,73 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// hubStatusInterval is the hub-side STATUS tick used by these tests. It is a
+// hub *input*, not an assertion: every client deadline in this file is sized as
+// a multiple of it (or of an observed baseline), never the other way round.
+const hubStatusInterval = 10 * time.Millisecond
+
+// measureRoundTripBaseline times a trivial, immediately-answered request
+// against the live hub under whatever load the machine is currently carrying.
+// It is the calibration input for any client idle deadline in this file: a
+// hardcoded millisecond budget encodes an assumption about scheduler
+// promptness that a loaded host simply outruns, whereas a multiple of an
+// observed same-run round trip scales with the actual machine.
+// See .claude/rules/testing-timing-assertion-flakes.md.
+func measureRoundTripBaseline(t *testing.T, sock string) time.Duration {
+	t.Helper()
+	probe := hubclient.NewConn(hubclient.WithSocketPath(sock), hubclient.WithTimeout(30*time.Second))
+	defer func() { _ = probe.Close() }()
+
+	worst := time.Millisecond
+	for i := 0; i < 5; i++ {
+		start := time.Now()
+		_, err := probe.Request(hubproto.VerbInfo).JSON()
+		require.NoError(t, err, "baseline probe request failed")
+		if d := time.Since(start); d > worst {
+			worst = d
+		}
+	}
+	return worst
+}
+
 // TestHubProgressKeepsSilentRequestAlive reproduces the production failure in
 // which a healthy, long-running daemon handler emitted no bytes before the
 // client's I/O deadline. STATUS frames are transport liveness, not the final
 // response, so the request must remain pending until its JSON result arrives.
+//
+// Load-invariance: the client's idle deadline is derived from an observed
+// same-run round-trip baseline rather than a fixed 25ms, and the handler's
+// duration is then derived from that deadline (silentMultiple deadline windows
+// wide). So the property under test is a *ratio* that holds at any absolute
+// speed: the request must survive many consecutive idle-deadline windows during
+// which the handler writes nothing at all. Nothing but a STATUS frame can
+// refresh that deadline (client conn.go refreshes only on ResponseStatus), so a
+// success here is positive evidence that STATUS frames were received — and the
+// observed elapsed time is asserted against the observed deadline to prove the
+// request really did outlive multiple windows rather than racing through one.
 func TestHubProgressKeepsSilentRequestAlive(t *testing.T) {
 	sock := filepath.Join(t.TempDir(), "hub.sock")
+
+	// silentMultiple: how many client idle-deadline windows the handler stays
+	// completely silent for. >1 is what gives the test teeth — with STATUS
+	// keepalive removed the request dies after the first window.
+	const silentMultiple = 6
+
+	var slowFor atomic.Int64 // handler sleep, set once the baseline is known
+
 	h := hubpkg.New(hubpkg.Config{
-		SocketPath:     sock,
-		MaxClients:     4,
-		WriteTimeout:   time.Second,
-		StatusInterval: 10 * time.Millisecond,
+		SocketPath:   sock,
+		MaxClients:   4,
+		WriteTimeout: time.Second,
+		// Status ticks land many times inside one client deadline window, so
+		// losing individual ticks to scheduler drift or a busy response writer
+		// cannot starve the deadline refresh.
+		StatusInterval: hubStatusInterval,
 	})
 	require.NoError(t, h.RegisterCommand(hubpkg.CommandDefinition{
 		Verb: "SLOW",
 		Handler: func(_ context.Context, conn *hubpkg.Connection, _ *hubproto.Command) error {
-			time.Sleep(65 * time.Millisecond)
+			time.Sleep(time.Duration(slowFor.Load()))
 			return conn.WriteJSON([]byte(`{"result":"done"}`))
 		},
 	}))
@@ -39,12 +91,34 @@ func TestHubProgressKeepsSilentRequestAlive(t *testing.T) {
 		require.NoError(t, h.Stop(ctx))
 	})
 
-	c := hubclient.NewConn(hubclient.WithSocketPath(sock), hubclient.WithTimeout(25*time.Millisecond))
+	baseline := measureRoundTripBaseline(t, sock)
+	// Idle deadline: generous against observed load, but still far shorter than
+	// the handler's silence, which is what the assertion turns on.
+	idleDeadline := 8 * baseline
+	if idleDeadline < 25*time.Millisecond {
+		idleDeadline = 25 * time.Millisecond
+	}
+	silence := silentMultiple * idleDeadline
+	slowFor.Store(int64(silence))
+	require.Greater(t, idleDeadline, 2*hubStatusInterval,
+		"idle deadline must span several STATUS ticks or the test is calibrating against tick jitter")
+
+	c := hubclient.NewConn(hubclient.WithSocketPath(sock), hubclient.WithTimeout(idleDeadline))
 	t.Cleanup(func() { _ = c.Close() })
 
+	start := time.Now()
 	got, err := c.Request("SLOW").JSON()
+	elapsed := time.Since(start)
 	require.NoError(t, err)
 	require.Equal(t, "done", got["result"])
+
+	// Judge from what actually happened, not from the nominal schedule: the
+	// result arrived only after the connection sat silent across several of its
+	// own idle-deadline windows. Without STATUS refreshing that deadline the
+	// read above would have failed instead of reaching this line.
+	require.Greater(t, elapsed, 2*idleDeadline,
+		"request completed inside ~one idle-deadline window: the STATUS keepalive path was never exercised (baseline=%s, deadline=%s, silence=%s)",
+		baseline, idleDeadline, silence)
 }
 
 // TestHubProgressDoesNotBlockOtherClients pins the daemon-wide responsiveness
@@ -59,7 +133,7 @@ func TestHubProgressDoesNotBlockOtherClients(t *testing.T) {
 		SocketPath:     sock,
 		MaxClients:     4,
 		WriteTimeout:   time.Second,
-		StatusInterval: 10 * time.Millisecond,
+		StatusInterval: hubStatusInterval,
 	})
 	require.NoError(t, h.RegisterCommand(hubpkg.CommandDefinition{
 		Verb: "BLOCKED",
@@ -112,7 +186,7 @@ func TestHubProgressDoesNotContaminateChunkedPayload(t *testing.T) {
 		SocketPath:     sock,
 		MaxClients:     4,
 		WriteTimeout:   time.Second,
-		StatusInterval: 10 * time.Millisecond,
+		StatusInterval: hubStatusInterval,
 	})
 	require.NoError(t, h.RegisterCommand(hubpkg.CommandDefinition{
 		Verb: "STREAM",
