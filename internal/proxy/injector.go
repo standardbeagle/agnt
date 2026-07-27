@@ -483,6 +483,42 @@ const authPopupRelayJS = `(function(){try{` +
 	`document.title='Authentication complete';window.close();` +
 	`}catch(e){}})();`
 
+// --- Wrap+inject seam (S6a finding: already role-parameterized; do NOT unify) ---
+//
+// A public reverse-proxy plane (S6) needs to wrap/inject an arbitrary upstream
+// with the RolePublic bundle. The reusable half of that is ALREADY extracted and
+// already role-parameterized, so no further extraction is warranted:
+//
+//   - bundle selection by role: instrumentationAssetPathForRole(scripts.Role)
+//     (+ PublicInstrumentationAssetPath / PublicInstrumentationAssetCSPHash)
+//   - injection-point + splice: instrumentationInsertOffset, spliceInto
+//   - wrap-decision predicates: isTopLevelNavigation, isContentFrameRequest,
+//     isFullHTMLDocument, ShouldInject
+//   - frame identity: frameIDForPath, shellFrameID, sanitizeFrameID,
+//     contentFrameSrc
+//   - escaping: jsStringLiteral, neutralizeScriptClose
+//
+// Every one of those is a package-level function with NO *ProxyServer receiver,
+// no session/project scope, and no __devtool control-surface dependency. A
+// public handler in this package calls them directly.
+//
+// What is deliberately NOT unified is the two composers below. BuildShellDocument
+// and InjectContentRuntime hardcode their role because they hardcode DEV-ONLY
+// payload — window.__devtool_proxy_id (the WS/exec control handle), the
+// auth-breakout config, and the auth popup relay. Adding a role parameter to
+// them would create exactly one code path on which a public response could carry
+// the dev control surface, which is an INV-1 regression, not a refactor. The
+// public plane composes its own shell (serveArtifact, public_routes.go) with the
+// RolePublic bundle, SRI integrity, and a CSP nonce — none of which the dev shell
+// has. This mirrors the same call already made and documented for
+// handlePublicInstrumentationAsset vs handleInstrumentationAsset above: separate
+// composer, structurally no dev fallback.
+//
+// Enforcement of the bundle half of INV-1 lives upstream of this file, in
+// scripts/embed.go's RolePublic explicit allowlist, pinned by
+// scripts/role_public_test.go (golden manifest, forbidden-symbol scan,
+// dependency closure).
+//
 // BuildShellDocument returns the outer chrome-shell HTML for a top-level
 // navigation. The shell carries the proxy-id, the chrome role marker, and the
 // instrumentation bundle, and embeds a single full-viewport content <iframe>
