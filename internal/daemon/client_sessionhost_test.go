@@ -18,6 +18,32 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// sessionHostLiveness is a generous ceiling for *liveness* waits in the
+// session-host client test: "does this frame ever arrive at all". Per
+// .claude/rules/testing-timing-assertion-flakes.md a generous ceiling guarding
+// an eventually-property is legitimate; what is not legitimate is a tight fixed
+// wall-clock budget standing in as the primary invariant. None of these waits
+// assert that a frame is *fast* — only that it arrives — so the ceiling costs
+// nothing on a healthy run (each wait returns as soon as the frame lands) and a
+// genuine delivery regression still fails the test, just later.
+const sessionHostLiveness = 60 * time.Second
+
+// awaitClosed blocks until ch is closed, failing with msg once the liveness
+// ceiling elapses. Polling a channel through require.Eventually keeps the
+// success path immediate while removing the fixed `time.After` window that made
+// this test load-sensitive.
+func awaitClosed(t *testing.T, ch <-chan struct{}, msg string) {
+	t.Helper()
+	require.Eventually(t, func() bool {
+		select {
+		case <-ch:
+			return true
+		default:
+			return false
+		}
+	}, sessionHostLiveness, 10*time.Millisecond, msg)
+}
+
 // TestClientSessionHost_FullCycle exercises the daemonclient.Client SESSION-HOST
 // wrapper methods (added for `agnt attach` / `agnt session hosts|kill`) end
 // to end: create a real PTY session, attach and observe the replay+live
@@ -47,7 +73,12 @@ func TestClientSessionHost_FullCycle(t *testing.T) {
 	time.Sleep(200 * time.Millisecond) // let "preexisting" land in scrollback
 
 	// --- First attach: observe attach_id/primary + replay + live echo ---
-	ctx1, cancel1 := context.WithTimeout(context.Background(), 5*time.Second)
+	// The attach stream's context is itself a liveness ceiling: if it expires
+	// mid-test the stream ends and every later frame (including the post-KILL
+	// exit frame) silently never arrives. A fixed 5s budget here was a second,
+	// less obvious wall-clock assumption — the whole first half of the test had
+	// to finish inside it.
+	ctx1, cancel1 := context.WithTimeout(context.Background(), sessionHostLiveness)
 	defer cancel1()
 
 	var (
@@ -81,11 +112,7 @@ func TestClientSessionHost_FullCycle(t *testing.T) {
 		)
 	}()
 
-	select {
-	case <-gotAttach:
-	case <-time.After(3 * time.Second):
-		t.Fatal("attach did not deliver an 'attached' frame")
-	}
+	awaitClosed(t, gotAttach, "attach did not deliver an 'attached' frame")
 	mu.Lock()
 	require.NotEmpty(t, attachID)
 	require.True(t, isPrimary)
@@ -95,7 +122,7 @@ func TestClientSessionHost_FullCycle(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		return strings.Contains(replayed.String(), "preexisting")
-	}, 3*time.Second, 20*time.Millisecond, "replay did not contain pre-existing scrollback")
+	}, sessionHostLiveness, 20*time.Millisecond, "replay did not contain pre-existing scrollback")
 
 	// Primary stdin: write "hello\n" to the cat child, expect it echoed
 	// back as a live stdout frame.
@@ -104,7 +131,7 @@ func TestClientSessionHost_FullCycle(t *testing.T) {
 		mu.Lock()
 		defer mu.Unlock()
 		return strings.Contains(replayed.String(), "hello")
-	}, 3*time.Second, 20*time.Millisecond, "stdin write was not echoed back")
+	}, sessionHostLiveness, 20*time.Millisecond, "stdin write was not echoed back")
 
 	// Resize must not error even though nothing asserts on the PTY size here.
 	require.NoError(t, client.SessionHostResize(created.SessionID, 100, 40))
@@ -113,7 +140,7 @@ func TestClientSessionHost_FullCycle(t *testing.T) {
 	require.NoError(t, client.SessionHostDetach(created.SessionID, attachID))
 
 	// --- Second attach (re-attach after detach): session must still be alive ---
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx2, cancel2 := context.WithTimeout(context.Background(), sessionHostLiveness)
 	defer cancel2()
 
 	var (
@@ -143,11 +170,7 @@ func TestClientSessionHost_FullCycle(t *testing.T) {
 		)
 	}()
 
-	select {
-	case <-gotAttach2:
-	case <-time.After(3 * time.Second):
-		t.Fatal("re-attach did not deliver an 'attached' frame")
-	}
+	awaitClosed(t, gotAttach2, "re-attach did not deliver an 'attached' frame")
 	require.NotEmpty(t, attachID2)
 	require.True(t, isPrimary2, "the primary slot should be reclaimable after the prior primary detached")
 
@@ -162,12 +185,22 @@ func TestClientSessionHost_FullCycle(t *testing.T) {
 	// --- Kill: the still-attached second connection must observe "exit" ---
 	require.NoError(t, client.SessionHostKill(created.SessionID))
 
-	select {
-	case code := <-gotExit:
-		require.Equal(t, -1, code) // KILL reaps the pgid via signal, not a clean stdin-close exit
-	case <-time.After(3 * time.Second):
-		t.Fatal("attached client did not observe an exit frame after SESSION-HOST KILL")
-	}
+	// Liveness: the exit frame must eventually reach the still-attached client.
+	// The old fixed 3s window made a scheduling stall look like a delivery
+	// regression; the assertion below still fails hard if the frame never
+	// arrives, or arrives with the wrong exit code.
+	var exitCode int
+	require.Eventually(t, func() bool {
+		select {
+		case code := <-gotExit:
+			exitCode = code
+			return true
+		default:
+			return false
+		}
+	}, sessionHostLiveness, 10*time.Millisecond,
+		"attached client did not observe an exit frame after SESSION-HOST KILL")
+	require.Equal(t, -1, exitCode) // KILL reaps the pgid via signal, not a clean stdin-close exit
 
 	// Session-host session must be gone from LIST after kill.
 	listAfter, err := client.SessionHostList(protocol.DirectoryFilter{Global: true})
