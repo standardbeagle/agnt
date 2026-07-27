@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -690,4 +691,173 @@ func TestIsClientDisconnect(t *testing.T) {
 			t.Errorf("expected NOT client-disconnect for %v", err)
 		}
 	}
+}
+
+// TestMCPAutostartHandler_DoesNotBlockSession pins the reason autostart is
+// detached: the MCP SDK dispatches notifications synchronously on the JSON-RPC
+// handler queue, so a blocking InitializedHandler wedges every later request on
+// the session. tools/list needs no daemon at all, so if it cannot answer while
+// autostart is still running, the server has gone silent — the exact Windows
+// failure this guards against (initialize succeeds, everything after it hangs
+// forever, no stderr, daemon healthy on its own connection).
+func TestMCPAutostartHandler_DoesNotBlockSession(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	ct, st := mcp.NewInMemoryTransports()
+
+	// Autostart that never returns until the test releases it, standing in for
+	// an unbounded depends-on wait inside the daemon.
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	var enterOnce sync.Once
+	blockingAutostart := func(dir string) (map[string]interface{}, error) {
+		enterOnce.Do(func() { close(entered) })
+		<-release
+		return map[string]interface{}{"scripts": []string{}}, nil
+	}
+	defer close(release)
+
+	opts := defaultDaemonServerOptions()
+	opts.InitializedHandler = mcpAutostartHandler(blockingAutostart)
+
+	server := mcp.NewServer(&mcp.Implementation{Name: "test-server", Version: "0.0.0"}, opts)
+	mcp.AddTool(server, &mcp.Tool{Name: "ping_tool", Description: "test"},
+		func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, any, error) {
+			return &mcp.CallToolResult{}, nil, nil
+		})
+
+	ss, err := server.Connect(ctx, st, nil)
+	if err != nil {
+		t.Fatalf("server connect: %v", err)
+	}
+	defer ss.Close()
+
+	cConn, err := ct.Connect(ctx)
+	if err != nil {
+		t.Fatalf("client transport connect: %v", err)
+	}
+
+	initID, err := jsonrpc.MakeID(float64(1))
+	if err != nil {
+		t.Fatalf("make ID: %v", err)
+	}
+	initParams := json.RawMessage(`{"protocolVersion":"2025-11-25","capabilities":{},` +
+		`"clientInfo":{"name":"testClient","version":"1.0.0"}}`)
+	if err := cConn.Write(ctx, &jsonrpc.Request{ID: initID, Method: "initialize", Params: initParams}); err != nil {
+		t.Fatalf("write initialize: %v", err)
+	}
+	if _, err := cConn.Read(ctx); err != nil {
+		t.Fatalf("read initialize response: %v", err)
+	}
+
+	if err := cConn.Write(ctx, &jsonrpc.Request{Method: "notifications/initialized"}); err != nil {
+		t.Fatalf("write initialized notification: %v", err)
+	}
+
+	// Only assert once autostart is genuinely in flight; otherwise a tools/list
+	// that raced ahead of it would pass without exercising the head-of-line case.
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("autostart never ran")
+	}
+
+	listID, err := jsonrpc.MakeID(float64(2))
+	if err != nil {
+		t.Fatalf("make ID: %v", err)
+	}
+	if err := cConn.Write(ctx, &jsonrpc.Request{ID: listID, Method: "tools/list", Params: json.RawMessage(`{}`)}); err != nil {
+		t.Fatalf("write tools/list: %v", err)
+	}
+
+	listCtx, listCancel := context.WithTimeout(ctx, 3*time.Second)
+	defer listCancel()
+	msg, err := cConn.Read(listCtx)
+	if err != nil {
+		t.Fatalf("tools/list did not answer while autostart was in flight: %v", err)
+	}
+	resp, ok := msg.(*jsonrpc.Response)
+	if !ok {
+		t.Fatalf("expected *jsonrpc.Response, got %T", msg)
+	}
+	if resp.Error != nil {
+		t.Fatalf("tools/list returned error: %v", resp.Error)
+	}
+	var listResult mcp.ListToolsResult
+	if err := json.Unmarshal(resp.Result, &listResult); err != nil {
+		t.Fatalf("unmarshal tools/list result: %v", err)
+	}
+	if len(listResult.Tools) == 0 {
+		t.Fatal("expected at least one registered tool in tools/list")
+	}
+}
+
+// TestWatchAutostartStall_ReportsAndStops verifies the stall notice actually
+// fires while autostart is in flight and stops once it finishes. The silent
+// stall was the whole diagnostic problem in the original failure: without this
+// notice a wedged autostart is indistinguishable from an idle healthy server.
+func TestWatchAutostartStall_ReportsAndStops(t *testing.T) {
+	const notice = 20 * time.Millisecond
+
+	// A locked buffer, not a swapped os.Stderr: this package runs tests in
+	// parallel, and hijacking the process-global stderr both loses this test's
+	// output to whoever else is writing and captures theirs as if it were ours.
+	var buf lockedBuffer
+
+	done := make(chan struct{})
+	watchDone := make(chan struct{})
+	go func() {
+		defer close(watchDone)
+		watchAutostartStall(&buf, filepath.FromSlash("/proj/demo"), notice, done)
+	}()
+
+	// Let it tick more than once so the repeat behaviour is covered too.
+	time.Sleep(120 * time.Millisecond)
+	close(done)
+
+	select {
+	case <-watchDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("watchAutostartStall did not return after done was closed")
+	}
+
+	out := buf.String()
+
+	if !strings.Contains(out, filepath.FromSlash("/proj/demo")) {
+		t.Errorf("notice does not name the project directory:\n%s", out)
+	}
+	if !strings.Contains(out, "still running after") {
+		t.Errorf("notice does not report elapsed time:\n%s", out)
+	}
+	// The single most important sentence: the reader must not conclude the
+	// MCP server is dead, which is exactly what the original silence implied.
+	if !strings.Contains(out, "NOT blocked") {
+		t.Errorf("notice does not state that tool calls are unaffected:\n%s", out)
+	}
+	if !strings.Contains(out, "depends-on") {
+		t.Errorf("notice does not name the likely cause:\n%s", out)
+	}
+	if strings.Count(out, "still running after") < 2 {
+		t.Errorf("expected the notice to repeat while the stall persists:\n%s", out)
+	}
+}
+
+// lockedBuffer is a bytes.Buffer safe for the watcher goroutine to write while
+// the test body reads it.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

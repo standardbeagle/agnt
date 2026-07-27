@@ -214,10 +214,7 @@ func handleDaemonStop(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, error
 	}
 
 	// Close our connection
-	if dt.client != nil {
-		dt.client.Close()
-		dt.client = nil
-	}
+	dt.resetClient()
 
 	return nil, DaemonOutput{
 		Running:    false,
@@ -240,10 +237,7 @@ func handleDaemonRestart(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, er
 		}
 
 		// Close our connection
-		if dt.client != nil {
-			dt.client.Close()
-			dt.client = nil
-		}
+		dt.resetClient()
 	}
 
 	// Start again

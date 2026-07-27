@@ -20,9 +20,16 @@ import (
 
 // DaemonTools wraps a daemon client for MCP tool handlers.
 type DaemonTools struct {
-	client  *daemonclient.ResilientClient
-	config  daemonclient.AutoStartConfig
-	version string // Client version for validation
+	client *daemonclient.ResilientClient
+	// clientMu serialises the lazy create-and-assign of client. Tool calls are
+	// dispatched concurrently by the MCP SDK and the initialized handler's
+	// autostart now runs on its own goroutine, so two callers can reach
+	// ensureConnected at once; without this they would each build a
+	// ResilientClient and one would be leaked with its heartbeat goroutine
+	// still running.
+	clientMu sync.Mutex
+	config   daemonclient.AutoStartConfig
+	version  string // Client version for validation
 
 	// Session management
 	sessionCode     string     // Attached session code (empty if not attached)
@@ -119,9 +126,24 @@ func (dt *DaemonTools) tryAutoAttach() {
 // ensureConnected ensures we have a connection to the daemon with automatic version checking and upgrade.
 // It also attempts to auto-attach to a session on first connection.
 func (dt *DaemonTools) ensureConnected() error {
+	if err := dt.ensureClient(); err != nil {
+		return err
+	}
+
+	// Auto-attach outside the client lock: it is a daemon round trip, and
+	// holding clientMu across it would serialise every concurrent tool call
+	// behind one session lookup. tryAutoAttach is idempotent on its own flag.
+	dt.tryAutoAttach()
+	return nil
+}
+
+// ensureClient lazily builds the ResilientClient, at most once across
+// concurrent callers.
+func (dt *DaemonTools) ensureClient() error {
+	dt.clientMu.Lock()
+	defer dt.clientMu.Unlock()
+
 	if dt.client != nil && dt.client.IsConnected() {
-		// Already connected, but try auto-attach if not done yet
-		dt.tryAutoAttach()
 		return nil
 	}
 
@@ -155,18 +177,36 @@ func (dt *DaemonTools) ensureConnected() error {
 		return nil
 	}
 
-	// Create and connect ResilientClient
+	// Create and connect ResilientClient. Name the socket and the recovery
+	// step: this error is what an agent sees in place of every tool result, so
+	// a bare "failed to connect" costs a round trip to find out where it even
+	// looked.
 	client := daemonclient.NewResilientClient(resilientConfig)
 	if err := client.Connect(); err != nil {
-		return fmt.Errorf("failed to connect to daemon: %w", err)
+		socketPath := dt.config.SocketPath
+		if socketPath == "" {
+			socketPath = daemonclient.DefaultSocketPath()
+		}
+		return fmt.Errorf("cannot reach the agnt daemon at %s: %w "+
+			"(the daemon auto-starts on demand; if this persists, run `agnt doctor` "+
+			"to inspect it or `agnt up` to start one explicitly)", socketPath, err)
 	}
 
 	dt.client = client
-
-	// Try to auto-attach to a session for the current directory
-	dt.tryAutoAttach()
-
 	return nil
+}
+
+// resetClient closes and drops the daemon client so the next ensureConnected
+// rebuilds it. Used by the daemon stop/restart tools, which invalidate the
+// connection out from under every other in-flight tool call.
+func (dt *DaemonTools) resetClient() {
+	dt.clientMu.Lock()
+	defer dt.clientMu.Unlock()
+
+	if dt.client != nil {
+		dt.client.Close()
+		dt.client = nil
+	}
 }
 
 // Close closes the daemon client connection.

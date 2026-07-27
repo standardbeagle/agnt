@@ -257,6 +257,17 @@ type runAutostartFunc func(projectDir string) (map[string]interface{}, error)
 // mcpAutostartHandler returns an InitializedHandler that triggers project
 // autostart for the current working directory. Safe to run alongside agnt run:
 // AutostartManager.GetOrCreate ensures at-most-one autostart per project.
+//
+// The autostart runs on its own goroutine and the handler returns immediately.
+// This is load-bearing, not a latency optimisation: the MCP SDK dispatches
+// notifications *synchronously* on the JSON-RPC handler queue (only calls get
+// jsonrpc2.Async), so anything this handler blocks on blocks every subsequent
+// request on the session — including tools/list, which needs no daemon at all.
+// Autostart reaches the daemon and can legitimately take a long time (a
+// depends-on wait is bounded only by the caller's context, per
+// .claude/rules/daemon-lifecycle.md), so blocking here turns a slow project
+// start into a permanently silent MCP server. Nothing consumes the result but
+// the diagnostics below, so detaching loses nothing.
 func mcpAutostartHandler(runAutostart runAutostartFunc) func(context.Context, *mcp.InitializedRequest) {
 	return func(ctx context.Context, req *mcp.InitializedRequest) {
 		cwd, err := os.Getwd()
@@ -265,14 +276,72 @@ func mcpAutostartHandler(runAutostart runAutostartFunc) func(context.Context, *m
 			return
 		}
 
-		result, err := runAutostart(cwd)
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "[agnt] autostart failed: %v\n", err)
-			return
-		}
+		go func() {
+			done := make(chan struct{})
+			defer close(done)
+			// A stalled autostart used to be indistinguishable from a healthy
+			// idle server: no output, no error, nothing to search for. Name it
+			// out loud, and say explicitly that tools still work, so a slow
+			// project start is not misread as the MCP server having died.
+			go watchAutostartStall(os.Stderr, cwd, autostartStallNotice, done)
 
-		if scripts, ok := result["scripts"]; ok {
-			fmt.Fprintf(os.Stderr, "[agnt] autostart completed: scripts=%v\n", scripts)
+			result, err := runAutostart(cwd)
+			if err != nil {
+				// Persist as well as print: a stalled or failed autostart is
+				// exactly the condition a developer goes looking for later,
+				// and MCP clients routinely discard the server's stderr.
+				selflog.Record("mcp", "autostart failed for %s: %v", cwd, err)
+				fmt.Fprintf(os.Stderr, "[agnt] autostart failed for %s: %v\n", cwd, err)
+				fmt.Fprintf(os.Stderr, "[agnt]   MCP tools are unaffected — the daemon is queried per call.\n")
+				fmt.Fprintf(os.Stderr, "[agnt]   Diagnose with: agnt doctor   (details: agnt hook log)\n")
+				return
+			}
+
+			if scripts, ok := result["scripts"]; ok {
+				fmt.Fprintf(os.Stderr, "[agnt] autostart completed: scripts=%v\n", scripts)
+			}
+		}()
+	}
+}
+
+// autostartStallNotice is how long autostart may run before it is reported as
+// still in flight. A project whose dev server takes longer than this to signal
+// ready is normal (dotnet cold start, NuGet restore); a project that never
+// signals is not, and the two are indistinguishable from the outside without a
+// message. Long enough not to fire on an ordinary start, short enough to beat
+// a developer's "is this thing hung?" instinct.
+//
+// watchAutostartStall takes the period as a parameter rather than reading this
+// directly, so a test can assert the notice's shape in milliseconds without
+// mutating package state that a still-running watcher may be reading.
+const autostartStallNotice = 20 * time.Second
+
+// watchAutostartStall reports an autostart that is still running when the
+// notice window elapses, then repeats on the same period so an indefinite
+// depends-on wait (bounded only by the daemon's context — see
+// daemon.waitForSingleDependency) leaves a trail instead of silence. Returns as
+// soon as done is closed.
+// The writer is a parameter rather than a hardcoded os.Stderr so tests can
+// capture the notice without swapping the process-global stderr, which would
+// race every other parallel test in this package.
+func watchAutostartStall(w io.Writer, projectDir string, every time.Duration, done <-chan struct{}) {
+	ticker := time.NewTicker(every)
+	defer ticker.Stop()
+
+	waited := time.Duration(0)
+	for {
+		select {
+		case <-done:
+			return
+		case <-ticker.C:
+			waited += every
+			msg := fmt.Sprintf("autostart still running after %s for %s", waited, projectDir)
+			selflog.Record("mcp", "%s", msg)
+			fmt.Fprintf(w, "[agnt] %s\n", msg)
+			fmt.Fprintf(w, "[agnt]   MCP tools are NOT blocked by this — calls are served normally.\n")
+			fmt.Fprintf(w, "[agnt]   Most likely a script's depends-on target has not signalled ready;\n")
+			fmt.Fprintf(w, "[agnt]   that wait is unbounded unless the dependency declares timeout=N in .agnt.kdl.\n")
+			fmt.Fprintf(w, "[agnt]   Inspect with: agnt doctor  |  agnt errors  |  proc list\n")
 		}
 	}
 }
