@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -566,15 +567,37 @@ func (d *Daemon) waitForSingleDependency(ctx context.Context, name string, dep c
 	})
 
 	waitCtx := ctx
+	bound := "unbounded (no timeout=N declared in .agnt.kdl)"
 	if dep.Timeout > 0 {
 		var cancel context.CancelFunc
 		waitCtx, cancel = context.WithTimeout(ctx, dep.Timeout)
 		defer cancel()
+		bound = fmt.Sprintf("timeout=%s", dep.Timeout)
 	}
 
+	// Name the wait before entering it. An unbounded wait is correct behavior
+	// (a slow dependency is Starting, not Stalled) but it is also the one place
+	// autostart can sit forever, so it must not be invisible to whoever is
+	// asking why nothing has come up yet.
+	log.Info(name, "dependency_wait_start",
+		fmt.Sprintf("waiting for dependency %q to signal ready — %s", dep.Name, bound))
+
+	start := time.Now()
 	if err := d.readySignaler.WaitReadyCtx(depProcessID, waitCtx); err != nil {
-		log.Warn(name, "dependency_wait",
-			fmt.Sprintf("cancelled waiting for %s: %v (starting anyway)", dep.Name, err))
+		waited := time.Since(start).Round(time.Millisecond)
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
+			log.Warn(name, "dependency_wait_timeout", fmt.Sprintf(
+				"dependency %q did not signal ready within its declared timeout=%s (waited %s); "+
+					"starting %q anyway, so it may come up against a backend that is not listening yet. "+
+					"Raise timeout=N on the depends-on in .agnt.kdl, or check %q with: proc status / proc output",
+				dep.Name, dep.Timeout, waited, name, dep.Name))
+		default:
+			log.Warn(name, "dependency_wait_cancelled", fmt.Sprintf(
+				"stopped waiting for dependency %q after %s because the autostart was cancelled (%v); "+
+					"starting %q anyway. This is expected when the session ends or the daemon shuts down mid-start",
+				dep.Name, waited, err, name))
+		}
 	} else {
 		emitProgress(progress, projectPath, AutostartProgress{
 			Phase: PhaseDependencyReady, Script: name, Dependency: dep.Name, Layer: layerIdx,
