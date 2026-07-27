@@ -14,6 +14,7 @@ number keep resolving it.
 |---|---|---|
 | 2026-07-13 | Original spec. | all |
 | 2026-07-27 | **INV-6 retired** (variant ops may carry raw CSS/HTML/JS from the authored revision). **INV-11/INV-12 activated** (live upstream is now genuinely proxied); `script-src` widens to the authored-revision script hash. **INV-13** upstream-origin allowlist (SSRF/open-relay hygiene). **INV-14** always-on demo indicator. **INV-15** token-per-file serve semantics. | §0, §1, §3a, §4, §4a, §5, §5b, §6, §9a, §9c, §11 |
+| 2026-07-27 (b) | **Contradiction repair inside the operative tables** — no invariant added, retired, or renumbered. (1) §6's `applyStyle` row still cited the retired §5b property allowlist and a forbidden-token re-check, which §5b, §5 and §6a all forbid enforcing; it now cites only the surviving §5 size cap and §5a selector grammar and names §5b as non-enforced guidance. (2) §6a's `addScript src` was resolvable only by adding a host source to `script-src`, which INV-12 forbids; **decision: `src` is a publish-time fetch input, not a runtime attribute** — the daemon fetches it under §4a/INV-13, inlines the body, and pins its hash (INV-12), so the served revision emits no `<script src>` and CSP is never widened to a host source. Rejected alternative: deleting `src` outright — it is the cheaper edit, but it removes a capability the epic exists to demo (third-party demo scripts), and §4a already treats `addScript src` as an origin the **daemon fetches**, so inlining reuses machinery INV-13 mandates anyway rather than deleting a feature to dodge a wording conflict. SRI is moot under this choice: nothing is loaded by URL at render time. (3) §11's P10 e2e row scoped coverage to INV-1…INV-12 and now covers INV-13/INV-14/INV-15. | §6, §6a, §11 |
 
 **Explicitly unchanged by the 2026-07-27 amendment:**
 
@@ -331,7 +332,7 @@ cheaper to validate, cheaper to diff between variants, and they do not consume
 | `setAttribute` | `{op:"setAttribute", selector, name, value}` | `el.setAttribute(name, value)` | `name` ∈ attr allowlist (`class`,`id`,`title`,`alt`,`aria-*`,`data-*`,`href`,`src`); `href`/`src` value must be `https:` (§5); **event-handler attrs (`on*`) forbidden** |
 | `replaceClass` | `{op:"replaceClass", selector, from, to}` | `classList.replace(from,to)` | idents only |
 | `addClass`/`removeClass` | `{op:"addClass", selector, value}` | `classList.add/remove` | ident only |
-| `applyStyle` | `{op:"applyStyle", selector, props:{...}}` | `el.style[prop]=val` per allowlisted prop | §5b allowlist; forbidden-token re-check |
+| `applyStyle` | `{op:"applyStyle", selector, props:{...}}` | `el.style[prop]=val` per prop | ≤4096 B per variant (§5 style-patch cap); `selector` per the §5a grammar. **No property allowlist and no forbidden-token scan** — §5b survives as non-enforced guidance only (retired with INV-6); validators MUST NOT enforce either list (§6a) |
 | `setImageSrc` | `{op:"setImageSrc", selector, url}` | `img.src = url` | `https:` only, ≤2048 chars |
 
 ### 6a. Raw-content ops (admitted by INV-6's retirement)
@@ -346,7 +347,23 @@ attributed to exactly one **authored revision** (§3a), which is what makes the
 |---|---|---|---|
 | `setHTML` | `{op:"setHTML", selector, html}` | `el.innerHTML = html` | ≤8192 B; selector per §5a; inline `on*` handlers and `javascript:` URLs inside the fragment are **inert under CSP** (`script-src` has no `unsafe-inline`) — the validator does not strip them |
 | `addStyle` | `{op:"addStyle", css}` | append `<style>` to the variant root | ≤4096 B per variant; no property allowlist (§5b retired); `url()`/`@import` targets are bounded by CSP `default-src`/`img-src`, not by a token scan |
-| `addScript` | `{op:"addScript", src?, code?}` | append `<script>` to the variant root | ≤16384 B; `code` executes **only** if `sha256(code)` is in the revision's pinned `script-src` hash set (INV-12); `src` must be `https:` and pass §4a (INV-13) |
+| `addScript` | `{op:"addScript", src?, code?}` | append an **inline** `<script>` (never `<script src>`) to the variant root | ≤16384 B per authored revision, counted on the **final inlined body**; the body executes **only** if its `sha256` is in the revision's pinned `script-src` hash set (INV-12). `src` is a **publish-time fetch input, not a runtime attribute**: it must be `https:`, pass §4a (INV-13), and its fetched body is inlined at publish time so its hash joins the pinned set — see below |
+
+**`addScript src` resolves at publish time, never at render time.** A served
+revision contains **no** `<script src=…>` element. When an op carries `src`, the
+daemon fetches that URL **once, at publish time**, under the same §4a machinery
+that guards the upstream target (scheme check, deny-list on the *resolved*
+address, resolve-pinned dial, per-hop redirect re-check — INV-13). The fetched
+bytes are then treated exactly as `code`: bounded by the 16384 B revision cap
+(§5), stored in the authored revision (§3a), and hashed into the pinned
+`script-src` set (INV-12). A fetch that fails, exceeds the cap, or fails §4a is
+a **loud publish rejection** — never a fallback to a runtime `src`, and never an
+unfetched passthrough. Consequence, which is the point: because no `src`
+attribute ever reaches the served DOM, there is **no** shape of this op that can
+be satisfied by adding a host source to `script-src` — INV-12's "never widened
+to … a host source" stays literally true, and no SRI attribute is needed because
+nothing is loaded by URL at render time. `src` and `code` are alternative
+sources for one body; supplying both is a 422.
 
 **Still forbidden (validator rejects — these are not "raw content", they are
 plane-crossing):** any op naming a `__devtool` control API, `proxy exec`, a
@@ -486,7 +503,7 @@ Traceability from invariant/limit to the enforcing P-task.
 | **Upstream origin allowlist** — deny-list + normalization + resolve-pinned dial + per-hop redirect re-check (§4a) | INV-13 | **P7** (rule) / **P10** (redirect + rebinding e2e) |
 | **Feedback** sink — anonymous, rate-limited, size-capped, inert, retention (§7) | INV-7 | **P8** — feedback |
 | **Persistence + revoke/restart** — authoritative store, atomic revoke, corruption-fails-loud (§8) | INV-4, INV-8 | **P6/P9** — publish store |
-| **End-to-end**: token guess, revoke-kills-all, forbidden-module build fail, XSS/JS-injection attempts, **upstream `unsafe-inline` CSP stripped** (INV-12), restart survival | INV-1…INV-12 (integration) | **P10** — e2e |
+| **End-to-end**: token guess, revoke-kills-all, forbidden-module build fail, XSS/JS-injection attempts, **upstream `unsafe-inline` CSP stripped** (INV-12), **op-supplied `addScript src` inlined + hash-pinned with no host source in `script-src`** (INV-12/INV-13, §6a), **private-address/redirect/rebinding refusal** (INV-13), **variant cannot hide the demo indicator** (INV-14), **per-file token scoping across edit and delete** (INV-15), restart survival | INV-1…INV-15 (integration) | **P10** — e2e |
 
 ---
 
