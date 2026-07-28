@@ -16,7 +16,9 @@ package proxy
 //
 // The suite is deliberately adversarial: most of it asserts NEGATIVES — the dev
 // control surface is unreachable, injection payloads are rejected or stored
-// inert and never reflected, traversal serves no file, an unknown/revoked/rotated
+// inert and never reflected (since INV-6's retirement, raw publisher-authored
+// CSS/HTML lands on the "inert" side: accepted at create, contained by the
+// wholesale-replaced CSP), traversal serves no file, an unknown/revoked/rotated
 // token is an indistinguishable 404, and a crash mid-write makes the store reload
 // FAIL LOUD rather than silently serve an empty store.
 
@@ -317,16 +319,99 @@ func TestE2EPublishGate(t *testing.T) {
 				"feedback payload reflected into /s/{token}%s", sub)
 		}
 
-		// A malicious VARIANT never reaches the wire: Create rejects it at the
-		// validation trust boundary, so no revocation is even needed.
-		bad := e2eWalkthrough()
-		bad.ID = "wt-bad"
-		bad.VariantSet.ID = "set-bad"
-		bad.VariantSet.Variants[0].Ops = []publish.Op{
+		// ---- INV-6 RETIRED (2026-07-27; spec §5, §5b, §6a) ----------------
+		// Raw publisher-authored CSS/HTML is no longer refused at create. The
+		// author of a variant is the PUBLISHER holding the dev session, not the
+		// anonymous viewer, so the old code-shape string scan guarded the wrong
+		// boundary; containment moved to the wholesale-replaced CSP (INV-11/
+		// INV-12). §6a is explicit that the scan must NOT come back as
+		// "defense in depth". So this subtest's contract shifts from the
+		// "rejected" half of its name to the "inert / never reflected" half:
+		// the payload is accepted, round-trips UNMODIFIED, and is contained.
+		raw := e2eWalkthrough()
+		raw.ID = "wt-raw"
+		raw.VariantSet.ID = "set-raw"
+		raw.VariantSet.Variants[0].Ops = []publish.Op{
 			{Op: publish.OpApplyStyle, Selector: ".x", Props: map[string]string{"background": "url(https://evil/x)"}},
+			{Op: publish.OpAddStyle, CSS: `@import url(https://evil/i); .y{behavior:url(#z)}`},
+			{Op: publish.OpSetHTML, Selector: ".z", HTML: `<img src=x onerror="alert(1)"><a href="javascript:evil()">go</a>`},
 		}
-		_, _, cerr := p.store.Create(bad, e2eProjectA)
-		assert.Error(t, cerr, "malicious variant (css url exfil) must be rejected at create")
+		_, rawToken, rerr := p.store.Create(raw, e2eProjectA)
+		require.NoError(t, rerr, "INV-6 retired: raw publisher CSS/HTML must be accepted at create")
+
+		// ...and the containment that replaced the scan is asserted here, on the
+		// REAL served response. Without these the retirement would be a hole.
+		rawCode, rawBody, rawHdr := p.get(t, "/s/"+rawToken)
+		require.Equal(t, http.StatusOK, rawCode)
+		rawCSP := rawHdr.Get("Content-Security-Policy")
+		require.NotEmpty(t, rawCSP)
+		// INV-12: the inline on* handler and the javascript: href in the raw
+		// fragment are INERT because script-src is the bundle hash alone.
+		assert.NotContains(t, rawCSP, "unsafe-inline", "raw-content share must still forbid unsafe-inline")
+		assert.NotContains(t, rawCSP, "unsafe-eval")
+		assert.NotContains(t, rawCSP, "script-src 'self'", "hash pin must not be diluted by 'self'")
+		assert.Contains(t, rawCSP, assetHash, "CSP must still pin the RolePublic bundle hash")
+		// The retired url()/@import token scan is replaced by fetch-boundary
+		// directives, not by nothing: no third-party image beacon, no exfil.
+		assert.Contains(t, rawCSP, "img-src 'self' data:", "img-src must stay 'self' data: (no https: beacon)")
+		assert.Contains(t, rawCSP, "connect-src 'self'", "connect-src must stay 'self' (no exfil)")
+		// INV-1: raw content is public-plane content only. The shell must still
+		// load the RolePublic bundle ALONE, must not reference any dev control
+		// endpoint, and must not inline the authored fragment into the shell
+		// document — raw content reaches the DOM only through the CSP-governed
+		// renderer, never as bytes parsed outside it.
+		assert.Contains(t, rawBody, `<script src="`+assetPath+`" integrity="`+assetHash+`"`,
+			"raw-content share must still load the RolePublic bundle alone")
+		for _, devMarker := range []string{"__devtool_metrics", "__devtool/exec", "__devtool/ws", "__devtool."} {
+			assert.NotContainsf(t, rawBody, devMarker,
+				"raw-content share leaked dev control marker %q into the shell", devMarker)
+		}
+		assert.NotContains(t, rawBody, "onerror", "authored fragment must not be inlined into the shell document")
+		assert.NotContains(t, rawBody, "url(https://evil/x)", "authored CSS must not be inlined into the shell document")
+
+		// The op set round-trips UNMODIFIED — proving the validator neither
+		// rejected nor silently stripped the authored content (§6a).
+		_, rawVariants, _ := p.get(t, "/s/"+rawToken+"/variants.json")
+		assert.Contains(t, rawVariants, "url(https://evil/x)", "authored CSS must round-trip unmodified")
+		assert.Contains(t, rawVariants, "onerror", "authored HTML must round-trip unstripped (inert under CSP)")
+
+		// ---- What the retirement did NOT retire ---------------------------
+		// The surviving guards are still red-capable at the create boundary:
+		// selector grammar (§5a), attribute allowlist (§6), https-only URLs
+		// (§5/INV-13), size caps (§5), and the closed op vocabulary (§6).
+		surviving := []struct {
+			name string
+			ops  []publish.Op
+		}{
+			{"selector grammar :has()", []publish.Op{
+				{Op: publish.OpSetText, Selector: ":has(a)", Value: "x"}}},
+			{"selector grammar sibling combinator", []publish.Op{
+				{Op: publish.OpSetText, Selector: ".a ~ .b", Value: "x"}}},
+			{"event-handler attribute", []publish.Op{
+				{Op: publish.OpSetAttribute, Selector: ".x", Name: "onclick", Value: "alert(1)"}}},
+			{"href via setAttribute", []publish.Op{
+				{Op: publish.OpSetAttribute, Selector: ".x", Name: "href", Value: "https://ok/"}}},
+			{"javascript: image url", []publish.Op{
+				{Op: publish.OpSetImageSrc, Selector: ".x", URL: "javascript:evil()"}}},
+			{"plaintext http image url", []publish.Op{
+				{Op: publish.OpSetImageSrc, Selector: ".x", URL: "http://evil/x.png"}}},
+			{"non-https addScript src", []publish.Op{
+				{Op: publish.OpAddScript, Src: "http://evil/x.js"}}},
+			{"oversize raw CSS", []publish.Op{
+				{Op: publish.OpAddStyle, CSS: strings.Repeat("a", 4097)}}},
+			{"oversize raw HTML", []publish.Op{
+				{Op: publish.OpSetHTML, Selector: ".x", HTML: strings.Repeat("b", 8193)}}},
+			{"unknown op type", []publish.Op{
+				{Op: publish.OpType("evalScript"), Selector: ".x", Value: "alert(1)"}}},
+		}
+		for i, sc := range surviving {
+			w := e2eWalkthrough()
+			w.ID = fmt.Sprintf("wt-guard-%d", i)
+			w.VariantSet.ID = fmt.Sprintf("set-guard-%d", i)
+			w.VariantSet.Variants[0].Ops = sc.ops
+			_, _, gerr := p.store.Create(w, e2eProjectA)
+			assert.Errorf(t, gerr, "%s must still be rejected at create", sc.name)
+		}
 	})
 
 	t.Run("path_traversal_serves_no_file", func(t *testing.T) {
