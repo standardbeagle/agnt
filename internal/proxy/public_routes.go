@@ -212,7 +212,10 @@ func (h *PublicHandler) serveArtifact(w http.ResponseWriter, r *http.Request, re
 		return
 	}
 	nonce := newNonce()
-	h.writeHeaders(w.Header(), kindArtifact, nonce)
+	// The artifact document is where the renderer appends authored script, so
+	// this is the only response whose script-src is widened — by exactly the
+	// hashes of THIS revision's authored bodies (INV-12).
+	h.writeHeaders(w.Header(), kindArtifact, nonce, authoredScriptCSPHashes(rev)...)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	title := "Walkthrough"
@@ -379,7 +382,42 @@ func (h *PublicHandler) writeJSON(w http.ResponseWriter, r *http.Request, v any)
 // unconditionally as defence in depth: if any future upstream-copy path ever
 // seeds a hostile CSP into this header set, it dies here. nonce, when non-empty,
 // authorises the shell's single inline <style>.
-func (h *PublicHandler) writeHeaders(hdr http.Header, kind responseKind, nonce string) {
+// authoredScriptCSPHashes enumerates one CSP sha256 source per authored script
+// body carried by this revision's variant set (§6a addScript) — the exact set
+// INV-12 widens script-src by. It is derived from the immutable published
+// revision rather than recomputed from any live input, so the "pinned at publish
+// time" property holds: the revision's bytes are what a token resolves to, and
+// re-publishing an edited revision yields a different set for free.
+//
+// A body is hashed exactly as the renderer will assign it (script.textContent =
+// op.code, variant-engine.js), deduped so a repeated body costs one source, and
+// order-stable so the served header is deterministic. An op still carrying Src
+// at serve time contributes NO hash: src is a publish-time fetch input, so an
+// unresolved one means the pipeline did not run, and the renderer refuses it —
+// pinning a hash for a body that was never inlined would authorise nothing.
+func authoredScriptCSPHashes(rev *publish.PublishedWalkthrough) []string {
+	if rev == nil || rev.VariantSet == nil {
+		return nil
+	}
+	var hashes []string
+	seen := make(map[string]bool)
+	for _, v := range rev.VariantSet.Variants {
+		for _, op := range v.Ops {
+			if op.Op != publish.OpAddScript || op.Code == "" {
+				continue
+			}
+			hash := cspSHA256([]byte(op.Code))
+			if seen[hash] {
+				continue
+			}
+			seen[hash] = true
+			hashes = append(hashes, hash)
+		}
+	}
+	return hashes
+}
+
+func (h *PublicHandler) writeHeaders(hdr http.Header, kind responseKind, nonce string, scriptHashes ...string) {
 	// INV-12: wholesale delete of any upstream CSP, then set agnt's. NEVER the
 	// stripFrameDenyHeaders strip-merge path (which preserves upstream script-src).
 	hdr.Del("Content-Security-Policy")
@@ -396,7 +434,14 @@ func (h *PublicHandler) writeHeaders(hdr http.Header, kind responseKind, nonce s
 		// plane serves no other same-origin JS, and the one bundle it does load
 		// carries a matching SRI integrity attribute (see the <script> tag in
 		// servePublicArtifact), so the hash source authorises exactly it.
-		"script-src '" + h.cspHash + "'",
+		//
+		// scriptHashes widens this by exactly one 'sha256-…' per authored script
+		// body in the served revision (INV-12) — the whole containment story now
+		// that INV-6 is retired: publisher script runs because its hash is
+		// pinned here, while upstream and viewer script do not, because theirs is
+		// not. Only hash sources are ever added; 'unsafe-inline', 'unsafe-eval',
+		// and host sources remain unreachable from this composition.
+		scriptSrc(h.cspHash, scriptHashes),
 		"style-src " + styleSrc,
 		"img-src 'self' data:",
 		"connect-src 'self'",
@@ -425,6 +470,19 @@ func (h *PublicHandler) writeHeaders(hdr http.Header, kind responseKind, nonce s
 		// Revoke must take effect immediately — no stale artifact past revoke.
 		hdr.Set("Cache-Control", "public, max-age=0, must-revalidate")
 	}
+}
+
+// scriptSrc composes the script-src directive from the bundle hash plus the
+// authored-revision hashes. Every element is quoted as a hash source; there is
+// no branch that can emit a keyword or host source, so the directive cannot be
+// widened past "these exact script bodies" by any caller input.
+func scriptSrc(bundleHash string, scriptHashes []string) string {
+	var b strings.Builder
+	b.WriteString("script-src '" + bundleHash + "'")
+	for _, hash := range scriptHashes {
+		b.WriteString(" '" + hash + "'")
+	}
+	return b.String()
 }
 
 // methodNotAllowed writes a 405 with an Allow header for a known route hit with
