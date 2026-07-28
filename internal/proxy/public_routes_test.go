@@ -373,3 +373,110 @@ func TestArtifactJSONShape(t *testing.T) {
 		t.Fatalf("variants.json not valid JSON: %v", err)
 	}
 }
+
+// authoredScriptRevision is a revision whose variant set carries publisher
+// script (§6a addScript), the input INV-12's per-revision hash pin is computed
+// from.
+func authoredScriptRevision(codes ...string) *publish.PublishedWalkthrough {
+	rev := sampleWalkthrough()
+	ops := make([]publish.Op, 0, len(codes))
+	for _, c := range codes {
+		ops = append(ops, publish.Op{Op: publish.OpAddScript, Code: c})
+	}
+	rev.VariantSet = &publish.VariantSet{
+		Version:  publish.SchemaV1,
+		ID:       "vs-1",
+		Variants: []publish.Variant{{ID: "v1", Ops: ops}},
+	}
+	return rev
+}
+
+func artifactScriptSrc(t *testing.T, h *PublicHandler) string {
+	t.Helper()
+	art := do(h, http.MethodGet, sharePrefix+validToken, "", nil)
+	if art.Code != http.StatusOK {
+		t.Fatalf("artifact: got %d, want 200", art.Code)
+	}
+	for _, d := range strings.Split(art.Header().Get("Content-Security-Policy"), ";") {
+		if d = strings.TrimSpace(d); strings.HasPrefix(d, "script-src") {
+			return d
+		}
+	}
+	t.Fatalf("no script-src directive in CSP %q", art.Header().Get("Content-Security-Policy"))
+	return ""
+}
+
+// TestAuthoredScriptHashPinnedInScriptSrc is the INV-12 widening: the artifact
+// CSP gains exactly one 'sha256-…' per authored script body in the served
+// revision, so publisher script executes — while a byte-different (foreign)
+// inline script, whose hash is absent, stays refused. Hashes are over the exact
+// bytes the renderer assigns to script.textContent (variant-engine.js
+// addScript), so the browser's inline-hash check matches.
+func TestAuthoredScriptHashPinnedInScriptSrc(t *testing.T) {
+	const authored = "window.__demo_variant=1;"
+	const foreign = "window.__evil=1;"
+
+	h := NewPublicHandler(&fakeVerifier{token: validToken, rev: authoredScriptRevision(authored), id: "share-1"}, nil, 0)
+	scriptSrc := artifactScriptSrc(t, h)
+
+	authoredHash := cspSHA256([]byte(authored))
+	if !strings.Contains(scriptSrc, "'"+authoredHash+"'") {
+		t.Fatalf("authored script hash %q missing from script-src: %q", authoredHash, scriptSrc)
+	}
+	if foreignHash := cspSHA256([]byte(foreign)); strings.Contains(scriptSrc, foreignHash) {
+		t.Fatalf("foreign script hash must not be pinned: %q", scriptSrc)
+	}
+	// The bundle pin survives the widening, and no shortcut source is admitted.
+	if !strings.Contains(scriptSrc, "'"+h.cspHash+"'") {
+		t.Fatalf("bundle hash dropped from script-src: %q", scriptSrc)
+	}
+	for _, forbidden := range []string{"'unsafe-inline'", "'unsafe-eval'", "'self'", "http", "*"} {
+		if strings.Contains(scriptSrc, forbidden) {
+			t.Fatalf("script-src admitted forbidden source %q: %q", forbidden, scriptSrc)
+		}
+	}
+
+	// A revision with NO authored script pins the bundle hash alone: the
+	// widening is per-revision, not a blanket relaxation.
+	plain := artifactScriptSrc(t, newTestHandler(nil))
+	if plain != "script-src '"+h.cspHash+"'" {
+		t.Fatalf("script-less revision widened script-src: %q", plain)
+	}
+
+	// Two authored bodies → two hashes; a repeated body is pinned once.
+	multi := NewPublicHandler(&fakeVerifier{token: validToken, rev: authoredScriptRevision(authored, foreign, authored), id: "share-1"}, nil, 0)
+	multiSrc := artifactScriptSrc(t, multi)
+	if got := strings.Count(multiSrc, "sha256-"); got != 3 {
+		t.Fatalf("want bundle + 2 deduped authored hashes (3), got %d: %q", got, multiSrc)
+	}
+}
+
+// TestHostileUpstreamCSPCannotSurviveWidening re-asserts INV-11/INV-12 with the
+// authored-hash widening in place: an upstream CSP is DELETED wholesale (both
+// enforcing and report-only) and agnt's is SET — never merged — so an upstream
+// 'unsafe-inline'/host source cannot ride along beside the authored hashes.
+func TestHostileUpstreamCSPCannotSurviveWidening(t *testing.T) {
+	const authored = "window.__demo_variant=1;"
+	h := NewPublicHandler(&fakeVerifier{token: validToken, rev: authoredScriptRevision(authored), id: "share-1"}, nil, 0)
+
+	hostile := http.Header{}
+	hostile.Set("Content-Security-Policy", "script-src 'unsafe-inline' 'unsafe-eval' https://evil.example; default-src *")
+	hostile.Set("Content-Security-Policy-Report-Only", "default-src *")
+	h.writeHeaders(hostile, kindArtifact, "n0nce", cspSHA256([]byte(authored)))
+
+	csp := hostile.Get("Content-Security-Policy")
+	if len(hostile.Values("Content-Security-Policy")) != 1 {
+		t.Fatalf("CSP must be a single wholesale-set header, got %v", hostile.Values("Content-Security-Policy"))
+	}
+	for _, leaked := range []string{"unsafe-inline", "unsafe-eval", "evil.example", "default-src *"} {
+		if strings.Contains(csp, leaked) {
+			t.Fatalf("INV-12 violated: upstream directive %q survived: %q", leaked, csp)
+		}
+	}
+	if hostile.Get("Content-Security-Policy-Report-Only") != "" {
+		t.Fatalf("report-only CSP not deleted wholesale")
+	}
+	if !strings.Contains(csp, "'"+cspSHA256([]byte(authored))+"'") {
+		t.Fatalf("authored hash missing after wholesale replace: %q", csp)
+	}
+}

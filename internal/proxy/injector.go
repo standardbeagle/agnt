@@ -112,7 +112,18 @@ func publicInstrumentationAssetBytes() []byte {
 // external <script src> with a matching SRI integrity attribute, so the served
 // CSP names the exact bundle content, not just its origin (spec §4).
 func PublicInstrumentationAssetCSPHash() string {
-	sum := sha256.Sum256(publicInstrumentationAssetBytes())
+	return cspSHA256(publicInstrumentationAssetBytes())
+}
+
+// cspSHA256 formats body's sha256 as a CSP hash source ("sha256-<b64>"), the
+// single spelling both pinned-script populations on the public plane use: the
+// RolePublic bundle and each authored-revision script body (§6a addScript). The
+// digest is over the EXACT bytes the browser hashes — the served asset bytes for
+// the bundle, and the string assigned to script.textContent for an authored body
+// (variant-engine.js) — so a byte of drift on either side fails closed by
+// refusing the script rather than silently widening the policy.
+func cspSHA256(body []byte) string {
+	sum := sha256.Sum256(body)
 	return "sha256-" + base64.StdEncoding.EncodeToString(sum[:])
 }
 
