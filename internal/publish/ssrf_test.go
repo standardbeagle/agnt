@@ -61,6 +61,18 @@ func TestCheckUpstreamOrigin_DeniesResolvedAddress(t *testing.T) {
 		{"ipv4-compatible loopback", "::127.0.0.1"},
 		{"6to4 embedding loopback", "2002:7f00:1::1"},
 		{"teredo", "2001::1"},
+		// NAT64: an IPv6-only cloud/CI subnet reaches IPv4 through a translator
+		// at the well-known prefix, so these ARE routes to the v4 targets above.
+		{"nat64 well-known -> 169.254.169.254", "64:ff9b::a9fe:a9fe"},
+		{"nat64 well-known -> 10.0.0.1", "64:ff9b::a00:1"},
+		{"nat64 well-known -> 127.0.0.1", "64:ff9b::7f00:1"},
+		{"nat64 rfc8215 local-use -> 169.254.169.254", "64:ff9b:1::a9fe:a9fe"},
+		{"nat64 rfc8215 local-use tail", "64:ff9b:1:ffff:ffff:ffff:ffff:ffff"},
+		// A zone identifier makes netip.Prefix.Contains report false by design,
+		// which silently defeated the whole table. It must not.
+		{"zoned loopback", "::1%lo"},
+		{"zoned link-local", "fe80::1%eth0"},
+		{"zoned gcp metadata", "fd00:ec2::254%eth0"},
 	}
 	for _, tc := range denied {
 		t.Run(tc.name, func(t *testing.T) {
@@ -97,6 +109,17 @@ func TestCheckUpstreamOrigin_DeniesEncodedLiterals(t *testing.T) {
 		"https://2852039166/",         // decimal 169.254.169.254
 		"https://[::1]/",
 		"https://0/", // decimal 0.0.0.0
+		// RFC 6874 zone identifiers, percent-encoded as %25 in a URL. Go's URL
+		// parser hands these back as a zoned netip.Addr, for which
+		// netip.Prefix.Contains is documented to return false — so before the
+		// fix every row below was ALLOWED and returned as a dial address.
+		"https://[::1%25lo]/",
+		"https://[fe80::1%25eth0]/",
+		"https://[fd00:ec2::254%25eth0]/",
+		// NAT64 translator prefixes reaching denied IPv4 targets.
+		"https://[64:ff9b::a9fe:a9fe]/",
+		"https://[64:ff9b::a00:1]/",
+		"https://[64:ff9b:1::a9fe:a9fe]/",
 	}
 	for _, raw := range encoded {
 		t.Run(raw, func(t *testing.T) {
@@ -131,6 +154,45 @@ func TestCheckUpstreamOrigin_AllowsPublic(t *testing.T) {
 	}
 	if len(lit) != 1 || lit[0].String() != "93.184.216.34" {
 		t.Fatalf("literal must be returned as its own dial address, got %v", lit)
+	}
+}
+
+// TestCheckUpstreamOrigin_NoZonedDialAddress: a zone identifier scopes an
+// address to one local interface, so it can never be a legitimate PUBLIC
+// upstream origin — it is rejected outright rather than stripped, and no
+// returned dial address may carry one. S6 dials exactly what this returns, so a
+// zoned address handed back is a live hole even when its bare form is public.
+func TestCheckUpstreamOrigin_NoZonedDialAddress(t *testing.T) {
+	// Zone on an otherwise PUBLIC address: still denied.
+	if got, err := CheckUpstreamOrigin(context.Background(),
+		"https://[2606:2800:220:1::1%25eth0]/", nil); err == nil {
+		t.Fatalf("zoned literal must be denied even when the bare address is public, got %v", got)
+	}
+	// Zone arriving from the resolver rather than the URL.
+	zoned := [][]string{
+		{"fe80::1%eth0"},
+		{"::1%lo"},
+		{"93.184.216.34", "fd00:ec2::254%eth0"},
+		{"2606:2800:220:1::1%eth0"},
+	}
+	for _, answers := range zoned {
+		got, err := CheckUpstreamOrigin(context.Background(), "https://example.com/",
+			staticResolver(answers...))
+		if err != nil {
+			continue
+		}
+		t.Fatalf("resolver answers %v carry a zone and must be denied, got %v", answers, got)
+	}
+	// Belt and braces: nothing this package would ever hand back has a zone.
+	addrs, err := CheckUpstreamOrigin(context.Background(), "https://example.com/",
+		staticResolver("93.184.216.34", "2606:2800:220:1::1"))
+	if err != nil {
+		t.Fatalf("public host must be allowed: %v", err)
+	}
+	for _, a := range addrs {
+		if a.Zone() != "" {
+			t.Fatalf("returned dial address %v carries zone %q", a, a.Zone())
+		}
 	}
 }
 

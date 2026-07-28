@@ -65,6 +65,13 @@ var deniedPrefixes = []struct {
 	// is cheaper and safer than decoding the embedded address.
 	{netip.MustParsePrefix("2002::/16"), "6to4 (embeds arbitrary IPv4)"},
 	{netip.MustParsePrefix("2001::/32"), "Teredo (embeds arbitrary IPv4)"},
+	// NAT64 is the one IPv4-embedding prefix family that is NOT obsolete: an
+	// IPv6-only cloud/CI subnet — precisely the environment §4a is about —
+	// reaches IPv4 through a translator at the well-known prefix, so
+	// 64:ff9b::a9fe:a9fe IS 169.254.169.254. Denied for the same reason as
+	// 6to4: the embedded address is arbitrary, so the prefix goes whole.
+	{netip.MustParsePrefix("64:ff9b::/96"), "NAT64 well-known prefix (embeds arbitrary IPv4)"},
+	{netip.MustParsePrefix("64:ff9b:1::/48"), "NAT64 local-use prefix RFC 8215 (embeds arbitrary IPv4)"},
 }
 
 // deniedAddrs are §4a entries that are single addresses rather than ranges and
@@ -77,9 +84,31 @@ var deniedAddrs = map[netip.Addr]string{
 // ::ffff:10.0.0.1 is judged as 10.0.0.1 rather than waved through as "IPv6,
 // therefore not RFC1918". An invalid address is denied — never allowed by
 // omission.
+//
+// A zone identifier (fe80::1%eth0, and via RFC 6874 the URL form
+// https://[fe80::1%25eth0]/) is REJECTED OUTRIGHT rather than stripped. Two
+// reasons, and the first alone is decisive:
+//
+//  1. A zone scopes an address to one local interface. That is the definition
+//     of not-a-public-origin, so no legitimate upstream can carry one — even
+//     when the bare address is public. Rejecting is therefore both simpler and
+//     strictly safer than stripping-then-classifying.
+//  2. Stripping would leave the zone able to re-enter. netip.Prefix.Contains
+//     returns false by documented design for a zoned Addr, and a zone is part
+//     of Addr identity so a map lookup misses too — that is how a zone silently
+//     defeated this whole table at once, and how a zoned address could be
+//     returned as a validated dial address. This check runs FIRST, before the
+//     map and the prefix walk, so neither can be reached with a zone attached
+//     and nothing that reaches the returned slice can carry one.
+//
+// Unmap() drops a zone as a side effect, which is why the IPv4-mapped rows
+// survived incidentally; correctness must not rest on that.
 func deniedReason(addr netip.Addr) (string, bool) {
 	if !addr.IsValid() {
 		return "invalid address", true
+	}
+	if addr.Zone() != "" {
+		return "interface-scoped zone identifier (never a public origin)", true
 	}
 	addr = addr.Unmap()
 	if reason, ok := deniedAddrs[addr]; ok {
@@ -96,7 +125,9 @@ func deniedReason(addr netip.Addr) (string, bool) {
 // CheckUpstreamOrigin is the INV-13 guard. It validates rawURL (https-only, via
 // the existing ValidateURL), normalizes the host, resolves it when it is a name,
 // and rejects the origin unless EVERY resolved address is outside the deny-list.
-// On success it returns those validated addresses.
+// On success it returns those validated addresses. Every returned address has
+// passed deniedReason, so none of them carries a zone identifier — S6 dials
+// exactly this slice, and a zoned address handed back would be a live hole.
 //
 // The caller MUST dial one of the returned addresses rather than re-resolving
 // the hostname. Validating a name and then letting a transport resolve it again
