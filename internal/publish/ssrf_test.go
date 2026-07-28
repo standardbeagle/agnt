@@ -292,6 +292,95 @@ func TestDeniedReason_PropertySweep(t *testing.T) {
 	}
 }
 
+// TestDeniedReason_IPv6PropertySweep is the IPv6 half of the density check. The
+// v4-only sweep above was breadth on one axis, and an IPv6-shaped miss (zone
+// identifiers defeating every prefix; NAT64 reaching v4 targets) survived a
+// green run because of it. This sweeps the top /16 of the address space against
+// the same INDEPENDENT stdlib predicate, then walks every denied IPv6 prefix
+// with its own boundaries.
+func TestDeniedReason_IPv6PropertySweep(t *testing.T) {
+	// Cross-check against netip's own predicates, which know nothing about
+	// deniedPrefixes — so this cannot become self-referential.
+	var b [16]byte
+	b[14], b[15] = 0x07, 0x09
+	for hi := 0; hi <= 0xffff; hi++ {
+		b[0], b[1] = byte(hi>>8), byte(hi)
+		addr := netip.AddrFrom16(b)
+		reason, denied := deniedReason(addr)
+		if stdlibNonGlobal(addr) && !denied {
+			t.Fatalf("%s is non-global per stdlib but was allowed", addr)
+		}
+		if denied && reason == "" {
+			t.Fatalf("%s denied without a reason", addr)
+		}
+	}
+
+	// Every denied IPv6 prefix: its first address, its last address, and the
+	// same pair carrying a zone must all be denied.
+	for _, d := range deniedPrefixes {
+		if !d.prefix.Addr().Is6() || d.prefix.Addr().Is4In6() {
+			continue
+		}
+		for _, a := range []netip.Addr{d.prefix.Addr(), lastAddrIn(d.prefix)} {
+			if _, denied := deniedReason(a); !denied {
+				t.Fatalf("%s (in denied prefix %s) must be denied", a, d.prefix)
+			}
+			if _, denied := deniedReason(a.WithZone("eth0")); !denied {
+				t.Fatalf("%s%%eth0 (in denied prefix %s) must be denied", a, d.prefix)
+			}
+		}
+	}
+
+	// last-denied / first-allowed pairs straddling each denied IPv6 prefix.
+	boundaries := []struct{ last, next string }{
+		{"::ffff:ffff", "::1:0:0"},
+		{"64:ff9b::ffff:ffff", "64:ff9b:0:0:0:1:0:0"},
+		{"64:ff9b:1:ffff:ffff:ffff:ffff:ffff", "64:ff9b:2::"},
+		{"fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", "fe00::"},
+		{"febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff", "fec0::"},
+		{"2002:ffff:ffff:ffff:ffff:ffff:ffff:ffff", "2003::"},
+		{"2001:0:ffff:ffff:ffff:ffff:ffff:ffff", "2001:1::"},
+	}
+	for _, bd := range boundaries {
+		if _, denied := deniedReason(netip.MustParseAddr(bd.last)); !denied {
+			t.Fatalf("%s (prefix boundary) must be denied", bd.last)
+		}
+		if _, denied := deniedReason(netip.MustParseAddr(bd.next)); denied {
+			t.Fatalf("%s is public and must be allowed (over-broad prefix)", bd.next)
+		}
+	}
+
+	// Public IPv6 stays allowed — bare only; a zone denies whatever it decorates.
+	for _, ok := range []string{"2606:2800:220:1::1", "2001:4860:4860::8888", "2a00:1450:4001::200e"} {
+		if _, denied := deniedReason(netip.MustParseAddr(ok)); denied {
+			t.Fatalf("%s must be allowed", ok)
+		}
+		if _, denied := deniedReason(netip.MustParseAddr(ok).WithZone("eth0")); !denied {
+			t.Fatalf("%s%%eth0 carries a zone and must be denied", ok)
+		}
+	}
+	// An IPv4-mapped address whose zone must not survive into a dial address.
+	if _, denied := deniedReason(netip.MustParseAddr("::ffff:10.0.0.1").WithZone("eth0")); !denied {
+		t.Fatalf("zoned IPv4-mapped private address must be denied")
+	}
+}
+
+// lastAddrIn returns the highest address inside p (all host bits set).
+func lastAddrIn(p netip.Prefix) netip.Addr {
+	b := p.Addr().As16()
+	bits := p.Bits()
+	if p.Addr().Is4() {
+		bits += 96
+	}
+	for i := bits; i < 128; i++ {
+		b[i/8] |= 1 << uint(7-i%8)
+	}
+	a := netip.AddrFrom16(b)
+	if p.Addr().Is4() {
+		return a.Unmap()
+	}
+	return a
+}
 func stdlibNonGlobal(a netip.Addr) bool {
 	return a.IsLoopback() || a.IsPrivate() || a.IsLinkLocalUnicast() ||
 		a.IsLinkLocalMulticast() || a.IsMulticast() || a.IsUnspecified()
