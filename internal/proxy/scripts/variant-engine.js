@@ -19,9 +19,26 @@
 // (the dynamic-code sinks) — the served CSP carries no 'unsafe-eval', and a compile
 // path would be an attempt to run a body no pinned hash covers.
 //
-// The op/selector/style/url contract below MIRRORS the P2 Go validators
-// byte-for-byte (op.go, selector.go, style.go, url.go, limits.go). Keep the two
-// in lockstep: a change to a Go allowlist/limit must be reflected here.
+// MIRROR SCOPE — what this file does and does not reproduce from the P2 Go
+// validators (op.go, selector.go, style.go, url.go, limits.go, validate.go).
+// The header used to claim a "byte-for-byte" mirror; it was not one, and the
+// false claim is what let the two halves drift apart unnoticed. Precisely:
+//
+//   MIRRORED: the closed op vocabulary and its stray-field rule; the §5a
+//     restricted selector grammar; the setAttribute name allowlist; https-only
+//     URLs; every §5 size limit — per-op AND the two aggregates (style per
+//     variant, raw script per revision).
+//   NOT MIRRORED, deliberately: publish-time-only concerns the browser cannot
+//     evaluate — id/version/duplicate-op/duplicate-variant-id validation, the
+//     §4a resolved-address checks, and the addScript src fetch-and-inline step
+//     (an op still carrying src at render time is refused outright).
+//   NOT ENFORCED BY EITHER SIDE: the retired §5b property allowlist and the §5
+//     forbidden-CSS-token scan. See the style-guard block below; §6a forbids
+//     reintroducing them here as defense-in-depth.
+//
+// Keep the two in lockstep: a change to a Go allowlist/limit — including an
+// aggregate budget in validate.go — must be reflected here, or a published
+// artifact carries ops one side accepts and the other silently drops.
 //
 // Public surface (what the P4 injector / cycler call):
 //   window.__variantEngine.create(variantSet, routeBinding, opts) -> engine
