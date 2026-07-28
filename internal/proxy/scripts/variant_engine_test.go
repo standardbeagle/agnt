@@ -177,6 +177,58 @@ func TestVariantEngineRawOpGuards(t *testing.T) {
 	}
 }
 
+// TestVariantEngineCapsAreByteDenominated is the source-level guard against the
+// cap-UNIT drift that is this file's whole reason for existing. Every §5 size
+// limit in internal/publish is a Go `len(...)` — UTF-8 BYTES. JS `.length` is
+// UTF-16 CODE UNITS, which for CJK undercounts 3x and for astral-plane 4x, so a
+// `.length` comparison silently accepts payloads the Go validator rejects. Each
+// cap site must therefore route through utf8Len().
+//
+// Written as an exact-source assertion per site (not a bare "utf8Len appears
+// somewhere") so re-introducing `.length` at ANY ONE of them fails, even while
+// the other sites stay converted — the precise way this drifted the first time.
+func TestVariantEngineCapsAreByteDenominated(t *testing.T) {
+	sites := []struct {
+		what   string
+		goRef  string
+		byteEd string // the required byte-denominated comparison
+		unitEd string // the code-unit comparison it replaced
+	}{
+		{
+			what:   "selector length",
+			goRef:  "internal/publish/selector.go:37 len(sel) > MaxSelectorLength",
+			byteEd: "var selBytes = utf8Len(sel);",
+			unitEd: "sel.length > MAX_SELECTOR_LENGTH",
+		},
+		{
+			what:   "URL length",
+			goRef:  "internal/publish/url.go:15 len(raw) > MaxURLLength",
+			byteEd: "var rawBytes = utf8Len(raw);",
+			unitEd: "raw.length > MAX_URL_LENGTH",
+		},
+		{
+			what:   "setAttribute value",
+			goRef:  "internal/publish/op.go:93 len(o.Value) > MaxAttrValueLength",
+			byteEd: "if (utf8Len(String(op.value || '')) > MAX_ATTR_VALUE_LENGTH)",
+			unitEd: "String(op.value || '').length > MAX_ATTR_VALUE_LENGTH",
+		},
+	}
+	for _, s := range sites {
+		if !strings.Contains(variantEngineJS, s.byteEd) {
+			t.Errorf("variant-engine.js %s cap must compare UTF-8 bytes (%q), mirroring %s", s.what, s.byteEd, s.goRef)
+		}
+		if strings.Contains(variantEngineJS, s.unitEd) {
+			t.Errorf("variant-engine.js %s cap compares UTF-16 code units (%q) against a byte-denominated Go limit (%s) — 3x gap for CJK, 4x for emoji", s.what, s.unitEd, s.goRef)
+		}
+	}
+
+	// The header's blanket claim is only honest while the above holds; pin the
+	// sentence that carries it so the claim and the code are edited together.
+	if !strings.Contains(variantEngineJS, "compared in UTF-8 BYTES via utf8Len(), matching Go's len()") {
+		t.Error("variant-engine.js MIRROR SCOPE header must state the size limits are byte-denominated — a blanket 'every §5 size limit' claim with no unit is what let the mirrors drift")
+	}
+}
+
 func TestDesignVariantSetBridgeIsExported(t *testing.T) {
 	for _, want := range []string{
 		"importVariantSet: importVariantSet",

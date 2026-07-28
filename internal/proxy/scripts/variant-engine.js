@@ -27,7 +27,10 @@
 //   MIRRORED: the closed op vocabulary and its stray-field rule; the §5a
 //     restricted selector grammar; the setAttribute name allowlist; https-only
 //     URLs; every §5 size limit — per-op AND the two aggregates (style per
-//     variant, raw script per revision).
+//     variant, raw script per revision). Every one of those size limits is
+//     compared in UTF-8 BYTES via utf8Len(), matching Go's len() on a string;
+//     comparing JS `.length` (UTF-16 code units) would accept payloads the Go
+//     validator rejects — 3x over for CJK, 4x for astral-plane characters.
 //   NOT MIRRORED, deliberately: publish-time-only concerns the browser cannot
 //     evaluate — id/version/duplicate-op/duplicate-variant-id validation, the
 //     §4a resolved-address checks, and the addScript src fetch-and-inline step
@@ -188,8 +191,10 @@
     // restricted grammar and within the length/depth limits (§5/§5a).
     function validateSelector(sel) {
       if (typeof sel !== 'string' || sel === '') { return { ok: false, reason: 'selector: empty' }; }
-      if (sel.length > MAX_SELECTOR_LENGTH) {
-        return { ok: false, reason: 'selector: length ' + sel.length + ' exceeds max ' + MAX_SELECTOR_LENGTH };
+      // Byte-denominated, like selector.go:37 `len(sel) > MaxSelectorLength`.
+      var selBytes = utf8Len(sel);
+      if (selBytes > MAX_SELECTOR_LENGTH) {
+        return { ok: false, reason: 'selector: length ' + selBytes + ' exceeds max ' + MAX_SELECTOR_LENGTH };
       }
       var split = splitCompounds(sel);
       if (split.err) { return { ok: false, reason: 'selector: ' + split.err }; }
@@ -232,8 +237,10 @@
     // ---- URL allowlist (mirror url.go): https-only, capped, no ctrl ------
     function validateURL(raw) {
       if (typeof raw !== 'string' || raw === '') { return 'url: empty'; }
-      if (raw.length > MAX_URL_LENGTH) {
-        return 'url: length ' + raw.length + ' exceeds max ' + MAX_URL_LENGTH;
+      // Byte-denominated, like url.go:15 `len(raw) > MaxURLLength`.
+      var rawBytes = utf8Len(raw);
+      if (rawBytes > MAX_URL_LENGTH) {
+        return 'url: length ' + rawBytes + ' exceeds max ' + MAX_URL_LENGTH;
       }
       if (!noControlChars(raw)) { return 'url: contains control character'; }
       var u;
@@ -352,7 +359,8 @@
           stray = forbidExcept(['name', 'value']);
           if (stray) { return { ok: false, reason: 'setAttribute: ' + stray }; }
           if (!allowedAttrName(op.name)) { return { ok: false, reason: 'setAttribute: attribute ' + JSON.stringify(op.name) + ' not on allowlist' }; }
-          if (String(op.value || '').length > MAX_ATTR_VALUE_LENGTH) { return { ok: false, reason: 'setAttribute: value exceeds max ' + MAX_ATTR_VALUE_LENGTH }; }
+          // Byte-denominated, like op.go:93 `len(o.Value) > MaxAttrValueLength`.
+          if (utf8Len(String(op.value || '')) > MAX_ATTR_VALUE_LENGTH) { return { ok: false, reason: 'setAttribute: value exceeds max ' + MAX_ATTR_VALUE_LENGTH }; }
           if (!noControlChars(String(op.value || ''))) { return { ok: false, reason: 'setAttribute: value has illegal control character' }; }
           return { ok: true, reason: null };
         case 'replaceClass':

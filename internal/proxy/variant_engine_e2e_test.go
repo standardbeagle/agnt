@@ -301,6 +301,80 @@ func TestE2E_VariantEngine_RealBrowser(t *testing.T) {
 		assert.Equal(t, 1, styleRefused, "the op that overflows the per-variant style budget must be refused")
 		assert.Equal(t, 1, scriptRefused, "the op that overflows the per-revision script budget must be refused")
 	})
+
+	// 10. the §5 size limits are denominated in UTF-8 BYTES, not UTF-16 code
+	//     units. Every Go limit is a `len(...)` over a string; JS `.length`
+	//     counts code units, so a CJK payload measures 1/3 of its real size and
+	//     an emoji payload 1/4. Each probe below is comfortably UNDER its limit
+	//     in code units and comfortably OVER it in bytes — under a `.length`
+	//     comparison every one of them is wrongly ACCEPTED here while the Go
+	//     validator rejects it, which is exactly the mirror disagreement this
+	//     engine exists to prevent. Each site is paired with an under-both
+	//     control so the assertion cannot be satisfied by refusing everything.
+	t.Run("size_caps_are_utf8_byte_denominated", func(t *testing.T) {
+		loadFixture(t, ctx, url)
+
+		// 900 CJK chars: 900 code units (< 2048), 2700 UTF-8 bytes (> 2048).
+		// mirrors internal/publish/op.go:93 len(o.Value) > MaxAttrValueLength.
+		var attrOverReason, attrUnderOK string
+		require.NoError(t, cdp.Run(ctx,
+			cdp.Evaluate(`(function(){
+				var v = new Array(901).join('漢');
+				var r = window.__variantEngine.validateOp({ op: 'setAttribute', selector: '#title', name: 'title', value: v });
+				return (v.length < 2048 && r.ok === false) ? r.reason : 'WRONGLY ACCEPTED: units=' + v.length;
+			})()`, &attrOverReason),
+			cdp.Evaluate(`(function(){
+				var v = new Array(601).join('漢'); // 600 units, 1800 bytes — under both
+				var r = window.__variantEngine.validateOp({ op: 'setAttribute', selector: '#title', name: 'title', value: v });
+				return r.ok === true ? 'ok' : 'WRONGLY REFUSED: ' + r.reason;
+			})()`, &attrUnderOK),
+		))
+		assert.Contains(t, attrOverReason, "setAttribute: value exceeds max 2048",
+			"a 2700-byte / 900-code-unit setAttribute value must be refused (op.go:93 counts bytes)")
+		assert.Equal(t, "ok", attrUnderOK, "an under-both-measures value must still be accepted")
+
+		// 800 CJK chars in the query: ~840 code units (< 2048), ~2440 bytes
+		// (> 2048). mirrors internal/publish/url.go:15 len(raw) > MaxURLLength.
+		var urlOverReason, urlUnderOK string
+		require.NoError(t, cdp.Run(ctx,
+			cdp.Evaluate(`(function(){
+				var u = 'https://cdn.example.com/x.png?q=' + new Array(801).join('漢');
+				var r = window.__variantEngine.validateOp({ op: 'setImageSrc', selector: '#title', url: u });
+				return (u.length < 2048 && r.ok === false) ? r.reason : 'WRONGLY ACCEPTED: units=' + u.length;
+			})()`, &urlOverReason),
+			cdp.Evaluate(`(function(){
+				var u = 'https://cdn.example.com/x.png?q=' + new Array(601).join('漢');
+				var r = window.__variantEngine.validateOp({ op: 'setImageSrc', selector: '#title', url: u });
+				return r.ok === true ? 'ok' : 'WRONGLY REFUSED: ' + r.reason;
+			})()`, &urlUnderOK),
+		))
+		assert.Contains(t, urlOverReason, "exceeds max 2048",
+			"a ~2440-byte / ~840-code-unit URL must be refused (url.go:15 counts bytes)")
+		assert.Contains(t, urlOverReason, "url: length",
+			"the refusal must come from the LENGTH cap, not some other guard")
+		assert.Equal(t, "ok", urlUnderOK, "an under-both-measures https URL must still be accepted")
+
+		// 120 CJK chars: 120 code units (< 256), 360 bytes (> 256). The selector
+		// grammar rejects non-ASCII idents too, so the assertion pins that the
+		// LENGTH cap is what fires — under `.length` the string sails past the
+		// cap and is refused later by the grammar, a different (and wrong) reason.
+		// mirrors internal/publish/selector.go:37 len(sel) > MaxSelectorLength.
+		var selOverReason, selUnderOK string
+		require.NoError(t, cdp.Run(ctx,
+			cdp.Evaluate(`(function(){
+				var s = new Array(121).join('漢');
+				var r = window.__variantEngine.validateSelector(s);
+				return (s.length < 256 && r.ok === false) ? r.reason : 'WRONGLY ACCEPTED: units=' + s.length;
+			})()`, &selOverReason),
+			cdp.Evaluate(`(function(){
+				var r = window.__variantEngine.validateSelector('#title');
+				return r.ok === true ? 'ok' : 'WRONGLY REFUSED: ' + r.reason;
+			})()`, &selUnderOK),
+		))
+		assert.Contains(t, selOverReason, "selector: length 360 exceeds max 256",
+			"a 360-byte / 120-code-unit selector must be refused BY THE LENGTH CAP (selector.go:37 counts bytes), not incidentally by the grammar")
+		assert.Equal(t, "ok", selUnderOK, "an ordinary in-grammar selector must still be accepted")
+	})
 }
 
 func TestE2E_VariantEngine_SelfCSPAndDesignRoundTrip(t *testing.T) {
