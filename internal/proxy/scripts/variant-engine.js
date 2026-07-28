@@ -3,17 +3,21 @@
 // Given a validated VariantSet (the P2 shape:
 // internal/publish/schema.go — {version,id,stepId,variants:[{id,label,ops}]})
 // bound to a route, this module applies the CLOSED, DECLARATIVE op vocabulary
-// (spec §6) to the proxied page and can revert it EXACTLY. It is the client-side
-// half of the defense-in-depth contract: the server (internal/publish) validates
-// on publish; this engine RE-VALIDATES client-side so a hostile upstream / a
-// tampered snapshot cannot re-introduce a hole (INV-6).
+// (spec §6) plus the raw-content ops (§6a) to the proxied page and can revert it
+// EXACTLY. It is the client-side half of the defense-in-depth contract: the
+// server (internal/publish) validates on publish; this engine RE-VALIDATES
+// client-side so a tampered snapshot cannot smuggle in an op shape the
+// vocabulary does not define.
 //
-// It applies ops ONLY through safe DOM APIs — textContent, setAttribute on the
-// attr allowlist, classList, and el.style.setProperty from the property
-// allowlist. There is NO code path that evaluates author-supplied strings as
-// code or markup: no HTML-string sinks, no on* event-handler attributes, no
-// dynamic code compilation, no javascript:/data: URLs, no url()/expression or
-// at-import CSS. It runs unchanged under `script-src 'self'` (spec §4 CSP).
+// INV-6 RETIRED 2026-07-27 (§6a): the vocabulary now carries publisher-authored
+// CSS, HTML, and script. That author is the publisher holding the dev session —
+// a trusted actor — so the old "no author string reaches a markup/code sink"
+// rule guarded the wrong boundary. Containment moved to CSP: authored script
+// runs only because its sha256 is pinned in the served revision's script-src
+// (INV-11/INV-12), so upstream- and viewer-injected script still cannot execute.
+// What this engine therefore still refuses is DYNAMIC CODE COMPILATION
+// (the dynamic-code sinks) — the served CSP carries no 'unsafe-eval', and a compile
+// path would be an attempt to run a body no pinned hash covers.
 //
 // The op/selector/style/url contract below MIRRORS the P2 Go validators
 // byte-for-byte (op.go, selector.go, style.go, url.go, limits.go). Keep the two
@@ -46,8 +50,18 @@
     var MAX_URL_LENGTH = 2048;
     var MAX_ATTR_VALUE_LENGTH = MAX_TEXT_BYTES;
     var MAX_VARIANTS_PER_SET = 12;
+    // Raw-content caps (§5, mirrored from internal/publish/schema.go). These are
+    // parse-cost/abuse bounds, not injection controls — §6a is explicit that the
+    // payloads are NOT scanned for code-shape.
+    var MAX_RAW_HTML_BYTES = 8192;
+    var MAX_RAW_SCRIPT_BYTES = 16384;
 
     var LOG = '[VariantEngine]';
+
+    // The variant root: the single container the variant-root ops (addStyle,
+    // addScript) append to. Created lazily on first use, removed wholesale on
+    // revert, so a variant's stylesheet and script leave no residue behind.
+    var VARIANT_ROOT_ID = '__variant-engine-root';
 
     // ---- Restricted selector grammar (mirror selector.go §5a) ------------
     // ident := [A-Za-z_][A-Za-z0-9_-]*  — anchored full-string variant.
@@ -269,12 +283,23 @@
     }
 
     // ---- Op validation (mirror op.go Op.Validate) ------------------------
-    // Returns {ok, reason}. There is no op that accepts markup or code — INV-6
-    // holds structurally because the switch has no such branch.
+    // Returns {ok, reason}. The vocabulary is CLOSED — an unknown op is a
+    // rejection, never a passthrough — but since INV-6's retirement it includes
+    // the raw-content ops (§6a), whose payloads are bounded by size and
+    // contained by CSP rather than scanned for code-shape.
+    function isRootOp(op) { return op && (op.op === 'addStyle' || op.op === 'addScript'); }
+
     function validateOp(op) {
       if (!op || typeof op !== 'object') { return { ok: false, reason: 'op: not an object' }; }
-      var sel = validateSelector(op.selector);
-      if (!sel.ok) { return { ok: false, reason: sel.reason }; }
+      if (isRootOp(op)) {
+        // Variant-root ops append to the variant root rather than mutating a
+        // matched element, so a selector is meaningless — and accepting one
+        // would imply a targeting semantic the renderer does not have.
+        if (op.selector) { return { ok: false, reason: op.op + ": unexpected field 'selector'" }; }
+      } else {
+        var sel = validateSelector(op.selector);
+        if (!sel.ok) { return { ok: false, reason: sel.reason }; }
+      }
 
       function forbidExcept(allowed) {
         var ok = {};
@@ -284,6 +309,10 @@
         if (op.from && !ok.from) { return "unexpected field 'from'"; }
         if (op.to && !ok.to) { return "unexpected field 'to'"; }
         if (op.url && !ok.url) { return "unexpected field 'url'"; }
+        if (op.html && !ok.html) { return "unexpected field 'html'"; }
+        if (op.css && !ok.css) { return "unexpected field 'css'"; }
+        if (op.code && !ok.code) { return "unexpected field 'code'"; }
+        if (op.src && !ok.src) { return "unexpected field 'src'"; }
         if (op.props && Object.keys(op.props).length > 0 && !ok.props) { return "unexpected field 'props'"; }
         return null;
       }
@@ -328,6 +357,37 @@
           var uerr = validateURL(op.url);
           if (uerr) { return { ok: false, reason: uerr }; }
           return { ok: true, reason: null };
+        case 'setHTML':
+          stray = forbidExcept(['html']);
+          if (stray) { return { ok: false, reason: 'setHTML: ' + stray }; }
+          if (typeof op.html !== 'string' || op.html === '') { return { ok: false, reason: 'setHTML: html is required' }; }
+          if (utf8Len(op.html) > MAX_RAW_HTML_BYTES) {
+            return { ok: false, reason: 'setHTML: html exceeds max ' + MAX_RAW_HTML_BYTES };
+          }
+          return { ok: true, reason: null };
+        case 'addStyle':
+          stray = forbidExcept(['css']);
+          if (stray) { return { ok: false, reason: 'addStyle: ' + stray }; }
+          if (typeof op.css !== 'string' || op.css === '') { return { ok: false, reason: 'addStyle: css is required' }; }
+          if (utf8Len(op.css) > MAX_STYLE_PATCH_BYTES) {
+            return { ok: false, reason: 'addStyle: css exceeds max ' + MAX_STYLE_PATCH_BYTES };
+          }
+          return { ok: true, reason: null };
+        case 'addScript':
+          stray = forbidExcept(['code', 'src']);
+          if (stray) { return { ok: false, reason: 'addScript: ' + stray }; }
+          // src is a PUBLISH-TIME fetch input (§6a): the daemon fetches it once
+          // under §4a and inlines the bytes so the hash can be pinned. An op
+          // that still carries src by the time it reaches a browser means that
+          // resolution did not happen — fail closed rather than invent a
+          // runtime fetch, which would emit the <script src> §6a forbids and
+          // load a body no pinned hash covers.
+          if (op.src) { return { ok: false, reason: 'addScript: src must be inlined at publish time; the renderer emits no <script src>' }; }
+          if (typeof op.code !== 'string' || op.code === '') { return { ok: false, reason: 'addScript: code is required' }; }
+          if (utf8Len(op.code) > MAX_RAW_SCRIPT_BYTES) {
+            return { ok: false, reason: 'addScript: code exceeds max ' + MAX_RAW_SCRIPT_BYTES };
+          }
+          return { ok: true, reason: null };
         default:
           return { ok: false, reason: 'unknown op type ' + JSON.stringify(op.op) };
       }
@@ -338,6 +398,7 @@
       return [
         op.op, op.selector, op.name || '', op.value || '',
         op.from || '', op.to || '', op.url || '',
+        op.html || '', op.css || '', op.code || '',
         op.props ? JSON.stringify(sortedProps(op.props)) : ''
       ].join('|');
     }
@@ -347,12 +408,15 @@
       return out;
     }
 
-    // ---- Op apply / undo (safe DOM APIs only) ----------------------------
+    // ---- Op apply / undo -------------------------------------------------
     // captureUndo snapshots the exact prior state so revert restores it byte-
-    // for-byte, then applyOp performs the mutation. Neither touches any HTML-
-    // string sink, on* handler, dynamic code path, or any code/markup string.
+    // for-byte, then applyOp performs the mutation. Raw-content ops (§6a) write
+    // authored markup/CSS/script verbatim; the variant-root ops need no prior-
+    // state snapshot because applyOp returns the node it created and the caller
+    // builds a remove-the-node undo from it.
     function captureUndo(el, op) {
       switch (op.op) {
+        case 'setHTML':
         case 'setText': {
           // Snapshot the live child nodes (detached, not cloned) so restore
           // rebuilds the subtree EXACTLY — including element children a plain
@@ -417,9 +481,38 @@
       }
     }
 
+    // applyOp mutates el for op. For the variant-root ops it RETURNS the node it
+    // appended, which the caller turns into the undo; every other op returns
+    // undefined and is undone from captureUndo's snapshot.
     function applyOp(el, op) {
       switch (op.op) {
         case 'setText': el.textContent = op.value; break;
+        case 'setHTML':
+          // Authored markup, written verbatim (§6a). Inline on* handlers and
+          // javascript: URLs inside the fragment are inert under the served
+          // CSP (script-src carries no 'unsafe-inline'), which is why the
+          // renderer neither strips nor rejects them.
+          el.innerHTML = op.html;
+          break;
+        case 'addStyle': {
+          var styleEl = document.createElement('style');
+          styleEl.textContent = op.css;
+          el.appendChild(styleEl);
+          return styleEl;
+        }
+        case 'addScript': {
+          // The authored script is emitted as a SCRIPT ELEMENT whose body is the
+          // authored text — never handed to a dynamic-code sink, which the
+          // served CSP forbids outright ('unsafe-eval' absent, INV-12). Whether
+          // this body executes is decided entirely by CSP: it runs iff its
+          // sha256 is in the revision's pinned script-src hash set. Until that
+          // pinning lands the browser refuses it, which is the correct
+          // fail-closed state — a body no hash covers must not run.
+          var scriptEl = document.createElement('script');
+          scriptEl.textContent = op.code;
+          el.appendChild(scriptEl);
+          return scriptEl;
+        }
         case 'setAttribute': el.setAttribute(op.name, op.value); break;
         case 'setImageSrc': el.setAttribute('src', op.url); break;
         case 'addClass': el.classList.add(op.value); break;
@@ -545,6 +638,7 @@
       var undos = [];       // {el, undo} applied-op records, unwound on revert
       var marks = new WeakMap(); // el -> Set(opSig) already applied (idempotency)
       var lastMissing = [];
+      var rootEl = null;    // the variant root, created on first variant-root op
       var applying = false; // true while WE mutate — makes the observer ignore self-mutations
       var scheduled = false;
       var destroyed = false;
@@ -574,6 +668,22 @@
         else { setTimeout(run, 0); }
       }
 
+      // variantRoot returns the container the variant-root ops append to,
+      // creating it on first use. It is inert layout-wise (a hidden div): a
+      // <style> inside it still applies document-wide, and a <script> inside it
+      // still runs — subject to CSP — while keeping every authored node under
+      // one parent that revert can drop in a single removal.
+      function variantRoot() {
+        if (rootEl && rootEl.parentNode) { return rootEl; }
+        var host = document.body || document.documentElement;
+        rootEl = document.createElement('div');
+        rootEl.id = VARIANT_ROOT_ID;
+        rootEl.setAttribute('hidden', '');
+        rootEl.style.setProperty('display', 'none');
+        host.appendChild(rootEl);
+        return rootEl;
+      }
+
       function applyOps(id) {
         var v = variants[id];
         if (!v) { return; }
@@ -583,15 +693,26 @@
           for (var i = 0; i < v.ops.length; i++) {
             var op = v.ops[i];
             var els;
-            try { els = scopeRoot.querySelectorAll(op.selector); } catch (e) { els = []; }
-            if (!els || els.length === 0) { missing.push(op.selector); continue; }
+            if (isRootOp(op)) {
+              // Variant-root ops target the engine's own container, so they can
+              // never "miss" — there is no selector and nothing to report.
+              els = [variantRoot()];
+            } else {
+              try { els = scopeRoot.querySelectorAll(op.selector); } catch (e) { els = []; }
+              if (!els || els.length === 0) { missing.push(op.selector); continue; }
+            }
             for (var j = 0; j < els.length; j++) {
               var el = els[j];
               var set = marks.get(el);
               if (!set) { set = {}; marks.set(el, set); }
               if (set[op._sig]) { continue; } // already applied to this node — idempotent
               var undo = captureUndo(el, op);
-              applyOp(el, op);
+              var created = applyOp(el, op);
+              if (created) {
+                undo = (function (node) {
+                  return function () { if (node.parentNode) { node.parentNode.removeChild(node); } };
+                })(created);
+              }
               undos.push({ el: el, undo: undo });
               set[op._sig] = true;
               stats.writeCount++;
@@ -607,7 +728,7 @@
       }
 
       function removeOverlay() {
-        if (appliedId === null && undos.length === 0) { clearMissingMarker(); return; }
+        if (appliedId === null && undos.length === 0 && !rootEl) { clearMissingMarker(); return; }
         beginMutate();
         try {
           for (var i = undos.length - 1; i >= 0; i--) {
@@ -615,6 +736,11 @@
           }
           undos = [];
           marks = new WeakMap();
+          // Drop the variant root itself, not just its children: leaving an
+          // empty container behind would be residue a revert is supposed to
+          // erase, and the next apply must start from a fresh root.
+          if (rootEl && rootEl.parentNode) { rootEl.parentNode.removeChild(rootEl); }
+          rootEl = null;
           appliedId = null;
           lastMissing = [];
           stats.revertCount++;
