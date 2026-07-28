@@ -99,6 +99,27 @@ func TestVariantEngineDoesNotResurrectRetiredStyleRule(t *testing.T) {
 	}
 }
 
+// TestVariantEngineMirrorsAggregateBudgets pins the direction the JS mirror was
+// LOOSER than Go. The engine mirrored only the per-op caps, but §5's real bounds
+// are aggregates that a tampered snapshot can trivially dodge by splitting one
+// oversize payload across several ops:
+//
+//	internal/publish/validate.go:94  — style patch is per VARIANT
+//	                                   (applyStyle + addStyle share one budget)
+//	internal/publish/validate.go:139 — raw script is per authored REVISION
+//	                                   (summed across every variant in the set)
+func TestVariantEngineMirrorsAggregateBudgets(t *testing.T) {
+	for _, want := range []string{
+		"styleBytesOf",           // applyStyle + addStyle spend one budget
+		"variant style budget",   // per-variant refusal reason
+		"revision script budget", // per-set refusal reason
+	} {
+		if !strings.Contains(variantEngineJS, want) {
+			t.Errorf("variant-engine.js missing aggregate-budget mirror %q (mirror internal/publish/validate.go)", want)
+		}
+	}
+}
+
 // TestVariantEngineRendersRawOps pins the render primitive for each raw-content
 // op (spec §6a) — one assertion per op kind:
 //

@@ -252,6 +252,22 @@
     //
     // The size cap stays: it is an abuse control, not an injection control.
 
+    // styleBytesOf reports what an op spends from the §5 per-variant style
+    // budget (mirror op.go styleBytes): applyStyle and addStyle are two
+    // spellings of the same thing and therefore share one budget.
+    function styleBytesOf(op) {
+      if (op.op === 'applyStyle') {
+        var n = 0;
+        var ks = op.props ? Object.keys(op.props) : [];
+        for (var i = 0; i < ks.length; i++) {
+          n += utf8Len(ks[i]) + utf8Len(String(op.props[ks[i]]));
+        }
+        return n;
+      }
+      if (op.op === 'addStyle') { return utf8Len(op.css || ''); }
+      return 0;
+    }
+
     function validateStyleProps(props) {
       if (!props || typeof props !== 'object') { return 'applyStyle: no properties'; }
       var keys = Object.keys(props);
@@ -604,16 +620,40 @@
       var refused = [];
       var variants = {};
       var order = [];
+      // §5's real bounds are AGGREGATES, not per-op caps (mirror
+      // internal/publish/validate.go): the style patch is budgeted per VARIANT
+      // with applyStyle and addStyle spending from one pot, and the raw script is
+      // budgeted per authored REVISION — summed across every variant in the set,
+      // which is also what keeps INV-12's pinned script-src hash set bounded.
+      // Mirroring only the per-op caps let a tampered snapshot dodge both by
+      // splitting one oversize payload across several legal-sized ops.
+      var scriptBudget = 0; // per-revision: spans the whole variant set
+      function refuse(op, reason) {
+        refused.push({ op: op, reason: reason });
+        try { console.warn(LOG + ' refused op (' + reason + '): ' + JSON.stringify(op)); } catch (e) { /* ignore */ }
+      }
       rawVariants.forEach(function (v) {
         if (!v || typeof v.id !== 'string') { return; }
         var ops = [];
+        var styleBudget = 0; // per-variant: reset for each variant
         (v.ops || []).forEach(function (op) {
           var res = validateOp(op);
           if (!res.ok) {
-            refused.push({ op: op, reason: res.reason });
-            try { console.warn(LOG + ' refused op (' + res.reason + '): ' + JSON.stringify(op)); } catch (e) { /* ignore */ }
+            refuse(op, res.reason);
             return;
           }
+          var sb = styleBytesOf(op);
+          if (sb > 0 && styleBudget + sb > MAX_STYLE_PATCH_BYTES) {
+            refuse(op, op.op + ': variant style budget exceeded (' + (styleBudget + sb) + ' > ' + MAX_STYLE_PATCH_BYTES + ' bytes per variant)');
+            return;
+          }
+          var cb = op.op === 'addScript' ? utf8Len(op.code || '') : 0;
+          if (cb > 0 && scriptBudget + cb > MAX_RAW_SCRIPT_BYTES) {
+            refuse(op, 'addScript: revision script budget exceeded (' + (scriptBudget + cb) + ' > ' + MAX_RAW_SCRIPT_BYTES + ' bytes per revision)');
+            return;
+          }
+          styleBudget += sb;
+          scriptBudget += cb;
           op._sig = opSignature(op);
           ops.push(op);
         });

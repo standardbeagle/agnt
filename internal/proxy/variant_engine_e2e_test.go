@@ -269,6 +269,38 @@ func TestE2E_VariantEngine_RealBrowser(t *testing.T) {
 		assert.Contains(t, bg, "url(", "a url() background is publisher-authored CSS, contained by CSP not by a substring scan")
 		assert.Contains(t, mask, "linear-gradient", "an off-allowlist property must apply")
 	})
+
+	// 9. the AGGREGATE budgets (internal/publish/validate.go:94 and :139), which
+	//    the engine previously did not mirror at all: splitting one oversize
+	//    payload across several per-op-legal ops must not dodge the bound.
+	t.Run("aggregate_budgets_enforced", func(t *testing.T) {
+		loadFixture(t, ctx, url)
+		var styleRefused, scriptRefused int
+		require.NoError(t, cdp.Run(ctx,
+			// Per-VARIANT style budget: applyStyle and addStyle share one 4096B
+			// budget, so 3000B + 3000B overflows even though neither op alone does.
+			cdp.Evaluate(`(function(){
+				var big = new Array(3001).join('x');
+				window.mkEngine([{ id: 's', ops: [
+					{ op: 'applyStyle', selector: '#title', props: { color: big } },
+					{ op: 'addStyle', css: '/*' + big + '*/' }
+				] }]);
+				return window.__eng.refusedOps().length;
+			})()`, &styleRefused),
+			// Per-REVISION script budget: summed across every variant in the set,
+			// so two 10000B bodies in two different variants overflow 16384B.
+			cdp.Evaluate(`(function(){
+				var body = new Array(10001).join('y');
+				window.mkEngine([
+					{ id: 'p', ops: [{ op: 'addScript', code: body }] },
+					{ id: 'q', ops: [{ op: 'addScript', code: body }] }
+				]);
+				return window.__eng.refusedOps().length;
+			})()`, &scriptRefused),
+		))
+		assert.Equal(t, 1, styleRefused, "the op that overflows the per-variant style budget must be refused")
+		assert.Equal(t, 1, scriptRefused, "the op that overflows the per-revision script budget must be refused")
+	})
 }
 
 func TestE2E_VariantEngine_SelfCSPAndDesignRoundTrip(t *testing.T) {
