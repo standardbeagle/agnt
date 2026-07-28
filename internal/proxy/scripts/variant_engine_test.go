@@ -13,10 +13,19 @@ import (
 // 'unsafe-eval' and no 'unsafe-inline'. An eval/new Function path could not run
 // under that CSP anyway, and reaching for one would be an attempt to route
 // around the hash pinning that IS the containment story.
+//
+// It also pins the raw-markup SINK list. §6a sanctioned exactly ONE markup
+// primitive — `innerHTML` on the op's matched element — because that is the only
+// sink whose blast radius is the selector the publisher named. `outerHTML`
+// replaces the matched element itself (it can delete the engine's own anchor and
+// escape the intended target), and `insertAdjacentHTML` writes outside the
+// element entirely. Neither was sanctioned; both were dropped from this list
+// alongside `innerHTML` by mistake. Re-banned here.
 func TestVariantEngineNoDynamicCodeCompilation(t *testing.T) {
 	forbidden := []string{
 		"eval(", "new Function", "Function(",
 		".setTimeout(", "document.write",
+		"outerHTML", "insertAdjacentHTML",
 	}
 	for _, tok := range forbidden {
 		if strings.Contains(variantEngineJS, tok) {
@@ -48,12 +57,6 @@ func TestVariantEngineMirrorsP2Allowlists(t *testing.T) {
 			t.Errorf("variant-engine.js should name %s in its forbidden-attr switch (mirror op.go)", forbiddenAttr)
 		}
 	}
-	// Forbidden CSS tokens (style.go forbiddenCSSTokens).
-	for _, tok := range []string{"url(", "expression(", "@import", "javascript:", "image-set(", "cross-fade("} {
-		if !strings.Contains(variantEngineJS, "'"+tok+"'") {
-			t.Errorf("variant-engine.js missing forbidden CSS token %q (mirror style.go)", tok)
-		}
-	}
 	// The concrete limits (limits.go) must be encoded verbatim.
 	for _, lim := range []string{"256", "4096", "2048"} {
 		if !strings.Contains(variantEngineJS, lim) {
@@ -63,6 +66,36 @@ func TestVariantEngineMirrorsP2Allowlists(t *testing.T) {
 	// https-only URL scheme check (url.go).
 	if !strings.Contains(variantEngineJS, "'https:'") {
 		t.Error("variant-engine.js must enforce https-only URLs (mirror url.go)")
+	}
+}
+
+// TestVariantEngineDoesNotResurrectRetiredStyleRule is the flipped half of the
+// old forbidden-CSS-token assertion. Those tokens used to be REQUIRED here;
+// INV-6's retirement (2026-07-27) removed the §5b property allowlist and the §5
+// forbidden-token scan from internal/publish/style.go, and §6a explicitly
+// forbids reintroducing the scan as defense-in-depth. The JS mirror kept
+// enforcing both, so the Go validator accepted an `applyStyle {background:
+// url(...)}` op at publish while the browser silently refused to apply it —
+// neither rejected loudly nor honored. The rule must now be absent from BOTH
+// mirrors, so the assertion is inverted rather than deleted.
+func TestVariantEngineDoesNotResurrectRetiredStyleRule(t *testing.T) {
+	// Match the retired CODE shapes, not prose: the file still *documents* the
+	// retirement (and the attr allowlist, which survives, reuses the phrase "not
+	// on allowlist"), so a bare substring sweep would false-positive on both.
+	for _, gone := range []string{
+		"FORBIDDEN_CSS_TOKENS", "hasForbiddenCSSToken", "CSS_PROP_NAME_RE",
+		"ALLOWED_CSS_EXACT", "ALLOWED_CSS_PREFIX", "allowedCSSProperty(",
+		"'expression('", "'-moz-binding'", "'image-set('", "'cross-fade('",
+		"has forbidden token in value", "illegal backslash escape",
+		"value has illegal character",
+	} {
+		if strings.Contains(variantEngineJS, gone) {
+			t.Errorf("variant-engine.js still carries retired §5b/§5 style rule %q — style.go dropped it and §6a forbids reintroducing it as defense-in-depth", gone)
+		}
+	}
+	// The guard that SURVIVES on the same payload: the size cap.
+	if !strings.Contains(variantEngineJS, "MAX_STYLE_PATCH_BYTES") {
+		t.Error("variant-engine.js must keep the §5 style-patch size cap (an abuse control, not an injection control)")
 	}
 }
 

@@ -221,7 +221,6 @@ func TestE2E_VariantEngine_RealBrowser(t *testing.T) {
 		maliciousOps := `[{ id: 'x', ops: [
 			{ op: 'setAttribute', selector: '#title', name: 'onclick', value: 'alert(1)' },
 			{ op: 'setAttribute', selector: '#title', name: 'href', value: 'javascript:alert(1)' },
-			{ op: 'applyStyle', selector: '#title', props: { background: 'url(https://evil.example/x.png)' } },
 			{ op: 'setText', selector: '#title:has(script)', value: 'x' },
 			{ op: 'setImageSrc', selector: '#title', url: 'http://evil.example/x.png' },
 			{ op: 'setHTML', selector: '#title', value: '<img src=x onerror=alert(1)>' }
@@ -233,7 +232,7 @@ func TestE2E_VariantEngine_RealBrowser(t *testing.T) {
 			cdp.Evaluate(`window.__eng.stats().writeCount`, &writeCount),
 			cdp.Evaluate(`document.getElementById('title').textContent`, &titleText),
 		))
-		assert.Equal(t, 6, refusedCount, "every malicious op must be refused client-side")
+		assert.Equal(t, 5, refusedCount, "every malicious op must be refused client-side")
 		assert.Equal(t, 0, writeCount, "no malicious op may reach the DOM")
 		assert.Equal(t, "Original", titleText, "the target is untouched by refused ops")
 		// Belt-and-suspenders: the forbidden handler/attr never landed.
@@ -244,6 +243,31 @@ func TestE2E_VariantEngine_RealBrowser(t *testing.T) {
 		))
 		assert.False(t, hasOnclick, "onclick handler must never be set")
 		assert.False(t, hasHref, "href must never be set via setAttribute")
+	})
+
+	// 8. the RETIRED §5b allowlist / §5 forbidden-token scan: an applyStyle that
+	//    the old client-side rule refused must now APPLY. internal/publish/style.go
+	//    dropped both guards with INV-6 (2026-07-27), so the server accepts this
+	//    op at publish; a JS mirror that still refused it produced an op that was
+	//    neither rejected loudly nor honored. This is the flipped half of case 7.
+	t.Run("retired_style_guards_now_apply", func(t *testing.T) {
+		loadFixture(t, ctx, url)
+		retiredOps := `[{ id: 'r', ops: [
+			{ op: 'applyStyle', selector: '#title', props: { background: 'url(https://cdn.example.com/x.png)' } },
+			{ op: 'applyStyle', selector: '.msg', props: { '-webkit-mask-image': 'linear-gradient(black, transparent)' } }
+		] }]`
+		var refusedCount, writeCount int
+		var bg, mask string
+		require.NoError(t, cdp.Run(ctx,
+			cdp.Evaluate(`window.mkEngine(`+retiredOps+`); window.__eng.apply('r'); window.__eng.refusedOps().length`, &refusedCount),
+			cdp.Evaluate(`window.__eng.stats().writeCount`, &writeCount),
+			cdp.Evaluate(`document.getElementById('title').style.background`, &bg),
+			cdp.Evaluate(`document.querySelector('.msg').style.getPropertyValue('-webkit-mask-image')`, &mask),
+		))
+		assert.Equal(t, 0, refusedCount, "the retired property allowlist / token scan must refuse nothing")
+		assert.Equal(t, 2, writeCount, "both ops must reach the DOM")
+		assert.Contains(t, bg, "url(", "a url() background is publisher-authored CSS, contained by CSP not by a substring scan")
+		assert.Contains(t, mask, "linear-gradient", "an off-allowlist property must apply")
 	})
 }
 

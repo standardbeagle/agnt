@@ -228,36 +228,29 @@
       return null;
     }
 
-    // ---- Style allowlist (mirror style.go §5b/§6) ------------------------
-    var CSS_PROP_NAME_RE = /^-?[a-z][a-z-]*$/;
-    var FORBIDDEN_CSS_TOKENS = [
-      'url(', 'expression(', 'behavior', '-moz-binding', '@import', 'javascript:',
-      'image-set(', '-webkit-image-set(', 'cross-fade(', '-webkit-cross-fade('
-    ];
-    var CSS_STRIP_RE = /\/\*[^*]*\*+(?:[^/*][^*]*\*+)*\/|\s+/g;
-    var ALLOWED_CSS_EXACT = {
-      'color': true, 'background-color': true, 'background': true,
-      'line-height': true, 'letter-spacing': true, 'opacity': true,
-      'display': true, 'visibility': true, 'width': true, 'height': true,
-      'box-shadow': true, 'border-radius': true, 'transform': true, 'transition': true
-    };
-    var ALLOWED_CSS_PREFIX = ['border', 'outline', 'padding', 'margin', 'font', 'text-', 'min-', 'max-'];
-
-    function allowedCSSProperty(prop) {
-      if (ALLOWED_CSS_EXACT[prop]) { return true; }
-      for (var i = 0; i < ALLOWED_CSS_PREFIX.length; i++) {
-        if (prop.indexOf(ALLOWED_CSS_PREFIX[i]) === 0) { return true; }
-      }
-      return false;
-    }
-
-    function hasForbiddenCSSToken(s) {
-      var lower = String(s).replace(CSS_STRIP_RE, '').toLowerCase();
-      for (var i = 0; i < FORBIDDEN_CSS_TOKENS.length; i++) {
-        if (lower.indexOf(FORBIDDEN_CSS_TOKENS[i]) !== -1) { return true; }
-      }
-      return false;
-    }
+    // ---- Style guards (mirror style.go ValidateStyleProps) ---------------
+    // What SURVIVES on an applyStyle payload: a non-empty property name and the
+    // §5 style-patch size cap. Nothing else.
+    //
+    // RETIRED 2026-07-27 with INV-6, and deliberately NOT reinstated here — the
+    // Go half dropped both in internal/publish/style.go:
+    //
+    //   - the §5b property allowlist. §5b is now non-enforced guidance; any CSS
+    //     property is legal.
+    //   - the §5 forbidden-token scan and its companion backslash / punctuation
+    //     rejections, which existed only to make that scan unbypassable.
+    //
+    // Keeping them client-side after the server dropped them was strictly worse
+    // than either mirror alone: the validator accepted the op at publish and
+    // this engine silently refused to apply it, so a published artifact carried
+    // an op that was neither rejected loudly nor honored. §6a is explicit that
+    // downstream code MUST NOT reintroduce the scan as defense-in-depth — the
+    // author is the publisher (a trusted actor) and the exfil the scan nominally
+    // blocked is contained by the wholesale-replaced CSP (INV-11/INV-12), whose
+    // connect-src/img-src bound where a CSS fetch can reach far better than a
+    // substring match on a property value can.
+    //
+    // The size cap stays: it is an abuse control, not an injection control.
 
     function validateStyleProps(props) {
       if (!props || typeof props !== 'object') { return 'applyStyle: no properties'; }
@@ -268,13 +261,8 @@
         var prop = keys[i];
         var val = props[prop];
         if (typeof val !== 'string') { return 'applyStyle: property ' + JSON.stringify(prop) + ' value is not a string'; }
-        total += prop.length + val.length;
-        var name = prop.toLowerCase().trim();
-        if (!CSS_PROP_NAME_RE.test(name)) { return 'applyStyle: illegal property name ' + JSON.stringify(prop); }
-        if (!allowedCSSProperty(name)) { return 'applyStyle: property ' + JSON.stringify(prop) + ' not on allowlist'; }
-        if (val.indexOf('\\') !== -1) { return 'applyStyle: property ' + JSON.stringify(prop) + ' value has illegal backslash escape'; }
-        if (hasForbiddenCSSToken(val)) { return 'applyStyle: property ' + JSON.stringify(prop) + ' has forbidden token in value'; }
-        if (/[;{}<>]/.test(val)) { return 'applyStyle: property ' + JSON.stringify(prop) + ' value has illegal character'; }
+        if (prop.trim() === '') { return 'applyStyle: empty property name'; }
+        total += utf8Len(prop) + utf8Len(val);
       }
       if (total > MAX_STYLE_PATCH_BYTES) {
         return 'applyStyle: patch size ' + total + ' exceeds max ' + MAX_STYLE_PATCH_BYTES;
