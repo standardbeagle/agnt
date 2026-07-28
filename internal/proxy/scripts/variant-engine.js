@@ -670,7 +670,7 @@
 
       // variantRoot returns the container the variant-root ops append to,
       // creating it on first use. It is inert layout-wise (a hidden div): a
-      // <style> inside it still applies document-wide, and a <script> inside it
+      // style element inside it still applies document-wide, and a script element
       // still runs — subject to CSP — while keeping every authored node under
       // one parent that revert can drop in a single removal.
       function variantRoot() {
