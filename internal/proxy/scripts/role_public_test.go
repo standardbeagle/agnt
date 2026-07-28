@@ -21,9 +21,21 @@ var rolePublicGoldenManifest = []string{
 	"public-boot",
 }
 
-// forbiddenPublicTokens are dev-control-surface signatures that MUST NOT appear
-// anywhere in the assembled public bundle. Each is derived from a REAL dev-surface
-// entrypoint, not guessed:
+// forbiddenPublicTokens are DEV-CONTROL-SURFACE signatures that MUST NOT appear
+// anywhere in the assembled public bundle. This is the executable half of INV-1:
+// the build fails if a dev-control module reaches the public plane.
+//
+// Scope, restated after INV-6's retirement (spec §6a, 2026-07-27): this gate
+// bans the DEV CONTROL SURFACE, not authored content. The public plane now
+// renders publisher-authored HTML/CSS/script (variant-engine's setHTML/addStyle/
+// addScript), so markup and script-element sinks are a SANCTIONED public
+// capability and must not be listed here — TestRolePublicPermitsAuthoredContent
+// pins that they stay permitted. Containment of authored script is CSP's job:
+// it runs iff its sha256 is in the served revision's pinned script-src
+// (INV-11/INV-12). What remains banned is anything that would let the public
+// plane *control the developer's session* or run code CSP never pinned.
+//
+// Each token is derived from a REAL dev-surface entrypoint, not guessed:
 //
 //   - "__devtool"      the entire dev control namespace: core WS transport
 //     (window.__devtool_core, new WebSocket in core.js), the
@@ -39,7 +51,11 @@ var rolePublicGoldenManifest = []string{
 //   - "new WebSocket"  the WebSocket command channel opened in core.js.
 //   - "WebSocket("     any WebSocket construction (defensive superset).
 //   - "eval("          the exec channel's dynamic-code sink (core.js: eval(code)).
-//   - "new Function"   dynamic code compilation.
+//     Still banned AFTER INV-6's retirement, for a different
+//     reason than before: the served CSP carries no
+//     'unsafe-eval', so a compile path could only be an attempt
+//     to run a body whose hash CSP never pinned.
+//   - "new Function"   dynamic code compilation; same reasoning.
 //   - "html2canvas"    the capture/screenshot library bundled for the dev roles.
 var forbiddenPublicTokens = []string{
 	"__devtool",
@@ -113,6 +129,67 @@ func TestRolePublicForbiddenSymbolScan(t *testing.T) {
 	}
 	if !strings.Contains(moduleScript["core"], "eval(") {
 		t.Fatal("expected core.js to contain the exec 'eval(' sink; the forbidden-symbol scan would be vacuous otherwise")
+	}
+}
+
+// devControlModules are modules whose presence in the public bundle would mean
+// the public plane can drive the developer's session. They are the concrete
+// intruders TestRolePublicScanCatchesDevControlModule feeds the scan to prove it
+// still has teeth: core (WS command channel + exec sink), indicator/design
+// (agent control UI), capture (screenshotting the dev page), audit-api (the
+// audit family).
+var devControlModules = []string{"core", "indicator", "design", "capture", "audit-api"}
+
+// TestRolePublicScanCatchesDevControlModule is the proof-of-negative for the
+// symbol scan, at the level the gate actually protects: for EVERY dev-control
+// module, appending its source to the public bundle must trip at least one
+// forbidden token. Without this, a scan could silently rot into a list of
+// tokens that no longer matches any real dev surface and pass vacuously.
+func TestRolePublicScanCatchesDevControlModule(t *testing.T) {
+	clean := GetCombinedScriptForRole(RolePublic)
+	for _, name := range devControlModules {
+		src, ok := moduleScript[name]
+		if !ok {
+			t.Fatalf("dev-control module %q not found in moduleScript — update devControlModules", name)
+		}
+		poisoned := clean + "\n// " + name + " module\n" + src
+		var tripped []string
+		for _, tok := range forbiddenPublicTokens {
+			if strings.Contains(poisoned, tok) {
+				tripped = append(tripped, tok)
+			}
+		}
+		if len(tripped) == 0 {
+			t.Errorf("forbidden-symbol scan did not trip on dev-control module %q — the gate would not fail the build if it entered RolePublic", name)
+		}
+	}
+}
+
+// TestRolePublicPermitsAuthoredContent pins the OTHER half of the rewritten
+// gate: since INV-6's retirement the public plane's whole job includes rendering
+// publisher-authored HTML/CSS/script (§6a), so the authored-content render path
+// must be PRESENT in the public bundle and must not trip the dev-control scan.
+// This fails if someone "hardens" the gate by re-banning markup/script sinks,
+// which would silently delete the capability the epic exists to ship.
+func TestRolePublicPermitsAuthoredContent(t *testing.T) {
+	pub := GetCombinedScriptForRole(RolePublic)
+	for _, want := range []string{
+		"el.innerHTML = op.html", // setHTML
+		"styleEl.textContent",    // addStyle
+		"scriptEl.textContent",   // addScript — the hash-pinnable script element
+		"__variant-engine-root",  // the variant root the two root-ops append to
+	} {
+		if !strings.Contains(pub, want) {
+			t.Errorf("public bundle missing sanctioned authored-content render path %q (§6a)", want)
+		}
+	}
+	// And the authored path must not itself be a dynamic-code path: the served
+	// CSP has no 'unsafe-eval', so an authored body only ever runs via the
+	// hash-pinned script element, never a compile call.
+	for _, tok := range []string{"eval(", "new Function"} {
+		if strings.Contains(variantEngineJS, tok) {
+			t.Errorf("the authored-content path must not use %q — script executes only via CSP hash pinning (INV-12)", tok)
+		}
 	}
 }
 
