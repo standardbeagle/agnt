@@ -583,6 +583,82 @@ func TestPublishFileSurvivesRestart(t *testing.T) {
 	}
 }
 
+// TestPublishFileIdenticalContentDistinctOwners is the regression the prior
+// content-addressing defect needed and did not have
+// (.claude/rules/publish-security-review-lessons.md §2): two DIFFERENT owners
+// publishing BYTE-IDENTICAL content — hence the identical content digest — must
+// get independent shares. The digest identifies a revision inside an
+// already-owner-scoped share; it is never the key a share is resolved by. If it
+// ever becomes one, one owner's edits/revocations bleed into the other's reads.
+func TestPublishFileIdenticalContentDistinctOwners(t *testing.T) {
+	s, _ := newStore(t)
+	content := func() *PublishedWalkthrough { return fileWalkthrough("wt", "identical") }
+
+	idA, tokA, revA, err := s.PublishFile(content(), "/project-a", "tour.html")
+	if err != nil {
+		t.Fatalf("PublishFile A: %v", err)
+	}
+	idB, tokB, revB, err := s.PublishFile(content(), "/project-b", "tour.html")
+	if err != nil {
+		t.Fatalf("PublishFile B: %v", err)
+	}
+
+	// Test premise: the two shares really do collide on content digest.
+	infoA, _ := s.Status(idA)
+	infoB, _ := s.Status(idB)
+	if infoA.Digest != infoB.Digest {
+		t.Fatalf("premise broken: digests differ (%q vs %q), the collision path is untested", infoA.Digest, infoB.Digest)
+	}
+	if idA == idB || tokA == tokB || revA == revB {
+		t.Fatalf("identical content collapsed two owners: id %q/%q token-equal=%v rev %q/%q",
+			idA, idB, tokA == tokB, revA, revB)
+	}
+	// The owner-scoped lookup key must separate them.
+	if sourceKey("/project-a", "tour.html") == sourceKey("/project-b", "tour.html") {
+		t.Fatalf("sourceKey ignores the owner: two projects share one key")
+	}
+	if _, gotID, ok := s.VerifyToken(tokA); !ok || gotID != idA {
+		t.Fatalf("token A resolved to %q (ok=%v), want %q", gotID, ok, idA)
+	}
+	if _, gotID, ok := s.VerifyToken(tokB); !ok || gotID != idB {
+		t.Fatalf("token B resolved to %q (ok=%v), want %q", gotID, ok, idB)
+	}
+
+	// Editing A's file must not touch B's revision.
+	if _, _, _, err := s.PublishFile(fileWalkthrough("wt", "a-edited"), "/project-a", "tour.html"); err != nil {
+		t.Fatalf("PublishFile A edit: %v", err)
+	}
+	if got, _, ok := s.VerifyToken(tokA); !ok || got.Steps[0].Body != "a-edited" {
+		t.Fatalf("A did not take its own edit: ok=%v body=%q", ok, got.Steps[0].Body)
+	}
+	if got, _, ok := s.VerifyToken(tokB); !ok || got.Steps[0].Body != "identical" {
+		t.Fatalf("A's edit leaked into B: ok=%v body=%q", ok, got.Steps[0].Body)
+	}
+
+	// Revoking A's file must not revoke B's identical-content share.
+	revoked, err := s.ReconcileFiles("/project-a", nil)
+	if err != nil {
+		t.Fatalf("ReconcileFiles A: %v", err)
+	}
+	if len(revoked) != 1 || revoked[0] != idA {
+		t.Fatalf("reconcile A revoked %v, want [%s]", revoked, idA)
+	}
+	if _, _, ok := s.VerifyToken(tokA); ok {
+		t.Fatalf("A's token survived revocation")
+	}
+	if _, _, ok := s.VerifyToken(tokB); !ok {
+		t.Fatalf("revoking A killed B's identical-content share")
+	}
+
+	// Control-plane listing stays project-scoped.
+	if got := s.List("/project-a"); len(got) != 1 {
+		t.Fatalf("List(/project-a) = %d, want 1", len(got))
+	}
+	if got := s.List("/project-b"); len(got) != 1 {
+		t.Fatalf("List(/project-b) = %d, want 1", len(got))
+	}
+}
+
 // TestPublishFileRejectsBadInput pins the trust boundary: no filename and no
 // invalid artifact ever reaches the store.
 func TestPublishFileRejectsBadInput(t *testing.T) {
