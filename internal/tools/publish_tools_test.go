@@ -115,6 +115,88 @@ func TestPublishFeedbackRenderNoToken(t *testing.T) {
 	}
 }
 
+// TestMergeUpstreamCarriesManualControlPlaneInputs pins the create path's
+// upstream handling: the field is optional and byte-transparent when absent,
+// folds into the artifact when the nested object is missing, tolerates a
+// restatement of the same origin, and REJECTS two different origins rather than
+// silently picking one — the origin decides what a viewer's browser loads.
+func TestMergeUpstreamCarriesManualControlPlaneInputs(t *testing.T) {
+	const base = `{"version":"v1","id":"demo","title":"Demo","steps":[]}`
+
+	// Absent upstream: unchanged bytes, so existing callers are untouched.
+	got, err := mergeUpstream(json.RawMessage(base), "")
+	if err != nil {
+		t.Fatalf("empty upstream: %v", err)
+	}
+	if string(got) != base {
+		t.Fatalf("empty upstream rewrote the artifact: %s", got)
+	}
+
+	// Merged in when absent.
+	got, err = mergeUpstream(json.RawMessage(base), "https://shop.example.com/cart")
+	if err != nil {
+		t.Fatalf("merge: %v", err)
+	}
+	var merged struct {
+		ID       string `json:"id"`
+		Upstream struct {
+			URL string `json:"url"`
+		} `json:"upstream"`
+	}
+	if err := json.Unmarshal(got, &merged); err != nil {
+		t.Fatalf("decode merged: %v (%s)", err, got)
+	}
+	if merged.Upstream.URL != "https://shop.example.com/cart" {
+		t.Fatalf("upstream not merged: %s", got)
+	}
+	if merged.ID != "demo" {
+		t.Fatalf("merge lost an artifact field: %s", got)
+	}
+
+	// Identical restatement is fine.
+	withUpstream := `{"version":"v1","id":"demo","title":"Demo","upstream":{"url":"https://a.example.com/"},"steps":[]}`
+	if _, err := mergeUpstream(json.RawMessage(withUpstream), "https://a.example.com/"); err != nil {
+		t.Fatalf("identical upstream rejected: %v", err)
+	}
+
+	// Two different origins is a loud rejection naming both.
+	_, err = mergeUpstream(json.RawMessage(withUpstream), "https://b.example.com/")
+	if err == nil {
+		t.Fatalf("contradicting origins were silently resolved")
+	}
+	if !strings.Contains(err.Error(), "a.example.com") || !strings.Contains(err.Error(), "b.example.com") {
+		t.Fatalf("rejection should name both origins: %v", err)
+	}
+
+	// A non-object artifact cannot take a merge and must say so.
+	if _, err := mergeUpstream(json.RawMessage(`["not","an","object"]`), "https://a.example.com/"); err == nil {
+		t.Fatalf("a non-object artifact accepted an upstream merge")
+	}
+}
+
+// TestPublishCreateAcceptsRawOpsArtifact pins that a variant set carrying the
+// raw-content ops (setHTML/addStyle/addScript) plus an upstream survives the
+// tool's own handling unaltered — the tool must not filter the op vocabulary it
+// does not own. Validation of the ops belongs to the daemon-side P2 validators.
+func TestPublishCreateAcceptsRawOpsArtifact(t *testing.T) {
+	artifact := `{"version":"v1","id":"demo","title":"Demo",` +
+		`"steps":[{"id":"s1","title":"One","advance":{"type":"auto","ms":1000}}],` +
+		`"variantSet":{"version":"v1","id":"vs1","variants":[{"id":"v1","ops":[` +
+		`{"op":"setHTML","selector":"#hero","html":"<b>hi</b>"},` +
+		`{"op":"addStyle","css":"#hero{color:red}"},` +
+		`{"op":"addScript","code":"console.log(1)"}]}]}}`
+
+	got, err := mergeUpstream(json.RawMessage(artifact), "https://shop.example.com/cart")
+	if err != nil {
+		t.Fatalf("merge with raw ops: %v", err)
+	}
+	for _, op := range []string{"setHTML", "addStyle", "addScript", `"<b>hi</b>"`, "console.log(1)"} {
+		if !strings.Contains(string(got), op) {
+			t.Fatalf("raw op content %q did not survive: %s", op, got)
+		}
+	}
+}
+
 func renderText(t *testing.T, res *mcp.CallToolResult) string {
 	t.Helper()
 	if res == nil || len(res.Content) == 0 {
