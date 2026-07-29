@@ -68,7 +68,9 @@ test.
 Same family — a harness artifact that costs real diagnostic time because it
 *reads* as someone's product change. `cmd/agnt/AGENTS.md` gets written into the
 repository working tree during the `cmd/agnt` suite (tracked as
-`01KYQEGBK1XWS4TKVCYCR6YYFY`, attributed to `support_matrix_test.go`). The file
+`01KYQEGBK1XWS4TKVCYCR6YYFY`; the real writer is the `agnt` binary spawned by
+`shell_resolve_test.go`'s `TestShellResolve_E2E_Binary` — see the
+misdiagnosis history below). The file
 is untracked and is not in any task's `fileScope`, but **scope-check evaluates
 the whole tree including untracked files**, so every full-suite run dirtied the
 tree for whatever task happened to be in flight.
@@ -80,18 +82,44 @@ same wasted-attribution tax as the `-p 1` class above, just paid in review
 cycles instead of reruns.
 
 The mechanism to watch for is a **cwd-relative write in production code**
-(`phaseCmdArgsAndPrompt` writes `AGENTS.md` next to the working directory)
-exercised by a test fenced only with `os.Chdir`. `t.TempDir()` is real
-isolation; `os.Chdir` is **process-global** and therefore is not — a panic or
-`t.Fatal` before the restoring `t.Cleanup`, or any interleaving code path that
-performs the same write while cwd is the repo, lands the artifact in the source
-tree.
+(`phaseCmdArgsAndPrompt`/`writePersistentContext` write `AGENTS.md` next to the
+project directory, which `run.go` resolved from `os.Getwd()`) reached either
+in-process by a test fenced only with `os.Chdir`, or — the part that took three
+tries to find — **by a child process the test spawns**. `t.TempDir()` is real
+isolation; `os.Chdir` is **process-global** and therefore is not; and neither
+one reaches a subprocess at all.
+
+This bug was misdiagnosed three times in a row, each time plausibly:
+
+1. Blamed the test for not using `t.TempDir()` — it did use it.
+2. Blamed `support_matrix_test.go` — it `Chdir`'d into a temp dir correctly, so
+   its write never landed in the repo.
+3. Fixed the in-process path only (threading `projectDir` through
+   `phaseCmdArgsAndPrompt`, commits `3d17edf4`/`d50c28f6` — correct and worth
+   keeping) while the subprocess path kept leaking.
+
+The actual writer was `TestShellResolve_E2E_Binary` spawning the real `agnt`
+binary with **no `cmd.Dir`**: the child inherited cwd=`cmd/agnt` and re-resolved
+the destination itself. Provenance that settled it: the artifact's body contains
+`test-e2e-cmd`, a string unique to that one spawn. Note the leak fires *even
+when the test reports SKIP*, because the write precedes `pty.Start`; and it only
+fires where the test process has a controlling terminal, so a TTY-less CI run
+skips the test and yields a **false clean**. Verify this class under
+`script -qec '<go test …>' /dev/null`, and prefer a positive assertion that the
+write landed under `cmd.Dir` over merely asserting the repo stayed clean — the
+latter is also satisfied by a child that never ran.
 
 **Rules**:
 
 1. A test must never be able to write into the repository working tree. Pass an
    explicit destination directory (`t.TempDir()`) into the code under test;
    treat reliance on process-global `os.Chdir` as a defect, not isolation.
+1a. **A test that spawns your own binary must set `cmd.Dir`.** `t.TempDir()` and
+   `os.Chdir` in the PARENT do not constrain a CHILD process — the child
+   re-resolves every cwd-relative path itself. De-cwd'ing the in-process call
+   path does nothing for a spawned one. Audit every `exec.Command(agntPath, …)`
+   for `cmd.Dir` (`cmd/agnt/run_test.go` already sets it; `shell_resolve_test.go`
+   did not).
 2. If a stray untracked file appears mid-task, do not fold it into a close-out
    commit and do not adjudicate it from scratch — check the known-strays list
    here first, delete it, and move on.
@@ -114,4 +142,8 @@ tree.
        01KYJC0D3FDSG4A05W9058YNR0, 01KYJC0D6K1NAA9Q9J68T4CW7B);
        observed independently by S9's implementer, S9's reviewer, and S10's
        reviewer (advisory on cmd/agnt/AGENTS.md);
-     tracking task 01KYQEGBK1XWS4TKVCYCR6YYFY -->
+     tracking task 01KYQEGBK1XWS4TKVCYCR6YYFY;
+     attribution corrected 2026-07-29 (attempt 2 of the same task, after
+       correctness-review reproduced the leak at HEAD d50c28f6 in an isolated
+       worktree under a real PTY): the writer is the no-cmd.Dir binary spawn in
+       shell_resolve_test.go, not support_matrix_test.go -->
