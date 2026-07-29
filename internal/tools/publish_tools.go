@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -17,7 +18,8 @@ import (
 // NOT reachable through this tool.
 type PublishInput struct {
 	Action      string          `json:"action"                jsonschema:"Action: create | status | list | revoke | rotate | feedback"`
-	Walkthrough json.RawMessage `json:"walkthrough,omitempty" jsonschema:"create: the published walkthrough artifact as JSON (validated before publish)"`
+	Walkthrough json.RawMessage `json:"walkthrough,omitempty" jsonschema:"create: the published walkthrough artifact as JSON - steps plus an optional variantSet whose ops may include the raw-content ops setHTML/addStyle/addScript (validated before publish)"`
+	Upstream    string          `json:"upstream,omitempty"    jsonschema:"create: https URL of the live origin this walkthrough is demonstrated against; equivalent to walkthrough.upstream.url and rejected if it contradicts one already present"`
 	ID          string          `json:"id,omitempty"          jsonschema:"status/revoke/rotate/feedback: the viewer-safe share id returned by create"`
 	Cursor      string          `json:"cursor,omitempty"      jsonschema:"feedback: opaque pagination cursor from a prior call's next_cursor (empty = first page)"`
 	Limit       int             `json:"limit,omitempty"       jsonschema:"feedback: max rows to return this page (<=0 = all remaining)"`
@@ -53,6 +55,14 @@ Actions:
   create  — publish a walkthrough behind a fresh unguessable share token.
             Returns the token ONCE (never stored, never shown again — rotate if lost)
             plus a viewer-safe share id and the /s/{token} URL.
+            Accepts a live origin to demo against — either walkthrough.upstream.url
+            or the top-level "upstream" field (naming two different origins is
+            rejected) — and variant ops including the raw-content ops setHTML,
+            addStyle, and addScript. Publisher script runs only because its
+            sha256 is pinned in the served revision's CSP script-src.
+            The /s/{token} URL it returns is a PATH: prefix it with the origin
+            serving the public plane, or use "agnt publish serve --dir" which
+            prints whole URLs (and folds in a tunnel origin).
   status  — show a share's state (never the token; only a hash prefix).
   list    — list this project's shares.
   revoke  — kill a share immediately (token stops working at once).
@@ -63,6 +73,7 @@ Actions:
 
 Examples:
   publish {action: "create", walkthrough: {...}}
+  publish {action: "create", walkthrough: {...}, upstream: "https://shop.example.com/cart"}
   publish {action: "list"}
   publish {action: "status", id: "<share-id>"}
   publish {action: "revoke", id: "<share-id>"}
@@ -90,7 +101,11 @@ func makePublishHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolRequ
 			if len(input.Walkthrough) == 0 {
 				return fail[PublishOutput]("publish create: walkthrough is required")
 			}
-			res, err := dt.client.PublishCreate(protocol.PublishCreateRequest{Walkthrough: input.Walkthrough})
+			artifact, err := mergeUpstream(input.Walkthrough, input.Upstream)
+			if err != nil {
+				return fail[PublishOutput]("publish create: " + err.Error())
+			}
+			res, err := dt.client.PublishCreate(protocol.PublishCreateRequest{Walkthrough: artifact})
 			if err != nil {
 				return fail[PublishOutput]("publish create failed: " + err.Error())
 			}
@@ -159,6 +174,60 @@ func makePublishHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolRequ
 			return fail[PublishOutput]("publish: unknown action " + action + " (create|status|list|revoke|rotate)")
 		}
 	}
+}
+
+// mergeUpstream folds the optional `upstream` input into the walkthrough
+// artifact, so the manual control-plane path can name the live origin without
+// hand-assembling the nested object. An empty upstream returns the artifact
+// byte-for-byte unchanged, which is what keeps this a no-op for every existing
+// caller.
+//
+// A contradiction between the two spellings is a REJECTION, never a silent
+// precedence rule: the origin decides what a viewer's browser actually loads, so
+// quietly preferring one of two conflicting values is exactly the kind of
+// invisible decision that ends with a demo pointed at the wrong site. Identical
+// values are accepted as the harmless restatement they are.
+//
+// The merged artifact is still fully validated daemon-side by the P2 validators
+// (DecodePublishedWalkthrough) before anything is stored — this function is a
+// convenience over the JSON shape, not a trust boundary.
+func mergeUpstream(walkthrough json.RawMessage, upstream string) (json.RawMessage, error) {
+	upstream = strings.TrimSpace(upstream)
+	if upstream == "" {
+		return walkthrough, nil
+	}
+	var artifact map[string]json.RawMessage
+	if err := json.Unmarshal(walkthrough, &artifact); err != nil {
+		return nil, fmt.Errorf("walkthrough must be a JSON object to merge upstream into: %w", err)
+	}
+	if existing, ok := artifact["upstream"]; ok {
+		var cur struct {
+			URL string `json:"url"`
+		}
+		if err := json.Unmarshal(existing, &cur); err != nil {
+			return nil, fmt.Errorf("walkthrough.upstream is not an object: %w", err)
+		}
+		if cur.URL != upstream {
+			return nil, fmt.Errorf("upstream %q contradicts walkthrough.upstream.url %q — pass one of them, not two different origins", upstream, cur.URL)
+		}
+		return walkthrough, nil
+	}
+	merged, err := json.Marshal(map[string]string{"url": upstream})
+	if err != nil {
+		return nil, fmt.Errorf("encode upstream: %w", err)
+	}
+	artifact["upstream"] = merged
+	// Encode with HTML escaping OFF: json.Marshal would rewrite a setHTML op's
+	// "<b>" as "<b>". Decoding is unaffected, but needlessly mangling
+	// bytes we are only passing through makes the artifact harder to read in a
+	// log or an error message.
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(artifact); err != nil {
+		return nil, fmt.Errorf("re-encode walkthrough: %w", err)
+	}
+	return json.RawMessage(bytes.TrimRight(buf.Bytes(), "\n")), nil
 }
 
 func renderPublish(out PublishOutput, raw bool) *mcp.CallToolResult {
