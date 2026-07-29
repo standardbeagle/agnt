@@ -264,6 +264,13 @@ func TestShellResolve_E2E_Binary(t *testing.T) {
 
 	cmd := exec.Command(agntPath, "run", "--no-overlay", "test-e2e-cmd")
 	isolateFromTTY(cmd)
+	// The child is a real `agnt run`, and it resolves its own project path from
+	// ITS cwd (run.go's os.Getwd) to write the agent-context file. t.TempDir()
+	// and os.Chdir in this parent constrain nothing in a child process, so
+	// without cmd.Dir the child inherits cwd=cmd/agnt and drops AGENTS.md into
+	// the repository working tree — poisoning every worktree-reading gate.
+	workDir := t.TempDir()
+	cmd.Dir = workDir
 	cmd.Env = append(os.Environ(),
 		"HOME="+homeDir,
 		"SHELL="+bash,
@@ -287,6 +294,16 @@ func TestShellResolve_E2E_Binary(t *testing.T) {
 			t.Skip("test requires TTY - skipping in non-interactive environment")
 		}
 		t.Fatal("command timed out")
+	}
+
+	// Positive proof of containment, asserted BEFORE the raw-mode skips below:
+	// the child writes its agent-context file before it ever touches the PTY, so
+	// this holds on the skip path too. Absence of a repo-tree artifact alone
+	// would also be satisfied by a child that never ran; this shows the write
+	// happened AND landed under cmd.Dir.
+	if _, err := os.Stat(filepath.Join(workDir, "AGENTS.md")); err != nil {
+		t.Errorf("child's agent-context write did not land under cmd.Dir (%v); "+
+			"if it ran at all it resolved the destination elsewhere: %s", err, string(output))
 	}
 
 	outStr := string(output)
