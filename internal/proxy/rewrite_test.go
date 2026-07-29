@@ -3,6 +3,7 @@ package proxy
 import (
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -288,5 +289,105 @@ func TestGetProxyHost(t *testing.T) {
 				t.Errorf("getProxyHost() = %q, want %q", result, tt.expected)
 			}
 		})
+	}
+}
+
+// TestInjectPublicBundle covers the body half of the public plane's proxied
+// upstream serve: the RolePublic bundle tag is spliced in at the structural
+// insertion point, the upstream's own bytes survive byte-for-byte around it, and
+// a document with no <head>/<body>/<html> still gets the bundle rather than
+// silently going uninstrumented.
+func TestInjectPublicBundle(t *testing.T) {
+	const assetPath = "/__devtool/inject.abc123.js"
+	const integrity = "sha256-Zm9vYmFy"
+	wantTag := `<script src="` + assetPath + `" integrity="` + integrity + `" crossorigin="anonymous"></script>`
+
+	cases := []struct {
+		name string
+		body string
+		// wantBefore is the upstream substring the tag must precede, proving the
+		// bundle runs ahead of the upstream's own body content.
+		wantBefore string
+	}{
+		{
+			name:       "before closing head",
+			body:       "<!DOCTYPE html><html><head><title>Up</title></head><body><p>upstream</p><script>x=1</script></body></html>",
+			wantBefore: "</head>",
+		},
+		{
+			name:       "after open head when unclosed",
+			body:       "<html><head><body><p>upstream</p>",
+			wantBefore: "<body>",
+		},
+		{
+			name:       "body only",
+			body:       `<body class="x"><p>upstream</p>`,
+			wantBefore: "<p>upstream</p>",
+		},
+		{
+			name:       "no structure at all still injects",
+			body:       "<p>bare fragment</p>",
+			wantBefore: "<p>bare fragment</p>",
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := string(injectPublicBundle([]byte(c.body), assetPath, integrity))
+			tagAt := strings.Index(got, wantTag)
+			if tagAt < 0 {
+				t.Fatalf("bundle tag missing from injected document: %s", got)
+			}
+			if n := strings.Count(got, wantTag); n != 1 {
+				t.Fatalf("bundle tag injected %d times, want exactly 1", n)
+			}
+			if beforeAt := strings.Index(got, c.wantBefore); beforeAt < 0 || tagAt > beforeAt {
+				t.Fatalf("tag at %d must precede %q at %d: %s", tagAt, c.wantBefore, beforeAt, got)
+			}
+			// The upstream document is otherwise passed through untouched: removing
+			// the injected tag must reproduce the input exactly.
+			if restored := strings.Replace(got, wantTag, "", 1); restored != c.body {
+				t.Fatalf("upstream bytes were modified.\n got: %q\nwant: %q", restored, c.body)
+			}
+		})
+	}
+}
+
+// TestStripFrameDenyHeadersPreservesUpstreamScriptSrc pins the exact behaviour
+// that makes this function FORBIDDEN on the public publish plane (INV-11/INV-12).
+// It is a strip-MERGE — it removes only frame-ancestors — so every other upstream
+// directive, including script-src 'unsafe-inline', survives. Reusing it for
+// public responses instead of the wholesale Del+Set already caused one review
+// rewind on this epic.
+//
+// This test therefore asserts the *unsafe* outcome on purpose: if someone
+// "hardens" stripFrameDenyHeaders into a wholesale replace, this fails and they
+// are forced to notice that the dev content path depends on the merge, while the
+// public plane has its own composer. The companion assertion — that the public
+// header policy discards the same upstream CSP — lives in
+// TestHostileUpstreamCSPCannotSurviveWidening.
+func TestStripFrameDenyHeadersPreservesUpstreamScriptSrc(t *testing.T) {
+	resp := &http.Response{Header: http.Header{}}
+	resp.Header.Set("X-Frame-Options", "DENY")
+	resp.Header.Set("Content-Security-Policy",
+		"frame-ancestors 'none'; script-src 'unsafe-inline' https://evil.example; default-src *")
+
+	stripFrameDenyHeaders(resp)
+
+	if got := resp.Header.Get("X-Frame-Options"); got != "" {
+		t.Fatalf("X-Frame-Options not dropped: %q", got)
+	}
+	csp := resp.Header.Get("Content-Security-Policy")
+	if strings.Index(csp, "frame-ancestors") >= 0 {
+		t.Fatalf("frame-ancestors not stripped: %q", csp)
+	}
+	// The whole point: these DID survive. That is why the public plane must not
+	// route through here.
+	for _, survivor := range []string{"script-src 'unsafe-inline'", "https://evil.example", "default-src *"} {
+		if strings.Index(csp, survivor) < 0 {
+			t.Fatalf("strip-merge semantics changed: %q no longer survives in %q — "+
+				"the public plane's wholesale Del+Set is the only INV-12-safe path; "+
+				"re-read .claude/rules/publish-security-review-lessons.md before adjusting this test",
+				survivor, csp)
+		}
 	}
 }

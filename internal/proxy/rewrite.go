@@ -288,12 +288,51 @@ func readAllCapped(r io.Reader, sizeHint int64, cap int64) ([]byte, bool, error)
 	return data, false, nil
 }
 
+// injectPublicBundle splices the RolePublic bundle tag into a PROXIED UPSTREAM
+// document for the public publish plane (S6). It is the body half of what
+// serveProxiedArtifact does; the header half is PublicHandler.writeHeaders.
+//
+// This is deliberately NOT one of the dev composers (BuildShellDocument /
+// InjectContentRuntime): those hardcode dev-only payload — window
+// .__devtool_proxy_id, the auth-breakout config, the popup relay — and giving
+// them a role parameter would manufacture the one code path on which public
+// traffic could inherit the dev control surface (INV-1). See the "Wrap+inject
+// seam" note in injector.go: the reusable half (instrumentationInsertOffset,
+// spliceInto) is already role-free, and this function is the public composer
+// that calls it.
+//
+// Both arguments are server-derived constants (the content-addressed asset path
+// and its sha256), never upstream or viewer input, so no escaping is required
+// here and none is implied for future callers: this must not be handed an
+// attacker-controlled value.
+//
+// The upstream document's own bytes are otherwise passed through untouched. The
+// bundle lands before </head> when the document has one, so it runs ahead of the
+// upstream's body scripts — which the public CSP refuses regardless, their hash
+// being absent from the hash-only script-src (INV-12).
+func injectPublicBundle(body []byte, assetPath, integrity string) []byte {
+	tag := []byte(`<script src="` + assetPath + `" integrity="` + integrity + `" crossorigin="anonymous"></script>`)
+	if at, ok := instrumentationInsertOffset(body); ok {
+		return spliceInto(body, at, tag)
+	}
+	return spliceInto(body, 0, tag) // last resort: prepend
+}
+
 // stripFrameDenyHeaders removes framing-prohibition headers from a proxied
 // content response so our own same-origin chrome shell can embed it. X-Frame-
 // Options is dropped wholesale; only the frame-ancestors directive is removed
 // from CSP (other directives are preserved). Pragmatic, narrowly-scoped to the
 // proxied content the proxy itself serves — see
 // docs/responsive-canonical-target.md §4.3.
+//
+// FORBIDDEN ON THE PUBLIC PUBLISH PLANE (INV-11/INV-12). This is a strip-MERGE:
+// it deletes only frame-ancestors and preserves every other upstream directive,
+// so a hostile upstream's script-src 'unsafe-inline' would survive onto a
+// published artifact. The public plane must instead Header.Del then Header.Set
+// wholesale — PublicHandler.writeHeaders. Routing public responses through here
+// already caused one review rewind on this epic; the preservation behaviour is
+// pinned by TestStripFrameDenyHeadersPreservesUpstreamScriptSrc so the
+// distinction cannot quietly erode.
 func stripFrameDenyHeaders(resp *http.Response) {
 	resp.Header.Del("X-Frame-Options")
 	csp := resp.Header.Get("Content-Security-Policy")
