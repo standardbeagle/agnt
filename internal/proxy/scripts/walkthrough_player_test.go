@@ -2,6 +2,7 @@ package scripts
 
 import (
 	"encoding/json"
+	"os"
 	"os/exec"
 	"strings"
 	"testing"
@@ -200,55 +201,83 @@ func TestPlayerReadThroughReveal(t *testing.T) {
 	}
 }
 
-// TestPlayerCapsAndClampsAreByteDenominated is the source-level guard against
-// the cap-UNIT drift this player shares with variant-engine.js (closed there by
-// commit 34abd80c). Every limit the player enforces is a BYTE limit on the Go
-// side — internal/publish measures with len() over a UTF-8 string — while JS
-// `.length` counts UTF-16 code units, which undercounts 3x for CJK and 4x for
-// astral-plane characters.
+// TestPlayerCapsAndClampsAreByteDenominated is the source-level guard on the
+// player's rendering ceilings. Two ways to get one wrong, and this file has held
+// both:
 //
-// The two clamps are the worse shape and the reason this test exists: a
-// mis-denominated CAP refuses loudly and the visitor sees it, but a
-// mis-denominated TRUNCATION silently emits a value the Go validator still
-// considers oversize — the player believes it clamped, Go rejects the same
-// payload, and nothing in the browser explains why.
+//	too LOOSE  — comparing JS `.length` (UTF-16 code units) against a limit Go
+//	             expresses in bytes admits up to 4x the intended bound;
+//	too TIGHT  — a byte ceiling borrowed from a DIFFERENT field's Go limit cuts
+//	             text the validator accepted (a Go-accepted 3000-byte CJK body is
+//	             only 1000 code units), i.e. silent visitor-facing content loss.
+//
+// So each site is pinned twice: byte-denominated, and bound to the constant
+// carrying ITS OWN field's Go limit. The player is a CONSUMER of an
+// already-validated payload — it submits nothing, so no ceiling here can trigger
+// a Go rejection; the requirement is only that it never alter what Go accepted.
 //
 // Written as an exact-source assertion per site (not a bare "utf8Len appears
-// somewhere") so re-introducing a code-unit comparison at ANY ONE of them fails
-// while the others stay converted — the precise way this drifted the first time.
+// somewhere") so re-introducing a code-unit comparison, or re-pointing one field
+// at another field's limit, fails at that ONE site while the others stay correct.
 func TestPlayerCapsAndClampsAreByteDenominated(t *testing.T) {
 	js := walkthroughViewerJS
 	sites := []struct {
 		what   string
 		goRef  string
-		byteEd string // the required byte-denominated form
-		unitEd string // the code-unit form it replaced
+		byteEd string // the required byte-denominated, per-field form
+		unitEd string // a code-unit or wrong-limit form that must NOT be present
 	}{
 		{
-			what:   "selector length cap",
-			goRef:  "internal/publish/selector.go:37 len(sel) > MaxSelectorLength",
+			what:   "target selector cap",
+			goRef:  "internal/publish/selector.go:37 len(sel) > MaxSelectorLength (256)",
 			byteEd: "if (utf8Len(sel) > MAX_SELECTOR_BYTES)",
 			unitEd: "sel.length > 256",
 		},
 		{
-			what:   "title/body/wait-value clamp (TRUNCATION)",
-			goRef:  "internal/publish/limits.go MaxTextBytes = 2048 bytes UTF-8",
-			byteEd: "return truncateToBytes(s, MAX_TEXT_BYTES);",
-			unitEd: "s.slice(0, MAX_TEXT)",
+			what:   "title clamp",
+			goRef:  "internal/publish/validate.go:181 len(s.Title) > MaxTitleLength (256)",
+			byteEd: "title: clampText(s.title || '', MAX_TITLE_BYTES)",
+			unitEd: "title: clampText(s.title || '')",
 		},
 		{
-			what:   "gesture_label clamp (TRUNCATION)",
-			goRef:  "internal/publish/validate.go:205 len(s.GestureLabel) > MaxGestureLabelLength",
+			what:   "body clamp",
+			goRef:  "internal/publish/validate.go:184 len(s.Body) > MaxBodyLength (4096)",
+			byteEd: "MAX_BODY_BYTES)",
+			unitEd: "MAX_TEXT_BYTES",
+		},
+		{
+			what:   "advance.value clamp",
+			goRef:  "internal/publish/validate.go:159 len(a.Value) > MaxURLLength (2048)",
+			byteEd: "value: clampText(adv.value || '', MAX_WAIT_VALUE_BYTES)",
+			unitEd: "value: clampText(adv.value || '')",
+		},
+		{
+			what:   "gesture_label clamp",
+			goRef:  "internal/publish/validate.go:205 len(s.GestureLabel) > MaxGestureLabelLength (64)",
 			byteEd: "truncateToBytes(s.gesture_label, MAX_GESTURE_LABEL)",
 			unitEd: "s.gesture_label.slice(0, MAX_GESTURE_LABEL)",
 		},
 	}
 	for _, s := range sites {
 		if !strings.Contains(js, s.byteEd) {
-			t.Errorf("walkthrough-viewer.js %s must be denominated in UTF-8 bytes (%q), mirroring %s", s.what, s.byteEd, s.goRef)
+			t.Errorf("walkthrough-viewer.js %s must be byte-denominated and bound to its own field limit (%q), matching what %s ACCEPTS", s.what, s.byteEd, s.goRef)
 		}
 		if strings.Contains(js, s.unitEd) {
-			t.Errorf("walkthrough-viewer.js %s uses UTF-16 code units (%q) against a byte-denominated Go limit (%s) — 3x gap for CJK, 4x for emoji", s.what, s.unitEd, s.goRef)
+			t.Errorf("walkthrough-viewer.js %s still carries %q — either UTF-16 code units or another field's limit; %s is the limit that applies here", s.what, s.unitEd, s.goRef)
+		}
+	}
+
+	// Each field's ceiling constant must carry the Go value for THAT field. A
+	// single shared text constant is the regression this pins against.
+	for _, want := range []string{
+		"var MAX_SELECTOR_BYTES = 256;",
+		"var MAX_TITLE_BYTES = 256;",
+		"var MAX_BODY_BYTES = 4096;",
+		"var MAX_WAIT_VALUE_BYTES = 2048;",
+		"var MAX_GESTURE_LABEL = 64;",
+	} {
+		if !strings.Contains(js, want) {
+			t.Errorf("walkthrough-viewer.js must declare %q — one ceiling per field, each at its own publish limit", want)
 		}
 	}
 
@@ -272,90 +301,165 @@ func TestPlayerCapsAndClampsAreByteDenominated(t *testing.T) {
 		}
 	}
 
-	// The unit claim must live next to the limits, because an imprecise claim is
-	// exactly what let the two halves drift unnoticed.
-	if !strings.Contains(js, "compared and truncated in UTF-8 BYTES via utf8Len(), matching Go's len()") {
-		t.Error("walkthrough-viewer.js must state that its size limits are byte-denominated — a bare 'mirrors publish.Max…' claim with no unit is what let the mirrors drift")
+	// The unit claim must live next to the ceilings, because an imprecise claim is
+	// exactly what let these drift unnoticed.
+	if !strings.Contains(js, "compared/truncated in UTF-8 BYTES via utf8Len()") {
+		t.Error("walkthrough-viewer.js must state that its ceilings are byte-denominated — a bare 'mirrors publish.Max…' claim with no unit is what let them drift")
+	}
+	// ...and it must not claim a round-trip this file does not have: the player
+	// consumes an already-validated payload and submits nothing, so it can never
+	// cause a Go rejection. (Same correction as commit 35291eae, which replaced a
+	// false "byte-for-byte mirror" claim with the real scope.)
+	if !strings.Contains(js, "This file is a CONSUMER") {
+		t.Error("the ceilings block must state the player is a consumer of an already-validated payload, so the ceilings are a render bound rather than a mirror of a rejection this code can trigger")
+	}
+	for _, falseClaim := range []string{
+		"rejected in Go's",
+		"Go still\n    // considers oversize",
+		"validator rejects, and the two clamps",
+	} {
+		if strings.Contains(js, falseClaim) {
+			t.Errorf("walkthrough-viewer.js claims %q — this player never submits to the Go validator, so it cannot cause a rejection; state the consumer direction instead", falseClaim)
+		}
 	}
 }
 
-// TestPlayerByteTruncationIsClusterSafe runs the player's OWN utf8Len /
-// truncateToBytes source in node against payloads that are under the limit in
-// UTF-16 code units but over it in UTF-8 bytes — the exact input class the
-// pre-fix `.slice(0, N)` emitted and the Go validator then rejected.
+// TestPlayerByteTruncationIsClusterSafe drives the player's OWN normalizeStep
+// source under node — ceilings, helpers and all — so every case goes through the
+// real field-to-ceiling wiring. It covers what source text cannot: the per-field
+// ceiling VALUES, that a payload Go ACCEPTS renders unaltered, and that an
+// oversize one is cut on a grapheme boundary.
 //
-// Each case asserts four things, so reverting the fix fails: the result fits the
-// BYTE budget, it is a prefix of the input, it contains no replacement character
-// (a split surrogate pair decodes to U+FFFD), and it does not end mid-cluster
-// (no dangling ZWJ / combining mark / variation selector / skin-tone modifier,
-// and no odd regional indicator).
+// Executing shipped JS from a Go test has no in-repo precedent (the other tests in
+// this package assert on source text; the established home for running this script
+// is the chromee2e tier in internal/proxy/walkthrough_player_e2e_test.go), so this
+// tier is OFF by default and never lets the default suite's greenness depend on a
+// node install:
+//
+//	AGNT_JS_RUNTIME_TESTS=1 go test ./internal/proxy/scripts/ -run TestPlayerByteTruncation
+//
+// A build tag would match the chromee2e precedent more closely, but a tag applies
+// to a whole file and this task's declared scope is two files, so the gate is an
+// explicit opt-in env var instead; see the scope note returned with this change.
+//
+// Per case it asserts: the result fits THAT FIELD's byte ceiling, is a prefix of
+// the input, carries no U+FFFD (a split surrogate pair decodes to one), does not
+// end mid-cluster (no dangling ZWJ, no odd regional indicator, and the first
+// dropped character never attaches to the kept prefix), is unchanged when the
+// input already fits, and is cut when it does not.
 func TestPlayerByteTruncationIsClusterSafe(t *testing.T) {
+	if os.Getenv("AGNT_JS_RUNTIME_TESTS") == "" {
+		t.Skip("SKIPPING js-runtime tier: set AGNT_JS_RUNTIME_TESTS=1 to run the player's own ceiling/truncation source under node (the always-on source guard in TestPlayerCapsAndClampsAreByteDenominated still ran)")
+	}
 	node, err := exec.LookPath("node")
 	if err != nil {
-		t.Skip("SKIPPING byte-truncation behavior tier: node is not on PATH (the source-level guard in TestPlayerCapsAndClampsAreByteDenominated still ran)")
+		t.Fatalf("AGNT_JS_RUNTIME_TESTS is set but node is not on PATH: %v", err)
 	}
 
-	const limit = 64
+	// field is the step field fed to normalizeStep; limit is the ceiling constant
+	// the player must apply to it.
+	const (
+		titleLim = "MAX_TITLE_BYTES"
+		bodyLim  = "MAX_BODY_BYTES"
+		waitLim  = "MAX_WAIT_VALUE_BYTES"
+		labelLim = "MAX_GESTURE_LABEL"
+	)
+	limitOf := map[string]string{
+		"title":         titleLim,
+		"body":          bodyLim,
+		"value":         waitLim,
+		"gesture_label": labelLim,
+	}
 	cases := []struct {
 		name  string
+		field string
 		input string
 	}{
-		{"cjk", strings.Repeat("中", 30)},                   // 30 code units, 90 bytes
-		{"astral-emoji", strings.Repeat("\U0001F600", 20)}, // 40 code units, 80 bytes
-		{"zwj-family", strings.Repeat("\U0001F468‍\U0001F469‍\U0001F467", 3)},
-		{"regional-flag", strings.Repeat("\U0001F1EF\U0001F1F5", 10)},
-		{"skin-tone", strings.Repeat("\U0001F44D\U0001F3FD", 10)},
-		{"combining-mark", strings.Repeat("é", 30)},
-		{"under-limit-cjk", strings.Repeat("中", 5)}, // control: 15 bytes, unchanged
+		// The regression this tier exists for: a body Go ACCEPTS (3000 bytes, under
+		// MaxBodyLength 4096) must render in full. It is only 1000 code units, so the
+		// old code-unit ceiling passed it too; clamping it at the setText limit (2048)
+		// instead of the body limit would silently cut a third of it.
+		{"body-cjk-3000-bytes-go-accepts", "body", strings.Repeat("中", 1000)},
+		{"body-cjk-over-its-own-limit", "body", strings.Repeat("中", 2000)},
+		{"title-cjk-over-256-bytes", "title", strings.Repeat("中", 100)},
+		{"title-cjk-inside-256-bytes", "title", strings.Repeat("中", 80)},
+		{"wait-value-cjk-over-2048-bytes", "value", strings.Repeat("中", 700)},
+		{"wait-value-cjk-inside-2048-bytes", "value", strings.Repeat("中", 600)},
+		// Cluster safety, all at the 64-byte label ceiling: every input here is inside
+		// the ceiling in code units and over it in bytes.
+		{"label-cjk", "gesture_label", strings.Repeat("中", 30)},                   // 30 units, 90 bytes
+		{"label-astral-emoji", "gesture_label", strings.Repeat("\U0001F600", 20)}, // 40 units, 80 bytes
+		{"label-zwj-family", "gesture_label", strings.Repeat("\U0001F468‍\U0001F469‍\U0001F467", 3)},
+		{"label-regional-flag", "gesture_label", strings.Repeat("\U0001F1EF\U0001F1F5", 10)},
+		{"label-skin-tone", "gesture_label", strings.Repeat("\U0001F44D\U0001F3FD", 10)},
+		{"label-combining-mark", "gesture_label", strings.Repeat("é", 30)},
+		{"label-inside-ceiling", "gesture_label", strings.Repeat("中", 5)}, // control: 15 bytes
 	}
 
-	script := playerTruncationDriver(t)
-	in, err := json.Marshal(struct {
-		Limit int      `json:"limit"`
-		Cases []string `json:"cases"`
-	}{Limit: limit, Cases: func() []string {
-		out := make([]string, len(cases))
-		for i, c := range cases {
-			out[i] = c.input
-		}
-		return out
-	}()})
+	type driverCase struct {
+		S     string `json:"s"`
+		Field string `json:"field"`
+	}
+	payload := make([]driverCase, len(cases))
+	for i, c := range cases {
+		payload[i] = driverCase{S: c.input, Field: c.field}
+	}
+	in, err := json.Marshal(payload)
 	if err != nil {
 		t.Fatalf("marshal cases: %v", err)
 	}
 
-	cmd := exec.Command(node, "-e", script)
+	cmd := exec.Command(node, "-e", playerTruncationDriver(t))
 	cmd.Stdin = strings.NewReader(string(in))
 	raw, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("node driver failed: %v\n%s", err, raw)
 	}
-	var got []string
+	var got struct {
+		Limits  map[string]int `json:"limits"`
+		Results []string       `json:"results"`
+	}
 	if err := json.Unmarshal(raw, &got); err != nil {
 		t.Fatalf("decode node output %q: %v", raw, err)
 	}
-	if len(got) != len(cases) {
-		t.Fatalf("node returned %d results for %d cases", len(got), len(cases))
+	if len(got.Results) != len(cases) {
+		t.Fatalf("node returned %d results for %d cases", len(got.Results), len(cases))
+	}
+
+	// Each ceiling must carry the value publish applies to THAT field: one shared
+	// constant, or a field pointed at another field's limit, is the tight-ceiling
+	// bug that cuts content Go accepted.
+	for name, want := range map[string]int{
+		titleLim: 256,  // validate.go:181 MaxTitleLength
+		bodyLim:  4096, // validate.go:184 MaxBodyLength
+		waitLim:  2048, // validate.go:159 MaxURLLength
+		labelLim: 64,   // validate.go:205 MaxGestureLabelLength
+	} {
+		if got.Limits[name] != want {
+			t.Errorf("%s is %d, want %d — the ceiling must be the Go limit for that field, else a payload Go accepted is silently cut", name, got.Limits[name], want)
+		}
 	}
 
 	for i, c := range cases {
-		out := got[i]
+		out := got.Results[i]
+		limitName := limitOf[c.field]
+		ceiling := got.Limits[limitName]
 		t.Run(c.name, func(t *testing.T) {
-			if len(out) > limit {
-				t.Errorf("truncateToBytes returned %d bytes, over the %d-byte limit: a code-unit slice of %d units would be %d bytes",
-					len(out), limit, len([]rune(c.input)), len(c.input))
+			if len(out) > ceiling {
+				t.Errorf("normalizeStep emitted %d bytes, over the %d-byte %s ceiling (input: %d units / %d bytes)",
+					len(out), ceiling, limitName, len([]rune(c.input)), len(c.input))
 			}
 			if !strings.HasPrefix(c.input, out) {
-				t.Errorf("result %q is not a prefix of the input — truncation must not rewrite content", out)
+				t.Error("result is not a prefix of the input — a clamp must not rewrite content")
 			}
-			if strings.ContainsRune(out, '�') {
-				t.Errorf("result %q contains U+FFFD: a surrogate pair or multi-byte sequence was split", out)
+			if strings.ContainsRune(out, utf8.RuneError) {
+				t.Error("result contains U+FFFD: a surrogate pair or multi-byte sequence was split")
 			}
-			// A complete cluster may legitimately END with an extender (👍🏽, é), so
-			// the mid-cluster test is on the cut itself: the first character the
-			// truncation dropped must not be one that attaches to what was kept.
+			// A complete cluster may legitimately END with an extender (a skin-tone
+			// thumb, a combining accent), so the mid-cluster test is on the cut
+			// itself: the first dropped character must not attach to what was kept.
 			if r, _ := utf8.DecodeLastRuneInString(out); out != "" && r == zwj {
-				t.Errorf("result ends with a dangling ZWJ — the cut landed inside a joined emoji sequence")
+				t.Error("result ends with a dangling ZWJ — the cut landed inside a joined emoji sequence")
 			}
 			if rest := strings.TrimPrefix(c.input, out); rest != "" {
 				if r, _ := utf8.DecodeRuneInString(rest); isClusterExtender(r) || r == zwj {
@@ -365,11 +469,13 @@ func TestPlayerByteTruncationIsClusterSafe(t *testing.T) {
 			if n := countRegionalIndicators(out); n%2 != 0 {
 				t.Errorf("result carries %d regional indicators (odd) — a flag cluster was split in half", n)
 			}
-			if len(c.input) <= limit && out != c.input {
-				t.Errorf("an input already inside the byte budget must pass through unchanged, got %q", out)
+			if len(c.input) <= ceiling && out != c.input {
+				t.Errorf("input of %d bytes is inside the %d-byte %s ceiling, so Go accepted it and it must render UNALTERED — got %d bytes",
+					len(c.input), ceiling, limitName, len(out))
 			}
-			if len(c.input) > limit && out == c.input {
-				t.Errorf("input of %d bytes was NOT truncated (%d code units is under the limit, which is the whole bug)", len(c.input), len([]rune(c.input)))
+			if len(c.input) > ceiling && out == c.input {
+				t.Errorf("input of %d bytes exceeds the %d-byte %s ceiling but was not clamped (%d code units is inside it, which is the code-unit bug)",
+					len(c.input), ceiling, limitName, len([]rune(c.input)))
 			}
 		})
 	}
@@ -403,28 +509,89 @@ func countRegionalIndicators(s string) int {
 	return n
 }
 
-// playerTruncationDriver builds a node script out of the player's OWN helper
-// source (extracted verbatim from walkthrough-viewer.js) plus a stdin/stdout
-// harness, so the behavior tier tests the shipped code rather than a copy.
+// playerTruncationDriver builds a node script out of the player's OWN source —
+// the ceiling declarations, the byte helpers, clampText, isSafeSelector and
+// normalizeStep, all extracted verbatim from walkthrough-viewer.js — plus a
+// stdin/stdout harness. Driving normalizeStep rather than clampText directly is
+// deliberate: the field-to-ceiling WIRING is half of what can regress here, and a
+// helper-only driver would pass with body pointed at the wrong field's limit.
 func playerTruncationDriver(t *testing.T) string {
 	t.Helper()
 	var b strings.Builder
+	// The declarations come from the shipped source too, so the values under
+	// assertion are the ones the player actually renders with.
+	for _, decl := range []string{
+		"var DEFAULT_AUTO_MS",
+		"var MAX_AUTO_MS",
+		"var MAX_SELECTOR_BYTES",
+		"var MAX_TITLE_BYTES",
+		"var MAX_BODY_BYTES",
+		"var MAX_WAIT_VALUE_BYTES",
+		"var MAX_GESTURE_LABEL",
+		"var SAFE_SELECTOR_RE",
+	} {
+		b.WriteString(extractJSLine(t, walkthroughViewerJS, decl))
+		b.WriteString("\n")
+	}
 	for _, header := range []string{
 		"function utf8Len(s)",
 		"function isExtender(cp)",
 		"function isRegionalIndicator(cp)",
 		"function truncateToBytes(s, maxBytes)",
+		"function clampText(s, maxBytes)",
+		"function isSafeSelector(sel)",
+		"function normalizeStep(s)",
 	} {
 		b.WriteString(extractJSFunc(t, walkthroughViewerJS, header))
 		b.WriteString("\n")
 	}
+	// `window` stands in for the browser global isSafeSelector probes for the
+	// shared variant-engine grammar; absent it, the local regex path runs.
+	// Naming each constant in LIMITS means a rename or removal is a loud node
+	// ReferenceError, not a silently-skipped assertion.
 	b.WriteString(`
-var input = JSON.parse(require('fs').readFileSync(0, 'utf8'));
-process.stdout.write(JSON.stringify(input.cases.map(function (s) {
-  return truncateToBytes(s, input.limit);
-})));
+var window = {};
+var LIMITS = {
+  MAX_TITLE_BYTES: MAX_TITLE_BYTES,
+  MAX_BODY_BYTES: MAX_BODY_BYTES,
+  MAX_WAIT_VALUE_BYTES: MAX_WAIT_VALUE_BYTES,
+  MAX_GESTURE_LABEL: MAX_GESTURE_LABEL
+};
+// Each field is fed to normalizeStep in a step shaped so that field survives
+// normalization, and the corresponding normalized field is read back.
+function renderField(field, s) {
+  switch (field) {
+    case 'title':
+      return normalizeStep({ title: s, body: 'x' }).title;
+    case 'body':
+      return normalizeStep({ title: 't', body: s }).body;
+    case 'value':
+      return normalizeStep({ title: 't', advance: { type: 'wait', when: 'url-contains', value: s } }).advance.value;
+    case 'gesture_label':
+      return normalizeStep({ title: 't', target: '#a', gesture: 'click', gesture_label: s }).gestureLabel;
+  }
+  throw new Error('unknown field ' + field);
+}
+var cases = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+process.stdout.write(JSON.stringify({
+  limits: LIMITS,
+  results: cases.map(function (c) { return renderField(c.field, c.s); })
+}));
 `)
 	return b.String()
+}
+
+// extractJSLine pulls the single source line declaring a constant, so the driver
+// runs with the shipped VALUE rather than one restated in the test.
+func extractJSLine(t *testing.T, js, prefix string) string {
+	t.Helper()
+	for _, ln := range strings.Split(js, "\n") {
+		if strings.HasPrefix(strings.TrimSpace(ln), prefix) {
+			return strings.TrimSpace(ln)
+		}
+	}
+	t.Fatalf("walkthrough-viewer.js is missing a %q declaration — every clamped field needs its own ceiling constant", prefix)
+	return ""
 }
 
 // extractJSFunc pulls one function's source out of a JS file by brace matching.

@@ -69,24 +69,37 @@
     var MAX_AUTO_MS = 600000;
     var POLL_MS = 300; // mirrors walkthrough.js wait-condition poll cadence
     var MAX_STEPS = 64; // element COUNT (steps), not a byte limit
-    // ---- Size limits: BYTES, never UTF-16 code units ----------------------
-    // Every limit below is a byte limit on the Go side (internal/publish/limits.go
-    // measures with len() over a UTF-8 string). All three are therefore
-    // compared and truncated in UTF-8 BYTES via utf8Len(), matching Go's len().
-    // A JS `.length` comparison counts UTF-16 code units, undercounting 3x for CJK and 4x
-    // for astral-plane characters: the cap would admit a selector the Go
-    // validator rejects, and the two clamps would silently emit a value Go still
-    // considers oversize — clamped in the player's eyes, rejected in Go's, with
-    // nothing in the browser explaining why. (MAX_STEPS above and the `.length`
-    // uses elsewhere in this file count ELEMENTS, and are correct as counts.)
-    var MAX_SELECTOR_BYTES = 256; // mirrors publish.MaxSelectorLength (selector.go:37)
-    var MAX_TEXT_BYTES = 2048;    // mirrors publish.MaxTextBytes
+    // ---- Rendering ceilings: BYTES, never UTF-16 code units ---------------
+    // Direction matters here. This file is a CONSUMER: it renders a payload
+    // internal/publish has ALREADY validated and it submits nothing back, so no
+    // ceiling below can cause a Go rejection — the causality only runs the other
+    // way. Their job is defensive rendering: keep a card bounded no matter how a
+    // payload reached the browser, while never altering a payload Go accepted.
+    //
+    // "Never alter what Go accepted" is what makes the units and the per-field
+    // pairing load-bearing. Go measures every one of these with len() over a
+    // UTF-8 string — BYTES — while JS `.length` counts UTF-16 code units. Two
+    // ways to get it wrong, and this file has held both: a code-unit ceiling is
+    // loose by up to 4x (2048 units of CJK is 6144 bytes), and a byte ceiling
+    // borrowed from a DIFFERENT field's limit is too tight and silently cuts
+    // valid text (a Go-accepted 3000-byte CJK body is only 1000 code units).
+    // So each ceiling is compared/truncated in UTF-8 BYTES via utf8Len(),
+    // matching Go's len(), against the limit Go applies to THAT field — never one
+    // shared constant. (MAX_STEPS above and the `.length` uses elsewhere in this
+    // file count ELEMENTS, and are correct as counts.)
+    var MAX_SELECTOR_BYTES = 256;     // publish.MaxSelectorLength (selector.go:37)
+    var MAX_TITLE_BYTES = 256;        // publish.MaxTitleLength (validate.go:181)
+    var MAX_BODY_BYTES = 4096;        // publish.MaxBodyLength (validate.go:184)
+    // advance.value: for wait/url-contains Go bounds it by MaxURLLength
+    // (validate.go:159); for wait/element-* it must be a valid selector, which
+    // isSafeSelector already enforces at use. The wider of the two is the ceiling.
+    var MAX_WAIT_VALUE_BYTES = 2048;  // publish.MaxURLLength (validate.go:159)
     // Cap on an author-supplied gesture_label; the VALUE is shared with
-    // walkthrough.js MAX_GESTURE_LABEL and publish.MaxGestureLabelLength. Here it
-    // is enforced in bytes, like the Go validator that rejects the payload
-    // (validate.go:205); walkthrough.js still caps in code units — same class,
-    // its own file. The label pill is a single nowrap line, so longer text runs
-    // off the viewport.
+    // walkthrough.js MAX_GESTURE_LABEL and publish.MaxGestureLabelLength
+    // (validate.go:205), which is where a label this long is refused before it
+    // ever reaches the player. Here it is a byte-denominated render ceiling;
+    // walkthrough.js still clamps in code units — same class, its own file. The
+    // label pill is a single nowrap line, so longer text runs off the viewport.
     var MAX_GESTURE_LABEL = 64;
 
     // utf8Len returns the UTF-8 byte length of a JS string (mirrors Go len()).
@@ -171,7 +184,8 @@
 
     function isSafeSelector(sel) {
       if (typeof sel !== 'string' || sel.length === 0) { return false; }
-      // Byte-denominated, like selector.go:37 `len(sel) > MaxSelectorLength`.
+      // Byte-denominated, so this admits exactly the selectors selector.go:37
+      // (`len(sel) > MaxSelectorLength`) admits — no wider, no narrower.
       if (utf8Len(sel) > MAX_SELECTOR_BYTES) { return false; }
       try {
         if (window.__variantEngine && typeof window.__variantEngine.validateSelector === 'function') {
@@ -181,11 +195,12 @@
       return SAFE_SELECTOR_RE.test(sel);
     }
 
-    function clampText(s) {
+    // clampText bounds one field at ITS OWN byte ceiling (see the ceilings block:
+    // title, body and advance.value have three different Go limits, so a single
+    // shared constant would cut text Go accepted for the wider fields).
+    function clampText(s, maxBytes) {
       if (typeof s !== 'string') { return ''; }
-      // Byte-denominated truncation: a code-unit slice of MAX_TEXT_BYTES units is
-      // up to 4x the byte budget the Go side enforces.
-      return truncateToBytes(s, MAX_TEXT_BYTES);
+      return truncateToBytes(s, maxBytes);
     }
 
     // normalizeStep mirrors walkthrough.js normalizeScript + internal/publish
@@ -217,17 +232,17 @@
       // gesture_label names the concrete action for this step. Degrade (clamp /
       // drop), never throw: the public plane must not crash a visitor's page.
       // Written with textContent only — never parsed as markup.
-      // Clamped in BYTES: validate.go:205 rejects a gesture_label over
-      // MaxGestureLabelLength bytes, so a code-unit slice would emit a label the
-      // Go validator refuses while the player believed it had clamped it.
+      // Clamped in BYTES against publish.MaxGestureLabelLength, the same bound
+      // validate.go:205 already applied upstream — so a published label always
+      // renders whole, and only a label that arrived some other way is cut.
       var gLabel = (typeof s.gesture_label === 'string') ? truncateToBytes(s.gesture_label, MAX_GESTURE_LABEL) : '';
       return {
-        title: clampText(s.title || ''),
-        body: clampText(s.body || s.narration || s.text || ''),
+        title: clampText(s.title || '', MAX_TITLE_BYTES),
+        body: clampText(s.body || s.narration || s.text || '', MAX_BODY_BYTES),
         target: target,
         gesture: target ? gesture : '',
         gestureLabel: (target && gesture) ? gLabel : '',
-        advance: { type: type, ms: ms, when: when || '', value: clampText(adv.value || '') }
+        advance: { type: type, ms: ms, when: when || '', value: clampText(adv.value || '', MAX_WAIT_VALUE_BYTES) }
       };
     }
 
