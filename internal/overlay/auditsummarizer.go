@@ -82,18 +82,27 @@ type AuditData struct {
 	Label     string          `json:"label"`
 	Summary   string          `json:"summary"`
 	Result    json.RawMessage `json:"result"`
+	// ProjectPath is the project root the audit JSON and SUMMARY.md are written
+	// under. It is supplied by the caller rather than resolved here so this
+	// package never derives a write destination from ambient process state.
+	// Empty means "do not persist"; the report is still returned.
+	ProjectPath string `json:"projectPath,omitempty"`
 }
 
 // SummarizeAudit generates a high-quality report from audit data.
 // It also saves the full audit data to .agnt/audit/ for later reference.
 func (s *AuditSummarizer) SummarizeAudit(ctx context.Context, audit AuditData, userMessage string) (string, error) {
-	// Save audit data to file for later reference
+	// Save audit data to file for later reference. The project root comes from
+	// the caller (AuditData.ProjectPath) — this package must not resolve a write
+	// destination from the process cwd.
 	auditFilePath := ""
-	if filePath, err := proxy.SaveAuditData(audit.AuditType, audit.Label, audit.Result); err == nil {
+	if audit.ProjectPath == "" {
+		debug.Warn("overlay", "audit %q not persisted: no project path supplied", audit.Label)
+	} else if filePath, err := proxy.SaveAuditData(audit.ProjectPath, audit.AuditType, audit.Label, audit.Result); err == nil {
 		auditFilePath = filePath
 		debug.Log("overlay", "audit data saved to: %s", filePath)
 		// Best-effort summary index refresh; a stale SUMMARY.md loses no data.
-		if err := proxy.UpdateAuditSummary(); err != nil {
+		if err := proxy.UpdateAuditSummary(audit.ProjectPath); err != nil {
 			debug.Log("overlay", "failed to update audit summary: %v", err)
 		}
 	} else {

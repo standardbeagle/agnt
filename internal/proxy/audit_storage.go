@@ -15,18 +15,23 @@ import (
 // AuditDirName is the directory name for storing audit data within .agnt
 const AuditDirName = "audit"
 
-// GetAuditDir returns the audit directory path for a project.
-// Creates the directory if it doesn't exist.
-// Returns absolute path to .agnt/audit in the current working directory.
-func GetAuditDir() (string, error) {
-	// Get current working directory
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("failed to get working directory: %w", err)
+// GetAuditDir returns projectRoot/.agnt/audit, creating it if it does not exist.
+//
+// projectRoot is a required parameter rather than something resolved here from
+// os.Getwd(): the daemon that owns proxies is long-lived and shared across
+// projects, so its working directory belongs to whichever project happened to
+// start it. Resolving the destination from ambient process state put one
+// project's audit data and screenshots in another project's tree (and, under
+// test, inside the source tree). An empty projectRoot is an error, never a cwd
+// fallback — see the Silent Failure Prohibition in
+// .claude/rules/daemon-architecture.md.
+func GetAuditDir(projectRoot string) (string, error) {
+	if projectRoot == "" {
+		return "", fmt.Errorf("project root is required to resolve the audit directory")
 	}
 
-	// Create .agnt/audit directory path
-	auditDir := filepath.Join(cwd, ".agnt", AuditDirName)
+	// Create <projectRoot>/.agnt/audit directory path
+	auditDir := filepath.Join(projectRoot, ".agnt", AuditDirName)
 
 	// Create directory if it doesn't exist
 	if err := os.MkdirAll(auditDir, 0755); err != nil {
@@ -36,10 +41,10 @@ func GetAuditDir() (string, error) {
 	return auditDir, nil
 }
 
-// SaveAuditData saves audit data as a JSON file in the .agnt/audit directory.
+// SaveAuditData saves audit data as a JSON file in projectRoot/.agnt/audit.
 // Returns the file path and any error.
-func SaveAuditData(auditType, label string, result json.RawMessage) (string, error) {
-	auditDir, err := GetAuditDir()
+func SaveAuditData(projectRoot, auditType, label string, result json.RawMessage) (string, error) {
+	auditDir, err := GetAuditDir(projectRoot)
 	if err != nil {
 		return "", err
 	}
@@ -77,23 +82,13 @@ func sanitizeFilename(name string) string {
 	return pathutil.SafePathComponent(name)
 }
 
-// FormatAuditReference formats a reference to the audit directory for AI agent messages.
-func FormatAuditReference() string {
-	auditDir, err := GetAuditDir()
-	if err != nil {
-		// Fallback to relative path if we can't get absolute path
-		return ".agnt/audit/"
-	}
-	return auditDir + "/"
-}
-
 // AuditSummaryFile is the name of the summary file in the audit directory.
 const AuditSummaryFile = "SUMMARY.md"
 
-// UpdateAuditSummary creates or updates the SUMMARY.md file in .agnt/audit/
-// with a listing of all files and their descriptions.
-func UpdateAuditSummary() error {
-	auditDir, err := GetAuditDir()
+// UpdateAuditSummary creates or updates the SUMMARY.md file in
+// projectRoot/.agnt/audit/ with a listing of all files and their descriptions.
+func UpdateAuditSummary(projectRoot string) error {
+	auditDir, err := GetAuditDir(projectRoot)
 	if err != nil {
 		return err
 	}

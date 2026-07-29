@@ -38,8 +38,10 @@ func (ps *ProxyServer) saveScreenshot(name string, dataURL string) (string, erro
 		return "", fmt.Errorf("failed to decode base64: %w", err)
 	}
 
-	// Get audit directory (.agnt/audit)
-	auditDir, err := GetAuditDir()
+	// Get audit directory (<project root>/.agnt/audit). ps.Path is the working
+	// directory the proxy was created for; the daemon's own cwd is unrelated to
+	// it and would put this project's screenshots in another project's tree.
+	auditDir, err := GetAuditDir(ps.Path)
 	if err != nil {
 		// Fallback to temp dir if audit directory unavailable. The saved path
 		// is returned to the caller, so the file is still locatable.
@@ -88,7 +90,7 @@ func (ps *ProxyServer) LookupCapture(name string) string {
 // savePNGBytes writes raw PNG bytes directly to the screenshots directory.
 // This is the fast path for binary WebSocket captures — no base64 decode needed.
 func (ps *ProxyServer) savePNGBytes(name string, data []byte) (string, error) {
-	auditDir, err := GetAuditDir()
+	auditDir, err := GetAuditDir(ps.Path)
 	if err != nil {
 		// Fallback to temp dir; the saved path is returned to the caller.
 		debug.Log("proxy", "audit dir unavailable, saving PNG to temp dir: %v", err)

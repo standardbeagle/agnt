@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -140,11 +141,23 @@ func processAuditAttachment(data json.RawMessage, userMessage string, summarizer
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 
+		// The overlay runs inside the `agnt run` PTY process, whose working
+		// directory IS the project the session was started for — so this is the
+		// one place in the chain that legitimately owns the cwd. Resolve it here
+		// and hand it down explicitly; internal/proxy must not read it itself,
+		// because the daemon shares one cwd across every project.
+		projectRoot, err := os.Getwd()
+		if err != nil {
+			debug.Warn("overlay", "cannot resolve project root, audit will not be persisted: %v", err)
+			projectRoot = ""
+		}
+
 		report, err := summarizer.SummarizeAudit(ctx, overlay.AuditData{
-			AuditType: auditData.AuditType,
-			Label:     auditData.Label,
-			Summary:   auditData.Summary,
-			Result:    auditData.Result,
+			AuditType:   auditData.AuditType,
+			Label:       auditData.Label,
+			Summary:     auditData.Summary,
+			Result:      auditData.Result,
+			ProjectPath: projectRoot,
 		}, userMessage)
 
 		if err != nil {

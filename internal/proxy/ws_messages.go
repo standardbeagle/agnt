@@ -417,7 +417,7 @@ func (c *wsConnState) handlePanelMessage(msg *wsMessage) {
 
 	// Update audit folder summary after saving new files. Best-effort
 	// housekeeping: a stale SUMMARY.md index does not lose any data.
-	if err := UpdateAuditSummary(); err != nil {
+	if err := UpdateAuditSummary(c.ps.Path); err != nil {
 		debug.Log("proxy", "failed to update audit summary: %v", err)
 	}
 }
@@ -466,7 +466,7 @@ func (c *wsConnState) handleSketch(msg *wsMessage) {
 
 	// Update audit folder summary. Best-effort housekeeping: a stale
 	// SUMMARY.md index does not lose any data.
-	if err := UpdateAuditSummary(); err != nil {
+	if err := UpdateAuditSummary(c.ps.Path); err != nil {
 		debug.Log("proxy", "failed to update audit summary: %v", err)
 	}
 }

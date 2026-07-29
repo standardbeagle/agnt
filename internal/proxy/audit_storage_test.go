@@ -1,9 +1,13 @@
 package proxy
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // --- Path Traversal Tests for Audit Storage ---
@@ -153,4 +157,115 @@ func TestSanitizeFilename_ColonReplacement(t *testing.T) {
 	result := sanitizeFilename("project:name:host-port")
 	assert.NotContains(t, result, ":")
 	assert.Equal(t, "project-name-host-port", result)
+}
+
+// --- cwd-containment tests ---
+//
+// GetAuditDir used to call os.Getwd() internally. The daemon that owns proxies
+// is long-lived and shared across projects, so its cwd belongs to whichever
+// project happened to start it: audit data for project B landed in project A's
+// tree, and under test inside the source tree. These assertions are POSITIVE —
+// they prove the artifact was really written AND that it landed under the
+// caller-supplied root. An absence-only check ("nothing appeared in the cwd")
+// would pass just as happily if the code under test never ran.
+
+func TestGetAuditDir_WritesUnderSuppliedRootNotProcessCwd(t *testing.T) {
+	projectRoot := t.TempDir()
+	sentinelCwd := t.TempDir()
+	t.Chdir(sentinelCwd)
+
+	dir, err := GetAuditDir(projectRoot)
+	require.NoError(t, err)
+	require.Equal(t, filepath.Join(projectRoot, ".agnt", AuditDirName), dir)
+
+	// POSITIVE containment: a write through the returned dir really lands there.
+	written := filepath.Join(dir, "containment.json")
+	require.NoError(t, os.WriteFile(written, []byte(`{"ok":true}`), 0644))
+	got, err := os.ReadFile(written)
+	require.NoError(t, err, "artifact must exist under the supplied root")
+	require.Equal(t, `{"ok":true}`, string(got))
+
+	// NEGATIVE half: nothing was created relative to the process cwd.
+	_, statErr := os.Stat(filepath.Join(sentinelCwd, ".agnt"))
+	require.True(t, os.IsNotExist(statErr), "no .agnt tree may be created relative to the process cwd")
+}
+
+func TestGetAuditDir_EmptyRootFailsLoud(t *testing.T) {
+	sentinelCwd := t.TempDir()
+	t.Chdir(sentinelCwd)
+
+	dir, err := GetAuditDir("")
+	require.Error(t, err, "a caller with no project root must fail loud, not fall back to cwd")
+	require.Empty(t, dir)
+	require.Contains(t, err.Error(), "project root is required")
+
+	_, statErr := os.Stat(filepath.Join(sentinelCwd, ".agnt"))
+	require.True(t, os.IsNotExist(statErr))
+}
+
+func TestSaveAuditData_LandsUnderSuppliedRoot(t *testing.T) {
+	projectRoot := t.TempDir()
+	sentinelCwd := t.TempDir()
+	t.Chdir(sentinelCwd)
+
+	filePath, err := SaveAuditData(projectRoot, "accessibility", "home page", json.RawMessage(`{"issues":3}`))
+	require.NoError(t, err)
+
+	// POSITIVE containment: the file exists, holds the payload, and is inside
+	// the supplied root's audit dir.
+	require.Equal(t, filepath.Join(projectRoot, ".agnt", AuditDirName), filepath.Dir(filePath))
+	raw, err := os.ReadFile(filePath)
+	require.NoError(t, err, "audit JSON must exist under the supplied root")
+	require.NotEmpty(t, raw)
+
+	var saved map[string]any
+	require.NoError(t, json.Unmarshal(raw, &saved))
+	require.Equal(t, "accessibility", saved["auditType"])
+	require.Equal(t, "home page", saved["label"])
+
+	_, statErr := os.Stat(filepath.Join(sentinelCwd, ".agnt"))
+	require.True(t, os.IsNotExist(statErr))
+}
+
+func TestSaveAuditData_EmptyRootFailsLoud(t *testing.T) {
+	sentinelCwd := t.TempDir()
+	t.Chdir(sentinelCwd)
+
+	filePath, err := SaveAuditData("", "accessibility", "home page", json.RawMessage(`{}`))
+	require.Error(t, err)
+	require.Empty(t, filePath)
+
+	_, statErr := os.Stat(filepath.Join(sentinelCwd, ".agnt"))
+	require.True(t, os.IsNotExist(statErr))
+}
+
+func TestUpdateAuditSummary_LandsUnderSuppliedRoot(t *testing.T) {
+	projectRoot := t.TempDir()
+	sentinelCwd := t.TempDir()
+	t.Chdir(sentinelCwd)
+
+	_, err := SaveAuditData(projectRoot, "performance", "checkout", json.RawMessage(`{"lcp":2100}`))
+	require.NoError(t, err)
+	require.NoError(t, UpdateAuditSummary(projectRoot))
+
+	// POSITIVE containment: SUMMARY.md exists under the supplied root and
+	// actually indexes the audit file written there.
+	summaryPath := filepath.Join(projectRoot, ".agnt", AuditDirName, AuditSummaryFile)
+	body, err := os.ReadFile(summaryPath)
+	require.NoError(t, err, "SUMMARY.md must exist under the supplied root")
+	require.NotEmpty(t, body)
+	require.Contains(t, string(body), "audit-performance-checkout-")
+
+	_, statErr := os.Stat(filepath.Join(sentinelCwd, ".agnt"))
+	require.True(t, os.IsNotExist(statErr))
+}
+
+func TestUpdateAuditSummary_EmptyRootFailsLoud(t *testing.T) {
+	sentinelCwd := t.TempDir()
+	t.Chdir(sentinelCwd)
+
+	require.Error(t, UpdateAuditSummary(""))
+
+	_, statErr := os.Stat(filepath.Join(sentinelCwd, ".agnt"))
+	require.True(t, os.IsNotExist(statErr))
 }
