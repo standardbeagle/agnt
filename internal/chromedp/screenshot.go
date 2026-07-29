@@ -35,17 +35,22 @@ type ScreenshotOptions struct {
 	Scale    float64         // Scale factor for capture (default 1.0)
 }
 
-// GetScreenshotDir returns the screenshots directory path within .agnt/audit/.
-// Creates the directory if it doesn't exist.
-func GetScreenshotDir() (string, error) {
-	// Get current working directory
-	cwd, err := os.Getwd()
-	if err != nil {
-		return "", fmt.Errorf("failed to get working directory: %w", err)
+// GetScreenshotDir returns the screenshots directory path within
+// projectRoot/.agnt/audit/, creating it if it does not exist.
+//
+// projectRoot is a required parameter rather than something resolved here from
+// os.Getwd(): the daemon that hosts automation sessions is long-lived and shared
+// across projects, so its working directory is unrelated to the project a
+// session belongs to. Resolving the destination from ambient process state put
+// one project's screenshots in another project's tree (and, under test, inside
+// the source tree). An empty projectRoot is an error, never a cwd fallback.
+func GetScreenshotDir(projectRoot string) (string, error) {
+	if projectRoot == "" {
+		return "", fmt.Errorf("project root is required to resolve the screenshots directory")
 	}
 
-	// Create .agnt/audit/screenshots directory path
-	screenshotDir := filepath.Join(cwd, ".agnt", "audit", ScreenshotDirName)
+	// Create <projectRoot>/.agnt/audit/screenshots directory path
+	screenshotDir := filepath.Join(projectRoot, ".agnt", "audit", ScreenshotDirName)
 
 	// Create directory if it doesn't exist
 	if err := os.MkdirAll(screenshotDir, 0755); err != nil {
@@ -55,9 +60,15 @@ func GetScreenshotDir() (string, error) {
 	return screenshotDir, nil
 }
 
-// generateScreenshotPath creates a unique filename for a screenshot.
-func generateScreenshotPath(prefix, label, viewport string) (string, error) {
-	dir, err := GetScreenshotDir()
+// generateScreenshotPath creates a unique filename for a screenshot beneath the
+// project root the session was started for.
+func generateScreenshotPath(session *AutomationSession, prefix, label, viewport string) (string, error) {
+	projectRoot := session.Path()
+	if projectRoot == "" {
+		return "", fmt.Errorf("session %q has no project path; cannot resolve screenshot directory", session.ID())
+	}
+
+	dir, err := GetScreenshotDir(projectRoot)
 	if err != nil {
 		return "", err
 	}
@@ -107,7 +118,7 @@ func CaptureViewport(session *AutomationSession, opts ScreenshotOptions) (*Scree
 	}
 
 	// Generate file path
-	filePath, err := generateScreenshotPath("viewport", opts.Label, viewportName)
+	filePath, err := generateScreenshotPath(session, "viewport", opts.Label, viewportName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate screenshot path: %w", err)
 	}
@@ -158,7 +169,7 @@ func CaptureFullPage(session *AutomationSession, opts ScreenshotOptions) (*Scree
 	}
 
 	// Generate file path
-	filePath, err := generateScreenshotPath("fullpage", opts.Label, viewportName)
+	filePath, err := generateScreenshotPath(session, "fullpage", opts.Label, viewportName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate screenshot path: %w", err)
 	}
@@ -212,7 +223,7 @@ func CaptureElement(session *AutomationSession, selector string, opts Screenshot
 	if label == "" {
 		label = sanitizeFilename(selector)
 	}
-	filePath, err := generateScreenshotPath("element", label, viewportName)
+	filePath, err := generateScreenshotPath(session, "element", label, viewportName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate screenshot path: %w", err)
 	}
@@ -257,7 +268,7 @@ func CaptureWithClip(session *AutomationSession, x, y, width, height float64, op
 	}
 
 	// Generate file path
-	filePath, err := generateScreenshotPath("clip", opts.Label, viewportName)
+	filePath, err := generateScreenshotPath(session, "clip", opts.Label, viewportName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to generate screenshot path: %w", err)
 	}

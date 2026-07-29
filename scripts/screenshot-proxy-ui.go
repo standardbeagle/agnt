@@ -132,9 +132,18 @@ func main() {
 	sessionMgr := chromedp.NewSessionManager()
 
 	// Start automation session
+	// Path is the project root captures write their PNGs under. This script is
+	// run from the repo root (go run scripts/screenshot-proxy-ui.go), so name
+	// that explicitly instead of letting the capture helper read the cwd.
+	projectRoot, err := os.Getwd()
+	if err != nil {
+		log.Fatalf("Failed to resolve working directory: %v", err)
+	}
+
 	sessionConfig := chromedp.SessionConfig{
 		ID:       "proxy-ui-capture",
 		URL:      proxyURL,
+		Path:     projectRoot,
 		Headless: true,
 	}
 

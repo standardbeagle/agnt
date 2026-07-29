@@ -7,6 +7,7 @@ import (
 	"context"
 	"log"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/chromedp"
@@ -63,11 +64,20 @@ func main() {
 	proxyURL := "http://" + proxyServer.ListenAddr
 	log.Printf("Proxy at: %s", proxyURL)
 
+	// Path is the project root captures write their PNGs under. This script is
+	// run from the repo root, so name that explicitly instead of letting the
+	// capture helper read the cwd.
+	projectRoot, err := os.Getwd()
+	if err != nil {
+		log.Fatalf("Failed to resolve working directory: %v", err)
+	}
+
 	// Start automation session
 	sessionMgr := chromedp.NewSessionManager()
 	session, err := sessionMgr.Start(ctx, "tab-capture", chromedp.SessionConfig{
 		ID:       "tab-capture",
 		URL:      proxyURL,
+		Path:     projectRoot,
 		Headless: true,
 	})
 	if err != nil {

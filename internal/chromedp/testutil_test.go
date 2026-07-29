@@ -123,8 +123,13 @@ func setupBrowserOnce(tb testing.TB, startURL string) (*SessionManager, *Automat
 	manager := NewSessionManager()
 	id := "shared-screenshot-variants"
 	config := SessionConfig{
-		ID:       id,
-		URL:      startURL,
+		ID:  id,
+		URL: startURL,
+		// Path is the project root every capture writes its PNGs under. Left
+		// empty these tests inherited the process cwd and dumped screenshots
+		// into the source tree; a temp dir keeps the repo clean and the
+		// captures assertable.
+		Path:     tb.TempDir(),
 		Headless: true,
 	}
 	session, err := manager.Start(ctx, id, config)
