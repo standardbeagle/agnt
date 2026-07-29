@@ -16,19 +16,35 @@ package proxy
 // DELETED and agnt's own CSP is SET — never merged (INV-11 / INV-12). This is
 // the opposite of the strip-merge stripFrameDenyHeaders path, which would
 // preserve a hostile upstream's script-src 'unsafe-inline'.
+//
+// The artifact route has two shapes. A share whose revision names a live upstream
+// origin is served by proxying that origin through the INV-13 guard
+// (guardedUpstreamFetcher) and splicing the RolePublic bundle into the fetched
+// document; a share naming none is served the self-contained shell and performs
+// no outbound fetch at all. The upstream is untrusted in both directions —
+// nothing it returns is trusted, and nothing about the viewer (cookies, Referer,
+// the share token) is forwarded to it.
 
 import (
+	"context"
 	"crypto/rand"
+	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"html"
 	"io"
+	"net"
 	"net/http"
+	"net/netip"
+	"net/url"
 	"path"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/publish"
 )
 
@@ -41,6 +57,30 @@ const (
 	// used when the handler is constructed without a configured MaxBodyBytes.
 	// Excess is rejected (413), never silently truncated.
 	defaultMaxFeedbackBody = 4096
+
+	// maxPublicUpstreamBytes caps the upstream document the public plane will
+	// buffer. Injection is a whole-body operation, so the buffer is the bound.
+	// It is far tighter than the dev plane's maxInjectBodyBytes (16 MiB) because
+	// this path is driven by ANONYMOUS requests: the dev cap protects a
+	// developer's own proxy from their own app, whereas this one is a remote
+	// memory-amplification bound. An over-cap document is REFUSED, never
+	// truncated — a half document with our bundle spliced into it is a broken
+	// demo presented as a real one.
+	maxPublicUpstreamBytes = 4 << 20
+
+	// maxUpstreamRedirects caps the redirect chain. §4a requires the origin guard
+	// to re-run on every hop, so an unbounded chain is an unbounded number of
+	// guarded fetches; exceeding the cap FAILS CLOSED (refuse), never "serve the
+	// last thing we got".
+	maxUpstreamRedirects = 5
+
+	// upstreamFetchTimeout bounds the whole fetch, redirect chain included. A
+	// public request must not be able to pin a daemon goroutine on a slow or
+	// black-holing origin (see .claude/rules/lessons-liveness-probes.md).
+	upstreamFetchTimeout = 15 * time.Second
+
+	// upstreamDialTimeout bounds one TCP connect within that budget.
+	upstreamDialTimeout = 5 * time.Second
 )
 
 // PublicTokenVerifier is the constant-time token gate the public plane depends
@@ -76,6 +116,17 @@ type FeedbackSink interface {
 	Accept(shareID, revisionID, remoteAddr string, body []byte) error
 }
 
+// upstreamDocFetcher fetches the live upstream document a published share is a
+// demo of. It is a narrow interface so the public handler can be exercised
+// without a network, and so the ONE production implementation
+// (guardedUpstreamFetcher) is the only thing that ever opens a socket.
+type upstreamDocFetcher interface {
+	// fetchDocument returns the upstream HTML for rawURL, or a loud error. It
+	// must never return partial bytes alongside an error, and must never fall
+	// back to an unguarded fetch.
+	fetchDocument(ctx context.Context, rawURL string) ([]byte, error)
+}
+
 // PublicHandler serves the anonymous-viewer public plane. It is deny-by-default:
 // any route absent from the §2b matrix returns 404 (unknown) or 403 (a known
 // dev-control surface). Safe for concurrent use — it holds only immutable
@@ -88,6 +139,11 @@ type PublicHandler struct {
 
 	assetPath string // content-addressed RolePublic bundle path
 	cspHash   string // "sha256-<b64>" of the RolePublic bundle; CSP script-src hash + <script> SRI integrity
+
+	// upstream fetches the live origin for a share that names one. Never nil in
+	// production (NewPublicHandler installs the guarded fetcher); a nil value
+	// refuses every upstream-bearing share rather than fetching unguarded.
+	upstream upstreamDocFetcher
 }
 
 // NewPublicHandler builds the public plane over a token verifier and an optional
@@ -105,6 +161,7 @@ func NewPublicHandler(verifier PublicTokenVerifier, feedback FeedbackSink, maxBo
 		maxFeedbackBody: int64(maxBodyBytes),
 		assetPath:       PublicInstrumentationAssetPath(),
 		cspHash:         PublicInstrumentationAssetCSPHash(),
+		upstream:        &guardedUpstreamFetcher{},
 	}
 }
 
@@ -200,17 +257,106 @@ func (h *PublicHandler) serveShare(w http.ResponseWriter, r *http.Request, p str
 	}
 }
 
-// serveArtifact serves the artifact HTML shell that loads ONLY the RolePublic
-// bundle (spec §2b). The published walkthrough is a self-contained artifact
-// (steps + variant set); it does NOT proxy a live upstream, so the public plane
-// has no SSRF surface and copies NO upstream headers — the response headers are
-// built wholesale here (INV-11/INV-12). The bundle derives the share token from
-// window.location, so no secret is inlined into the shell.
+// serveArtifact is the /s/{token} document route. It branches on whether the
+// published revision names a live upstream origin (§0, §4a):
+//
+//   - Upstream named  → serveProxiedArtifact: fetch that origin through the
+//     INV-13 guard and serve it with the RolePublic bundle injected.
+//   - No upstream     → serveSelfContainedArtifact: the shell, unchanged.
+//
+// Both paths build their response headers wholesale here (INV-11/INV-12) and
+// neither copies an upstream header, so a hostile origin's CSP, cookies, or CORS
+// grants cannot reach a viewer. The token was already verified in serveShare, so
+// a revoked share 404s before either branch — and therefore before any outbound
+// fetch — which is what makes revoke atomic for the proxied route too (INV-4).
 func (h *PublicHandler) serveArtifact(w http.ResponseWriter, r *http.Request, rev *publish.PublishedWalkthrough) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		methodNotAllowed(w, "GET, HEAD")
 		return
 	}
+	if rev != nil && rev.Upstream != nil && rev.Upstream.URL != "" {
+		h.serveProxiedArtifact(w, r, rev)
+		return
+	}
+	h.serveSelfContainedArtifact(w, r, rev)
+}
+
+// serveProxiedArtifact serves a share whose revision names a live upstream: the
+// upstream document IS the artifact document, with the RolePublic bundle spliced
+// in so the walkthrough player and the variant ops run over the real page.
+//
+// Security posture, all of it load-bearing:
+//
+//   - Every outbound fetch — origin and every redirect hop — passes the INV-13
+//     guard inside guardedUpstreamFetcher. There is no unguarded path.
+//   - The request to the upstream is built from nothing but the published URL.
+//     No viewer header is forwarded: no Cookie, no Referer (which would carry
+//     the share token — INV-9), no X-Forwarded-*. The public plane holds no
+//     session scope to forward either (INV-1).
+//   - Response headers are composed wholesale by writeHeaders; not one upstream
+//     header is copied. The upstream CSP is deleted and ours set (INV-11/INV-12),
+//     never merged through stripFrameDenyHeaders.
+//   - A refusal is loud (502) and never falls back to the self-contained shell:
+//     a share that names an upstream is a demo OF that upstream, and serving a
+//     different page under the same URL is a silent failure, not degradation.
+//
+// KNOWN LIMITATION, stated rather than hidden: only the DOCUMENT is proxied.
+// The public CSP confines subresources to 'self' (script-src is hash-only,
+// img-src is 'self' data:), and there is no subresource proxy route, so the
+// upstream's own CSS/JS/images do not load. §4 anticipates this ("upstream
+// images genuinely needed must be proxied through 'self'"); building that route
+// is a separate slice, because each proxied subresource is another guarded
+// outbound fetch and another content-type surface on an anonymous route.
+func (h *PublicHandler) serveProxiedArtifact(w http.ResponseWriter, r *http.Request, rev *publish.PublishedWalkthrough) {
+	if h.upstream == nil {
+		// Fail closed. A missing fetcher must never degrade into an unguarded
+		// fetch or into the self-contained shell.
+		h.refuseUpstream(w, fmt.Errorf("no upstream fetcher configured"))
+		return
+	}
+	body, err := h.upstream.fetchDocument(r.Context(), rev.Upstream.URL)
+	if err != nil {
+		h.refuseUpstream(w, err)
+		return
+	}
+
+	// No nonce: this response emits no inline <style> of ours (the reset in the
+	// self-contained shell would restyle someone else's page). A nonce source
+	// nothing in the document carries would authorise nothing.
+	h.writeHeaders(w.Header(), kindArtifact, "", authoredScriptCSPHashes(rev)...)
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+
+	doc := injectPublicBundle(body, h.assetPath, h.cspHash)
+	w.Header().Set("Content-Length", strconv.Itoa(len(doc)))
+	if r.Method == http.MethodHead {
+		return
+	}
+	w.Write(doc)
+}
+
+// refuseUpstream emits the loud 502 for an upstream that could not be served,
+// with the public header policy still applied.
+//
+// The message to the viewer is deliberately constant: err can quote the guard's
+// verdict (which resolved address was denied, which hop failed), and that is
+// daemon-network topology, not viewer business. The detail goes to the debug log,
+// which never sees the share token — err is built only from the published
+// upstream URL, and the token lives in the request path this function is not
+// given (INV-9).
+func (h *PublicHandler) refuseUpstream(w http.ResponseWriter, err error) {
+	debug.Log("publish", "public plane refused upstream: %v", err)
+	h.writeHeaders(w.Header(), kindArtifact, "")
+	http.Error(w, "upstream unavailable", http.StatusBadGateway)
+}
+
+// serveSelfContainedArtifact serves the artifact HTML shell that loads ONLY the
+// RolePublic bundle (spec §2b) for a share that names no live upstream. The
+// published walkthrough is then a self-contained artifact (steps + variant set),
+// so this path performs no outbound fetch at all and copies NO upstream headers —
+// the response headers are built wholesale here (INV-11/INV-12). The bundle
+// derives the share token from window.location, so no secret is inlined into the
+// shell.
+func (h *PublicHandler) serveSelfContainedArtifact(w http.ResponseWriter, r *http.Request, rev *publish.PublishedWalkthrough) {
 	nonce := newNonce()
 	// The artifact document is where the renderer appends authored script, so
 	// this is the only response whose script-src is widened — by exactly the
@@ -504,4 +650,193 @@ func newNonce() string {
 		return ""
 	}
 	return base64.RawStdEncoding.EncodeToString(b)
+}
+
+// guardedUpstreamFetcher is the ONLY implementation of upstreamDocFetcher that
+// opens a socket. It implements the §4a / INV-13 obligations the pure guard
+// (publish.CheckUpstreamOrigin) documents but cannot discharge itself, because
+// it does not own the transport:
+//
+//  1. https-only + resolved-address deny-list, via CheckUpstreamOrigin.
+//  2. PIN-AND-DIAL: the connection is made to the exact address the guard
+//     validated, not to a re-resolution of the hostname. Re-resolving is the
+//     DNS-rebinding hole — a rebinding resolver answers publicly for the check
+//     and privately for the dial.
+//  3. Per-hop re-check: redirects are followed manually so every hop runs the
+//     full guard. A chain longer than maxUpstreamRedirects fails closed.
+//
+// The zero value is the production fetcher. resolve, dial, and tlsConfig are
+// test seams; each nil field falls back to the real thing. They exist because a
+// correct guard makes an end-to-end test otherwise impossible: any local test
+// listener is on loopback, which the deny-list refuses by design. A test supplies
+// a resolver answering with a public address and a dialer that asserts it was
+// handed exactly that address — so the pin itself is what gets verified, rather
+// than being bypassed.
+type guardedUpstreamFetcher struct {
+	resolve   publish.Resolver
+	dial      func(ctx context.Context, network, addr string) (net.Conn, error)
+	tlsConfig *tls.Config
+}
+
+func (f *guardedUpstreamFetcher) resolver() publish.Resolver {
+	if f.resolve != nil {
+		return f.resolve
+	}
+	return publish.SystemResolver
+}
+
+func (f *guardedUpstreamFetcher) dialer() func(ctx context.Context, network, addr string) (net.Conn, error) {
+	if f.dial != nil {
+		return f.dial
+	}
+	return (&net.Dialer{Timeout: upstreamDialTimeout}).DialContext
+}
+
+// fetchDocument runs the guarded redirect walk and returns the upstream HTML.
+// Every return path is either a complete document or an error — never both.
+func (f *guardedUpstreamFetcher) fetchDocument(ctx context.Context, rawURL string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, upstreamFetchTimeout)
+	defer cancel()
+
+	current := rawURL
+	for hop := 0; ; hop++ {
+		if hop > maxUpstreamRedirects {
+			// Fail closed: refuse, rather than serving whatever the last hop gave.
+			return nil, fmt.Errorf("upstream: redirect chain exceeded %d hops", maxUpstreamRedirects)
+		}
+		// INV-13 on EVERY hop, not just the origin. A chain whose final hop lands
+		// on 169.254.169.254 is refused at that hop.
+		addrs, err := publish.CheckUpstreamOrigin(ctx, current, f.resolver())
+		if err != nil {
+			return nil, fmt.Errorf("upstream refused: %w", err)
+		}
+		resp, err := f.get(ctx, current, addrs[0])
+		if err != nil {
+			return nil, fmt.Errorf("upstream fetch failed: %w", err)
+		}
+
+		if isRedirectStatus(resp.StatusCode) {
+			location := resp.Header.Get("Location")
+			resp.Body.Close()
+			if location == "" {
+				return nil, fmt.Errorf("upstream: %d with no Location", resp.StatusCode)
+			}
+			next, err := resolveRedirectTarget(current, location)
+			if err != nil {
+				return nil, fmt.Errorf("upstream: bad redirect target: %w", err)
+			}
+			current = next
+			continue
+		}
+
+		body, err := readUpstreamDocument(resp)
+		resp.Body.Close()
+		if err != nil {
+			return nil, err
+		}
+		return body, nil
+	}
+}
+
+// get performs one guarded request. addr is the guard-validated address and is
+// the ONLY address dialed; the URL's hostname is still what TLS verifies against,
+// so pinning the address does not weaken certificate validation.
+func (f *guardedUpstreamFetcher) get(ctx context.Context, rawURL string, addr netip.Addr) (*http.Response, error) {
+	u, err := url.Parse(rawURL)
+	if err != nil {
+		return nil, err
+	}
+	port := u.Port()
+	if port == "" {
+		port = "443" // CheckUpstreamOrigin already enforced https
+	}
+	pinned := net.JoinHostPort(addr.String(), port)
+
+	dial := f.dialer()
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			// The address the transport derived from the URL host is DISCARDED in
+			// favour of the validated one. This is the pin.
+			return dial(ctx, network, pinned)
+		},
+		TLSClientConfig:     f.tlsConfig,
+		TLSHandshakeTimeout: upstreamDialTimeout,
+		// No connection pooling: a pooled connection is keyed by host, so reuse
+		// would let a later request ride a connection established for a
+		// separately-validated address.
+		DisableKeepAlives: true,
+		// Proxy is explicitly nil rather than defaulted: http.ProxyFromEnvironment
+		// would route this fetch to whatever HTTPS_PROXY names, i.e. to an address
+		// the guard never validated.
+		Proxy: nil,
+	}
+	defer transport.CloseIdleConnections()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	// Built from nothing but the published URL. No viewer header is forwarded:
+	// forwarding Referer would hand the share token to the upstream (INV-9), and
+	// forwarding Cookie/authorization would make the daemon a credential relay.
+	req.Header.Set("User-Agent", "agnt-publish")
+	req.Header.Set("Accept", "text/html")
+
+	client := &http.Client{
+		Transport: transport,
+		// Redirects are walked by fetchDocument so each hop is re-guarded; letting
+		// the client follow them would dial unvalidated addresses.
+		CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse },
+	}
+	return client.Do(req)
+}
+
+// isRedirectStatus reports whether a status carries a Location we must re-guard.
+func isRedirectStatus(code int) bool {
+	switch code {
+	case http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther,
+		http.StatusTemporaryRedirect, http.StatusPermanentRedirect:
+		return true
+	}
+	return false
+}
+
+// resolveRedirectTarget resolves a Location value against the hop it came from.
+// The result is fed straight back into CheckUpstreamOrigin, so a relative
+// Location, a scheme downgrade, and a cross-origin jump are all re-validated
+// rather than trusted.
+func resolveRedirectTarget(from, location string) (string, error) {
+	base, err := url.Parse(from)
+	if err != nil {
+		return "", err
+	}
+	loc, err := url.Parse(location)
+	if err != nil {
+		return "", err
+	}
+	return base.ResolveReference(loc).String(), nil
+}
+
+// readUpstreamDocument validates and reads one non-redirect upstream response.
+// Non-200, non-HTML, and over-cap all refuse: this document is about to be
+// served as the published artifact, so anything we are not sure is a complete
+// HTML document must not be presented as one.
+func readUpstreamDocument(resp *http.Response) ([]byte, error) {
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("upstream: status %d", resp.StatusCode)
+	}
+	if ct := resp.Header.Get("Content-Type"); !ShouldInject(ct) {
+		// The artifact route serves a document. Passing arbitrary upstream bytes
+		// through it would turn an anonymous route into a general-purpose relay
+		// for whatever the origin decides to return.
+		return nil, fmt.Errorf("upstream: content-type %q is not HTML", ct)
+	}
+	body, truncated, err := readAllCapped(resp.Body, resp.ContentLength, maxPublicUpstreamBytes)
+	if err != nil {
+		return nil, fmt.Errorf("upstream: read failed: %w", err)
+	}
+	if truncated {
+		return nil, fmt.Errorf("upstream: document exceeds %d bytes", maxPublicUpstreamBytes)
+	}
+	return body, nil
 }

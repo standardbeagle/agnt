@@ -1,9 +1,15 @@
 package proxy
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -451,6 +457,44 @@ func TestAuthoredScriptHashPinnedInScriptSrc(t *testing.T) {
 	}
 }
 
+// shellStyleReset is the signature of the SELF-CONTAINED artifact shell (the
+// only response that carries an inline nonce'd style). Its presence in a
+// response proves the self-contained path served it.
+const shellStyleReset = "html,body{margin:0;height:100%}"
+
+// upstreamRevision is a published revision that names a live upstream origin —
+// the input that must take the proxied path rather than the self-contained one.
+func upstreamRevision(rawURL string) *publish.PublishedWalkthrough {
+	rev := sampleWalkthrough()
+	rev.Upstream = &publish.UpstreamConfig{URL: rawURL}
+	return rev
+}
+
+// TestUpstreamShareNeverFallsBackToSelfContainedShell is the no-silent-fallback
+// rule for S6, and the one assertion that holds on EVERY failure path: a share
+// that names a live upstream is a demo OF that upstream, so when the upstream
+// cannot be served the plane must refuse loudly. Quietly substituting the
+// self-contained shell would present a different page as the published demo —
+// a Silent Failure Prohibition violation dressed as graceful degradation.
+//
+// The upstream here is an RFC1918 literal, so the INV-13 guard refuses it before
+// any socket is opened: this test never touches the network.
+func TestUpstreamShareNeverFallsBackToSelfContainedShell(t *testing.T) {
+	h := NewPublicHandler(&fakeVerifier{token: validToken, rev: upstreamRevision("https://10.0.0.7/app"), id: "share-1"}, nil, 0)
+
+	w := do(h, http.MethodGet, sharePrefix+validToken, "", nil)
+	if w.Code == http.StatusOK {
+		t.Fatalf("refused upstream served 200 — the plane fell back to something")
+	}
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("refused upstream: got %d, want 502", w.Code)
+	}
+	body := w.Body.String()
+	if strings.Contains(body, shellStyleReset) || strings.Contains(body, h.assetPath) {
+		t.Fatalf("refused upstream silently served the self-contained shell: %s", body)
+	}
+}
+
 // TestHostileUpstreamCSPCannotSurviveWidening re-asserts INV-11/INV-12 with the
 // authored-hash widening in place: an upstream CSP is DELETED wholesale (both
 // enforcing and report-only) and agnt's is SET — never merged — so an upstream
@@ -478,5 +522,574 @@ func TestHostileUpstreamCSPCannotSurviveWidening(t *testing.T) {
 	}
 	if !strings.Contains(csp, "'"+cspSHA256([]byte(authored))+"'") {
 		t.Fatalf("authored hash missing after wholesale replace: %q", csp)
+	}
+}
+
+// --- Live-upstream proxied artifact (S6) ---
+
+// countingFetcher stands in for the guarded fetcher on the route-level tests. It
+// records whether the plane attempted a fetch at all, which is how the INV-4
+// revoke assertion is made: a revoked share must 404 BEFORE any outbound work.
+type countingFetcher struct {
+	calls  int
+	gotURL string
+	body   []byte
+	err    error
+}
+
+func (f *countingFetcher) fetchDocument(_ context.Context, rawURL string) ([]byte, error) {
+	f.calls++
+	f.gotURL = rawURL
+	return f.body, f.err
+}
+
+const upstreamDoc = `<!DOCTYPE html><html><head><title>Live App</title></head>` +
+	`<body><h1 id="hero">Real upstream page</h1></body></html>`
+
+func upstreamHandler(t *testing.T, rev *publish.PublishedWalkthrough, f upstreamDocFetcher) *PublicHandler {
+	t.Helper()
+	h := NewPublicHandler(&fakeVerifier{token: validToken, rev: rev, id: "share-1"}, nil, 0)
+	h.upstream = f
+	return h
+}
+
+// TestUpstreamShareServesProxiedDocument is the positive S6 criterion: an
+// upstream-bearing share serves the UPSTREAM's document with the RolePublic
+// bundle injected — not the self-contained shell — under the wholesale public
+// header policy.
+func TestUpstreamShareServesProxiedDocument(t *testing.T) {
+	f := &countingFetcher{body: []byte(upstreamDoc)}
+	h := upstreamHandler(t, upstreamRevision("https://demo.example.com/app"), f)
+
+	w := do(h, http.MethodGet, sharePrefix+validToken, "", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("proxied artifact: got %d, want 200", w.Code)
+	}
+	if f.calls != 1 || f.gotURL != "https://demo.example.com/app" {
+		t.Fatalf("fetcher calls=%d url=%q — the published upstream URL must be the fetch target", f.calls, f.gotURL)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, `id="hero"`) {
+		t.Fatalf("proxied response does not carry the upstream document: %s", body)
+	}
+	if strings.Contains(body, shellStyleReset) {
+		t.Fatalf("proxied response carries the self-contained shell's style reset: %s", body)
+	}
+	// RolePublic bundle, SRI-pinned exactly as on the self-contained path.
+	wantTag := `<script src="` + h.assetPath + `" integrity="` + h.cspHash + `" crossorigin="anonymous"></script>`
+	if !strings.Contains(body, wantTag) {
+		t.Fatalf("proxied response missing SRI-pinned RolePublic bundle.\nwant: %s\ngot: %s", wantTag, body)
+	}
+	// The bundle must run before the upstream's own body content.
+	if strings.Index(body, wantTag) > strings.Index(body, `id="hero"`) {
+		t.Fatalf("bundle injected after upstream body content: %s", body)
+	}
+	// No dev control surface rode along.
+	for _, forbidden := range []string{"__devtool_proxy_id", "window.__devtool"} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("proxied response leaked dev control symbol %q (INV-1)", forbidden)
+		}
+	}
+	if ct := w.Header().Get("Content-Type"); !strings.Contains(ct, "text/html") {
+		t.Fatalf("proxied content-type: %q", ct)
+	}
+	if got, want := w.Header().Get("Content-Length"), strconv.Itoa(len(body)); got != want {
+		t.Fatalf("Content-Length %q does not match body length %q", got, want)
+	}
+
+	// HEAD serves the same headers and no body.
+	hd := do(h, http.MethodHead, sharePrefix+validToken, "", nil)
+	if hd.Code != http.StatusOK || hd.Body.Len() != 0 {
+		t.Fatalf("HEAD proxied artifact: code=%d bodyLen=%d", hd.Code, hd.Body.Len())
+	}
+}
+
+// TestProxiedArtifactAppliesWholesaleCSP is INV-11/INV-12 on the PROXIED path,
+// which is the path that actually has a hostile upstream. The served CSP is
+// agnt's alone, script-src stays hash-only and gains the authored-revision
+// hashes, and none of the upstream's directives, cookies, or CORS grants survive.
+func TestProxiedArtifactAppliesWholesaleCSP(t *testing.T) {
+	const authored = "window.__demo_variant=1;"
+	rev := authoredScriptRevision(authored)
+	rev.Upstream = &publish.UpstreamConfig{URL: "https://demo.example.com/app"}
+
+	// An upstream document that itself tries to smuggle a CSP in via <meta> and
+	// carries inline script: neither may become authorised.
+	hostileDoc := `<!DOCTYPE html><html><head>` +
+		`<meta http-equiv="Content-Security-Policy" content="script-src 'unsafe-inline' *">` +
+		`</head><body><script>window.__evil=1</script></body></html>`
+	h := upstreamHandler(t, rev, &countingFetcher{body: []byte(hostileDoc)})
+
+	w := do(h, http.MethodGet, sharePrefix+validToken, "", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("proxied artifact: got %d, want 200", w.Code)
+	}
+	if n := len(w.Header().Values("Content-Security-Policy")); n != 1 {
+		t.Fatalf("CSP must be a single wholesale-set header, got %d", n)
+	}
+	csp := w.Header().Get("Content-Security-Policy")
+	for _, forbidden := range []string{"unsafe-inline", "unsafe-eval", "script-src 'self'"} {
+		if strings.Contains(csp, forbidden) {
+			t.Fatalf("INV-12 violated on the proxied path: %q present in %q", forbidden, csp)
+		}
+	}
+	if !strings.Contains(csp, "'"+h.cspHash+"'") || !strings.Contains(csp, "'"+cspSHA256([]byte(authored))+"'") {
+		t.Fatalf("proxied CSP must pin bundle + authored hashes: %q", csp)
+	}
+	if w.Header().Get("Content-Security-Policy-Report-Only") != "" {
+		t.Fatalf("report-only CSP present on proxied response")
+	}
+	for _, mustNotSet := range []string{"Set-Cookie", "Access-Control-Allow-Origin", "Access-Control-Allow-Credentials"} {
+		if w.Header().Get(mustNotSet) != "" {
+			t.Fatalf("proxied response set %s", mustNotSet)
+		}
+	}
+	if got := w.Header().Get("Referrer-Policy"); got != "no-referrer" {
+		t.Fatalf("proxied Referrer-Policy: %q", got)
+	}
+	if got := w.Header().Get("X-Frame-Options"); got != "DENY" {
+		t.Fatalf("proxied X-Frame-Options: %q", got)
+	}
+	// The upstream's inline script survives as BYTES (we pass the document
+	// through) but is not authorised: its hash is absent from script-src, which
+	// is the whole containment story now INV-6 is retired.
+	if h := cspSHA256([]byte("window.__evil=1")); strings.Contains(csp, h) {
+		t.Fatalf("upstream inline script hash was pinned: %q", csp)
+	}
+}
+
+// TestUpstreamlessShareStaysSelfContained pins the other half of the branch: a
+// share that names no upstream keeps the pre-S6 behaviour exactly, and performs
+// NO outbound fetch. A regression here would turn every existing published
+// walkthrough into a network call.
+func TestUpstreamlessShareStaysSelfContained(t *testing.T) {
+	f := &countingFetcher{body: []byte(upstreamDoc)}
+	h := upstreamHandler(t, sampleWalkthrough(), f)
+
+	w := do(h, http.MethodGet, sharePrefix+validToken, "", nil)
+	if w.Code != http.StatusOK {
+		t.Fatalf("self-contained artifact: got %d, want 200", w.Code)
+	}
+	if f.calls != 0 {
+		t.Fatalf("upstream-less share performed %d outbound fetches, want 0", f.calls)
+	}
+	body := w.Body.String()
+	if !strings.Contains(body, shellStyleReset) || strings.Contains(body, `id="hero"`) {
+		t.Fatalf("upstream-less share no longer serves the self-contained shell: %s", body)
+	}
+
+	// An empty upstream URL is not an upstream: it must not take the proxied
+	// branch and 502 an otherwise-serviceable share.
+	empty := upstreamHandler(t, upstreamRevision(""), f)
+	if w := do(empty, http.MethodGet, sharePrefix+validToken, "", nil); w.Code != http.StatusOK || f.calls != 0 {
+		t.Fatalf("empty upstream URL: code=%d fetches=%d, want 200/0", w.Code, f.calls)
+	}
+}
+
+// TestRevokedUpstreamShareNeverFetches is INV-4 on the proxied route: revoke
+// kills it atomically, and "atomically" has to mean the outbound fetch never
+// happens either — a revoked share that still pulls its upstream is both a
+// leaked signal to the origin and work done for a dead share.
+func TestRevokedUpstreamShareNeverFetches(t *testing.T) {
+	f := &countingFetcher{body: []byte(upstreamDoc)}
+	h := upstreamHandler(t, upstreamRevision("https://demo.example.com/app"), f)
+
+	for _, tok := range []string{"revoked-token", "unknown", ""} {
+		w := do(h, http.MethodGet, sharePrefix+tok, "", nil)
+		if w.Code != http.StatusNotFound {
+			t.Fatalf("token %q on proxied share: got %d, want 404", tok, w.Code)
+		}
+	}
+	// Every sub-route of a revoked share dies with it.
+	for _, sub := range []string{"/variants.json", "/walkthrough.json", "/feedback"} {
+		if w := do(h, http.MethodGet, sharePrefix+"revoked-token"+sub, "", nil); w.Code != http.StatusNotFound {
+			t.Fatalf("revoked %s: got %d, want 404", sub, w.Code)
+		}
+	}
+	if f.calls != 0 {
+		t.Fatalf("revoked share triggered %d upstream fetches, want 0 (INV-4)", f.calls)
+	}
+}
+
+// TestUpstreamFetchFailureIsLoudAndLeaksNothing covers every refusal branch of
+// the fetcher as seen from the route, plus INV-9: neither the response nor its
+// headers may echo the share token, and a nil fetcher fails closed instead of
+// fetching unguarded.
+func TestUpstreamFetchFailureIsLoudAndLeaksNothing(t *testing.T) {
+	h := upstreamHandler(t, upstreamRevision("https://demo.example.com/app"),
+		&countingFetcher{err: errors.New("upstream refused: origin \"10.0.0.7\" resolves to denied address")})
+
+	w := do(h, http.MethodGet, sharePrefix+validToken, "", nil)
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("failed upstream: got %d, want 502", w.Code)
+	}
+	// The refusal detail is daemon-network topology; the viewer gets a constant.
+	if body := w.Body.String(); strings.Contains(body, "10.0.0.7") || strings.Contains(body, "denied address") {
+		t.Fatalf("refusal leaked guard detail to the viewer: %q", body)
+	}
+	// INV-9: the token must not appear anywhere in the response we emit.
+	if strings.Contains(w.Body.String(), validToken) {
+		t.Fatalf("refusal body echoed the share token")
+	}
+	for k, vals := range w.Header() {
+		for _, v := range vals {
+			if strings.Contains(v, validToken) {
+				t.Fatalf("header %s echoed the share token: %q", k, v)
+			}
+		}
+	}
+	// The public header policy still applies to the error response.
+	if csp := w.Header().Get("Content-Security-Policy"); !strings.Contains(csp, "'"+h.cspHash+"'") {
+		t.Fatalf("refusal response missing the public CSP: %q", csp)
+	}
+
+	// Fail closed with no fetcher at all.
+	nilFetch := upstreamHandler(t, upstreamRevision("https://demo.example.com/app"), nil)
+	nilFetch.upstream = nil
+	if w := do(nilFetch, http.MethodGet, sharePrefix+validToken, "", nil); w.Code != http.StatusBadGateway {
+		t.Fatalf("nil fetcher: got %d, want 502", w.Code)
+	}
+
+	// And the correlation handle a log IS allowed to carry is the hash prefix,
+	// never the token (INV-9).
+	scrubbed := publish.ScrubSharePath(sharePrefix + validToken)
+	if strings.Contains(scrubbed, validToken) || scrubbed != sharePrefix+publish.HashPrefix(validToken) {
+		t.Fatalf("share path scrub is not hash[:8]: %q", scrubbed)
+	}
+}
+
+// --- The guarded fetcher itself (INV-13 obligations the pure guard cannot keep) ---
+
+// publicAddr is a routable address outside every §4a deny-list prefix. Tests
+// resolve their upstream hostname to it so the guard genuinely PASSES, and then
+// assert the dial was made to exactly it — the pin is what is under test, not
+// bypassed.
+var publicAddr = netip.MustParseAddr("93.184.216.34")
+
+// testUpstream stands up a TLS listener and returns a guardedUpstreamFetcher
+// wired to reach it only through the guard: the resolver answers with publicAddr,
+// and the dialer asserts it was handed that exact address before redirecting the
+// connection to the local listener. A local listener is on loopback, which the
+// deny-list refuses by design, so this indirection is the only way to test the
+// real guarded path end to end without weakening the guard.
+//
+// The upstream hostname is example.com because that is the name httptest's
+// certificate is issued for, so TLS verification is real rather than skipped.
+func testUpstream(t *testing.T, handler http.Handler) (*httptest.Server, *guardedUpstreamFetcher, *[]string) {
+	t.Helper()
+	srv := httptest.NewTLSServer(handler)
+	t.Cleanup(srv.Close)
+
+	tlsCfg := srv.Client().Transport.(*http.Transport).TLSClientConfig.Clone()
+	dialed := new([]string)
+	f := &guardedUpstreamFetcher{
+		resolve: func(_ context.Context, host string) ([]netip.Addr, error) {
+			if host != "example.com" {
+				return nil, errors.New("unexpected resolve of " + host)
+			}
+			return []netip.Addr{publicAddr}, nil
+		},
+		dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			*dialed = append(*dialed, addr)
+			if addr != publicAddr.String()+":443" {
+				return nil, errors.New("dial address is not the guard-validated one: " + addr)
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, srv.Listener.Addr().String())
+		},
+		tlsConfig: tlsCfg,
+	}
+	return srv, f, dialed
+}
+
+// TestGuardedFetchDialsTheValidatedAddress is the INV-13 pin: the connection goes
+// to the address CheckUpstreamOrigin approved, never to a re-resolution of the
+// hostname. Without the pin a rebinding resolver answers publicly for the check
+// and privately for the dial, and the whole deny-list is decorative.
+func TestGuardedFetchDialsTheValidatedAddress(t *testing.T) {
+	var gotReq *http.Request
+	_, f, dialed := testUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotReq = r.Clone(context.Background())
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		// A hostile upstream also tries to seed headers the public plane must not
+		// propagate.
+		w.Header().Set("Content-Security-Policy", "script-src 'unsafe-inline' *")
+		w.Header().Set("Set-Cookie", "upstream=1")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		io.WriteString(w, upstreamDoc)
+	}))
+
+	body, err := f.fetchDocument(context.Background(), "https://example.com/app?x=1")
+	if err != nil {
+		t.Fatalf("guarded fetch of a public origin failed: %v", err)
+	}
+	if !strings.Contains(string(body), `id="hero"`) {
+		t.Fatalf("fetched body is not the upstream document: %q", body)
+	}
+	if len(*dialed) != 1 || (*dialed)[0] != publicAddr.String()+":443" {
+		t.Fatalf("dialed %v, want exactly [%s:443] — the pin is broken", *dialed, publicAddr)
+	}
+	if gotReq == nil {
+		t.Fatal("upstream never received a request")
+	}
+	if gotReq.URL.RequestURI() != "/app?x=1" {
+		t.Fatalf("upstream path/query not preserved: %q", gotReq.URL.RequestURI())
+	}
+	if gotReq.Host != "example.com" {
+		t.Fatalf("Host header must remain the published hostname (TLS/vhost), got %q", gotReq.Host)
+	}
+}
+
+// TestGuardedFetchForwardsNoViewerContext is INV-1 + INV-9 on the outbound leg.
+// The upstream is a third party: it must learn nothing about the viewer and,
+// above all, must never receive the share token — which a forwarded Referer would
+// hand it in the path.
+func TestGuardedFetchForwardsNoViewerContext(t *testing.T) {
+	var gotReq *http.Request
+	_, f, _ := testUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotReq = r.Clone(context.Background())
+		w.Header().Set("Content-Type", "text/html")
+		io.WriteString(w, upstreamDoc)
+	}))
+	h := upstreamHandler(t, upstreamRevision("https://example.com/app"), f)
+
+	// A viewer request loaded with everything that must NOT travel onward.
+	w := do(h, http.MethodGet, sharePrefix+validToken, "", map[string]string{
+		"Cookie":          "session=viewer-secret",
+		"Authorization":   "Bearer viewer-token",
+		"Referer":         "https://public.example" + sharePrefix + validToken,
+		"X-Forwarded-For": "203.0.113.9",
+		"User-Agent":      "ViewerBrowser/1.0",
+	})
+	if w.Code != http.StatusOK {
+		t.Fatalf("proxied artifact over the real guarded fetcher: got %d", w.Code)
+	}
+	if gotReq == nil {
+		t.Fatal("upstream never received a request")
+	}
+	for _, header := range []string{"Cookie", "Authorization", "Referer", "X-Forwarded-For"} {
+		if v := gotReq.Header.Get(header); v != "" {
+			t.Fatalf("viewer %s forwarded to the upstream: %q", header, v)
+		}
+	}
+	// Belt and braces: the token must not appear in ANY outbound header or in the
+	// request line (INV-9).
+	for k, vals := range gotReq.Header {
+		for _, v := range vals {
+			if strings.Contains(v, validToken) {
+				t.Fatalf("outbound header %s carried the share token: %q", k, v)
+			}
+		}
+	}
+	if strings.Contains(gotReq.URL.String(), validToken) {
+		t.Fatalf("outbound request line carried the share token: %q", gotReq.URL)
+	}
+}
+
+// TestGuardedFetchRefusesPrivateOriginsWithoutDialing is the SSRF core: a share
+// pointing into private/link-local/metadata space is refused BEFORE a socket is
+// opened. Asserting "no dial happened" is the point — an error alone would also
+// be produced by a connection that was attempted and failed, which is a very
+// different security property.
+func TestGuardedFetchRefusesPrivateOriginsWithoutDialing(t *testing.T) {
+	refused := []struct{ name, rawURL string }{
+		{"loopback", "https://127.0.0.1/app"},
+		{"loopback name form", "https://127.1/app"},
+		{"loopback decimal", "https://2130706433/app"},
+		{"loopback octal", "https://0177.0.0.1/app"},
+		{"loopback hex", "https://0x7f000001/app"},
+		{"rfc1918 10", "https://10.0.0.7/app"},
+		{"rfc1918 172.16", "https://172.16.4.4/app"},
+		{"rfc1918 192.168", "https://192.168.1.1/app"},
+		{"link-local", "https://169.254.1.1/app"},
+		{"cloud metadata", "https://169.254.169.254/latest/meta-data/"},
+		{"alibaba metadata", "https://100.100.100.200/"},
+		{"cgnat", "https://100.64.0.1/"},
+		{"ipv6 loopback", "https://[::1]/app"},
+		{"ipv6 unique-local", "https://[fd00:ec2::254]/"},
+		{"ipv6 link-local zone", "https://[fe80::1%25eth0]/"},
+		{"ipv4-mapped private", "https://[::ffff:10.0.0.1]/"},
+		{"nat64 metadata", "https://[64:ff9b::a9fe:a9fe]/"},
+		{"6to4 loopback", "https://[2002:7f00:1::1]/"},
+		{"plaintext http", "http://93.184.216.34/app"},
+		{"file scheme", "file:///etc/passwd"},
+	}
+	for _, c := range refused {
+		t.Run(c.name, func(t *testing.T) {
+			var dials int
+			f := &guardedUpstreamFetcher{
+				// A resolver that must never be reached for a literal, and a dialer
+				// that must never be reached at all.
+				resolve: func(context.Context, string) ([]netip.Addr, error) {
+					return []netip.Addr{publicAddr}, nil
+				},
+				dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
+					dials++
+					return nil, errors.New("must not dial")
+				},
+			}
+			if _, err := f.fetchDocument(context.Background(), c.rawURL); err == nil {
+				t.Fatalf("%s was NOT refused", c.rawURL)
+			}
+			if dials != 0 {
+				t.Fatalf("%s opened %d connections — refusal must precede the dial", c.rawURL, dials)
+			}
+		})
+	}
+
+	// A name that resolves to a mix of public and private answers is refused
+	// wholesale: one public answer among private ones is exactly the rebinding
+	// shape, not a safe host.
+	var dials int
+	mixed := &guardedUpstreamFetcher{
+		resolve: func(context.Context, string) ([]netip.Addr, error) {
+			return []netip.Addr{publicAddr, netip.MustParseAddr("10.1.2.3")}, nil
+		},
+		dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			dials++
+			return nil, errors.New("must not dial")
+		},
+	}
+	if _, err := mixed.fetchDocument(context.Background(), "https://example.com/app"); err == nil {
+		t.Fatal("host with one private answer was not refused")
+	}
+	if dials != 0 {
+		t.Fatalf("mixed-answer host opened %d connections", dials)
+	}
+}
+
+// TestPrivateUpstreamShareIsRefusedAtTheRoute is the same property observed where
+// it matters: through the real handler, with the production fetcher, a share
+// naming a private origin 502s and serves none of it.
+func TestPrivateUpstreamShareIsRefusedAtTheRoute(t *testing.T) {
+	for _, raw := range []string{"https://169.254.169.254/latest/meta-data/", "https://127.0.0.1:8080/admin", "https://10.0.0.7/"} {
+		h := NewPublicHandler(&fakeVerifier{token: validToken, rev: upstreamRevision(raw), id: "share-1"}, nil, 0)
+		if _, ok := h.upstream.(*guardedUpstreamFetcher); !ok {
+			t.Fatalf("NewPublicHandler must install the guarded fetcher, got %T", h.upstream)
+		}
+		w := do(h, http.MethodGet, sharePrefix+validToken, "", nil)
+		if w.Code != http.StatusBadGateway {
+			t.Fatalf("%s: got %d, want 502", raw, w.Code)
+		}
+		if strings.Contains(w.Body.String(), shellStyleReset) {
+			t.Fatalf("%s: fell back to the self-contained shell", raw)
+		}
+	}
+}
+
+// TestGuardedFetchRechecksEveryRedirectHop covers §4a's per-hop obligation and
+// its fail-closed depth cap. A public origin that redirects into metadata space
+// is the classic bypass: guarding only the first URL lets the origin choose the
+// final address.
+func TestGuardedFetchRechecksEveryRedirectHop(t *testing.T) {
+	t.Run("hop into private space is refused", func(t *testing.T) {
+		_, f, dialed := testUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Redirect(w, r, "https://169.254.169.254/latest/meta-data/", http.StatusFound)
+		}))
+		_, err := f.fetchDocument(context.Background(), "https://example.com/app")
+		if err == nil {
+			t.Fatal("redirect into cloud-metadata space was followed")
+		}
+		// The refusal must come from the GUARD, not incidentally from a dial that
+		// happened to fail. Without a per-hop re-check this test would still see an
+		// error (the pinned-dial assertion inside the harness would produce one),
+		// so the reason is the assertion that has teeth here.
+		if !strings.Contains(err.Error(), "upstream refused") {
+			t.Fatalf("hop was not refused by the origin guard: %v", err)
+		}
+		if len(*dialed) != 1 {
+			t.Fatalf("dialed %v — the metadata hop must never reach the dialer", *dialed)
+		}
+	})
+
+	t.Run("relative hop is re-guarded and followed", func(t *testing.T) {
+		_, f, dialed := testUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path != "/final" {
+				http.Redirect(w, r, "/final", http.StatusMovedPermanently)
+				return
+			}
+			w.Header().Set("Content-Type", "text/html")
+			io.WriteString(w, upstreamDoc)
+		}))
+		body, err := f.fetchDocument(context.Background(), "https://example.com/app")
+		if err != nil {
+			t.Fatalf("legitimate redirect not followed: %v", err)
+		}
+		if !strings.Contains(string(body), `id="hero"`) {
+			t.Fatalf("redirected body wrong: %q", body)
+		}
+		// Two hops, each pinned to the validated address.
+		if len(*dialed) != 2 {
+			t.Fatalf("dialed %v, want one dial per hop", *dialed)
+		}
+	})
+
+	t.Run("chain longer than the cap fails closed", func(t *testing.T) {
+		var hops int
+		_, f, _ := testUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			hops++
+			http.Redirect(w, r, "/next"+strconv.Itoa(hops), http.StatusFound)
+		}))
+		if _, err := f.fetchDocument(context.Background(), "https://example.com/app"); err == nil {
+			t.Fatal("unbounded redirect chain was not refused")
+		}
+		if hops > maxUpstreamRedirects+1 {
+			t.Fatalf("followed %d hops, cap is %d", hops, maxUpstreamRedirects)
+		}
+	})
+
+	t.Run("redirect with no Location is refused", func(t *testing.T) {
+		_, f, _ := testUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusFound)
+		}))
+		if _, err := f.fetchDocument(context.Background(), "https://example.com/app"); err == nil {
+			t.Fatal("3xx with no Location was accepted")
+		}
+	})
+}
+
+// TestGuardedFetchRefusesNonDocumentResponses keeps the artifact route a document
+// route. Without these checks an anonymous URL becomes a general-purpose relay
+// for whatever bytes the publisher's origin decides to return, and an oversize
+// body becomes a remote memory-amplification lever.
+func TestGuardedFetchRefusesNonDocumentResponses(t *testing.T) {
+	cases := []struct {
+		name    string
+		handler http.HandlerFunc
+	}{
+		{"non-HTML content-type", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			io.WriteString(w, `{"not":"a document"}`)
+		}},
+		{"missing content-type", func(w http.ResponseWriter, r *http.Request) {
+			w.Header()["Content-Type"] = nil
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte{0x00, 0x01})
+		}},
+		{"upstream error status", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			http.Error(w, "<html>upstream 500</html>", http.StatusInternalServerError)
+		}},
+		{"oversize document", func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/html")
+			io.WriteString(w, "<html><head></head><body>")
+			chunk := strings.Repeat("x", 64<<10)
+			for written := 0; written <= maxPublicUpstreamBytes; written += len(chunk) {
+				if _, err := io.WriteString(w, chunk); err != nil {
+					return
+				}
+			}
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			_, f, _ := testUpstream(t, c.handler)
+			body, err := f.fetchDocument(context.Background(), "https://example.com/app")
+			if err == nil {
+				t.Fatalf("accepted a non-document upstream response (%d bytes)", len(body))
+			}
+			if body != nil {
+				t.Fatalf("refusal returned %d bytes alongside the error — a partial document must never be served", len(body))
+			}
+		})
 	}
 }
