@@ -229,6 +229,18 @@
     function reassert() {
       if (document.getElementById(HOST_ID)) { return; }
       if (reasserts >= MAX_REASSERTS) {
+        // The budget bounds the LOOP, not the disclosure. Mount once more BEFORE
+        // giving up watching, so the last state this module controls still carries
+        // the badge: INV-14 is about every public artifact response rendering the
+        // disclosure, and disconnecting from a state that has none of it is the
+        // worst end state this module can produce. It is also reachable by an
+        // ordinary SPA and not only by a hostile page, so paying nothing for it is
+        // not an option. mount() is idempotent and the host is absent on this
+        // branch, so this is exactly one insertion. A page that removes it again
+        // afterwards does so with nothing of ours re-inserting — which is the
+        // bounded loss the budget deliberately accepts, rather than a loss we
+        // caused by walking away mid-removal.
+        mount();
         if (observer) { observer.disconnect(); }
         try {
           console.warn('[AgntDemoIndicator] re-assert budget exhausted; the page is removing the disclosure repeatedly');

@@ -223,6 +223,68 @@ func TestDemoIndicatorSurvivesBenignDOMReplacement(t *testing.T) {
 	}
 }
 
+// demoIndicatorSpan returns the module source between two markers, so an
+// assertion can be scoped to one function body instead of matching anywhere in
+// the file. Both markers are required, so a rename is a loud failure.
+func demoIndicatorSpan(t *testing.T, js, from, to string) string {
+	t.Helper()
+	i := strings.Index(js, from)
+	if i < 0 {
+		t.Fatalf("demo-indicator no longer contains %q", from)
+	}
+	rest := js[i:]
+	j := strings.Index(rest, to)
+	if j < 0 {
+		t.Fatalf("demo-indicator no longer contains %q after %q", to, from)
+	}
+	return rest[:j]
+}
+
+// TestDemoIndicatorExhaustedBudgetStillCarriesTheBadge pins the terminal state of
+// the re-assert budget. The budget exists to bound a LOOP — a page whose own
+// observer removes the host on every insertion would otherwise ping-pong with
+// ours inside the microtask checkpoint and hang the tab — and it must keep doing
+// that. What it must NOT do is end with the mandatory disclosure absent: an
+// exhaustion path that disconnects without mounting makes the last state this
+// module controls carry ZERO disclosure, which for INV-14 ("every public artifact
+// response renders the demo indicator") is the worst end state available, and is
+// reachable by an ordinary SPA rather than only by an attacker.
+//
+// So the branch mounts once and THEN stops watching. Asserted by ORDER, not by
+// presence: reassert() already contained a mount() before this fix, so only its
+// position relative to disconnect() distinguishes fixed from broken.
+func TestDemoIndicatorExhaustedBudgetStillCarriesTheBadge(t *testing.T) {
+	js := demoIndicatorSource(t)
+	reassert := demoIndicatorSpan(t, js, "function reassert()", "function watch()")
+
+	// The bound itself must survive: this fix may not be implemented by deleting
+	// the budget, which would restore the hang-the-tab defect it exists to stop.
+	if !strings.Contains(js, "var MAX_REASSERTS = 100;") {
+		t.Error("the finite re-assert budget must remain; an unbounded re-assert lets a hostile page hang the tab")
+	}
+	if !strings.Contains(reassert, "observer.disconnect()") {
+		t.Fatal("the exhaustion path must still disconnect the observer")
+	}
+
+	// The exhaustion branch, scoped from the budget test to the disconnect that
+	// closes it, must carry a mount. Scoping is what gives this teeth: the
+	// trailing mount() of the ordinary re-assert path lies outside this span.
+	branch := demoIndicatorSpan(t, reassert, "if (reasserts >= MAX_REASSERTS) {", "observer.disconnect()")
+	if !strings.Contains(branch, "mount();") {
+		t.Error("on budget exhaustion the module must mount() once before disconnecting, so the terminal state still carries the mandatory disclosure (INV-14)")
+	}
+	// Belt and braces on the ordering, independent of the span above: the FIRST
+	// mount in reassert must precede the disconnect.
+	if iMount, iDisc := strings.Index(reassert, "mount();"), strings.Index(reassert, "observer.disconnect()"); iMount > iDisc {
+		t.Error("reassert disconnects before it mounts; the exhausted state would carry no disclosure at all")
+	}
+	// Exactly two: the exhaustion mount and the ordinary re-assert mount. A third
+	// would mean a path was duplicated rather than gated.
+	if n := strings.Count(reassert, "mount();"); n != 2 {
+		t.Errorf("expected reassert to mount on exactly two paths (exhaustion, ordinary), found %d", n)
+	}
+}
+
 // TestDemoIndicatorUnstyledFallbackStaysVisibleAndCSPFree pins the decision taken
 // for the degraded path: when the platform has no constructable stylesheets the
 // badge renders UNSTYLED-BUT-PRESENT, made as visible as CSS-free HTML allows, and
