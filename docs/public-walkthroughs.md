@@ -550,13 +550,27 @@ style element or attribute into that module; the proxied response would refuse i
 **Be clear about its limits.** It resists ordinary page CSS; it is not
 adversarially tamper-proof. A benign SPA that replaces `document.body` currently
 removes it, because the mount is idempotent but not re-armed by an observer — a
-follow-up is filed. And where the platform has no constructable stylesheets
-(`CSSStyleSheet` / `adoptedStyleSheets` unavailable, or no usable
-`replaceSync`/`insertRule`), styling is skipped and the badge renders as an
-**unstyled** run of text: the disclosure wording still appears, but with none of
-the pinned geometry or contrast above — and, being unstyled, it is far easier for
-page CSS to bury. That degradation is deliberate: the alternative was an inline
-style the proxied path's CSP would refuse anyway. The end-to-end "a variant's raw CSS/HTML cannot hide it"
+follow-up is filed.
+
+**Where the platform has no constructable stylesheets** (`CSSStyleSheet` /
+`adoptedStyleSheets` unavailable) styling is skipped and the badge renders as an
+**unstyled** run of text. Constructable stylesheets are Baseline Widely Available
+(Chrome/Edge 73+, Firefox 101+, Safari 16.4+ / March 2023), so essentially all
+traffic gets the styled badge; the residual is older Safari and Firefox, which
+support `attachShadow` (the badge mounts) but not constructable sheets (it cannot
+be styled). On those engines the disclosure wording still appears, with none of the
+pinned geometry or contrast above, and is easier for page CSS to bury. Two
+mitigations apply there, both costing zero CSP: the host is inserted as the **first
+child** of `body` so it sits at the top of the document flow rather than below all
+of the page's content, and the brand renders as `<strong>` so it is bold with no
+stylesheet at all. The degradation itself is deliberate and the alternatives were
+rejected explicitly: there is no other styling mechanism (an inline `<style>` or
+`style=` is precisely what the proxied path's empty nonce refuses, and widening
+`style-src` is forbidden), and refusing to show the badge because it cannot be
+styled would delete the disclosure INV-14 mandates — unstyled text a viewer might
+miss still dominates no text. An unstyled render also `console.warn`s.
+
+The end-to-end "a variant's raw CSS/HTML cannot hide it"
 adversarial gate is likewise its own slice (spec §11 → P10). Treat the badge as
 honest disclosure to a cooperating page, not as a control that survives a
 determined publisher.

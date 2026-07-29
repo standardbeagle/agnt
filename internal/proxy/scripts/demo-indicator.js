@@ -68,6 +68,8 @@
     // Constant — no input of any kind can change or blank it.
     var BRAND = 'agnt';
     var TEXT = 'Demo walkthrough — not the live site.';
+    // The one constructed stylesheet, built lazily and shared by every mount.
+    var sheet = null;
 
     var CSS = [
       // all:initial first so a reset cannot clobber the geometry that follows.
@@ -86,25 +88,56 @@
       '.text{font-weight:400}'
     ].join('\n');
 
-    // adoptStyles installs CSS through the CSSOM only. Returns false when the
-    // platform has no constructable stylesheets — the badge still renders with
-    // its text (the disclosure survives), and the failure is reported rather
-    // than papered over with an inline style the CSP would refuse anyway.
+    // THE UNSTYLED FALLBACK — decision and reasoning, because the degraded
+    // outcome is a disclosure that is present in the DOM and possibly unseen,
+    // which for this element is close to no disclosure at all.
+    //
+    // Browser support, checked rather than assumed: constructable stylesheets
+    // (a constructed CSSStyleSheet + replaceSync + adoptedStyleSheets) are
+    // Baseline Widely Available — Chrome/Edge 73+, Firefox 101+, Safari 16.4+
+    // (Mar 2023). So the styled path is what essentially all traffic gets. The
+    // residual is real but small: Safari 10-16.3 and Firefox 63-100 support
+    // attachShadow (so the badge mounts) without constructable stylesheets (so it
+    // cannot be styled). That is why a fallback branch exists at all and why it is
+    // not dead code — but the ALREADY-dead half is gone: the early Chrome 73
+    // rule-by-rule insert shape (no replaceSync) never shipped in a browser we can
+    // reach, and carrying an untested code path for it was worse than not having
+    // it. One sheet, built once, reused by every (re-)mount.
+    //
+    // Of the three options — degrade silently, degrade loudly to the viewer, or
+    // refuse to serve — this module degrades to UNSTYLED-BUT-PRESENT plus a
+    // console warning, and makes the unstyled case as visible as CSS-free HTML
+    // allows (host inserted as body's FIRST child so it lands at the top of the
+    // document flow rather than below the page's content; the brand rendered as
+    // <strong> so it is bold with no stylesheet at all). Both cost zero CSP:
+    // no directive, no source, no inline style, no external asset.
+    //
+    // The two rejected options, and why:
+    //   - Refuse to serve: not available and not desirable. This is client-side
+    //     code that cannot un-serve a response, and suppressing the disclosure
+    //     because it cannot be made pretty deletes the very thing INV-14
+    //     mandates. Unstyled text a viewer might miss strictly dominates no text.
+    //   - Style it some other way to "degrade loudly": there IS no other way. A
+    //     style ELEMENT or a style ATTRIBUTE is exactly what the proxied path's
+    //     empty nonce refuses, so it would be blocked (and reported as a
+    //     violation) rather than seen. Widening style-src to buy it back is
+    //     forbidden by INV-11/INV-12. (Neither literal is spelled out here: the
+    //     module's own bytes are scanned for them by demo_indicator_test.go.)
+    //
+    // Residual, stated in docs/public-walkthroughs.md rather than hidden: on
+    // those older engines the disclosure has none of the pinned geometry and is
+    // easier for page CSS to bury.
     function adoptStyles(root) {
       if (typeof CSSStyleSheet !== 'function' || !('adoptedStyleSheets' in root)) {
         return false;
       }
-      var sheet = new CSSStyleSheet();
-      if (typeof sheet.replaceSync === 'function') {
-        sheet.replaceSync(CSS);
-      } else if (typeof sheet.insertRule === 'function') {
-        // Older constructable-stylesheet shape: insert rule by rule.
-        var rules = CSS.split('\n');
-        for (var i = 0; i < rules.length; i++) {
-          if (rules[i]) { sheet.insertRule(rules[i], sheet.cssRules.length); }
+      if (!sheet) {
+        var built = new CSSStyleSheet();
+        if (typeof built.replaceSync !== 'function') {
+          return false;
         }
-      } else {
-        return false;
+        built.replaceSync(CSS);
+        sheet = built;
       }
       root.adoptedStyleSheets = [sheet];
       return true;
@@ -133,7 +166,10 @@
       // A note, not a status: it never updates, and it must not be announced as
       // a live region on every step change.
       badge.setAttribute('role', 'note');
-      var brand = document.createElement('span');
+      // <strong>, not <span>: with a stylesheet it looks identical (.brand sets
+      // the same weight); WITHOUT one it is still bold, which is the only
+      // emphasis available when no CSS can be applied at all.
+      var brand = document.createElement('strong');
       brand.className = 'brand';
       brand.textContent = BRAND;
       var text = document.createElement('span');
@@ -143,7 +179,11 @@
       badge.appendChild(text);
       root.appendChild(badge);
 
-      parent.appendChild(host);
+      // FIRST child, not appended: when the sheet is adopted the host is
+      // position:fixed so document order is irrelevant, but on the unstyled
+      // fallback path it decides whether the disclosure sits above the page's
+      // content or below all of it. Costs nothing on the styled path.
+      parent.insertBefore(host, parent.firstChild);
       return host;
     }
 

@@ -152,6 +152,56 @@ func TestDemoIndicatorStylesViaCSSOMOnly(t *testing.T) {
 	}
 }
 
+// TestDemoIndicatorUnstyledFallbackStaysVisibleAndCSPFree pins the decision taken
+// for the degraded path: when the platform has no constructable stylesheets the
+// badge renders UNSTYLED-BUT-PRESENT, made as visible as CSS-free HTML allows, and
+// still buys no CSP source. The reviewer's finding was that the degraded badge is
+// "present but plausibly unseen"; these are the two zero-CSP mitigations, so a
+// regression that reverts either one fails here.
+func TestDemoIndicatorUnstyledFallbackStaysVisibleAndCSPFree(t *testing.T) {
+	js := demoIndicatorSource(t)
+
+	// Mitigation 1: the host lands at the TOP of the document flow. With the sheet
+	// adopted the host is position:fixed and order is irrelevant; without it, this
+	// is the difference between above the page's content and below all of it.
+	if !strings.Contains(js, "insertBefore(host, parent.firstChild)") {
+		t.Error("the host must be inserted as the first child so the unstyled fallback is not buried under page content")
+	}
+	if strings.Contains(js, "parent.appendChild(host)") {
+		t.Error("appending the host puts the unstyled disclosure below the whole page")
+	}
+	// Mitigation 2: emphasis that survives with no stylesheet at all.
+	if !strings.Contains(js, "createElement('strong')") {
+		t.Error("the brand must be a <strong> so it renders bold with no CSS applied")
+	}
+	// Neither mitigation may buy a CSP source: no inline style (covered exactly by
+	// TestDemoIndicatorStylesViaCSSOMOnly) and no fetched asset. What is asserted
+	// here is the third temptation — falling back to a style element on the
+	// degraded path specifically.
+	if strings.Contains(js, "createElement('style") || strings.Contains(js, `createElement("style`) {
+		t.Error("the fallback must not build a style element; the proxied path's empty nonce refuses it")
+	}
+	// The disclosure survives the degradation: text is set unconditionally, not
+	// inside the styled branch.
+	if !strings.Contains(js, "text.textContent = TEXT;") {
+		t.Error("the disclosure text must be set unconditionally, independent of whether styling succeeded")
+	}
+	// The failure is reported rather than silent.
+	if !strings.Contains(js, "console.warn(") {
+		t.Error("an unstyled render must warn; a silently degraded disclosure is indistinguishable from a working one")
+	}
+	// The already-dead half of the branch is gone: the early-Chrome
+	// insertRule-without-replaceSync constructable-stylesheet shape never shipped
+	// in a reachable browser, and an untested code path is worse than none.
+	if strings.Contains(js, "insertRule") {
+		t.Error("the insertRule fallback is unreachable in every browser that has adoptedStyleSheets; do not carry it")
+	}
+	// One sheet, built once and reused, so re-mounting cannot allocate per mount.
+	if n := strings.Count(js, "new CSSStyleSheet()"); n != 1 {
+		t.Errorf("expected exactly one constructed stylesheet, found %d", n)
+	}
+}
+
 // TestDemoIndicatorClosedShadowRoot pins the §9c containment shape: a CLOSED
 // shadow root at the top z-layer, so page script holds no handle on the badge's
 // internals and ordinary page CSS does not reach them.
