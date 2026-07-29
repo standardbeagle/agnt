@@ -63,8 +63,55 @@ isolating a "flaky" daemon/proxy/chromedp test, first re-run the failure
 under `-p 1` — if it goes green, the bug is harness concurrency, not the
 test.
 
+## Sibling class: a test that writes into the SOURCE TREE poisons every worktree-reading gate
+
+Same family — a harness artifact that costs real diagnostic time because it
+*reads* as someone's product change. `cmd/agnt/AGENTS.md` gets written into the
+repository working tree during the `cmd/agnt` suite (tracked as
+`01KYQEGBK1XWS4TKVCYCR6YYFY`, attributed to `support_matrix_test.go`). The file
+is untracked and is not in any task's `fileScope`, but **scope-check evaluates
+the whole tree including untracked files**, so every full-suite run dirtied the
+tree for whatever task happened to be in flight.
+
+Observed cost across the `pubserve` epic tail: deleted by hand three times, and
+**two implementers plus a reviewer each independently had to stop and establish
+that a file was not theirs** before they could trust their own diff. That is the
+same wasted-attribution tax as the `-p 1` class above, just paid in review
+cycles instead of reruns.
+
+The mechanism to watch for is a **cwd-relative write in production code**
+(`phaseCmdArgsAndPrompt` writes `AGENTS.md` next to the working directory)
+exercised by a test fenced only with `os.Chdir`. `t.TempDir()` is real
+isolation; `os.Chdir` is **process-global** and therefore is not — a panic or
+`t.Fatal` before the restoring `t.Cleanup`, or any interleaving code path that
+performs the same write while cwd is the repo, lands the artifact in the source
+tree.
+
+**Rules**:
+
+1. A test must never be able to write into the repository working tree. Pass an
+   explicit destination directory (`t.TempDir()`) into the code under test;
+   treat reliance on process-global `os.Chdir` as a defect, not isolation.
+2. If a stray untracked file appears mid-task, do not fold it into a close-out
+   commit and do not adjudicate it from scratch — check the known-strays list
+   here first, delete it, and move on.
+3. When production code writes to a cwd-relative path, that path is a
+   parameter waiting to be extracted. Extract it the first time a test needs to
+   `Chdir` to contain it.
+
 ## See also
 
 - `AGENTS.md` § Testing — pre-commit hook's `-p 1` contract
 - `.claude/rules/daemon-architecture.md` § Port-Kill Guard, § Session Containment — why daemon tests bind real ports
 - per-user memory `feedback_flaky_test_hunt`, `project_flake_class_2026_07`
+- `.claude/rules/publish-security-review-lessons.md` — the epic whose tail paid
+  the source-tree-pollution tax documented above
+
+<!-- provenance: the source-tree-pollution section —
+     written_at 2026-07-29;
+     source_event pubserve epic 01KYJBPVCX5BKD7YS03E4MTX87 tail (S7/S8/S9/S10:
+       01KYJC0CWY6DBN91V86CMDYFRX, 01KYJC0CZVVC0TTYT720KWYSYX,
+       01KYJC0D3FDSG4A05W9058YNR0, 01KYJC0D6K1NAA9Q9J68T4CW7B);
+       observed independently by S9's implementer, S9's reviewer, and S10's
+       reviewer (advisory on cmd/agnt/AGENTS.md);
+     tracking task 01KYQEGBK1XWS4TKVCYCR6YYFY -->
