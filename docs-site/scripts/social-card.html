@@ -1,0 +1,81 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<style>
+  @font-face { font-family: none; }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 1200px; height: 630px; }
+  body {
+    background: #0b1416;
+    background-image:
+      radial-gradient(900px 520px at 88% -12%, rgba(37,194,160,0.28), transparent 60%),
+      radial-gradient(700px 460px at -8% 108%, rgba(46,133,133,0.20), transparent 62%);
+    font-family: "Inter", "Segoe UI", "DejaVu Sans", system-ui, sans-serif;
+    color: #e9f5f2;
+    position: relative;
+    overflow: hidden;
+  }
+  .grid {
+    position: absolute; inset: 0;
+    background-image:
+      linear-gradient(rgba(255,255,255,0.030) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,0.030) 1px, transparent 1px);
+    background-size: 48px 48px;
+    mask-image: radial-gradient(700px 480px at 30% 40%, #000 30%, transparent 78%);
+  }
+  .wrap { position: relative; padding: 72px 80px; height: 100%; display: flex; flex-direction: column; }
+  .eyebrow {
+    display: inline-flex; align-items: center; gap: 12px;
+    font-size: 21px; letter-spacing: .16em; text-transform: uppercase;
+    color: #7fd8c4; font-weight: 600;
+  }
+  .dot { width: 11px; height: 11px; border-radius: 50%; background: #25c2a0; box-shadow: 0 0 18px 4px rgba(37,194,160,.55); }
+  h1 {
+    font-family: "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, monospace;
+    font-size: 132px; line-height: 1; font-weight: 700;
+    margin-top: 26px; letter-spacing: -.03em;
+    background: linear-gradient(96deg, #ffffff 8%, #7ef0d3 78%);
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+  }
+  h1 .caret { color: #25c2a0; -webkit-text-fill-color: #25c2a0; }
+  p.tag { margin-top: 22px; font-size: 40px; font-weight: 500; color: #cfe6e0; letter-spacing: -.01em; }
+  ul.caps { margin-top: 32px; display: flex; flex-wrap: wrap; gap: 12px; list-style: none; max-width: 1000px; }
+  ul.caps li {
+    font-size: 23px; font-weight: 500; color: #a9ded1;
+    border: 1px solid rgba(37,194,160,.34);
+    background: rgba(37,194,160,.09);
+    border-radius: 999px; padding: 9px 20px;
+  }
+  .foot {
+    margin-top: auto; display: flex; align-items: center; justify-content: space-between;
+    border-top: 1px solid rgba(255,255,255,.10); padding-top: 26px;
+  }
+  .foot .url {
+    font-family: "JetBrains Mono", "DejaVu Sans Mono", ui-monospace, monospace;
+    font-size: 26px; color: #8fb8b0;
+  }
+  .foot .tools { font-size: 24px; color: #6f938d; }
+</style>
+</head>
+<body>
+  <div class="grid"></div>
+  <div class="wrap">
+    <div class="eyebrow"><span class="dot"></span>MCP server &nbsp;·&nbsp; open source</div>
+    <h1>agnt<span class="caret">_</span></h1>
+    <p class="tag">Browser superpowers for AI coding agents.</p>
+    <ul class="caps">
+      <li>Screenshots</li>
+      <li>DOM &amp; layout inspection</li>
+      <li>Live error capture</li>
+      <li>Quality audits</li>
+      <li>Sketch &amp; design mode</li>
+      <li>Guided walkthroughs</li>
+    </ul>
+    <div class="foot">
+      <span class="url">standardbeagle.github.io/agnt</span>
+      <span class="tools">Claude Code · Cursor · Windsurf · Copilot</span>
+    </div>
+  </div>
+</body>
+</html>

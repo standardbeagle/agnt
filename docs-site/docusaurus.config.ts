@@ -2,6 +2,11 @@ import {themes as prismThemes} from 'prism-react-renderer';
 import type {Config} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 
+// Single source of truth for the description shown in search results and in
+// Slack/Discord/X link unfurls.
+const SITE_DESCRIPTION =
+  'agnt is an MCP server that gives your AI coding agent eyes into the browser: screenshots, DOM and layout inspection, live error capture, quality audits, sketch and design mode, and guided walkthroughs.';
+
 const config: Config = {
   title: 'agnt',
   tagline: 'Give your AI coding agent browser superpowers - Screenshots, DOM inspection, visual debugging, and real-time error capture',
@@ -38,7 +43,7 @@ const config: Config = {
         name: 'agnt',
         applicationCategory: 'DeveloperApplication',
         operatingSystem: 'Linux, macOS, Windows',
-        description: 'Browser superpowers for AI coding agents. Screenshots, DOM inspection, error capture, and visual debugging via MCP.',
+        description: SITE_DESCRIPTION,
         url: 'https://standardbeagle.github.io/agnt/',
         offers: {
           '@type': 'Offer',
@@ -77,10 +82,22 @@ const config: Config = {
   ],
 
   themeConfig: {
+    // Default social card for every page. Docusaurus expands this to absolute
+    // og:image + twitter:image URLs; per-page front matter `image:` overrides it.
+    // Regenerate with: npm run social-card (source: scripts/social-card.html).
+    image: 'img/agnt-social-card.png',
     metadata: [
       {name: 'keywords', content: 'MCP server, browser debugging, AI coding agent, Claude Code, Cursor, Windsurf, frontend debugging, error tracking, DOM inspection, screenshots'},
-      {name: 'og:type', content: 'website'},
-      {name: 'og:image', content: 'https://standardbeagle.github.io/agnt/img/docusaurus-social-card.jpg'},
+      // Site-level tags only. og:title / og:description / og:url / og:image are
+      // emitted per page by the theme (from the page title + front-matter
+      // `description` + themeConfig.image) — do not duplicate them here or every
+      // subpage unfurls with the homepage's copy.
+      {property: 'og:type', content: 'website'},
+      {property: 'og:site_name', content: 'agnt'},
+      {property: 'og:image:width', content: '1200'},
+      {property: 'og:image:height', content: '630'},
+      {property: 'og:image:type', content: 'image/png'},
+      {property: 'og:image:alt', content: 'agnt — browser superpowers for AI coding agents'},
       {name: 'twitter:card', content: 'summary_large_image'},
     ],
     colorMode: {
