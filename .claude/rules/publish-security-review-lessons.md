@@ -8,6 +8,13 @@ source:
   - task: 01KXFKH8DXA5KVCT2RNYMBB4WN (KDL feedback{} config wiring)
   - commits: a3340b5a d38205aa 8a01739a 97835086 8881179b 78b29b09 46491f5f 29466232 c50b6082 baf01b11 cb738b5f 7b79bba8 ec6b24cd
   - date: 2026-07-14
+  - epic: 01KYJBPVCX5BKD7YS03E4MTX87 (pubserve follow-on — §6 closure, §7-§14)
+  - task: 01KYJC0CQTMCV91FZ5B251V50S (S6 live upstream — §7-§9)
+  - task: 01KYJC0CWY6DBN91V86CMDYFRX (S7 demo indicator — §13, §14; re-scope)
+  - task: 01KYJC0CZVVC0TTYT720KWYSYX (S8 share store — §8 extension, §12)
+  - task: 01KYJC0D3FDSG4A05W9058YNR0 (S9 publish serve — §12)
+  - task: 01KYJC0D6K1NAA9Q9J68T4CW7B (S10 operator doc — §5 extension, §10, §11; only rewind)
+  - date: 2026-07-29
 ---
 
 # Publish-epic security-review and scope lessons
@@ -110,6 +117,35 @@ obviously; a *parsed-but-ignored* key looks configured and isn't).
 that asserts a non-default value changes runtime behavior — parsing alone
 is not done.
 
+### Extension: generalize from "config key" to "any validated input"
+
+The `pubserve` epic hit this class again, on an **op field** rather than a
+config key, and in a worse form — the validator is *partial*, so the author
+gets a success signal. `addScript`'s `src` (`internal/publish/op.go:159-166`)
+is validated for scheme and length via `ValidateURL`, publishes cleanly, and
+reports success. Nothing ever fetches it: `grep '\.Src'` across
+`internal/publish`, `internal/proxy`, `internal/tools`, `cmd` yields only
+`op.go` itself (validate / `forbidExcept` / signature). At render time
+`internal/proxy/scripts/variant-engine.js:414` refuses the op outright
+(`"addScript: src must be inlined at publish time; the renderer emits no
+<script src>"`), so the authored script silently never runs. Filed as
+`01KYQJ9ARWQ0YMGWZ199B6SA3F`.
+
+**Generalized rule**: the defect class is *any input a boundary validates
+but no consumer reads* — config key, op field, CLI flag (cf.
+`.claude/rules/lessons-ssh-transport.md` #4's inert `--tool`), or wire
+field. A **partial** validator is worse than no validator: it converts
+"unsupported" into "accepted, then silently dropped." Pending the real
+consumer, the honest shape is a hard reject at validation time with a
+"not implemented" reason — not a doc warning, and not a scheme check that
+implies the rest of the pipeline exists.
+
+Corollary sighted by the same review: introducing a boundary validator does
+**not** retire the raw casts that predate it. `tunnel.ParseProvider` landed
+in S9 while `internal/daemon/hub_tunnel.go:55` still casts a config string
+straight to `tunnel.Provider`. Sweep the existing call sites in the same
+epic, or the validator is decorative everywhere except its newest caller.
+
 ## 6. Verify the slice set covers the epic DoD's headline capability before execution starts
 
 The epic's stated DoD was publishing/injecting over a **live external
@@ -202,6 +238,40 @@ dangerous side effect was never reached. This is the same family as
 distinguish "the thing I care about happened" from "something unrelated
 went wrong" is a lie about coverage, whichever direction it points.
 
+### Extension: stop asking and start breaking — mutation-verify the guard
+
+§8 poses the question ("if I deleted this control, would this assertion still
+pass?"). S8 (`01KYJC0CZVVC0TTYT720KWYSYX`) shows the cheap way to *answer* it
+instead of reasoning about it. Reviewing the cross-tenant collision test for
+the share store, the reviewer did not accept it on its word: it **rewrote
+`sourceKey` to return `fileName` only**, re-ran, and confirmed
+`TestPublishFileIdenticalContentDistinctOwners` failed on the *behavioural*
+assertion (share ids collapsed, `share_store_test.go:613`) **before** reaching
+the tautological `sourceKey(a) != sourceKey(b)` line — then restored the tree.
+That ordering matters: a test that only fails on the key-comparison line proves
+the key changed, not that the tenancy boundary held.
+
+The test itself carries the other half — it asserts its own **premise** first:
+
+```go
+// Test premise: the two shares really do collide on content digest.
+if infoA.Digest != infoB.Digest {
+    t.Fatalf("premise broken: digests differ (%q vs %q), the collision path is untested", ...)
+}
+```
+
+Without that check the test degrades silently into exactly the blind spot §2
+records — the original digest-collision defect survived every author pass
+because no test published identical content twice.
+
+**Generalize**: (a) a regression test for a *known* security defect should be
+mutation-verified once, at review time, by reverting the fix and confirming the
+test fails on a behavioural assertion — this is a minute of work and it is the
+only direct evidence the test has teeth; and (b) any test whose value depends
+on an input **coincidence** (equal digests, colliding keys, equal hashes, same
+timestamp) must assert that coincidence as a named premise, or it will pass
+vacuously the moment the coincidence stops holding.
+
 ## 9. A criterion that names a test tier must ship in a fileScope that can reach it
 
 S6's acceptance criteria demanded "real-Chrome assertion is chromee2e-tagged",
@@ -227,6 +297,247 @@ against the code path, not only via a passing test." Both of this epic's
 rewinds landed on green suites (§1), and the value in S6's review came from
 reading `CheckUpstreamOrigin`'s return contract and `writeHeaders`'
 `Del`/`Set` ordering directly.
+
+## 10. A doc that claims to describe shipped behaviour is a security surface
+
+S10 (`01KYJC0D6K1NAA9Q9J68T4CW7B`) was a **docs-only** slice and it is this
+epic's only rewind. The reviewer blocked it, correctly, on one sentence in
+`docs/public-walkthroughs.md` §9a:
+
+> "The same guard covers publish-time `addScript src` fetches, not just the
+> upstream document."
+
+No such fetch exists. `publish.CheckUpstreamOrigin` has exactly **one**
+production caller — `internal/proxy/public_routes.go:709`, the guarded
+upstream-document fetch and its redirect walk — and nothing reads `op.Src`
+at all (see §5's extension). Because the doc's own header says it summarizes
+what ships today, the sentence read as a **live security control**: a false
+assurance an operator would rely on when deciding what an authored
+walkthrough is allowed to reference.
+
+**Rule**: a doc sentence asserting a security control's *scope* is a
+load-bearing claim and must be verified exactly as if it were code. The check
+is cheap and mechanical: **grep the guard function's production callers and
+confirm the doc's coverage claim matches the call sites you find.** The count
+is usually one. A doc that trades stale claims for new false ones is worse
+than the stale doc, because someone acts on it.
+
+**The reliable tell is coverage-quantifier language.** Both of this doc's
+false claims, and both of the implementer's own sweep fixes, were the same
+shape — a control described with broader reach than its single call site has.
+"Every outbound fetch is therefore guarded" was *literally* true (only one
+fetch exists) yet read as a policy that would survive the next fetch someone
+adds. Treat "every", "all", "the same guard also" in a security doc as a
+prompt to go count call sites.
+
+Related, from the same review: CSP-adjacent behaviour in this codebase is
+routinely enforced at **two** layers (renderer/validator first, then the CSP
+header), and prose reliably credits the wrong one. State which layer refuses
+a thing *first*, and whether the other is primary or defence-in-depth.
+
+### 10a. One instance of a claim-shape defect obliges a whole-file sweep
+
+The reviewer itemized the class twice. The attempt-2 implementer's own
+post-edit sweep (grep the file for `guard`/`SSRF`/`src`/`pipeline`) then found
+**two more** instances the reviewer had not named: §9a's "Every outbound fetch
+is therefore guarded", and §3's `variantSet` bullet implying an authored
+script runs when a `src` op silently never does.
+
+**Rule**: when a review finds one instance of a claim-shape defect, the fix
+must include a whole-file (or whole-doc) sweep for that *shape*, not just the
+cited line. Fixing only the cited instance is actively harmful: the siblings
+survive into a file that now carries a passing review, so they read as
+newly-blessed by the review that missed them.
+
+Note also that the honest fix was **not** deleting the false sentence. The
+falsehood was concealing a real silent-failure mode; deleting it would have
+removed the lie and left the trap undocumented. The shape that passed was
+*name the gap, name the silent failure, cite the tracking task id*.
+
+## 11. A dispatch brief or a reviewer's `fix_hint` is a hypothesis, not an authority
+
+Attempt 1's blocker asserted the `addScript src` op was stopped "at render
+time by the hash-only `script-src`", and the coordinator's dispatch brief
+repeated it. Both were wrong about the mechanism. The implementer read the
+code and followed the code: `variant-engine.js:414` refuses the op
+**during validation**, so no `<script>` is ever emitted and CSP never
+adjudicates at all; `authoredScriptCSPHashes` skipping a `Src`-carrying op
+(`public_routes.go:544`) is belt-and-braces, as that code's own comment says.
+The re-reviewer independently confirmed the implementer was right and that
+attempt 1's `fix_hint` had been imprecise.
+
+Had the brief been transcribed, the fix would have **replaced one false
+mechanism claim with another, inside the very paragraph the blocker existed to
+make accurate.** The same slice also corrected the coordinator's account of
+`--tunnel`'s accepted values, the CSP's `script-src` composition, the SSRF
+deny-list's breadth, and the upstream fetch bounds — four more instances in
+one task.
+
+**Rule, both directions**:
+
+- *Dispatching:* brief a subagent with your understanding explicitly marked as
+  a hypothesis, and instruct it to verify against code and **report
+  contradictions**. A brief treated as ground truth propagates the
+  coordinator's errors into artifacts, where they outlive the conversation.
+- *Reworking:* a `fix_hint` containing a causal or mechanism claim is a
+  diagnosis, not a specification. Verify it, follow the code, and **record the
+  divergence in the commit message** so the next reviewer can audit the
+  disagreement instead of flagging it as an unrequested change.
+- *Reviewing:* verify the mechanism before writing the `fix_hint`. An
+  imprecise hint on a docs slice costs a full rewind cycle and risks the fix
+  encoding the reviewer's own error.
+
+## 12. Make the dangerous input unrepresentable, not merely checked
+
+`publish.Store.ReconcileFiles(projectPath, presentFiles)` revokes every
+file-backed share of a project whose source file is absent from the set it is
+handed — **irreversibly**, by design (INV-4: a resurrected token silently
+re-opens a URL the owner deliberately killed). Its hazard is that a *failed*
+enumeration is spelled the same as an *empty* one: a transient scan failure
+destroys every live link.
+
+S8's reviewer flagged this as a hazard for the **future** consumer. S9 then
+closed it **structurally** rather than with a precondition check:
+
+- `loadWalkthroughDir` returns a complete set **or** an error — one bad
+  `*.json` aborts the whole pass, naming the file. A partial set is
+  *unrepresentable*, so there is no call site at which to forget the check.
+- The reconcile is reached only after every file published successfully; any
+  early return skips it entirely. Exactly **one** production call site
+  (`cmd/agnt/publish_serve.go:262`), trivially auditable.
+- `dirFingerprint` returns an error and never folds a read failure into an
+  empty fingerprint; a failed pass does **not** advance `last`, so the next
+  tick is a free retry with no retry machinery. The code says so out loud:
+  *"Do NOT treat an unreadable directory as 'everything was deleted': that is
+  the mass-revoke trap."*
+
+**Rule**: for any irreversible batch operation driven by a diff against an
+enumerated set (mass delete, revoke, tombstone, cache purge, GC), ask **"can a
+failed enumeration be spelled as an empty enumeration?"** If yes, fix the
+*loader's return type*, not the caller. A "check the set is complete first"
+guard is a rule every future caller must remember; an unrepresentable partial
+set is a rule the compiler enforces.
+
+**Corollary for reviewers**: a hazard noticed for a not-yet-written consumer
+should be handed **forward as an explicit constraint on that consumer's task**,
+not left in a closed review. S8's reviewer did exactly that ("S9 wiring must
+never call `ReconcileFiles` with the result of a failed or partial directory
+scan"), which is why S9 solved it structurally on attempt 1.
+
+**Corollary for planners**: state such a criterion as *"the destructive call is
+unreachable from a partial/failed scan, verified by reading every call site"*
+rather than *"a test proves shares survive a failed scan."* The structural
+property is what holds under future edits — and both of this epic family's
+rewinds landed on green suites (§1).
+
+**Residual, still open**: an unmounted-yet-present directory reads as empty,
+which is indistinguishable from "all files deleted." Filed for a two-poll
+confirmation.
+
+## 13. A slice's whole flow can be unsatisfiable, not just one criterion
+
+This is §9 recurring one level up. §9 says a *criterion* must be satisfiable
+inside its own `fileScope`. S7 (`01KYJC0CWY6DBN91V86CMDYFRX`) shows a slice's
+entire **flow** can describe an architecture that does not exist.
+
+S7 as planned said "render the indicator in the chrome shell, outside the
+content iframe", scoped to `injector.go` + `scripts/indicator-styles.js`. All
+three premises were false in code:
+
+1. S6 deliberately does **not** wrap the upstream — the upstream document *is*
+   the artifact document, so there is no shell frame on the public plane.
+2. `indicator-styles.js` is a **`RoleChrome`** module (`embed.go:432`) and
+   `rolePublicModules` (`embed.go:465`) is a **closed allowlist**, so editing
+   it cannot affect any public response.
+3. `injector.go`'s `BuildShellDocument` is dev-only (it emits
+   `__devtool_role="chrome"` and the `RoleChrome` asset); its own comment says
+   adding a role parameter would be an INV-1 regression.
+
+The implementer **stopped** and returned an out-of-scope report with a
+recommended re-scope instead of widening scope or faking the outcome. The spec
+(§9c/INV-14 plus the §11 traceability table) had been right all along — the
+*task* had mis-mapped the dev-plane wrap model onto the public plane at plan
+time.
+
+**Rule for planners**: before writing criteria, verify a slice's named
+integration points **exist and are on the path the slice claims**. Concretely
+for this codebase: cross-check `moduleRole` / `rolePublicModules` membership at
+plan time — a `fileScope` naming a `RoleChrome` module for a `RolePublic`
+outcome is a planning defect that no amount of execution can fix.
+
+**Rule for implementers**: the correct response to an impossible slice is a
+**STOP plus a re-scope report**, never a silent scope widening and never a
+plausible-looking substitute. A `pass` verdict on a re-scoped task is then
+judged against the *rewritten* task content, not the original framing.
+
+**Rule for resolving apparent conflicts**: the spec's traceability table was
+the tie-breaker. An apparent conflict between INV-14's tamper language and a
+user-made decision ("the module is not adversarially non-removable")
+dissolved once the table showed the module is P4 while the adversarial tamper
+e2e is P10 — the two were never actually in conflict. Consult the traceability
+mapping before escalating a spec-vs-decision contradiction.
+
+## 14. CSSOM is the CSP-compatible seam for injecting styled UI
+
+Verified end to end on S7. The public plane pins `script-src` to a **hash**
+and passes an **empty** nonce on the proxied path
+(`public_routes.go:326`: *"No nonce: ... A nonce source nothing in the
+document carries would authorise nothing"*), so the response authorises **no
+inline style whatsoever** — not even the upstream's own inline `<style>`
+blocks or `style=` attributes.
+
+`demo-indicator.js` styles a mandatory disclosure badge under that CSP with
+zero directive widening:
+
+- A constructed `CSSStyleSheet` + `replaceSync` (with an `insertRule`
+  fallback) assigned to `root.adoptedStyleSheets` on a **closed** shadow root.
+  **CSSOM-inserted rules are not subject to `style-src`.**
+- Zero inline `<style>`, zero `style=` attribute, zero `el.style`/`cssText`
+  writes (verified: the module contains none).
+- `:host { all: initial !important; … !important }` so page CSS cannot win the
+  cascade — the cheap, real half of tamper resistance.
+
+The second half is why **no header edit was needed at all**: `cspHash` is
+`cspSHA256(publicInstrumentationAssetBytes())` (`injector.go:115`) and serves
+as *both* the CSP `script-src` hash and the `<script>` SRI `integrity`
+attribute (`public_routes.go:141`, `:387`), while `assetPath` is
+content-addressed over the same bytes. **The pin is a function of content, so
+content growth re-pins itself.**
+
+**Rule**: (a) to inject styled UI the plane renders itself (not authored
+content) into a strict-CSP page, use CSSOM into a closed shadow root, paired
+with `:host{all:initial!important}`; and (b) **before proposing a CSP change
+for a new bundle member, check whether the pin is content-derived — if it is, a
+header edit is a red flag, not a requirement.** Every instinct on this epic was
+to widen a directive; the correct move was to verify the derivation and change
+nothing.
+
+Two honest limits, both in the shipped docs: the badge degrades to *unstyled*
+(disclosure text survives, styling skipped) on a platform without constructable
+stylesheets rather than failing loud; and a benign SPA upstream doing
+`document.body.innerHTML = …` on hydrate silently removes a one-shot appended
+element. That second one is a **distinct threat model from adversarial
+tampering** — P10's "a variant cannot hide it" e2e covers hostile removal and
+would not catch incidental removal. Split any always-on disclosure overlay's
+robustness into hostile-removal and incidental-removal, and assign each
+somewhere.
+
+<!-- provenance: §10-§14, and the extensions to §5 and §8 —
+     written_at 2026-07-29;
+     source_event pubserve epic 01KYJBPVCX5BKD7YS03E4MTX87 tail:
+       S7  01KYJC0CWY6DBN91V86CMDYFRX (commits 74c78aa4, e9578c12;
+           verdict pass attempt 1, after a re-scope: all three planned
+           premises were false in code);
+       S8  01KYJC0CZVVC0TTYT720KWYSYX (commits 7b9f2288, b2991907;
+           verdict pass attempt 1);
+       S9  01KYJC0D3FDSG4A05W9058YNR0 (commits 5099f44b, 24118a96,
+           4850dbf2, b7b9f237, 0940b58e; verdict pass attempt 1);
+       S10 01KYJC0D6K1NAA9Q9J68T4CW7B (commits 73b7606a, 2c736d31,
+           9aa2e86b; the epic's ONLY rewind — 1 major blocker on a
+           docs-only slice, fail attempt 1 -> pass attempt 2);
+     follow-ups filed: 01KYQJ9ARWQ0YMGWZ199B6SA3F (addScript src has no
+       consumer), 01KYQEGBK1XWS4TKVCYCR6YYFY (test writes into the source
+       tree) -->
 
 <!-- provenance: §7-§9 and the §6 closure note —
      written_at 2026-07-29;
