@@ -103,7 +103,7 @@
     //
     // Browser support, checked rather than assumed: constructable stylesheets
     // (a constructed CSSStyleSheet + replaceSync + adoptedStyleSheets) are
-    // Baseline Widely Available — Chrome/Edge 73+, Firefox 101+, Safari 16.4+
+    // Baseline Widely Available — Chrome 73+, Edge 79+, Firefox 101+, Safari 16.4+
     // (Mar 2023). So the styled path is what essentially all traffic gets. The
     // residual is real but small: Safari 10-16.3 and Firefox 63-100 support
     // attachShadow (so the badge mounts) without constructable stylesheets (so it

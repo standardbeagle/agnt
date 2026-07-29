@@ -560,7 +560,11 @@ re-mounts the badge whenever the host goes missing. It costs one id lookup per
 mutation batch, never walks the records, re-mounts only when the host is absent (so
 its own insertion cannot loop), uses no timer or poll, and carries a finite
 re-assert budget after which it disconnects and warns — a page that removes the
-badge in a loop must not be able to hang the tab.
+badge in a loop must not be able to hang the tab. On exhaustion it mounts the
+badge **once more before disconnecting**, so the last state the module controls
+still carries the disclosure: the budget bounds the loop, not the disclosure, and
+walking away from a state with no badge at all is the one end state INV-14
+cannot accept.
 
 **Be clear about its limits.** It resists ordinary page CSS and benign removal; it
 is not adversarially tamper-proof. A hostile publisher that removes the host in a
@@ -570,7 +574,7 @@ disclosure loss against a hostile page beats a hung page for every viewer).
 **Where the platform has no constructable stylesheets** (`CSSStyleSheet` /
 `adoptedStyleSheets` unavailable) styling is skipped and the badge renders as an
 **unstyled** run of text. Constructable stylesheets are Baseline Widely Available
-(Chrome/Edge 73+, Firefox 101+, Safari 16.4+ / March 2023), so essentially all
+(Chrome 73+, Edge 79+, Firefox 101+, Safari 16.4+ / March 2023), so essentially all
 traffic gets the styled badge; the residual is older Safari and Firefox, which
 support `attachShadow` (the badge mounts) but not constructable sheets (it cannot
 be styled). On those engines the disclosure wording still appears, with none of the
@@ -578,7 +582,11 @@ pinned geometry or contrast above, and is easier for page CSS to bury. Two
 mitigations apply there, both costing zero CSP: the host is inserted as the **first
 child** of `body` so it sits at the top of the document flow rather than below all
 of the page's content, and the brand renders as `<strong>` so it is bold with no
-stylesheet at all. The degradation itself is deliberate and the alternatives were
+stylesheet at all. The first-child placement applies to **this path only** — where
+the sheet was adopted the host is `position:fixed`, so document order buys the
+viewer nothing, while being body's first child is a position frameworks
+manipulate more readily and every such insert/remove spends re-assert budget
+whose exhaustion costs the disclosure. The styled path therefore appends. The degradation itself is deliberate and the alternatives were
 rejected explicitly: there is no other styling mechanism (an inline `<style>` or
 `style=` is precisely what the proxied path's empty nonce refuses, and widening
 `style-src` is forbidden), and refusing to show the badge because it cannot be
