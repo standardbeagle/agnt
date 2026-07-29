@@ -157,13 +157,18 @@ func (o *Op) Validate() error {
 			// §6a: src and code are alternative sources for ONE body.
 			return errf("addScript: src and code are alternatives; supply exactly one")
 		case o.Src != "":
-			// src is a publish-time fetch input (§6a). Here it is only gated on
-			// scheme/length; the §4a resolved-address checks and the fetch that
-			// inlines the body belong to the publish pipeline.
-			if err := ValidateURL(o.Src); err != nil {
-				return errf("addScript: %w", err)
-			}
-			return nil
+			// §6a records publish-time fetch-and-inline as the plan for src, and
+			// that decision stands — but its fetch half does not exist. Nothing
+			// reads Op.Src: no pipeline fetches it, authoredScriptCSPHashes
+			// contributes no 'sha256-' source for an op still carrying it, and
+			// variant-engine.js refuses it at render time. Accepting it here
+			// therefore reported publish success for a script that could never
+			// run, with no signal to the author — a validated input with no
+			// consumer (publish-security-review-lessons.md §5). Refuse it at its
+			// source so the unimplemented state is loud. The renderer's refusal
+			// stays as defence in depth, and it still covers revisions published
+			// before this gate existed.
+			return errf("addScript: src is not supported: publish-time fetching of src is not implemented, so the script would never run — inline the script body in 'code' instead")
 		case o.Code != "":
 			// The per-revision script budget (§5) is enforced by
 			// VariantSet.Validate across every variant.

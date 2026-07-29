@@ -120,7 +120,9 @@ func TestINV6RetirementAcceptsRawContent(t *testing.T) {
 		// §6a raw-content ops proper.
 		{"addStyle-raw-css", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"addStyle","css":"@import url(https://cdn.example.com/t.css); .x{position:fixed}"}]}]}`},
 		{"addScript-inline-code", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"addScript","code":"document.title='demo'"}]}]}`},
-		{"addScript-src-fetch-input", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"addScript","src":"https://cdn.example.com/demo.js"}]}]}`},
+		// NOTE: addScript with `src` used to sit here as an accepted "publish-time
+		// fetch input". It is now refused at publish — see
+		// TestAddScriptSrcRefusedAtPublish for why.
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -177,6 +179,66 @@ func TestRawOpGuards(t *testing.T) {
 				t.Fatalf("expected rejection for %s, got nil error", tc.name)
 			}
 		})
+	}
+}
+
+// TestAddScriptSrcRefusedAtPublish pins that an addScript op carrying `src` is
+// REFUSED at publish time, with an error that names why.
+//
+// Before this gate, `src` was a validated input with NO consumer
+// (.claude/rules/publish-security-review-lessons.md §5): nothing in the daemon
+// fetches Op.Src, authoredScriptCSPHashes contributes no 'sha256-' source for
+// such an op, and variant-engine.js refuses it at render time — so the op
+// validated, published, reported success, and then silently never ran. The
+// author got no signal at all. §6a's publish-time fetch-and-inline decision
+// stands as the recorded plan; until its fetch half exists, refusing at the
+// source is what makes the unimplemented state loud.
+func TestAddScriptSrcRefusedAtPublish(t *testing.T) {
+	set := func(op string) string {
+		return `{"version":"v1","id":"s","variants":[{"id":"a","ops":[` + op + `]}]}`
+	}
+
+	// src alone: refused, and the error must be actionable — it names that
+	// publish-time fetching is not implemented and points at inline `code`.
+	_, err := DecodeVariantSet([]byte(set(`{"op":"addScript","src":"https://cdn.example.com/demo.js"}`)))
+	if err == nil {
+		t.Fatal("addScript with src must be refused at publish, got nil error")
+	}
+	srcMsg := err.Error()
+	for _, want := range []string{"src", "not implemented", "code"} {
+		if !strings.Contains(srcMsg, want) {
+			t.Fatalf("src rejection must mention %q, got: %s", want, srcMsg)
+		}
+	}
+
+	// src+code together stays a distinct rejection (the §6a 422): the two errors
+	// must not collapse into one indistinguishable message, or an author who
+	// supplied both would be told the wrong thing.
+	_, bothErr := DecodeVariantSet([]byte(set(`{"op":"addScript","src":"https://cdn.example.com/demo.js","code":"x=1"}`)))
+	if bothErr == nil {
+		t.Fatal("addScript with both src and code must be refused, got nil error")
+	}
+	if bothMsg := bothErr.Error(); bothMsg == srcMsg {
+		t.Fatalf("src-only and src+code rejections must be distinguishable, both: %s", bothMsg)
+	} else if !strings.Contains(bothMsg, "alternatives") {
+		t.Fatalf("src+code rejection must name the xor contract, got: %s", bothMsg)
+	}
+
+	// The supported form is untouched: an inline `code` body still publishes,
+	// and the exact bytes survive to the revision the CSP hash is pinned from
+	// (internal/proxy's TestAuthoredScriptHashPinnedInScriptSrc hashes
+	// Op.Code — so preserving these bytes is what keeps that hash correct).
+	const code = "document.title='demo'"
+	vs, err := DecodeVariantSet([]byte(set(`{"op":"addScript","code":"` + code + `"}`)))
+	if err != nil {
+		t.Fatalf("inline code must still publish, got: %v", err)
+	}
+	op := vs.Variants[0].Ops[0]
+	if op.Code != code {
+		t.Fatalf("inline code body altered: got %q want %q", op.Code, code)
+	}
+	if op.Src != "" {
+		t.Fatalf("inline-code op must carry no src, got %q", op.Src)
 	}
 }
 
