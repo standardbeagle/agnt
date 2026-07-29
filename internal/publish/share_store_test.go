@@ -338,6 +338,274 @@ func TestPublicVerifyIgnoresProjectScope(t *testing.T) {
 	}
 }
 
+// fileWalkthrough builds a valid walkthrough whose step body carries body, so
+// two calls with different bodies have different content digests and two calls
+// with the same body are byte-identical (same digest).
+func fileWalkthrough(id, body string) *PublishedWalkthrough {
+	pw := validWalkthrough(id)
+	pw.Steps[0].Body = body
+	return pw
+}
+
+// TestPublishFileEditKeepsToken pins the headline S8 behaviour: editing a
+// folder-served file mints a NEW immutable revision under the SAME token, so an
+// already-shared URL keeps working and now serves the update. It also pins that
+// the edit did not disturb the at-rest token representation (INV-3).
+func TestPublishFileEditKeepsToken(t *testing.T) {
+	s, dir := newStore(t)
+
+	id, token, rev1, err := s.PublishFile(fileWalkthrough("wt", "v1"), "/proj", "tour.html")
+	if err != nil {
+		t.Fatalf("PublishFile: %v", err)
+	}
+	if id == "" || token == "" || rev1 == "" {
+		t.Fatalf("first publish returned id=%q token=%q rev=%q, want all non-empty", id, token, rev1)
+	}
+	got, gotID, ok := s.VerifyToken(token)
+	if !ok || gotID != id || got.Steps[0].Body != "v1" {
+		t.Fatalf("initial verify: ok=%v id=%q body=%q", ok, gotID, got.Steps[0].Body)
+	}
+	info1, err := s.Status(id)
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+
+	// Edit: same filename, changed content.
+	id2, token2, rev2, err := s.PublishFile(fileWalkthrough("wt", "v2"), "/proj", "tour.html")
+	if err != nil {
+		t.Fatalf("PublishFile edit: %v", err)
+	}
+	if id2 != id {
+		t.Fatalf("edit changed share id: %q -> %q", id, id2)
+	}
+	if token2 != "" {
+		t.Fatalf("edit minted a new token (%q); the existing token must be kept", token2)
+	}
+	if rev2 == rev1 {
+		t.Fatalf("edit reused revision id %q; a new immutable revision is required", rev1)
+	}
+	info2, err := s.Status(id)
+	if err != nil {
+		t.Fatalf("Status after edit: %v", err)
+	}
+	if info2.Digest == info1.Digest {
+		t.Fatalf("edit did not change the content digest (%q)", info2.Digest)
+	}
+
+	// The ORIGINAL token now serves the NEW revision.
+	got, gotID, ok = s.VerifyToken(token)
+	if !ok {
+		t.Fatalf("original token stopped verifying after an edit")
+	}
+	if gotID != id {
+		t.Fatalf("original token resolved to share %q, want %q", gotID, id)
+	}
+	if got.Steps[0].Body != "v2" {
+		t.Fatalf("original token serves body %q, want the new revision %q", got.Steps[0].Body, "v2")
+	}
+
+	// INV-3 continuity: the record still holds only sha256(token), unchanged.
+	if info2.TokenHashPrefix != info1.TokenHashPrefix {
+		t.Fatalf("token hash changed across an edit: %q -> %q", info1.TokenHashPrefix, info2.TokenHashPrefix)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, id+".json"))
+	if err != nil {
+		t.Fatalf("read record: %v", err)
+	}
+	if strings.Contains(string(data), token) {
+		t.Fatalf("plaintext token found in record after edit")
+	}
+	if !strings.Contains(string(data), hashToken(token)) {
+		t.Fatalf("token hash missing from record after edit")
+	}
+
+	// Republishing identical content is a no-op: no new revision, no new token.
+	_, token3, rev3, err := s.PublishFile(fileWalkthrough("wt", "v2"), "/proj", "tour.html")
+	if err != nil {
+		t.Fatalf("PublishFile unchanged: %v", err)
+	}
+	if rev3 != rev2 {
+		t.Fatalf("unchanged content minted revision %q, want no-op on %q", rev3, rev2)
+	}
+	if token3 != "" {
+		t.Fatalf("unchanged content minted a token %q", token3)
+	}
+}
+
+// TestPublishFileDeleteRevokes pins that a vanished source file revokes the
+// share, that a plain (non-file-backed) share is untouched by reconciliation,
+// and that a file coming back mints a FRESH token — the old one stays dead.
+func TestPublishFileDeleteRevokes(t *testing.T) {
+	s, _ := newStore(t)
+	id, token, _, err := s.PublishFile(fileWalkthrough("wt", "v1"), "/proj", "tour.html")
+	if err != nil {
+		t.Fatalf("PublishFile: %v", err)
+	}
+	plainID, plainToken, err := s.Create(validWalkthrough("plain"), "/proj")
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	revoked, err := s.ReconcileFiles("/proj", nil)
+	if err != nil {
+		t.Fatalf("ReconcileFiles: %v", err)
+	}
+	if len(revoked) != 1 || revoked[0] != id {
+		t.Fatalf("ReconcileFiles revoked %v, want [%s]", revoked, id)
+	}
+	if _, _, ok := s.VerifyToken(token); ok {
+		t.Fatalf("token still verifies after its source file was deleted")
+	}
+	info, err := s.Status(id)
+	if err != nil || !info.Revoked {
+		t.Fatalf("Status after delete: info.Revoked=%v err=%v", info.Revoked, err)
+	}
+	// A share with no source file is not folder-backed and must survive.
+	if _, _, ok := s.VerifyToken(plainToken); !ok {
+		t.Fatalf("reconciliation revoked the non-file-backed share %s", plainID)
+	}
+
+	// The file comes back: new share, new token; the revoked token stays dead.
+	newID, newToken, _, err := s.PublishFile(fileWalkthrough("wt", "v1"), "/proj", "tour.html")
+	if err != nil {
+		t.Fatalf("PublishFile after revoke: %v", err)
+	}
+	if newID == id {
+		t.Fatalf("republish reused the revoked share id %q", id)
+	}
+	if newToken == "" || newToken == token {
+		t.Fatalf("republish after revoke must mint a fresh token, got %q", newToken)
+	}
+	if _, _, ok := s.VerifyToken(token); ok {
+		t.Fatalf("revoked token resurrected by republishing the file")
+	}
+	if _, _, ok := s.VerifyToken(newToken); !ok {
+		t.Fatalf("fresh token does not verify")
+	}
+}
+
+// TestPublishFileRenameRevokes pins that a rename revokes the old name's share
+// (it is a delete plus an add) and that the new name gets its own token, even
+// though the content — and therefore the digest — is byte-identical.
+func TestPublishFileRenameRevokes(t *testing.T) {
+	s, _ := newStore(t)
+	oldID, oldToken, _, err := s.PublishFile(fileWalkthrough("wt", "same"), "/proj", "tour.html")
+	if err != nil {
+		t.Fatalf("PublishFile: %v", err)
+	}
+	// Rename: only the new name is present on disk now.
+	revoked, err := s.ReconcileFiles("/proj", []string{"tour-v2.html"})
+	if err != nil {
+		t.Fatalf("ReconcileFiles: %v", err)
+	}
+	if len(revoked) != 1 || revoked[0] != oldID {
+		t.Fatalf("rename revoked %v, want [%s]", revoked, oldID)
+	}
+	if _, _, ok := s.VerifyToken(oldToken); ok {
+		t.Fatalf("token still verifies after its source file was renamed")
+	}
+
+	newID, newToken, _, err := s.PublishFile(fileWalkthrough("wt", "same"), "/proj", "tour-v2.html")
+	if err != nil {
+		t.Fatalf("PublishFile renamed: %v", err)
+	}
+	if newID == oldID {
+		t.Fatalf("renamed file reused the revoked share id")
+	}
+	if newToken == oldToken {
+		t.Fatalf("renamed file reused the revoked token")
+	}
+	if _, gotID, ok := s.VerifyToken(newToken); !ok || gotID != newID {
+		t.Fatalf("renamed share does not verify: ok=%v id=%q", ok, gotID)
+	}
+	if _, _, ok := s.VerifyToken(oldToken); ok {
+		t.Fatalf("old token verifies after the renamed file was published")
+	}
+}
+
+// TestPublishFileSurvivesRestart pins INV-8 for the file mapping itself: the
+// filename -> share association is durable, so after a restart the same token
+// still serves the latest revision AND reconciliation still knows which file
+// each share tracks.
+func TestPublishFileSurvivesRestart(t *testing.T) {
+	dir := t.TempDir()
+	clk := fixedClock(time.Unix(1_700_000_000, 0).UTC())
+	s1, err := New(dir, clk)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	id, token, rev1, err := s1.PublishFile(fileWalkthrough("wt", "v1"), "/proj", "tour.html")
+	if err != nil {
+		t.Fatalf("PublishFile: %v", err)
+	}
+	_, _, rev2, err := s1.PublishFile(fileWalkthrough("wt", "v2"), "/proj", "tour.html")
+	if err != nil {
+		t.Fatalf("PublishFile edit: %v", err)
+	}
+	if rev2 == rev1 {
+		t.Fatalf("edit did not mint a new revision")
+	}
+
+	s2, err := New(dir, clk)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	got, gotID, ok := s2.VerifyToken(token)
+	if !ok || gotID != id {
+		t.Fatalf("token did not survive restart: ok=%v id=%q", ok, gotID)
+	}
+	if got.Steps[0].Body != "v2" {
+		t.Fatalf("after restart the token serves body %q, want the latest revision %q", got.Steps[0].Body, "v2")
+	}
+	// Editing after restart still keeps the same share/token.
+	id3, token3, rev3, err := s2.PublishFile(fileWalkthrough("wt", "v3"), "/proj", "tour.html")
+	if err != nil {
+		t.Fatalf("PublishFile after restart: %v", err)
+	}
+	if id3 != id || token3 != "" || rev3 == rev2 {
+		t.Fatalf("post-restart edit: id=%q token=%q rev=%q", id3, token3, rev3)
+	}
+
+	// Reconciliation after restart knows the mapping and revokes durably.
+	revoked, err := s2.ReconcileFiles("/proj", nil)
+	if err != nil {
+		t.Fatalf("ReconcileFiles: %v", err)
+	}
+	if len(revoked) != 1 || revoked[0] != id {
+		t.Fatalf("post-restart reconcile revoked %v, want [%s]", revoked, id)
+	}
+	s3, err := New(dir, clk)
+	if err != nil {
+		t.Fatalf("reopen after revoke: %v", err)
+	}
+	if _, _, ok := s3.VerifyToken(token); ok {
+		t.Fatalf("revocation did not survive restart")
+	}
+}
+
+// TestPublishFileRejectsBadInput pins the trust boundary: no filename and no
+// invalid artifact ever reaches the store.
+func TestPublishFileRejectsBadInput(t *testing.T) {
+	s, dir := newStore(t)
+	if _, _, _, err := s.PublishFile(fileWalkthrough("wt", "v1"), "/proj", ""); err == nil {
+		t.Fatalf("PublishFile accepted an empty file name")
+	}
+	if _, _, _, err := s.PublishFile(nil, "/proj", "tour.html"); err == nil {
+		t.Fatalf("PublishFile accepted a nil walkthrough")
+	}
+	bad := fileWalkthrough("wt", "v1")
+	bad.Steps = nil
+	if _, _, _, err := s.PublishFile(bad, "/proj", "tour.html"); err == nil {
+		t.Fatalf("PublishFile accepted an invalid artifact")
+	}
+	entries, _ := os.ReadDir(dir)
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".json") {
+			t.Fatalf("rejected publish persisted a record: %s", e.Name())
+		}
+	}
+}
+
 // TestUnknownIDErrors pins the not-found paths.
 func TestUnknownIDErrors(t *testing.T) {
 	s, _ := newStore(t)
