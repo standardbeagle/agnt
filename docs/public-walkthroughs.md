@@ -156,7 +156,8 @@ Each file is a `PublishedWalkthrough`:
 - `variantSet` is optional, and its ops may carry raw CSS/HTML/JS from your
   authored revision (INV-6 is retired); authored script executes only because its
   hash is pinned into `script-src` at publish time (§7) — which is why an
-  `addScript` must carry an inline `code` body, not a `src` URL (§9a).
+  `addScript` must carry an inline `code` body; a `src` URL is refused at publish
+  with an error (§9a).
 - Validation failures name the file. See the spec's limits table (§5) for the size
   and selector-grammar bounds.
 
@@ -489,26 +490,29 @@ Three properties that make it hold rather than merely look right:
 `publish.CheckUpstreamOrigin` has exactly one production caller
 (`internal/proxy/public_routes.go`, the `serveArtifact` upstream branch). In
 particular it does **not** cover `addScript src`, because nothing fetches an
-`addScript src` at all:
+`addScript src` at all — and so **`src` is refused at publish time**:
 
-- `Op.Validate` (`internal/publish/op.go`) gates `src` on **scheme and length
-  only**, via `ValidateURL`. Its own comment defers the §4a resolved-address
-  checks and the fetch that would inline the body to a "publish pipeline" —
-  that pipeline **is not implemented**.
+- `Op.Validate` (`internal/publish/op.go`) **rejects** any `addScript` op
+  carrying `src`, with an error naming that publish-time fetching of `src` is not
+  implemented and telling you to inline the body in `code` instead. Publishing
+  such a file fails loudly; nothing about it reaches a browser.
+- The variant engine's render-time refusal (`addScript: src must be inlined at
+  publish time; the renderer emits no <script src>`) is **kept as defence in
+  depth**, and it still covers any revision published before the publish-time
+  gate existed.
 - `authoredScriptCSPHashes` **skips** any op still carrying `src`, so such an op
-  contributes no `script-src` hash.
+  contributes no `script-src` hash — for the same reason.
 
-**The trap this sets for you:** an `addScript src` op **validates and publishes
-cleanly**, and then the script never runs. At render time the variant engine
-refuses that op outright (`addScript: src must be inlined at publish time; the
-renderer emits no <script src>`), and the hash-only `script-src` would refuse it
-a second time even if it were emitted. There is **no publish-time error** — your
-demo is simply missing that script. Until the pipeline lands, inline the body as
-`addScript code` instead of pointing at a URL.
+**The supported form is an inline body.** Write `addScript` with a `code` body:
+its sha256 is pinned into the revision's `script-src` at publish time (§7), which
+is what lets it run under the hash-only CSP. A `src` URL has never been able to
+run, and now says so at publish rather than silently going missing from your
+demo.
 
-*(Not yet implemented: spec §6a plans to fetch `src` at publish time, inline it,
-and pin its hash — the design that would put these fetches behind the guard.
-Tracked as `01KYQJ9ARWQ0YMGWZ199B6SA3F`. None of it ships today.)*
+*(Not implemented: spec §6a's plan is to fetch `src` at publish time, inline it,
+and pin its hash — the design that would put these fetches behind the guard. That
+decision stands as the recorded plan; the fetch half does not ship today, which is
+why `src` is refused until it does. Tracked as `01KYQJ9ARWQ0YMGWZ199B6SA3F`.)*
 
 **What this is not:** an anti-phishing control. A publisher dressing up a
 legitimate public site is explicitly out of the threat model — the publisher holds
