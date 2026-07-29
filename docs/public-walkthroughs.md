@@ -547,10 +547,21 @@ shadow root) — CSSOM rules are not subject to `style-src`, which is what lets 
 work on the proxied path where **no** inline style is authorised. Never introduce a
 style element or attribute into that module; the proxied response would refuse it.
 
-**Be clear about its limits.** It resists ordinary page CSS; it is not
-adversarially tamper-proof. A benign SPA that replaces `document.body` currently
-removes it, because the mount is idempotent but not re-armed by an observer — a
-follow-up is filed.
+**It survives benign DOM replacement.** An ordinary SPA doing
+`document.body.innerHTML = …` on route change removes the host, so a one-shot mount
+would lose the disclosure permanently after the first client-side navigation — and
+demoing a real SPA is the headline use case for live-upstream publishing. A
+`MutationObserver` on `documentElement` (`childList`, `subtree`) therefore
+re-mounts the badge whenever the host goes missing. It costs one id lookup per
+mutation batch, never walks the records, re-mounts only when the host is absent (so
+its own insertion cannot loop), uses no timer or poll, and carries a finite
+re-assert budget after which it disconnects and warns — a page that removes the
+badge in a loop must not be able to hang the tab.
+
+**Be clear about its limits.** It resists ordinary page CSS and benign removal; it
+is not adversarially tamper-proof. A hostile publisher that removes the host in a
+loop can exhaust the re-assert budget, and that is a deliberate trade (a bounded
+disclosure loss against a hostile page beats a hung page for every viewer).
 
 **Where the platform has no constructable stylesheets** (`CSSStyleSheet` /
 `adoptedStyleSheets` unavailable) styling is skipped and the badge renders as an

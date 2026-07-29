@@ -152,6 +152,77 @@ func TestDemoIndicatorStylesViaCSSOMOnly(t *testing.T) {
 	}
 }
 
+// TestDemoIndicatorSurvivesBenignDOMReplacement pins the decision taken for the
+// SPA case: the badge RE-ATTACHES rather than being a documented gap. A one-shot
+// mount is removed for good by an ordinary `document.body.innerHTML = …` on route
+// change, and INV-14 is not satisfied by rendering the disclosure until the first
+// client-side navigation.
+//
+// This tier can only assert the SHAPE of the mechanism — there is no DOM in a Go
+// test, and this repo's answer to "assert JS behaviour" is the chromee2e tier,
+// whose file is outside this task's scope (the functional end-state assertion is
+// handed to the P10 adversarial slice, which already drives a real browser against
+// this badge). The pins below are therefore chosen to fail on every way the fix
+// could be reverted or mis-shaped, not merely on the word "MutationObserver"
+// existing: wrong observation target, wrong options, an unguarded re-mount that
+// would loop, or a poll.
+func TestDemoIndicatorSurvivesBenignDOMReplacement(t *testing.T) {
+	js := demoIndicatorSource(t)
+
+	if !strings.Contains(js, "new MutationObserver(reassert)") {
+		t.Fatal("the badge must be re-asserted by a MutationObserver; a one-shot mount is removed for good by an SPA replacing body's contents")
+	}
+	// Target and options decide whether a body-contents replacement is even seen.
+	// Observing body would miss a replacement OF body; without subtree a nested
+	// container swap is missed.
+	if !strings.Contains(js, "observer.observe(target, { childList: true, subtree: true })") {
+		t.Error("the observer must watch childList with subtree, or a container swap goes unseen")
+	}
+	if !strings.Contains(js, "var target = document.documentElement;") {
+		t.Error("the observer must be attached to documentElement, which survives a replacement of body itself")
+	}
+	// The re-mount must be guarded by the host's absence. Without this the
+	// observer's own insertion re-triggers the callback and re-mounts forever.
+	reassert := js[strings.Index(js, "function reassert()"):]
+	reassert = reassert[:strings.Index(reassert, "function watch()")]
+	if !strings.Contains(reassert, "if (document.getElementById(HOST_ID)) { return; }") {
+		t.Error("reassert must no-op while the host is present; an unguarded re-mount loops on its own insertion")
+	}
+	if !strings.Contains(reassert, "mount();") {
+		t.Error("reassert must re-mount when the host is absent")
+	}
+	// Bounded: a page removing the badge in a loop must not be able to hang the
+	// tab through the microtask checkpoint.
+	if !strings.Contains(js, "MAX_REASSERTS") || !strings.Contains(reassert, "observer.disconnect()") {
+		t.Error("re-asserting must carry a finite budget that disconnects the observer, so a mutual removal loop cannot hang the page")
+	}
+	// No polling, no timers: the platform's own signal or nothing.
+	for _, poll := range []string{"setInterval", "setTimeout", "requestAnimationFrame", "requestIdleCallback"} {
+		if strings.Contains(js, poll) {
+			t.Errorf("the badge must not re-assert by polling; found %q", poll)
+		}
+	}
+	// The observer is installed once, and only alongside a mount.
+	if n := strings.Count(js, "new MutationObserver"); n != 1 {
+		t.Errorf("expected exactly one observer, found %d", n)
+	}
+	if !strings.Contains(js, "if (observer || typeof MutationObserver !== 'function') { return; }") {
+		t.Error("watch must be idempotent and must degrade on a platform without MutationObserver")
+	}
+	// Re-attaching may not introduce a public handle that could stop it, and must
+	// stay inside the closed shadow root (mount is the only code that builds the
+	// tree, so the re-attach path inherits the closed root by construction).
+	// The exported object literal only — LastIndex because the header comment
+	// documents the same name, and scanning from the comment would sweep the whole
+	// module body.
+	surface := js[strings.LastIndex(js, "window.__agntDemoIndicator = {"):]
+	for _, banned := range []string{"observer", "disconnect", "reassert", "watch:"} {
+		if strings.Contains(surface, banned) {
+			t.Errorf("the exported surface must not expose %q — that would be an off switch for the re-assert", banned)
+		}
+	}
+}
+
 // TestDemoIndicatorUnstyledFallbackStaysVisibleAndCSPFree pins the decision taken
 // for the degraded path: when the platform has no constructable stylesheets the
 // badge renders UNSTYLED-BUT-PRESENT, made as visible as CSS-free HTML allows, and

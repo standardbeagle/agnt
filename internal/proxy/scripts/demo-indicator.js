@@ -39,6 +39,15 @@
 // bundle's sha256 (CSP source) and its SRI integrity are both derived from the
 // bundle bytes, so adding this module re-pins the bundle automatically.
 //
+// IT SURVIVES BENIGN DOM REPLACEMENT. A MutationObserver re-asserts the badge if
+// the host disappears, because an ordinary SPA replacing body's contents on route
+// change would otherwise remove the disclosure permanently after the first
+// client-side navigation. That is a benign framework, not an attacker; hostile
+// removal is P10's slice and is not claimed here. The observer is O(1) per
+// mutation batch, re-mounts only when the host is absent, uses no timer or poll,
+// and carries a finite budget so a page that removes the badge in a loop cannot
+// hang the tab. See the reassert()/watch() comments for the full cost argument.
+//
 // TAMPER POSTURE (this slice): mounted in a CLOSED shadow root at the top
 // z-layer, and the :host geometry is declared !important so an important
 // declaration from the page cannot win over it. The adversarial "a variant's raw
@@ -187,13 +196,72 @@
       return host;
     }
 
-    function mountWhenReady() {
-      if (document.body) { mount(); return; }
-      if (document.readyState === 'loading') {
-        document.addEventListener('DOMContentLoaded', mount);
+    // RE-ASSERT AFTER BENIGN DOM REPLACEMENT. A one-shot mount is not enough:
+    // an ordinary SPA doing `document.body.innerHTML = …` on route change removes
+    // the host, and INV-14 ("every public artifact response renders the demo
+    // indicator") is not satisfied by rendering it until the first client-side
+    // navigation. Demoing a real SPA is the headline use case for live-upstream
+    // publishing, so this is a benign framework doing normal work — a DIFFERENT
+    // threat model from a hostile publisher targeting the badge, which is P10's
+    // slice and which this observer does not claim to defeat.
+    //
+    // Cost control, because this runs on someone else's page:
+    //   - The callback is O(1): one id lookup, then return. It does NOT walk the
+    //     mutation records, so a chatty SPA pays a lookup per batch, not per node.
+    //   - Re-mount happens only when the host is absent, so re-inserting the host
+    //     re-enters the callback exactly once and then no-ops. No loop, no timer,
+    //     no polling: MutationObserver is the platform's own signal.
+    //   - The sheet is built once (see adoptStyles), so a re-mount allocates one
+    //     element tree and nothing else.
+    // The observer's lifetime is the document's lifetime, deliberately: the
+    // disclosure's mandate lasts as long as the page a viewer is looking at. It
+    // holds one element-free closure and one counter, so there is nothing to grow.
+    var reasserts = 0;
+    var observer = null;
+    // Bounds a pathological mutual loop: a page whose own observer removed the
+    // host on every insertion would ping-pong with this one inside the microtask
+    // checkpoint and hang the tab. Only a HOSTILE page does that (P10's threat
+    // model, which already assumes the badge can be defeated), and a bounded
+    // disclosure loss is strictly better than a hung page. Benign SPA route
+    // changes are single- to double-digit over a session, far under this.
+    var MAX_REASSERTS = 100;
+
+    function reassert() {
+      if (document.getElementById(HOST_ID)) { return; }
+      if (reasserts >= MAX_REASSERTS) {
+        if (observer) { observer.disconnect(); }
+        try {
+          console.warn('[AgntDemoIndicator] re-assert budget exhausted; the page is removing the disclosure repeatedly');
+        } catch (e) {}
         return;
       }
+      reasserts++;
       mount();
+    }
+
+    function watch() {
+      if (observer || typeof MutationObserver !== 'function') { return; }
+      // documentElement, not body: a replacement of body itself is one of the
+      // mutations that has to be seen, and observing the element that owns body
+      // survives it. subtree so a nested container swap is seen too.
+      var target = document.documentElement;
+      if (!target) { return; }
+      observer = new MutationObserver(reassert);
+      observer.observe(target, { childList: true, subtree: true });
+    }
+
+    function start() {
+      mount();
+      watch();
+    }
+
+    function mountWhenReady() {
+      if (document.body) { start(); return; }
+      if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', start);
+        return;
+      }
+      start();
     }
 
     // The ONLY gate: the RolePublic version marker, set by buildCombinedScript
