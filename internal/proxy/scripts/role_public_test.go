@@ -14,7 +14,14 @@ import (
 // inert on a served share (the artifact shell carries no inline script), so a
 // visitor saw a blank page. It is the only public member that runs on its own,
 // double-gated on the RolePublic version marker + the /s/{token} route.
+// demo-indicator was added deliberately (spec §9c / INV-14): the disclosure badge
+// is MANDATORY on every public artifact response, so it belongs in the allowlist
+// rather than behind any switch. It is listed FIRST because the disclosure must
+// not be contingent on any other member — it self-mounts on the RolePublic
+// version marker alone and is dependency-free, so the closure walk below is still
+// exactly the allowlist.
 var rolePublicGoldenManifest = []string{
+	"demo-indicator",
 	"variant-engine",
 	"walkthrough-viewer",
 	"feedback-client",
@@ -264,7 +271,7 @@ func TestRolePublicClosureRejectsForbiddenMember(t *testing.T) {
 }
 
 // TestRolePublicShapeAndSize verifies the assembled public bundle carries exactly
-// the three public member markers, omits the html2canvas capture library and the
+// the allowlisted public member markers, omits the html2canvas capture library and the
 // __devtool_version dev marker, and is strictly smaller than the full bundle.
 func TestRolePublicShapeAndSize(t *testing.T) {
 	pub := GetCombinedScriptForRole(RolePublic)

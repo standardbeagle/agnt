@@ -132,6 +132,9 @@ var (
 	//go:embed public-boot.js
 	publicBootJS string
 
+	//go:embed demo-indicator.js
+	demoIndicatorJS string
+
 	//go:embed palette.js
 	paletteJS string
 
@@ -211,8 +214,9 @@ const (
 	// RolePublic is the HARD-ALLOWLISTED public bundle for the walkthrough-publish
 	// plane (P4). Unlike RoleChrome/RoleContent — which are SUBTRACTIVE filters
 	// over the full module set — RolePublic is built from an EXPLICIT ALLOWLIST
-	// (rolePublicModules) and contains ONLY those members: the variant renderer,
-	// the read-only walkthrough viewer, the feedback client, and the boot glue
+	// (rolePublicModules) and contains ONLY those members: the mandatory demo
+	// disclosure badge (INV-14), the variant renderer, the read-only walkthrough
+	// viewer, the feedback client, and the boot glue
 	// that starts the viewer from the share token in the URL. It carries NONE
 	// of the dev-control surface (no core WS/exec channel, no __devtool control
 	// API, no audits/capture/inspection/design/indicator/authbreakout), ships no
@@ -314,6 +318,16 @@ var moduleOrder = []moduleEntry{
 	// + frames (role + registry); loads after design, before indicator/api.
 	// Chrome-only: content frames get walkthrough-proxy instead.
 	{"walkthrough", []string{"core", "frames", "walkthrough-proxy"}},
+	// demo-indicator is the MANDATORY always-on disclosure badge for the public
+	// plane (spec §9c / INV-14): every public artifact response says the page is an
+	// agnt demo of a proxied site, not the site itself. Dependency-free on purpose
+	// — the disclosure must not be contingent on another public member booting, so
+	// it self-mounts on the RolePublic version marker alone and loads FIRST among
+	// the public members. It cannot use ui-tokens for its z-scale (that module
+	// hangs its surface off the dev-control namespace the public bundle is proven
+	// free of), so its two constants are inlined. Inert in dev bundles like its
+	// siblings, hence deliberately absent from moduleRole.
+	{"demo-indicator", nil},
 	// variant-engine is the declarative variant overlay renderer for the public
 	// walkthrough-publish plane (P3). It is dependency-free (pure DOM + its own
 	// isolated IIFE — it keeps a leading space after `function` so wrapModule
@@ -442,12 +456,19 @@ var moduleRole = map[string]Role{
 // moduleRole (a subtractive per-frame classification), this is the complete,
 // closed set of modules permitted in RolePublic: the variant renderer, the
 // read-only walkthrough viewer, the feedback client, and the boot glue —
-// nothing else. The first three are dependency-free and public-boot depends only
-// on two of them, so the public bundle's dependency closure is exactly these
-// four; role_public_test.go pins this set (golden manifest), scans the
+// plus the mandatory disclosure badge — nothing else. All but public-boot are
+// dependency-free and public-boot depends only on two of them, so the public
+// bundle's dependency closure is exactly this set;
+// role_public_test.go pins this set (golden manifest), scans the
 // assembled bundle for forbidden dev-surface tokens, and walks the closure so a
 // forbidden module can never enter without failing the build.
 var rolePublicModules = map[string]bool{
+	// MANDATORY member (INV-14), not an opt-in one: the disclosure badge's value is
+	// entirely in being unconditional, so there is deliberately no config key, op,
+	// or query parameter that removes it. Adding it here is what makes it ship on
+	// BOTH public artifact paths, since the self-contained shell and the proxied
+	// upstream document serve the same RolePublic bundle.
+	"demo-indicator":     true,
 	"variant-engine":     true,
 	"walkthrough-viewer": true,
 	"feedback-client":    true,
@@ -504,6 +525,7 @@ var moduleScript = map[string]string{
 	"sketch":             sketchJS,
 	"design":             designJS,
 	"walkthrough":        walkthroughJS,
+	"demo-indicator":     demoIndicatorJS,
 	"variant-engine":     variantEngineJS,
 	"walkthrough-viewer": walkthroughViewerJS,
 	"feedback-client":    feedbackClientJS,
