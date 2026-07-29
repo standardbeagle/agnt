@@ -1093,3 +1093,190 @@ func TestGuardedFetchRefusesNonDocumentResponses(t *testing.T) {
 		})
 	}
 }
+
+// --- Always-on demo indicator (S7, spec §9c / INV-14) ---
+
+// cspDirectives parses a served Content-Security-Policy into directive name ->
+// source list, so a test can assert the EXACT shape of the policy rather than
+// substring-matching it. That precision is the point: the interesting regression
+// is a directive or source silently GAINED to make some new module work.
+func cspDirectives(t *testing.T, csp string) map[string][]string {
+	t.Helper()
+	if csp == "" {
+		t.Fatal("response carried no Content-Security-Policy")
+	}
+	out := map[string][]string{}
+	for _, d := range strings.Split(csp, ";") {
+		fields := strings.Fields(strings.TrimSpace(d))
+		if len(fields) == 0 {
+			continue
+		}
+		if _, dup := out[fields[0]]; dup {
+			t.Fatalf("duplicate directive %q in CSP %q", fields[0], csp)
+		}
+		out[fields[0]] = fields[1:]
+	}
+	return out
+}
+
+// assertPublicCSPUnchanged pins the served public policy directive-by-directive
+// against the S6 baseline: exactly these nine directives, and for each exactly
+// these sources. The demo indicator had to be styled without paying for a single
+// one of them (CSSOM-only, closed shadow root), so this is the assertion that
+// catches the tempting shortcut — an inline style needs style-src widened, an
+// external asset needs img-src/font-src widened, and either would show up here.
+// style-src's nonce source is the one value that legitimately varies: the
+// self-contained shell carries one for its own reset, the proxied path passes an
+// empty nonce and so must carry none.
+func assertPublicCSPUnchanged(t *testing.T, h *PublicHandler, csp string, wantNonce bool) {
+	t.Helper()
+	got := cspDirectives(t, csp)
+
+	want := map[string][]string{
+		"default-src":     {"'self'"},
+		"script-src":      {"'" + h.cspHash + "'"},
+		"style-src":       {"'self'"},
+		"img-src":         {"'self'", "data:"},
+		"connect-src":     {"'self'"},
+		"frame-ancestors": {"'none'"},
+		"base-uri":        {"'none'"},
+		"form-action":     {"'self'"},
+		"object-src":      {"'none'"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("public CSP gained/lost a directive: got %v, want exactly %v", got, want)
+	}
+	for name, wantSrc := range want {
+		gotSrc, ok := got[name]
+		if !ok {
+			t.Errorf("public CSP missing directive %q", name)
+			continue
+		}
+		if name == "style-src" {
+			// 'self' plus, on the self-contained shell only, one nonce source.
+			if len(gotSrc) == 0 || gotSrc[0] != "'self'" {
+				t.Errorf("style-src must start with 'self': %v", gotSrc)
+			}
+			extra := gotSrc[1:]
+			if wantNonce {
+				if len(extra) != 1 || !strings.HasPrefix(extra[0], "'nonce-") {
+					t.Errorf("style-src must carry exactly the shell nonce, got %v", extra)
+				}
+			} else if len(extra) != 0 {
+				t.Errorf("proxied style-src must carry no extra source (empty nonce), got %v", extra)
+			}
+			continue
+		}
+		if len(gotSrc) != len(wantSrc) {
+			t.Errorf("directive %q gained/lost a source: got %v, want %v", name, gotSrc, wantSrc)
+			continue
+		}
+		for i := range wantSrc {
+			if gotSrc[i] != wantSrc[i] {
+				t.Errorf("directive %q source %d = %q, want %q", name, i, gotSrc[i], wantSrc[i])
+			}
+		}
+	}
+	// Belt and braces on the two sources that would make the whole hash pin moot.
+	for _, forbidden := range []string{"unsafe-inline", "unsafe-eval", "unsafe-hashes", "script-src 'self'"} {
+		if strings.Contains(csp, forbidden) {
+			t.Errorf("public CSP admitted %q: %q", forbidden, csp)
+		}
+	}
+}
+
+// TestDemoIndicatorShipsOnBothPublicArtifactPaths is the INV-14 route-level
+// criterion: the served bundle carries the disclosure badge with non-empty text,
+// and BOTH artifact shapes — self-contained shell and proxied upstream document —
+// load exactly that bundle under its SRI pin. The two paths are asserted
+// separately because they are different code paths in serveArtifact and only one
+// of them existed before S6.
+func TestDemoIndicatorShipsOnBothPublicArtifactPaths(t *testing.T) {
+	// The bundle the public asset route actually serves must carry the module and
+	// its disclosure text.
+	h := newTestHandler(nil)
+	asset := do(h, http.MethodGet, h.assetPath, "", nil)
+	if asset.Code != http.StatusOK {
+		t.Fatalf("public asset: got %d, want 200", asset.Code)
+	}
+	bundle := asset.Body.String()
+	for _, want := range []string{
+		"// demo-indicator module\n",
+		"Demo walkthrough of a proxied site",
+		"not the live site",
+		"attachShadow({ mode: 'closed' })",
+	} {
+		if !strings.Contains(bundle, want) {
+			t.Errorf("served public bundle missing %q", want)
+		}
+	}
+	// And the badge must not be reachable-by-removal from the served bytes: no
+	// disable surface travelled with it.
+	for _, banned := range []string{"__agntDemoIndicator.remove", "demo-indicator-disabled"} {
+		if strings.Contains(bundle, banned) {
+			t.Errorf("served bundle carries a disable surface %q", banned)
+		}
+	}
+
+	tag := func(h *PublicHandler) string {
+		return `<script src="` + h.assetPath + `" integrity="` + h.cspHash + `" crossorigin="anonymous"></script>`
+	}
+
+	// Path 1: self-contained shell.
+	selfContained := do(h, http.MethodGet, sharePrefix+validToken, "", nil)
+	if selfContained.Code != http.StatusOK {
+		t.Fatalf("self-contained artifact: got %d, want 200", selfContained.Code)
+	}
+	if !strings.Contains(selfContained.Body.String(), tag(h)) {
+		t.Errorf("self-contained artifact does not load the bundle carrying the indicator")
+	}
+
+	// Path 2: proxied upstream document.
+	up := upstreamHandler(t, upstreamRevision("https://demo.example.com/app"), &countingFetcher{body: []byte(upstreamDoc)})
+	proxied := do(up, http.MethodGet, sharePrefix+validToken, "", nil)
+	if proxied.Code != http.StatusOK {
+		t.Fatalf("proxied artifact: got %d, want 200", proxied.Code)
+	}
+	body := proxied.Body.String()
+	if !strings.Contains(body, tag(up)) {
+		t.Errorf("proxied artifact does not load the bundle carrying the indicator")
+	}
+	// The disclosure must be able to render before the upstream's own content
+	// paints, or a viewer sees the lookalike first.
+	if strings.Index(body, tag(up)) > strings.Index(body, `id="hero"`) {
+		t.Errorf("indicator bundle injected after upstream body content")
+	}
+	// Same bundle bytes on both paths: one hash, one pin, no per-path flavour that
+	// could omit the badge.
+	if h.assetPath != up.assetPath || h.cspHash != up.cspHash {
+		t.Errorf("public artifact paths serve different bundles (%q/%q vs %q/%q)", h.assetPath, h.cspHash, up.assetPath, up.cspHash)
+	}
+}
+
+// TestDemoIndicatorDoesNotWidenPublicCSP is the assertion most likely to catch a
+// regression, so it is exact rather than substring-based: adding the mandatory
+// badge must not have bought a single directive or source on EITHER artifact path.
+// A future "make the badge visible" fix that reaches for an inline style, a web
+// font, or an image would have to widen style-src/font-src/img-src, and that is
+// what fails here.
+func TestDemoIndicatorDoesNotWidenPublicCSP(t *testing.T) {
+	h := newTestHandler(nil)
+	selfContained := do(h, http.MethodGet, sharePrefix+validToken, "", nil)
+	if selfContained.Code != http.StatusOK {
+		t.Fatalf("self-contained artifact: got %d, want 200", selfContained.Code)
+	}
+	if n := len(selfContained.Header().Values("Content-Security-Policy")); n != 1 {
+		t.Fatalf("CSP must be a single wholesale-set header, got %d", n)
+	}
+	assertPublicCSPUnchanged(t, h, selfContained.Header().Get("Content-Security-Policy"), true)
+
+	up := upstreamHandler(t, upstreamRevision("https://demo.example.com/app"), &countingFetcher{body: []byte(upstreamDoc)})
+	proxied := do(up, http.MethodGet, sharePrefix+validToken, "", nil)
+	if proxied.Code != http.StatusOK {
+		t.Fatalf("proxied artifact: got %d, want 200", proxied.Code)
+	}
+	if n := len(proxied.Header().Values("Content-Security-Policy")); n != 1 {
+		t.Fatalf("proxied CSP must be a single wholesale-set header, got %d", n)
+	}
+	assertPublicCSPUnchanged(t, up, proxied.Header().Get("Content-Security-Policy"), false)
+}
