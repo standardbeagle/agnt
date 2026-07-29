@@ -128,8 +128,118 @@ narrows or reinterprets it, say so out loud in the plan (as a documented
 scope decision with a reason), don't let it emerge as a surprise at
 epic-close review.
 
+**Closed** — the `pubserve` follow-on epic (`01KYJBPVCX5BKD7YS03E4MTX87`)
+carried the narrowed capability back: slice S6
+(`01KYJC0CQTMCV91FZ5B251V50S`, commits `f61821ae`/`85e6b409`) made the public
+plane actually reverse-proxy a share's live `Upstream` origin. The rule above
+still stands as a plan-time check; the point is that the narrowing was
+recoverable *because it was written down*, not that it was harmless.
+
+## 7. Testing a correct SSRF/deny-list guard end to end is self-defeating unless the seam verifies the control
+
+A deny-list that correctly refuses loopback, RFC1918 and link-local space
+refuses **every address a Go test can actually bind**. `httptest.NewTLSServer`
+listens on 127.0.0.1, which is exactly what
+`publish.CheckUpstreamOrigin` exists to deny. The naive outcomes are both
+bad: the test fails against correct code, or the guard is disabled/widened
+"for tests" — which deletes the coverage the test was written to provide.
+
+The shape that worked (S6, `internal/proxy/public_routes_test.go`
+`testUpstream`, guarding `guardedUpstreamFetcher` in
+`internal/proxy/public_routes.go`):
+
+- The production type carries three seams — `resolve` (a
+  `publish.Resolver`), `dial`, and `tlsConfig` — whose **zero value is the
+  production path**, so no build tag and no test-only branch inside the
+  guard.
+- The test resolver answers with a genuinely **public** address
+  (`93.184.216.34`). The guard therefore runs its **real** logic and passes
+  on its own merits; nothing about the deny table is stubbed out.
+- The test **dialer asserts it was handed exactly that address** before
+  redirecting the connection to the local listener. The pinned address is
+  the assertion, not the bypass — a regression that re-resolved the hostname
+  would hand the dialer a different address and fail.
+- The URL hostname stays `example.com` (the name httptest's cert is issued
+  for), so TLS verification is real rather than skipped — the seam does not
+  quietly cost a second control.
+
+**Generalize**: for any allowlist/denylist guard whose deny set includes the
+only addresses the test environment can bind, inject the resolve/dial seam
+and make the test **assert on what the seam received**. A seam that removes
+the control tests nothing; a seam that *observes* the control turns the
+untestable end-to-end path into the strongest available assertion. Reuse
+`guardedUpstreamFetcher`'s shape rather than re-deriving a URL-validating-only
+variant — a guard that validates a hostname and then lets
+`http.Transport` re-resolve it is decorative (DNS rebinding answers publicly
+for the check and privately for the dial).
+
+## 8. "It errored" and "the control refused it" are different assertions — assert the refusal's provenance
+
+`TestGuardedFetchRechecksEveryRedirectHop` covers the canonical SSRF bypass:
+a public origin returning `302 -> https://169.254.169.254/`. A bare
+`if err == nil { t.Fatal(...) }` has **no teeth here**, because with the
+per-hop guard deleted the fetch would *still* error — the harness's own
+pinned-dial assertion (§7) rejects the unexpected address and produces an
+error of its own. A passing `err != nil` would prove nothing about the guard.
+
+Two assertions carry the actual meaning:
+
+1. the error text names the guard's **verdict** (`"upstream refused"`), so
+   the refusal is attributable to `CheckUpstreamOrigin` and not to an
+   incidental downstream failure; and
+2. `len(*dialed) == 1` — the forbidden hop **never reached the dialer at
+   all**, which is the property that matters (refusal must precede the
+   socket, not follow it).
+
+**Generalize**: when a test asserts that a security control *refused*
+something, assert the **provenance** of the refusal, never merely that the
+operation failed. Ask explicitly: "if I deleted this control, would this
+assertion still pass?" — in any layered path (harness checks, transport
+errors, downstream validation) the answer is usually yes, and the test is
+theatre. Prefer (a) matching the control's own verdict, and (b) asserting the
+dangerous side effect was never reached. This is the same family as
+`.claude/rules/lessons-liveness-probes.md`: a probe/assertion that cannot
+distinguish "the thing I care about happened" from "something unrelated
+went wrong" is a lie about coverage, whichever direction it points.
+
+## 9. A criterion that names a test tier must ship in a fileScope that can reach it
+
+S6's acceptance criteria demanded "real-Chrome assertion is chromee2e-tagged",
+but its `fileScope` was
+`{public_routes.go, public_routes_test.go, rewrite.go, rewrite_test.go}` —
+excluding `internal/proxy/publish_browser_e2e_test.go`, the only file that
+tier lives in (see `AGENTS.md` § Testing, Browser E2E loud-skip policy). The
+criterion was **unsatisfiable inside the scope it shipped with**. The
+implementer correctly refused to edit out of scope rather than silently
+widening it, and the reviewer classified the gap as a **planning defect, not
+an execution one** (accepted + follow-up slice).
+
+**Rule for planners**: a criterion naming a test tier, a config file, a doc,
+or a generated asset must have the owning file inside the task's `fileScope`
+— otherwise the criterion belongs to a different slice. This is §6's
+check one level down: §6 asks whether the *slice set* covers the DoD; §9
+asks whether each *slice* can satisfy its own criteria without breaking
+scope. Both failures look identical from inside execution — an implementer
+doing the right thing and still "failing" a criterion.
+
+Corollary from the same review: prefer criteria phrased as "X is verified
+against the code path, not only via a passing test." Both of this epic's
+rewinds landed on green suites (§1), and the value in S6's review came from
+reading `CheckUpstreamOrigin`'s return contract and `writeHeaders`'
+`Del`/`Set` ordering directly.
+
+<!-- provenance: §7-§9 and the §6 closure note —
+     written_at 2026-07-29;
+     source_event task S6 01KYJC0CQTMCV91FZ5B251V50S
+       (epic 01KYJBPVCX5BKD7YS03E4MTX87), verdict pass, 0 blockers,
+       attempt 1, no rewinds;
+     commits f61821ae, 85e6b409 -->
+
 ## See also
 
 - `.claude/rules/platform-build-and-flake-lessons.md` — the vendored-fork
   build-tag-drift and flake-misdiagnosis lessons this doc's §4 extends with
   a third (TOCTOU) instance.
+- `.claude/rules/lessons-liveness-probes.md` — the "signal with no teeth"
+  family §8 belongs to (an indefinite-blocking liveness probe that can never
+  fire is the same defect as an assertion that can never fail).
