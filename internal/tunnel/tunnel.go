@@ -8,6 +8,7 @@ import (
 	"io"
 	"os/exec"
 	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -28,6 +29,28 @@ const (
 	// NOT public: use cloudflare/ngrok for that.
 	ProviderTailscale Provider = "tailscale"
 )
+
+// supportedProviders is the closed set of providers this build can start; it
+// must stay in step with Start's dispatch switch (which independently rejects an
+// unknown provider, so a drift here is a bad error message, never a silent
+// start).
+var supportedProviders = map[Provider]bool{
+	ProviderCloudflare: true,
+	ProviderNgrok:      true,
+	ProviderTailscale:  true,
+}
+
+// ParseProvider validates a user-supplied provider name. Callers that take a
+// provider from a CLI flag or config value use this so a typo fails loudly at
+// the boundary, naming the legal set, instead of being cast straight to Provider
+// and only surfacing later as "unsupported tunnel provider" from Start.
+func ParseProvider(s string) (Provider, error) {
+	p := Provider(strings.ToLower(strings.TrimSpace(s)))
+	if !supportedProviders[p] {
+		return "", fmt.Errorf("unknown tunnel provider %q (cloudflare|ngrok|tailscale)", s)
+	}
+	return p, nil
+}
 
 // State represents the tunnel state.
 type State uint32
