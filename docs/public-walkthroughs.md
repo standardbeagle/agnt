@@ -155,7 +155,8 @@ Each file is a `PublishedWalkthrough`:
   a self-contained artifact.
 - `variantSet` is optional, and its ops may carry raw CSS/HTML/JS from your
   authored revision (INV-6 is retired); authored script executes only because its
-  hash is pinned into `script-src` at publish time (§7).
+  hash is pinned into `script-src` at publish time (§7) — which is why an
+  `addScript` must carry an inline `code` body, not a `src` URL (§9a).
 - Validation failures name the file. See the spec's limits table (§5) for the size
   and selector-grammar bounds.
 
@@ -163,8 +164,10 @@ Each file is a `PublishedWalkthrough`:
 
 ## 4. Token-per-file stability (INV-15)
 
-A folder-served file's share is keyed by **(filename, content digest)**, and that
-distinction is the whole feature:
+Two different keys are at work here, and keeping them apart is the whole feature:
+a share is **identified** by **(owner, filename)**, while a content digest
+**identifies one revision inside** that share. So the filename owns the URL and
+the digest owns the version:
 
 | You do this | What happens to the URL |
 |---|---|
@@ -179,11 +182,12 @@ distinction is the whole feature:
 A token is never valid for a file it was not minted for, and the store survives
 daemon/`serve` restart (INV-8).
 
-One implementation detail worth knowing, because it was a real defect once: a share
-is resolved by **(owner, filename)**, never by content digest. A content digest is
-a fine dedup/versioning key and does identify a revision *inside* a share, but it
-is not an identity — keying a read by it made two projects publishing byte-identical
-content collide (`.claude/rules/publish-security-review-lessons.md` §2).
+That split is load-bearing, because collapsing it was a real defect once: a share
+must be **resolved** by (owner, filename), never by content digest. A digest is a
+fine dedup/versioning key, but it is not an *identity* — keying a read by it made
+two projects publishing byte-identical content collide, leaking one project's
+viewer feedback into the other's read
+(`.claude/rules/publish-security-review-lessons.md` §2).
 
 ---
 
@@ -381,11 +385,19 @@ publish {action: "create", walkthrough: {..., "upstream": {"url": "https://shop.
 
 ### READ THIS FIRST: only the document is proxied, so a proxied demo renders unstyled
 
-The public CSP confines subresources to `'self'` — `script-src` is hash-only,
-`style-src` is `'self'` with **no nonce on this path**, `img-src` is `'self'
-data:` — and **there is no subresource proxy route**. So the upstream's own CSS,
-JS, fonts, and images **do not load**. What a viewer sees is the upstream's markup
-with your walkthrough running over it, unstyled.
+Two independent things strip the upstream's presentation, and the second is the
+one people miss:
+
+1. **There is no subresource proxy route.** The public CSP confines subresources
+   to `'self'` — `script-src` is hash-only, `img-src` is `'self' data:` — so the
+   upstream's own external CSS, JS, fonts, and images **do not load**.
+2. **The nonce is empty on the proxied path**, so `style-src` is bare `'self'`
+   and authorises **no inline style whatsoever**. The upstream's own inline
+   `<style>` blocks and its `style=` attributes die too — not just its external
+   stylesheets.
+
+So what a viewer sees is the upstream's markup with your walkthrough running over
+it, stripped of both external *and* inline presentation.
 
 This is a known gap with a follow-up filed for the subresource route; each proxied
 subresource is another guarded outbound fetch and another content-type surface on
@@ -443,8 +455,10 @@ indistinguishable in that message (no existence oracle).
 
 Proxying a publisher-named origin makes the daemon fetch an arbitrary URL and hand
 back the bytes. Unconstrained, that is a relay into whatever network the daemon can
-see — your LAN, a CI runner's VPC, a cloud instance's metadata service. Every
-outbound fetch is therefore guarded (`internal/publish/ssrf.go`, spec §4a).
+see — your LAN, a CI runner's VPC, a cloud instance's metadata service. That fetch
+is therefore guarded (`internal/publish/ssrf.go`, spec §4a). It is also the *only*
+outbound fetch the public plane makes today — see the scope note below before
+assuming otherwise.
 
 **Refused, loudly, before any socket opens:** loopback, RFC1918 (`10/8`,
 `172.16/12`, `192.168/16`), carrier-grade NAT (`100.64/10`), link-local
@@ -470,8 +484,31 @@ Three properties that make it hold rather than merely look right:
 3. **Every redirect hop is re-checked.** A chain whose last hop lands on
    `169.254.169.254` is refused at that hop; exceeding the hop cap fails closed.
 
-The same guard covers publish-time `addScript src` fetches, not just the upstream
-document.
+**Scope of the guard — read this before relying on it.** The guard covers the
+**upstream document fetch and its redirect walk, and nothing else.**
+`publish.CheckUpstreamOrigin` has exactly one production caller
+(`internal/proxy/public_routes.go`, the `serveArtifact` upstream branch). In
+particular it does **not** cover `addScript src`, because nothing fetches an
+`addScript src` at all:
+
+- `Op.Validate` (`internal/publish/op.go`) gates `src` on **scheme and length
+  only**, via `ValidateURL`. Its own comment defers the §4a resolved-address
+  checks and the fetch that would inline the body to a "publish pipeline" —
+  that pipeline **is not implemented**.
+- `authoredScriptCSPHashes` **skips** any op still carrying `src`, so such an op
+  contributes no `script-src` hash.
+
+**The trap this sets for you:** an `addScript src` op **validates and publishes
+cleanly**, and then the script never runs. At render time the variant engine
+refuses that op outright (`addScript: src must be inlined at publish time; the
+renderer emits no <script src>`), and the hash-only `script-src` would refuse it
+a second time even if it were emitted. There is **no publish-time error** — your
+demo is simply missing that script. Until the pipeline lands, inline the body as
+`addScript code` instead of pointing at a URL.
+
+*(Not yet implemented: spec §6a plans to fetch `src` at publish time, inline it,
+and pin its hash — the design that would put these fetches behind the guard.
+Tracked as `01KYQJ9ARWQ0YMGWZ199B6SA3F`. None of it ships today.)*
 
 **What this is not:** an anti-phishing control. A publisher dressing up a
 legitimate public site is explicitly out of the threat model — the publisher holds
@@ -506,7 +543,13 @@ style element or attribute into that module; the proxied response would refuse i
 **Be clear about its limits.** It resists ordinary page CSS; it is not
 adversarially tamper-proof. A benign SPA that replaces `document.body` currently
 removes it, because the mount is idempotent but not re-armed by an observer — a
-follow-up is filed. The end-to-end "a variant's raw CSS/HTML cannot hide it"
+follow-up is filed. And where the platform has no constructable stylesheets
+(`CSSStyleSheet` / `adoptedStyleSheets` unavailable, or no usable
+`replaceSync`/`insertRule`), styling is skipped and the badge renders as an
+**unstyled** run of text: the disclosure wording still appears, but with none of
+the pinned geometry or contrast above — and, being unstyled, it is far easier for
+page CSS to bury. That degradation is deliberate: the alternative was an inline
+style the proxied path's CSP would refuse anyway. The end-to-end "a variant's raw CSS/HTML cannot hide it"
 adversarial gate is likewise its own slice (spec §11 → P10). Treat the badge as
 honest disclosure to a cooperating page, not as a control that survives a
 determined publisher.
