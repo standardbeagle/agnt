@@ -1202,7 +1202,7 @@ func TestDemoIndicatorShipsOnBothPublicArtifactPaths(t *testing.T) {
 	bundle := asset.Body.String()
 	for _, want := range []string{
 		"// demo-indicator module\n",
-		"Demo walkthrough of a proxied site",
+		"Demo walkthrough",
 		"not the live site",
 		"attachShadow({ mode: 'closed' })",
 	} {
@@ -1250,6 +1250,49 @@ func TestDemoIndicatorShipsOnBothPublicArtifactPaths(t *testing.T) {
 	// could omit the badge.
 	if h.assetPath != up.assetPath || h.cspHash != up.cspHash {
 		t.Errorf("public artifact paths serve different bundles (%q/%q vs %q/%q)", h.assetPath, h.cspHash, up.assetPath, up.cspHash)
+	}
+}
+
+// TestDemoIndicatorDisclosureTextPerPath follows the disclosure from each artifact
+// document to the exact bytes that document pins, and asserts the wording is true
+// of THAT path. It is a per-path assertion even though both paths serve one bundle:
+// the self-contained path has no upstream at all, so wording claiming a proxied
+// site would be a false statement served under a share URL. The proxied path is
+// where the deception risk is highest, so the same check runs there too.
+func TestDemoIndicatorDisclosureTextPerPath(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		h    *PublicHandler
+	}{
+		{"self-contained", newTestHandler(nil)},
+		{"proxied", upstreamHandler(t, upstreamRevision("https://demo.example.com/app"), &countingFetcher{body: []byte(upstreamDoc)})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			doc := do(tc.h, http.MethodGet, sharePrefix+validToken, "", nil)
+			if doc.Code != http.StatusOK {
+				t.Fatalf("artifact: got %d, want 200", doc.Code)
+			}
+			// The document must pin the bundle whose bytes we are about to read;
+			// otherwise this test would assert about a bundle nobody serves.
+			tag := `<script src="` + tc.h.assetPath + `" integrity="` + tc.h.cspHash + `" crossorigin="anonymous"></script>`
+			if !strings.Contains(doc.Body.String(), tag) {
+				t.Fatalf("artifact does not load the pinned public bundle")
+			}
+			asset := do(tc.h, http.MethodGet, tc.h.assetPath, "", nil)
+			if asset.Code != http.StatusOK {
+				t.Fatalf("public asset: got %d, want 200", asset.Code)
+			}
+			served := asset.Body.String()
+
+			if !strings.Contains(served, "Demo walkthrough — not the live site.") {
+				t.Errorf("%s path does not serve the path-neutral disclosure text", tc.name)
+			}
+			// The defect this pins: wording that asserts a relationship to a live
+			// site which, on the self-contained path, does not exist.
+			if strings.Contains(served, "Demo walkthrough of a proxied site") {
+				t.Errorf("%s path serves a disclosure asserting proxying; false on the self-contained path", tc.name)
+			}
+		})
 	}
 }
 

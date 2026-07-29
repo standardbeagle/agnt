@@ -523,7 +523,14 @@ permits. The honest mitigation for deception is disclosure — §9b.
 Every public artifact response, proxied **and** self-contained, renders a
 disclosure badge reading:
 
-> **agnt** Demo walkthrough of a proxied site — not the live site.
+> **agnt** Demo walkthrough — not the live site.
+
+The wording is deliberately **path-neutral**: it ships on both artifact paths off
+the same bundle bytes, and on the self-contained path nothing is proxied — there is
+no upstream at all — so wording that claimed a proxied site would be false on
+exactly one of the two paths. Every clause above (an agnt demo, a walkthrough, not
+the live site) is true on both. It also asserts nothing that would require reading
+per-path or per-share input, which INV-14 forbids.
 
 It is a **mandatory** member of the `RolePublic` bundle
 (`internal/proxy/scripts/demo-indicator.js`), not an opt-in module. There is **no

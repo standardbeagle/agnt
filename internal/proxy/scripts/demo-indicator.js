@@ -1,8 +1,21 @@
 // Always-on demo indicator for the walkthrough-publish public plane (spec §9c,
 // INV-14). It is a MANDATORY member of the RolePublic allowlist, not an opt-in
 // module: every public artifact response — self-contained shell AND proxied
-// upstream document — renders this badge, which says the page is an agnt demo of
-// a proxied site rather than the live site itself.
+// upstream document — renders this badge, which says the page is an agnt demo
+// rather than the live site itself.
+//
+// THE WORDING IS PATH-NEUTRAL ON PURPOSE. The badge ships on both public
+// artifact paths, and on the self-contained path nothing is proxied at all —
+// there is no upstream. Wording that asserted proxying was therefore false on
+// exactly one of the two paths, which is the one thing an honesty control may not
+// be. Path-AWARE wording was rejected instead of path-neutral wording because it
+// would need a per-path signal in the document, and both paths deliberately serve
+// the SAME content-addressed bundle bytes (public_routes_test.go asserts one hash,
+// one pin, so there is no per-path flavour that could omit the badge). Reading
+// such a signal would also make the disclosure depend on input, and INV-14 says
+// it depends on none. So the text names agnt, names this a demo, and disclaims
+// being the live site — all three true on both paths — and asserts nothing about
+// proxying.
 //
 // WHY it is unconditional: §9c's honest mitigation for publisher-side deception.
 // A proxied lookalike is indistinguishable from the real site to a viewer unless
@@ -51,9 +64,10 @@
     // scale, which is not part of the public bundle (see header).
     var Z_TOP = '2147483647';
     // The disclosure itself: names agnt, names this a demo, and disclaims the
-    // live site. Constant — no input of any kind can change or blank it.
+    // live site — every clause true on BOTH public artifact paths (see header).
+    // Constant — no input of any kind can change or blank it.
     var BRAND = 'agnt';
-    var TEXT = 'Demo walkthrough of a proxied site — not the live site.';
+    var TEXT = 'Demo walkthrough — not the live site.';
 
     var CSS = [
       // all:initial first so a reset cannot clobber the geometry that follows.

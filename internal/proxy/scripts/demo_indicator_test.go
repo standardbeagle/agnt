@@ -51,7 +51,7 @@ func TestDemoIndicatorIsMandatoryPublicMember(t *testing.T) {
 	}
 	// The disclosure text itself must survive into the served bytes: a member
 	// whose text got stripped is a badge that renders blank.
-	for _, want := range []string{"Demo walkthrough of a proxied site", "not the live site"} {
+	for _, want := range []string{"Demo walkthrough", "not the live site"} {
 		if !strings.Contains(bundle, want) {
 			t.Errorf("RolePublic bundle missing disclosure text %q", want)
 		}
@@ -60,6 +60,58 @@ func TestDemoIndicatorIsMandatoryPublicMember(t *testing.T) {
 	// are shared-and-inert in dev bundles, and this one self-gates the same way.
 	if r, ok := moduleRole["demo-indicator"]; ok {
 		t.Errorf("demo-indicator should not be classified in moduleRole (got %q); it is allowlisted for RolePublic and inert elsewhere", r)
+	}
+}
+
+// demoIndicatorText returns the single disclosure string literal the module
+// renders, read out of the source rather than restated here, so the assertions
+// below are about the shipped constant and not about a copy of it.
+func demoIndicatorText(t *testing.T) string {
+	t.Helper()
+	js := demoIndicatorSource(t)
+	const marker = "var TEXT = '"
+	i := strings.Index(js, marker)
+	if i < 0 {
+		t.Fatal("demo-indicator no longer declares a single TEXT disclosure constant")
+	}
+	rest := js[i+len(marker):]
+	j := strings.Index(rest, "'")
+	if j < 0 {
+		t.Fatal("demo-indicator TEXT constant is unterminated")
+	}
+	return rest[:j]
+}
+
+// TestDemoIndicatorDisclosureTextIsPathNeutral is the honesty assertion. The badge
+// ships on BOTH public artifact paths off the same bundle bytes, and on the
+// self-contained path there is no upstream and nothing is proxied — so a claim of
+// proxying is false on exactly one path. For a control whose only job is to be
+// accurate, that is the worst possible direction to be wrong in. The text must
+// therefore assert nothing about proxying while still naming a demo and
+// disclaiming the live site.
+func TestDemoIndicatorDisclosureTextIsPathNeutral(t *testing.T) {
+	text := demoIndicatorText(t)
+
+	for _, claim := range []string{"proxied", "proxy", "upstream", "live site itself", "this site"} {
+		if strings.Contains(strings.ToLower(text), claim) {
+			t.Errorf("disclosure text %q asserts %q, which is false on the self-contained path (no upstream exists there)", text, claim)
+		}
+	}
+	// The three clauses that must survive any rewording: it is a demo, it is a
+	// walkthrough, and it is not the live site. (The agnt brand ships as its own
+	// element, asserted separately.)
+	for _, want := range []string{"Demo", "walkthrough", "not the live site"} {
+		if !strings.Contains(text, want) {
+			t.Errorf("disclosure text %q dropped the required clause %q", text, want)
+		}
+	}
+	if !strings.Contains(demoIndicatorSource(t), "var BRAND = 'agnt';") {
+		t.Error("the badge must still name agnt")
+	}
+	// One constant, one path: a second disclosure string would mean the wording had
+	// become conditional, which INV-14 forbids (it must read no input at all).
+	if n := strings.Count(demoIndicatorSource(t), "var TEXT = "); n != 1 {
+		t.Errorf("the disclosure must be exactly one unconditional constant, found %d", n)
 	}
 }
 
