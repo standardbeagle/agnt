@@ -1,6 +1,9 @@
 ---
 sidebar_position: 1
 slug: /
+title: Browser superpowers for AI coding agents
+sidebar_label: Introduction
+description: An MCP server that gives your AI coding agent eyes into the browser — screenshots, DOM and layout inspection, live error capture, quality audits, sketch and design mode, and guided walkthroughs.
 ---
 
 # agnt
@@ -48,14 +51,15 @@ One MCP server, one reverse proxy, one daemon. Behind them sits a full developme
 ### Test
 
 - **[Visual regression](/api/snapshot)** - baseline and compare screenshots with the `snapshot` tool.
-- **Replay testing** - replay saved frontend scenarios against worker-served API mocks, with optional fuzz presets to probe error handling (`replaytest`, Pro; recording is alpha).
+- **[Replay testing](/features/replay-testing)** - record live API traffic, then replay it against worker-served mocks, with fuzz presets to probe error handling (Pro; recording is alpha).
 - **[Chaos engineering](/features/chaos-engineering)** - simulate slow networks, 500s, timeouts, rate limits, and out-of-order responses at the proxy, no code changes.
 
 ### Show
 
 - **[Sketch mode](/api/frontend/sketch-mode)** - draw wireframes and annotations directly on your live UI; the AI receives the drawing with element context.
 - **[Design mode](/api/frontend/design-mode)** - the AI proposes design alternatives you preview live, with a style editor for iterating on CSS in place.
-- **Walkthrough mode** - the AI runs a live guided demo of what it just built: step cards, element highlighting, auto or click-to-advance.
+- **[Walkthrough mode](/features/walkthroughs)** - the AI runs a live guided demo of what it just built: step cards, element highlighting, gesture affordances, auto or click-to-advance.
+- **[Public walkthrough sharing](/features/walkthroughs#publishing-a-walkthrough)** - publish that demo behind a one-time share token as a self-contained public page, with anonymous feedback, instant revoke, and no public port bound unless you opt in.
 
 ### Run
 
@@ -63,6 +67,7 @@ One MCP server, one reverse proxy, one daemon. Behind them sits a full developme
 - **[Reverse proxy](/features/reverse-proxy)** - transparent HTTP interception, traffic logging, and JS instrumentation in front of any dev server.
 - **[Tunnels](/api/tunnel)** - expose your dev server to real phones via Cloudflare, ngrok, or Tailscale, with full instrumentation intact.
 - **[Project detection](/features/project-detection)** - Go/Node/Python projects and their scripts detected with zero configuration.
+- **[Detachable & remote sessions](/features/remote-sessions)** - the daemon owns the PTY, so your agent session survives a dropped terminal; `agnt ssh` drives a remote host's agnt with forwarded proxy ports, automatic reconnect, and `agnt push` for file delivery.
 
 ## Replaces 12+ Tools in Your Dev Loop
 
@@ -82,7 +87,9 @@ agnt doesn't replace your production monitoring stack. It replaces the pile of s
 | Excalidraw + screenshot annotation | Sketch mode - draw on the live UI itself | [Sketch Mode](/api/frontend/sketch-mode) |
 | PM2 / nodemon / foreman (dev servers) | Daemon-backed process management with output capture | [Process Management](/features/process-management) |
 | Postman (inspecting your own app's API) | Traffic log queries + API efficiency audits | [proxylog](/api/proxylog) / [api_audit](/api/api_audit) |
-| MSW / hand-written API mocks | Replay saved scenarios against a worker mock (Pro; recording is alpha) | `replaytest` |
+| MSW / hand-written API mocks | Record real traffic, replay it against a worker mock (Pro; recording is alpha) | [Replay Testing](/features/replay-testing) |
+| Loom / screen-recorded demos | Live guided walkthrough on the real app, publishable as a token-gated page | [Walkthroughs](/features/walkthroughs) |
+| tmux / screen for long agent runs | Daemon-owned sessions that survive disconnects, locally or over SSH | [Remote Sessions](/features/remote-sessions) |
 
 Each row is scoped to the development workflow: agnt won't monitor production for you, but during a coding session, your AI can do everything above without you switching apps.
 
@@ -247,7 +254,11 @@ The proxy injects 50+ diagnostic functions into every page, accessible via `wind
 | `api_audit` | API-efficiency audit (waterfall, N+1, duplicate, chatty-load) |
 | `loading_audit` | Loading-UX audit (spinner cascade + fragmentation) |
 | `snapshot` | Visual regression: baseline/compare screenshots |
-| `replaytest` | Saved-scenario → worker-mock → replay frontend testing (Pro; recording is alpha) |
+| `replaytest` | Record → worker-mock → replay frontend testing (Pro; recording is alpha) |
+| `walkthrough` | Live guided demo in the browser overlay: step list, highlights, gestures |
+| `publish` | Public walkthrough shares: create/status/list/rotate/revoke + feedback read |
+| `session` | `agnt run` session management and scheduled messages for AI agents |
+| `store` | Persistent key-value storage with scoped namespaces |
 | `tunnel` | Mobile testing via Cloudflare/ngrok/Tailscale |
 | `daemon` | Daemon management |
 | `watch` | Stream daemon events via `agnt monitor` |
@@ -260,4 +271,6 @@ The proxy injects 50+ diagnostic functions into every page, accessible via `wind
 - [Getting Started](/getting-started) - Installation and setup
 - [Use Cases](/use-cases) - Detailed workflows
 - [Chaos Engineering](/features/chaos-engineering) - Test the unhappy paths
+- [Walkthroughs & Public Sharing](/features/walkthroughs) - Demo what the AI built, then share it
 - [API Reference](/api/proxy) - Full tool documentation
+- [Roadmap](/roadmap) - What's shipping next

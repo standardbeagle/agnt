@@ -14,6 +14,9 @@ const sidebars: SidebarsConfig = {
         'features/reverse-proxy',
         'features/frontend-diagnostics',
         'features/chaos-engineering',
+        'features/walkthroughs',
+        'features/replay-testing',
+        'features/remote-sessions',
       ],
     },
     {
@@ -25,6 +28,7 @@ const sidebars: SidebarsConfig = {
         'concepts/graceful-shutdown',
       ],
     },
+    'roadmap',
   ],
   apiSidebar: [
     {
