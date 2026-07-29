@@ -116,10 +116,13 @@
     // Of the three options — degrade silently, degrade loudly to the viewer, or
     // refuse to serve — this module degrades to UNSTYLED-BUT-PRESENT plus a
     // console warning, and makes the unstyled case as visible as CSS-free HTML
-    // allows (host inserted as body's FIRST child so it lands at the top of the
-    // document flow rather than below the page's content; the brand rendered as
-    // <strong> so it is bold with no stylesheet at all). Both cost zero CSP:
-    // no directive, no source, no inline style, no external asset.
+    // allows (host inserted as body's FIRST child — on THIS path only — so it
+    // lands at the top of the document flow rather than below the page's content;
+    // the brand rendered as <strong> so it is bold with no stylesheet at all).
+    // Both cost zero CSP: no directive, no source, no inline style, no external
+    // asset. The first-child placement is gated on this path because on the
+    // styled path it is invisible (position:fixed) yet still widens the mutation
+    // surface that spends re-assert budget — see mount().
     //
     // The two rejected options, and why:
     //   - Refuse to serve: not available and not desirable. This is client-side
@@ -164,7 +167,8 @@
       host.id = HOST_ID;
       // CLOSED, so page script holds no handle on the shadow tree (§9c).
       var root = host.attachShadow({ mode: 'closed' });
-      if (!adoptStyles(root)) {
+      var styled = adoptStyles(root);
+      if (!styled) {
         try {
           console.warn('[AgntDemoIndicator] constructable stylesheets unavailable; badge renders unstyled');
         } catch (e) {}
@@ -188,11 +192,22 @@
       badge.appendChild(text);
       root.appendChild(badge);
 
-      // FIRST child, not appended: when the sheet is adopted the host is
-      // position:fixed so document order is irrelevant, but on the unstyled
-      // fallback path it decides whether the disclosure sits above the page's
-      // content or below all of it. Costs nothing on the styled path.
-      parent.insertBefore(host, parent.firstChild);
+      // PLACEMENT IS GATED ON STYLING, and the gate is the point. Being body's
+      // FIRST child decides whether the UNSTYLED disclosure sits above the page's
+      // content or below all of it, so on that path it is the only visibility
+      // this module still has. On the styled path it buys nothing — the host is
+      // position:fixed, so document order changes nothing a viewer can see — and
+      // it is not free: a framework manipulates a first child more readily than a
+      // last one, and every such insert/remove costs re-assert budget, whose
+      // exhaustion costs the disclosure itself (see reassert). Applying it
+      // unconditionally therefore charged ~100% of traffic for a benefit only the
+      // rare no-adoptedStyleSheets path collects. `styled` is the same value the
+      // warning above reads, so nothing is recomputed.
+      if (styled) {
+        parent.appendChild(host);
+      } else {
+        parent.insertBefore(host, parent.firstChild);
+      }
       return host;
     }
 

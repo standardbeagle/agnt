@@ -1,6 +1,10 @@
 package scripts
 
 import (
+	"encoding/json"
+	"os"
+	"os/exec"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -240,19 +244,19 @@ func demoIndicatorSpan(t *testing.T, js, from, to string) string {
 	return rest[:j]
 }
 
-// TestDemoIndicatorExhaustedBudgetStillCarriesTheBadge pins the terminal state of
-// the re-assert budget. The budget exists to bound a LOOP — a page whose own
-// observer removes the host on every insertion would otherwise ping-pong with
-// ours inside the microtask checkpoint and hang the tab — and it must keep doing
-// that. What it must NOT do is end with the mandatory disclosure absent: an
-// exhaustion path that disconnects without mounting makes the last state this
-// module controls carry ZERO disclosure, which for INV-14 ("every public artifact
-// response renders the demo indicator") is the worst end state available, and is
-// reachable by an ordinary SPA rather than only by an attacker.
+// TestDemoIndicatorExhaustedBudgetStillCarriesTheBadge is the composition fix.
+// The re-assert budget exists to bound a LOOP (a page whose own observer removes
+// the host on every insertion would otherwise ping-pong with ours inside the
+// microtask checkpoint and hang the tab), and it must keep doing that. What it
+// must NOT do is end with the mandatory disclosure absent: an exhaustion path
+// that disconnects without mounting makes the terminal state — the last state
+// this module controls — carry ZERO disclosure, which for INV-14 ("every public
+// artifact response renders the demo indicator") is the worst possible end
+// state, and is reachable by an ordinary SPA rather than only by an attacker.
 //
-// So the branch mounts once and THEN stops watching. Asserted by ORDER, not by
-// presence: reassert() already contained a mount() before this fix, so only its
-// position relative to disconnect() distinguishes fixed from broken.
+// So the budget branch mounts once and THEN stops watching. Asserted by order,
+// not by presence: `mount()` already appeared later in reassert() before the fix,
+// so only its position relative to disconnect() distinguishes fixed from broken.
 func TestDemoIndicatorExhaustedBudgetStillCarriesTheBadge(t *testing.T) {
 	js := demoIndicatorSource(t)
 	reassert := demoIndicatorSpan(t, js, "function reassert()", "function watch()")
@@ -268,7 +272,7 @@ func TestDemoIndicatorExhaustedBudgetStillCarriesTheBadge(t *testing.T) {
 
 	// The exhaustion branch, scoped from the budget test to the disconnect that
 	// closes it, must carry a mount. Scoping is what gives this teeth: the
-	// trailing mount() of the ordinary re-assert path lies outside this span.
+	// trailing `mount()` of the normal re-assert path is outside this span.
 	branch := demoIndicatorSpan(t, reassert, "if (reasserts >= MAX_REASSERTS) {", "observer.disconnect()")
 	if !strings.Contains(branch, "mount();") {
 		t.Error("on budget exhaustion the module must mount() once before disconnecting, so the terminal state still carries the mandatory disclosure (INV-14)")
@@ -285,6 +289,325 @@ func TestDemoIndicatorExhaustedBudgetStillCarriesTheBadge(t *testing.T) {
 	}
 }
 
+// TestDemoIndicatorFirstChildPlacementIsGatedOnStyling is the other half of the
+// composition. Inserting the host as body's FIRST child buys visibility on the
+// unstyled fallback path (with the sheet adopted the host is position:fixed, so
+// document order is irrelevant there) — but applied unconditionally it changes
+// the DOM for ~100% of traffic to benefit the rare no-adoptedStyleSheets case,
+// and a framework is likelier to manipulate a first child than a last one. That
+// widened the insert/remove surface that burns the re-assert budget, on the
+// proxied SPA path which is the headline use case.
+//
+// So the placement is now gated on adoptStyles() having SUCCEEDED, which mount()
+// already computes for its warning.
+func TestDemoIndicatorFirstChildPlacementIsGatedOnStyling(t *testing.T) {
+	js := demoIndicatorSource(t)
+	mountBody := demoIndicatorSpan(t, js, "function mount()", "// RE-ASSERT AFTER BENIGN DOM REPLACEMENT")
+
+	// adoptStyles' result is captured once and reused, not called twice.
+	if !strings.Contains(mountBody, "var styled = adoptStyles(root);") {
+		t.Fatal("mount must capture whether adoptStyles succeeded, so the placement can be gated on it")
+	}
+	if n := strings.Count(mountBody, "adoptStyles("); n != 1 {
+		t.Errorf("adoptStyles must be called exactly once per mount, found %d calls", n)
+	}
+
+	// Whitespace-normalized so indentation is not load-bearing, but both branches
+	// and their direction are: swapping them, or dropping either, fails here.
+	flat := strings.Join(strings.Fields(mountBody), " ")
+	if !strings.Contains(flat, "if (styled) { parent.appendChild(host); } else { parent.insertBefore(host, parent.firstChild); }") {
+		t.Error("placement must be conditional: appendChild on the styled path (host is position:fixed, order irrelevant), insertBefore-firstChild only on the unstyled fallback path")
+	}
+	// Neither placement may be unconditional. An ungated call of either kind
+	// outside that branch is the shape being fixed.
+	if n := strings.Count(mountBody, "parent.insertBefore(host, parent.firstChild)"); n != 1 {
+		t.Errorf("expected exactly one first-child insert, on the unstyled path only, found %d", n)
+	}
+	if n := strings.Count(mountBody, "parent.appendChild(host)"); n != 1 {
+		t.Errorf("expected exactly one append, on the styled path only, found %d", n)
+	}
+}
+
+// TestDemoIndicatorExhaustionAndPlacementUnderNode is the BEHAVIOURAL tier for
+// the two fixes above: it runs the shipped module source against a minimal DOM
+// stub under node, drives the re-assert budget past exhaustion, and reads back
+// where the host actually landed on each styling path. The source assertions
+// above pin the shape; this one proves the outcome — that the terminal state
+// after exhaustion still contains the badge, and that the budget still stops the
+// loop afterwards.
+//
+// It reuses this package's existing js-runtime gate (walkthrough_player_test.go)
+// rather than introducing a second, differently-gated tier: OFF by default, so
+// the default suite's greenness never depends on a node install.
+//
+//	AGNT_JS_RUNTIME_TESTS=1 go test ./internal/proxy/scripts/ -run TestDemoIndicatorExhaustionAndPlacement
+//
+// The stub is deliberately tiny and models only what the module touches. Its one
+// non-obvious fidelity rule: a mutation notifies observers only when the mutated
+// parent is CONNECTED to documentElement, because that is the subtree the module
+// observes — without it, building the badge's detached element tree would fire
+// the callback and the module would appear to recurse.
+func TestDemoIndicatorExhaustionAndPlacementUnderNode(t *testing.T) {
+	if os.Getenv("AGNT_JS_RUNTIME_TESTS") == "" {
+		t.Skip("SKIPPING js-runtime tier: set AGNT_JS_RUNTIME_TESTS=1 to drive demo-indicator.js against a DOM stub under node (the always-on source guards in TestDemoIndicatorExhaustedBudgetStillCarriesTheBadge and TestDemoIndicatorFirstChildPlacementIsGatedOnStyling still ran)")
+	}
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Fatalf("AGNT_JS_RUNTIME_TESTS is set but node is not on PATH: %v", err)
+	}
+
+	// One removal past the budget, plus one more to observe that the observer
+	// really did stop: 100 ordinary re-asserts, the 101st is the exhaustion
+	// mount, the 102nd is nobody's business but the page's.
+	const removals = 102
+
+	cmd := exec.Command(node, "-e", demoIndicatorDriver(t))
+	cmd.Stdin = strings.NewReader(`{"removals":` + strconv.Itoa(removals) + `}`)
+	raw, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("node driver failed: %v\n%s", err, raw)
+	}
+	var got struct {
+		MaxReasserts int `json:"maxReasserts"`
+		Styled       struct {
+			HostIndex     int      `json:"hostIndex"`
+			ChildCount    int      `json:"childCount"`
+			PresentAfter  []bool   `json:"presentAfter"`
+			Warnings      []string `json:"warnings"`
+			AdoptedSheets int      `json:"adoptedSheets"`
+		} `json:"styled"`
+		Unstyled struct {
+			HostIndex    int      `json:"hostIndex"`
+			ChildCount   int      `json:"childCount"`
+			PresentAfter []bool   `json:"presentAfter"`
+			Warnings     []string `json:"warnings"`
+		} `json:"unstyled"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("decode node output %q: %v", raw, err)
+	}
+
+	// The budget the driver observed must be the shipped one, else the presence
+	// indices below would be asserting against the wrong boundary.
+	if got.MaxReasserts != 100 {
+		t.Fatalf("driver observed MAX_REASSERTS=%d, want 100", got.MaxReasserts)
+	}
+
+	// PLACEMENT, both directions. The stub pre-fills body with page content, so
+	// first-child and last-child are distinguishable positions.
+	if got.Styled.HostIndex != got.Styled.ChildCount-1 {
+		t.Errorf("styled path: host is at index %d of %d children, want last — the first-child insert must not apply when the sheet was adopted (the host is position:fixed there, so it buys nothing and widens the mutation surface)", got.Styled.HostIndex, got.Styled.ChildCount)
+	}
+	if got.Unstyled.HostIndex != 0 {
+		t.Errorf("unstyled path: host is at index %d, want 0 — with no stylesheet the first-child insert is the only thing keeping the disclosure above the page's content", got.Unstyled.HostIndex)
+	}
+	if got.Styled.AdoptedSheets != 1 {
+		t.Errorf("styled path adopted %d stylesheets, want 1 — the scenario did not exercise the styled branch", got.Styled.AdoptedSheets)
+	}
+	if len(got.Unstyled.Warnings) == 0 {
+		t.Error("the unstyled path must warn; a silently degraded disclosure is indistinguishable from a working one")
+	}
+
+	// EXHAUSTION, on both paths (the fix is in reassert, which is styling-blind,
+	// but the whole point of this task is that the two interact).
+	for _, sc := range []struct {
+		name         string
+		presentAfter []bool
+	}{
+		{"styled", got.Styled.PresentAfter},
+		{"unstyled", got.Unstyled.PresentAfter},
+	} {
+		if len(sc.presentAfter) != removals {
+			t.Fatalf("%s: driver reported %d removals, want %d", sc.name, len(sc.presentAfter), removals)
+		}
+		for i := 0; i < 100; i++ {
+			if !sc.presentAfter[i] {
+				t.Fatalf("%s: badge absent after removal %d, inside the re-assert budget", sc.name, i+1)
+			}
+		}
+		// The assertion this task exists for: the removal that EXHAUSTS the budget
+		// must still leave the badge mounted.
+		if !sc.presentAfter[100] {
+			t.Errorf("%s: the badge is ABSENT after the removal that exhausted the re-assert budget — the terminal state carries zero disclosure, which INV-14 forbids", sc.name)
+		}
+		// And the bound must still hold: past exhaustion the observer is gone, so
+		// the page's own removal stands. A test that demanded presence here would
+		// be demanding the unbounded loop back.
+		if sc.presentAfter[101] {
+			t.Errorf("%s: the observer is still re-mounting past the budget; the bound that stops a hostile ping-pong from hanging the tab is gone", sc.name)
+		}
+	}
+	found := false
+	for _, w := range got.Styled.Warnings {
+		if strings.Contains(w, "budget exhausted") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("exhaustion must be reported, not silent; warnings were %q", got.Styled.Warnings)
+	}
+}
+
+// demoIndicatorDriver builds the node program: the SHIPPED module source (via
+// moduleScript, so this cannot drift from what the bundle serves) plus the
+// smallest DOM the module touches. Each scenario runs in its own function scope
+// so the two styling paths cannot share module state.
+func demoIndicatorDriver(t *testing.T) string {
+	t.Helper()
+	src, err := json.Marshal(demoIndicatorSource(t))
+	if err != nil {
+		t.Fatalf("marshal module source: %v", err)
+	}
+	return "var MODULE_SRC = " + string(src) + ";\n" + demoIndicatorDriverBody
+}
+
+// The driver body. Kept as one literal so the stub reads as the small DOM model
+// it is. `eval` of MODULE_SRC is deliberate: the module is an IIFE reading
+// document/window/MutationObserver/CSSStyleSheet as free variables, and a direct
+// eval inside the scenario function is what binds those to the stub.
+const demoIndicatorDriverBody = `
+var HOST_ID = 'agnt-demo-indicator';
+
+function Elem(tag) {
+  this.tagName = tag;
+  this.id = '';
+  this.className = '';
+  this.textContent = '';
+  this.childNodes = [];
+  this.parentNode = null;
+  this.attrs = {};
+  this.shadow = null;
+}
+// The module inserts relative to parent.firstChild, so the stub has to expose it:
+// without this it reads undefined, insertBefore degrades to an append, and BOTH
+// placement paths would look identical and pass.
+Object.defineProperty(Elem.prototype, 'firstChild', {
+  get: function () { return this.childNodes.length ? this.childNodes[0] : null; }
+});
+
+function runScenario(styled, removals) {
+  var warnings = [];
+  var observers = [];
+
+  // A mutation is only observable when it happens inside the observed subtree,
+  // which is documentElement's. Building the badge's detached tree is therefore
+  // silent, exactly as in a browser.
+  function connected(node) {
+    while (node) {
+      if (node === documentElement) { return true; }
+      node = node.parentNode;
+    }
+    return false;
+  }
+  function notify(parent) {
+    if (!connected(parent)) { return; }
+    for (var i = 0; i < observers.length; i++) {
+      if (observers[i].active) { observers[i].cb([]); }
+    }
+  }
+
+  Elem.prototype.insertAt = function (i, n) {
+    if (n.parentNode) { n.parentNode.detach(n); }
+    this.childNodes.splice(i, 0, n);
+    n.parentNode = this;
+    notify(this);
+  };
+  Elem.prototype.appendChild = function (n) {
+    this.insertAt(this.childNodes.length, n);
+    return n;
+  };
+  Elem.prototype.insertBefore = function (n, ref) {
+    var i = ref ? this.childNodes.indexOf(ref) : -1;
+    this.insertAt(i < 0 ? this.childNodes.length : i, n);
+    return n;
+  };
+  Elem.prototype.detach = function (n) {
+    var i = this.childNodes.indexOf(n);
+    if (i < 0) { return; }
+    this.childNodes.splice(i, 1);
+    n.parentNode = null;
+    notify(this);
+  };
+  Elem.prototype.setAttribute = function (k, v) { this.attrs[k] = v; };
+  Elem.prototype.attachShadow = function (opts) {
+    var root = { mode: opts.mode, childNodes: [] };
+    root.appendChild = function (n) { root.childNodes.push(n); return n; };
+    // Present only where constructable stylesheets are, which is what the
+    // module's capability probe reads.
+    if (styled) { root.adoptedStyleSheets = []; }
+    this.shadow = root;
+    return root;
+  };
+
+  var documentElement = new Elem('html');
+  var body = new Elem('body');
+  documentElement.appendChild(body);
+  // Page content, so first-child and last-child are distinct positions.
+  body.appendChild(new Elem('main'));
+  body.appendChild(new Elem('footer'));
+
+  function find(id, node) {
+    node = node || documentElement;
+    if (node.id === id) { return node; }
+    for (var i = 0; i < node.childNodes.length; i++) {
+      var hit = find(id, node.childNodes[i]);
+      if (hit) { return hit; }
+    }
+    return null;
+  }
+
+  var document = {
+    body: body,
+    documentElement: documentElement,
+    readyState: 'complete',
+    createElement: function (tag) { return new Elem(tag); },
+    getElementById: function (id) { return find(id); },
+    addEventListener: function () {}
+  };
+  var window = { __agnt_public_version: 'test-marker' };
+  var console = { warn: function (m) { warnings.push(String(m)); }, error: function (m) { warnings.push(String(m)); } };
+  function MutationObserver(cb) { this.cb = cb; this.active = false; }
+  MutationObserver.prototype.observe = function () { this.active = true; observers.push(this); };
+  MutationObserver.prototype.disconnect = function () { this.active = false; };
+  var CSSStyleSheet = styled ? function () { this.cssText = ''; } : undefined;
+  if (styled) {
+    CSSStyleSheet.prototype.replaceSync = function (t) { this.cssText = t; };
+  }
+
+  eval(MODULE_SRC);
+
+  var host = find(HOST_ID);
+  if (!host) { throw new Error('module did not mount at all (styled=' + styled + ')'); }
+  var out = {
+    hostIndex: body.childNodes.indexOf(host),
+    childCount: body.childNodes.length,
+    adoptedSheets: host.shadow && host.shadow.adoptedStyleSheets ? host.shadow.adoptedStyleSheets.length : 0,
+    presentAfter: []
+  };
+  // Each iteration is one benign removal of the host; the module's observer sees
+  // it and decides whether to re-assert.
+  for (var i = 0; i < removals; i++) {
+    var h = find(HOST_ID);
+    if (h && h.parentNode) { h.parentNode.detach(h); }
+    out.presentAfter.push(!!find(HOST_ID));
+  }
+  out.warnings = warnings;
+  return out;
+}
+
+// The shipped budget, read out of the source rather than restated, so a change to
+// it fails the Go assertion instead of silently shifting the indices.
+var m = /var MAX_REASSERTS = (\d+);/.exec(MODULE_SRC);
+if (!m) { throw new Error('MAX_REASSERTS declaration not found in module source'); }
+
+var cfg = JSON.parse(require('fs').readFileSync(0, 'utf8'));
+process.stdout.write(JSON.stringify({
+  maxReasserts: parseInt(m[1], 10),
+  styled: runScenario(true, cfg.removals),
+  unstyled: runScenario(false, cfg.removals)
+}));
+`
+
 // TestDemoIndicatorUnstyledFallbackStaysVisibleAndCSPFree pins the decision taken
 // for the degraded path: when the platform has no constructable stylesheets the
 // badge renders UNSTYLED-BUT-PRESENT, made as visible as CSS-free HTML allows, and
@@ -294,14 +617,17 @@ func TestDemoIndicatorExhaustedBudgetStillCarriesTheBadge(t *testing.T) {
 func TestDemoIndicatorUnstyledFallbackStaysVisibleAndCSPFree(t *testing.T) {
 	js := demoIndicatorSource(t)
 
-	// Mitigation 1: the host lands at the TOP of the document flow. With the sheet
-	// adopted the host is position:fixed and order is irrelevant; without it, this
-	// is the difference between above the page's content and below all of it.
+	// Mitigation 1: on THIS path the host lands at the TOP of the document flow,
+	// which is the difference between above the page's content and below all of it.
+	// It is gated on the styled path having failed, because with the sheet adopted
+	// the host is position:fixed (order irrelevant) and the repositioning only
+	// widens the mutation surface that burns the re-assert budget — see
+	// TestDemoIndicatorFirstChildPlacementIsGatedOnStyling for both directions.
 	if !strings.Contains(js, "insertBefore(host, parent.firstChild)") {
 		t.Error("the host must be inserted as the first child so the unstyled fallback is not buried under page content")
 	}
-	if strings.Contains(js, "parent.appendChild(host)") {
-		t.Error("appending the host puts the unstyled disclosure below the whole page")
+	if !strings.Contains(strings.Join(strings.Fields(js), " "), "} else { parent.insertBefore(host, parent.firstChild); }") {
+		t.Error("the first-child insert must be the unstyled branch specifically; unconditional, it applies to ~100% of traffic to benefit the rare degraded path")
 	}
 	// Mitigation 2: emphasis that survives with no stylesheet at all.
 	if !strings.Contains(js, "createElement('strong')") {
