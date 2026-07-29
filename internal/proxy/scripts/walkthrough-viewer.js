@@ -68,12 +68,98 @@
     var DEFAULT_AUTO_MS = 5000;
     var MAX_AUTO_MS = 600000;
     var POLL_MS = 300; // mirrors walkthrough.js wait-condition poll cadence
-    var MAX_STEPS = 64;
-    var MAX_TEXT = 2048;
-    // Cap on an author-supplied gesture_label; mirrors walkthrough.js
-    // MAX_GESTURE_LABEL and publish.MaxGestureLabelLength. The label pill is a
-    // single nowrap line, so longer text runs off the viewport.
+    var MAX_STEPS = 64; // element COUNT (steps), not a byte limit
+    // ---- Size limits: BYTES, never UTF-16 code units ----------------------
+    // Every limit below is a byte limit on the Go side (internal/publish/limits.go
+    // measures with len() over a UTF-8 string). All three are therefore
+    // compared and truncated in UTF-8 BYTES via utf8Len(), matching Go's len().
+    // A JS `.length` comparison counts UTF-16 code units, undercounting 3x for CJK and 4x
+    // for astral-plane characters: the cap would admit a selector the Go
+    // validator rejects, and the two clamps would silently emit a value Go still
+    // considers oversize — clamped in the player's eyes, rejected in Go's, with
+    // nothing in the browser explaining why. (MAX_STEPS above and the `.length`
+    // uses elsewhere in this file count ELEMENTS, and are correct as counts.)
+    var MAX_SELECTOR_BYTES = 256; // mirrors publish.MaxSelectorLength (selector.go:37)
+    var MAX_TEXT_BYTES = 2048;    // mirrors publish.MaxTextBytes
+    // Cap on an author-supplied gesture_label; the VALUE is shared with
+    // walkthrough.js MAX_GESTURE_LABEL and publish.MaxGestureLabelLength. Here it
+    // is enforced in bytes, like the Go validator that rejects the payload
+    // (validate.go:205); walkthrough.js still caps in code units — same class,
+    // its own file. The label pill is a single nowrap line, so longer text runs
+    // off the viewport.
     var MAX_GESTURE_LABEL = 64;
+
+    // utf8Len returns the UTF-8 byte length of a JS string (mirrors Go len()).
+    // Same spelling as variant-engine.js so the two mirrors cannot drift into
+    // two different notions of "length".
+    function utf8Len(s) {
+      // TextEncoder is available in every target browser; count code units as a
+      // safe fallback if it is somehow absent.
+      if (typeof TextEncoder !== 'undefined') {
+        try { return new TextEncoder().encode(s).length; } catch (e) { /* fall through */ }
+      }
+      return unescape(encodeURIComponent(s)).length;
+    }
+
+    // isExtender reports whether a code point must never be separated from the
+    // base character it attaches to: variation selectors, combining marks, and
+    // emoji skin-tone modifiers. (ZWJ is handled explicitly below because it also
+    // pulls the FOLLOWING code point into the same cluster.)
+    function isExtender(cp) {
+      return cp === 0xFE0E || cp === 0xFE0F ||
+        (cp >= 0x0300 && cp <= 0x036F) ||
+        (cp >= 0x1F3FB && cp <= 0x1F3FF);
+    }
+
+    // isRegionalIndicator reports a flag half; the two halves form one cluster.
+    function isRegionalIndicator(cp) {
+      return cp >= 0x1F1E6 && cp <= 0x1F1FF;
+    }
+
+    // truncateToBytes returns the longest prefix of s that fits in maxBytes UTF-8
+    // bytes. Truncating to N BYTES is not slicing to N code units: it must cut on
+    // a character boundary, so this walks whole code points (never half a
+    // surrogate pair) and keeps grapheme clusters intact — a ZWJ emoji sequence,
+    // a flag's regional-indicator pair, a skin-tone modifier, or a combining mark
+    // is either wholly kept or wholly dropped, never cut into mojibake. A single
+    // cluster wider than maxBytes yields '' rather than a split character.
+    function truncateToBytes(s, maxBytes) {
+      if (utf8Len(s) <= maxBytes) { return s; }
+      var out = '';
+      var used = 0;
+      var i = 0;
+      while (i < s.length) {
+        var cp = s.codePointAt(i);
+        var cluster = String.fromCodePoint(cp);
+        i += cluster.length;
+        if (isRegionalIndicator(cp) && i < s.length && isRegionalIndicator(s.codePointAt(i))) {
+          var pair = String.fromCodePoint(s.codePointAt(i));
+          cluster += pair;
+          i += pair.length;
+        }
+        while (i < s.length) {
+          var ncp = s.codePointAt(i);
+          var nch = String.fromCodePoint(ncp);
+          if (isExtender(ncp)) { cluster += nch; i += nch.length; continue; }
+          if (ncp === 0x200D) { // ZWJ: binds the next code point into this cluster
+            cluster += nch;
+            i += nch.length;
+            if (i < s.length) {
+              var jch = String.fromCodePoint(s.codePointAt(i));
+              cluster += jch;
+              i += jch.length;
+            }
+            continue;
+          }
+          break;
+        }
+        var w = utf8Len(cluster);
+        if (used + w > maxBytes) { break; }
+        out += cluster;
+        used += w;
+      }
+      return out;
+    }
 
     // Local restricted selector grammar. It is a SUBSET-equivalent fallback for
     // the P2/P3 grammar: when window.__variantEngine.validateSelector is present
@@ -84,7 +170,9 @@
     var SAFE_SELECTOR_RE = /^[#.]?[A-Za-z_][A-Za-z0-9_-]*(?:[ >][#.]?[A-Za-z_][A-Za-z0-9_-]*)*$/;
 
     function isSafeSelector(sel) {
-      if (typeof sel !== 'string' || sel.length === 0 || sel.length > 256) { return false; }
+      if (typeof sel !== 'string' || sel.length === 0) { return false; }
+      // Byte-denominated, like selector.go:37 `len(sel) > MaxSelectorLength`.
+      if (utf8Len(sel) > MAX_SELECTOR_BYTES) { return false; }
       try {
         if (window.__variantEngine && typeof window.__variantEngine.validateSelector === 'function') {
           return !!window.__variantEngine.validateSelector(sel).ok;
@@ -95,7 +183,9 @@
 
     function clampText(s) {
       if (typeof s !== 'string') { return ''; }
-      return s.length > MAX_TEXT ? s.slice(0, MAX_TEXT) : s;
+      // Byte-denominated truncation: a code-unit slice of MAX_TEXT_BYTES units is
+      // up to 4x the byte budget the Go side enforces.
+      return truncateToBytes(s, MAX_TEXT_BYTES);
     }
 
     // normalizeStep mirrors walkthrough.js normalizeScript + internal/publish
@@ -127,7 +217,10 @@
       // gesture_label names the concrete action for this step. Degrade (clamp /
       // drop), never throw: the public plane must not crash a visitor's page.
       // Written with textContent only — never parsed as markup.
-      var gLabel = (typeof s.gesture_label === 'string') ? s.gesture_label.slice(0, MAX_GESTURE_LABEL) : '';
+      // Clamped in BYTES: validate.go:205 rejects a gesture_label over
+      // MaxGestureLabelLength bytes, so a code-unit slice would emit a label the
+      // Go validator refuses while the player believed it had clamped it.
+      var gLabel = (typeof s.gesture_label === 'string') ? truncateToBytes(s.gesture_label, MAX_GESTURE_LABEL) : '';
       return {
         title: clampText(s.title || ''),
         body: clampText(s.body || s.narration || s.text || ''),

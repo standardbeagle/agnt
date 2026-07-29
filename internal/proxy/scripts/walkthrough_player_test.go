@@ -351,8 +351,16 @@ func TestPlayerByteTruncationIsClusterSafe(t *testing.T) {
 			if strings.ContainsRune(out, '�') {
 				t.Errorf("result %q contains U+FFFD: a surrogate pair or multi-byte sequence was split", out)
 			}
-			if r, _ := utf8.DecodeLastRuneInString(out); out != "" && isClusterExtender(r) {
-				t.Errorf("result ends with a dangling cluster extender %U — the cut landed mid-grapheme", r)
+			// A complete cluster may legitimately END with an extender (👍🏽, é), so
+			// the mid-cluster test is on the cut itself: the first character the
+			// truncation dropped must not be one that attaches to what was kept.
+			if r, _ := utf8.DecodeLastRuneInString(out); out != "" && r == zwj {
+				t.Errorf("result ends with a dangling ZWJ — the cut landed inside a joined emoji sequence")
+			}
+			if rest := strings.TrimPrefix(c.input, out); rest != "" {
+				if r, _ := utf8.DecodeRuneInString(rest); isClusterExtender(r) || r == zwj {
+					t.Errorf("the cut dropped %U, which attaches to the kept prefix — the truncation landed mid-grapheme", r)
+				}
 			}
 			if n := countRegionalIndicators(out); n%2 != 0 {
 				t.Errorf("result carries %d regional indicators (odd) — a flag cluster was split in half", n)
@@ -367,11 +375,15 @@ func TestPlayerByteTruncationIsClusterSafe(t *testing.T) {
 	}
 }
 
+// zwj is the zero-width joiner: it binds the code points on both sides of it
+// into one grapheme cluster, so a cut on either side of it is a mid-cluster cut.
+const zwj = rune(0x200D)
+
 // isClusterExtender mirrors the JS isExtender set: characters that must never be
 // separated from the base character they attach to.
 func isClusterExtender(r rune) bool {
 	switch {
-	case r == 0x200D, r == 0xFE0E, r == 0xFE0F:
+	case r == 0xFE0E, r == 0xFE0F:
 		return true
 	case r >= 0x0300 && r <= 0x036F:
 		return true
