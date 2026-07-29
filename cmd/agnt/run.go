@@ -74,7 +74,7 @@ func runPTYChild(ctx context.Context, args []string, socketPath string, sessionC
 	defer suppressAutostartDuringSetup(setupPhase)()
 
 	adapter := resolveAgentAdapter(command, projectPath)
-	launch, adapterPrompt, injectInitialPrompt := phaseCmdArgsAndPrompt(adapter, command, cmdArgs, setupPhase, socketPath)
+	launch, adapterPrompt, injectInitialPrompt := phaseCmdArgsAndPrompt(adapter, command, cmdArgs, setupPhase, socketPath, projectPath)
 
 	stopSpinner := spinner(fmt.Sprintf("Starting %s...", command))
 	c := commandWithArgs(command, launch.Args...)

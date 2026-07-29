@@ -69,7 +69,7 @@ func runConPTYChild(ctx context.Context, args []string, socketPath string, sessi
 	defer suppressAutostartDuringSetup(setupPhase)()
 
 	adapter := resolveAgentAdapter(command, projectPath)
-	launch, adapterPrompt, injectInitialPrompt := phaseCmdArgsAndPrompt(adapter, command, cmdArgs, setupPhase, socketPath)
+	launch, adapterPrompt, injectInitialPrompt := phaseCmdArgsAndPrompt(adapter, command, cmdArgs, setupPhase, socketPath, projectPath)
 
 	// Get initial terminal size BEFORE any mode changes — VS Code and
 	// other embedded terminals may not report size correctly on stdin.

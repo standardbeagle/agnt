@@ -1203,7 +1203,13 @@ func injectedArgs(base, built []string) []string {
 	return built[len(base):]
 }
 
-func phaseCmdArgsAndPrompt(adapter agentadapter.Adapter, command string, cmdArgs []string, setupPhase bool, socketPath string) (agentLaunch, string, bool) {
+// projectDir is the destination for the agent-context file and is resolved by
+// the caller, never from the process cwd. Resolving it here would make the
+// write depend on process-global state: `os.Chdir` is not isolation, so a test
+// exercising this function could only fence the write by moving the whole
+// process, and any interleaving or early exit before the restore landed the
+// file in whatever tree the process happened to be sitting in.
+func phaseCmdArgsAndPrompt(adapter agentadapter.Adapter, command string, cmdArgs []string, setupPhase bool, socketPath, projectDir string) (agentLaunch, string, bool) {
 	if adapter == nil {
 		return agentLaunch{Command: command, Args: cmdArgs}, "", false
 	}
@@ -1216,9 +1222,8 @@ func phaseCmdArgsAndPrompt(adapter agentadapter.Adapter, command string, cmdArgs
 		// kimi) that accept pasted text but require a second manual Enter.
 		// Agents without an automatically loaded context mechanism (aider), or
 		// a failed/disabled persistence write, retain the stdin fallback.
-		if cwd, err := os.Getwd(); err != nil ||
-			lookupAgentSupport(adapter.Name()).Mechanism == mechNone ||
-			!writePersistentContext(adapter.Name(), cwd, prompt) {
+		if lookupAgentSupport(adapter.Name()).Mechanism == mechNone ||
+			!writePersistentContext(adapter.Name(), projectDir, prompt) {
 			injectInitialPrompt = true
 		}
 	} else {
@@ -1227,11 +1232,9 @@ func phaseCmdArgsAndPrompt(adapter agentadapter.Adapter, command string, cmdArgs
 		// file (AGENTS.md, GEMINI.md, …) so non-Claude agents keep the agnt
 		// tool guidance every turn without injecting a visible first user
 		// message.
-		// No-op for Claude and when disabled in config. cwd is the project dir
-		// under `agnt run`. Best-effort: never blocks launch.
-		if cwd, err := os.Getwd(); err == nil {
-			writePersistentContext(adapter.Name(), cwd, prompt)
-		}
+		// No-op for Claude, for an empty projectDir, and when disabled in
+		// config. Best-effort: never blocks launch.
+		writePersistentContext(adapter.Name(), projectDir, prompt)
 	}
 	built := adapter.BuildArgs(cmdArgs, prompt)
 	return agentLaunch{
