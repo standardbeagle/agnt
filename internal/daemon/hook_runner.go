@@ -24,11 +24,21 @@ const hookTimeout = 5 * time.Second
 //
 // Env: os.Environ() + script Env block overrides + injected AGNT_* vars.
 func RunLifecycleHook(cmd, scriptID, event string, scriptCfg *config.ScriptConfig, exitCode int) error {
+	return runLifecycleHookWithTimeout(hookTimeout, cmd, scriptID, event, scriptCfg, exitCode)
+}
+
+// runLifecycleHookWithTimeout is RunLifecycleHook with the kill deadline as a
+// parameter. Production always passes hookTimeout via RunLifecycleHook; the
+// seam exists so tests can assert the "overrunning hook is killed and reports
+// timeout" property without paying the 5s production window in gate time. The
+// default itself is pinned directly as a constant assertion, which is free and
+// clearer than inferring it from elapsed wall time.
+func runLifecycleHookWithTimeout(timeout time.Duration, cmd, scriptID, event string, scriptCfg *config.ScriptConfig, exitCode int) error {
 	if cmd == "" {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), hookTimeout)
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	shell, shellArgs := resolveHookShell(cmd, scriptCfg)
@@ -38,7 +48,7 @@ func RunLifecycleHook(cmd, scriptID, event string, scriptCfg *config.ScriptConfi
 
 	if err := c.Run(); err != nil {
 		if ctx.Err() != nil {
-			return fmt.Errorf("lifecycle hook %s/%s timeout after %s", scriptID, event, hookTimeout)
+			return fmt.Errorf("lifecycle hook %s/%s timeout after %s", scriptID, event, timeout)
 		}
 		return fmt.Errorf("lifecycle hook %s/%s exited with error: %w", scriptID, event, err)
 	}

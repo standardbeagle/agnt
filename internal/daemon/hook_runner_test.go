@@ -53,12 +53,24 @@ func TestRunLifecycleHook_RespectsTimeout(t *testing.T) {
 	} else {
 		cmd = "sleep 60"
 	}
+	// The property under test is "an overrunning hook is killed and reports
+	// timeout", not "the default window is 5 seconds". Injecting a short
+	// deadline exercises exactly that property; paying the production 5s
+	// window to infer the constant from elapsed time cost 5s of gate time on
+	// every run and asserted the weaker thing.
+	const testTimeout = 200 * time.Millisecond
 	start := time.Now()
-	err := RunLifecycleHook(cmd, "backend", "stop", hookTestScriptConfig(nil), 0)
+	err := runLifecycleHookWithTimeout(testTimeout, cmd, "backend", "stop", hookTestScriptConfig(nil), 0)
 	elapsed := time.Since(start)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "timeout")
-	assert.Less(t, elapsed, 7*time.Second, "must not block longer than 5s timeout + buffer")
+	// The hook sleeps 60s, so anything short of that proves the deadline killed
+	// it. A generous ceiling, not a latency budget.
+	assert.Less(t, elapsed, 10*time.Second, "overrunning hook must be killed by its deadline, not run to completion")
+
+	// Pin the production default directly. This is what the old elapsed-time
+	// assertion was indirectly (and loosely) guarding, asserted for free.
+	assert.Equal(t, 5*time.Second, hookTimeout, "production lifecycle-hook kill deadline")
 }
 
 func TestRunLifecycleHook_ExitCodeEnvVar(t *testing.T) {
