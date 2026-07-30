@@ -19,6 +19,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand"
+	"runtime"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -408,15 +409,67 @@ func TestAutostartManager_ProgressBufferOverflow(t *testing.T) {
 
 	// Slow drain via broadcast callback. Producer uses BLOCKING send, so
 	// it should back-pressure on the 64-slot buffer rather than drop.
+	//
+	// The yield here is runtime.Gosched(), NOT a sleep. This callback runs
+	// synchronously in the drain loop, so yielding the drain's timeslice lets
+	// the producer outrun it and fill the 64-slot buffer, which is what puts
+	// the producer's blocking send under back-pressure. That is the condition
+	// this test needs, and it is a scheduling property, not a timing one.
+	//
+	// It previously slept 10µs per event on the reasoning that "10k events at
+	// ~10µs each is ~100ms of drain wall time". Go cannot sleep 10µs: a timer
+	// park costs ~0.5ms+, so 10k iterations cost ~5s, not ~100ms -- 5s of gate
+	// time bought nothing, because wall-clock duration was never the property
+	// under test. What is asserted below is completeness (no event lost),
+	// ordering (strict layer sequence, no reordering inside the drain), and
+	// termination (PhaseDone last). All three are deterministic and need no
+	// clock, so the back-pressure is now simulated rather than timed.
 	mgr := NewAutostartManagerWithBroadcast(func(_ string, _ AutostartProgress) {
-		// Tiny sleep; with 10k events at ~10µs each that's ~100ms total
-		// drain wall time which is plenty of opportunity to back-pressure.
-		time.Sleep(10 * time.Microsecond)
+		runtime.Gosched()
 	})
 
-	startFn := synthStartFn(events, 0, 0)
+	// Count how often the producer found the buffer full. This makes the
+	// back-pressure an asserted observable rather than an assumption: without
+	// it, deleting the yield above would leave a fast drain that never
+	// saturates the buffer, and the test would still pass while no longer
+	// exercising the thing it is named for.
+	var blocked atomic.Int64
+	startFn := func(ctx context.Context, progress chan<- AutostartProgress) *AutostartResult {
+		for i := 0; i < events; i++ {
+			ev := AutostartProgress{
+				Phase:  PhaseScriptStarting,
+				Script: fmt.Sprintf("s%d", i),
+				Layer:  i,
+			}
+			select {
+			case progress <- ev:
+			default:
+				// Buffer full — the drain is behind. Record it, then commit to
+				// the blocking send the production emitters use.
+				blocked.Add(1)
+				select {
+				case <-ctx.Done():
+					return &AutostartResult{}
+				case progress <- ev:
+				}
+			}
+		}
+		return &AutostartResult{Scripts: []string{"synth"}}
+	}
+
 	h := mgr.GetOrCreate(pathN(0), startFn)
 	<-h.Done()
+
+	// Measured on a 6-core dev box: ~8000 of 10000 sends block with the yield in
+	// place, versus ~150 with it removed. Back-pressure does arise without the
+	// yield, but only incidentally (~1.5%) and could reach zero on another
+	// scheduler; the yield is what makes saturation the sustained norm this test
+	// is named for. Logged rather than bounded, because the exact count is
+	// scheduler-dependent and only its presence is a real invariant.
+	t.Logf("producer blocked on a full buffer %d of %d sends", blocked.Load(), events)
+	assert.Positive(t, blocked.Load(),
+		"producer never found the 64-slot buffer full, so no back-pressure was exercised: "+
+			"%d events drained without the producer ever blocking", events)
 
 	rec := h.Progress()
 	require.Len(t, rec, events+1, "all %d events + PhaseDone must be recorded", events)
