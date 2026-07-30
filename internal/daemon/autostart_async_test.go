@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -292,49 +291,24 @@ func TestRunAutostartAsync_DependencyWait(t *testing.T) {
 	clusterDir := t.TempDir()
 	d := newDaemon(t, clusterDir)
 
-	// contextCancelDuringWait: "b" waits on "a" (ephemeral unreachable port);
-	// 15 s context deadline forces cancellation.
-	t.Run("context cancel during dependency wait", func(t *testing.T) {
-		dir := t.TempDir()
-		writeConfig(t, dir, clusterBConfig(t))
-
-		progress := make(chan AutostartProgress, 200)
-		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-
-		start := time.Now()
-		result := d.RunAutostartAsync(ctx, dir, progress)
-		elapsed := time.Since(start)
-		close(progress)
-		events := drainProgress(progress)
-
-		require.NotNil(t, result, "result must not be nil")
-
-		// Must complete at or near the 15 s deadline, not hang.
-		assert.Less(t, elapsed.Seconds(), 20.0,
-			"should complete near the 15s context deadline, not hang")
-
-		// "a" should have started OR appeared in errors.
-		aStarted := false
-		for _, s := range result.Scripts {
-			if s == "a" {
-				aStarted = true
-			}
-		}
-		aErrored := false
-		for _, e := range result.Errors {
-			if strings.Contains(e, "script a:") {
-				aErrored = true
-			}
-		}
-		assert.True(t, aStarted || aErrored,
-			"script 'a' should appear in result.Scripts or result.Errors (scripts=%v errors=%v)",
-			result.Scripts, result.Errors)
-
-		// "b" must have entered dep wait.
-		assert.True(t, hasDependencyWaitEvent(events, "b", "a"),
-			"expected PhaseDependencyWaitStart for b->a")
-	})
+	// A "context cancel during dependency wait" subtest used to sit here. It set
+	// a 15s parent deadline and waited the whole thing out — 15s of gate time on
+	// every run — then asserted only that it finished, that "a" started or
+	// errored, and that "b" reached dep wait. It was deleted as dominated:
+	//
+	//   - Every observable it asserted is also asserted by "no fallback timeout
+	//     waits indefinitely" below, which additionally pins that result.Scripts
+	//     contains "a" and NOT "b", and proves the wait was genuinely ACTIVE
+	//     (it waits for PhaseDependencyWaitStart before cancelling) rather than
+	//     merely un-returned. It costs ~0.1s to prove strictly more.
+	//   - Its one distinguishable production path — waitForSingleDependency's
+	//     errors.Is(err, context.DeadlineExceeded) branch, which a parent
+	//     deadline reaches but a parent cancel does not — is already exercised by
+	//     "explicit dependency timeout still honored" below via a declared
+	//     per-dep timeout. The only difference was the timeout value
+	//     interpolated into a log line no test asserts on.
+	//
+	// Two subtests of one mechanism is double gate cost for single coverage.
 
 	// noFallbackTimeout: proves "b" stays in dep wait indefinitely (no silent
 	// 120 s fallback). Uses event-driven signal instead of a blind sleep.
@@ -393,7 +367,11 @@ func TestRunAutostartAsync_DependencyWait(t *testing.T) {
 		close(progress)
 	})
 
-	// explicitDepTimeout: per-dep timeout=2 bounds the wait even with no parent deadline.
+	// explicitDepTimeout: per-dep timeout=1 bounds the wait even with no parent
+	// deadline. 1s is the floor the config accepts: depends-on timeout=N is
+	// parsed by config.toSeconds, which truncates to whole seconds
+	// (timeout=0.5 becomes 0 == "wait indefinitely"), so sub-second is not
+	// expressible here.
 	t.Run("explicit dependency timeout still honored", func(t *testing.T) {
 		dir := t.TempDir()
 		writeConfig(t, dir, fmt.Sprintf(`
@@ -406,7 +384,7 @@ scripts {
     b {
         run "sleep 60"
         autostart true
-        depends-on "a" timeout=2
+        depends-on "a" timeout=1
     }
 }
 `, ephemeralPort(t)))
@@ -422,9 +400,19 @@ scripts {
 
 		require.NotNil(t, result, "result must not be nil")
 
-		// Explicit 2 s dep timeout must bound the wait (not 120 s fallback, not infinite).
-		assert.Less(t, elapsed.Seconds(), 30.0,
-			"explicit 2s dep timeout should bound the wait, took %v", elapsed)
+		// "a" declares an ephemeral port nothing ever binds, so its port probe
+		// never signals ready and the declared timeout is the only thing that can
+		// end the wait. A lower bound is therefore a real, load-invariant
+		// invariant (a timer cannot fire early): if the wait returns in well under
+		// 1s, something other than the declared timeout released it.
+		assert.GreaterOrEqual(t, elapsed.Seconds(), 0.9,
+			"the declared timeout=1 must be what bounds the wait; returning early means "+
+				"the dep was released by something else, took %v", elapsed)
+		// Generous liveness ceiling, not a latency budget: its job is to catch a
+		// regression that reinstates the old 120s implicit fallback (or drops the
+		// bound entirely), which is 100x away from this value.
+		assert.Less(t, elapsed.Seconds(), 10.0,
+			"explicit 1s dep timeout should bound the wait, took %v", elapsed)
 
 		assert.Contains(t, result.Scripts, "a", "script 'a' should have started")
 
