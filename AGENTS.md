@@ -195,6 +195,24 @@ Test startup contract (`Start()` vs `NewForTest`)：`.claude/rules/daemon-archit
 
 - Default port hash-based (stable, 10000-60000); traffic log 1000 entries; request/response 10KB max in logs; `/__devtool_metrics` reserved; JS injection only `text/html`; auto-restart max 5/min.
 
+### Exposure Posture (operator decision, recorded 2026-07-31)
+
+每 listener 之 exposure declared here；未declared者即 loopback，須 bind `127.0.0.1`，勿 `0.0.0.0`。
+
+| Listener | Declared posture | Why |
+|---|---|---|
+| Dev proxy (`internal/proxy/server.go`) | **potentially-public** | binds loopback, but `tunnel` (cloudflare/ngrok/tailscale) exists to expose it on request |
+| Public walkthrough plane (`internal/daemon/publish_public.go`) | **potentially-public** | off unless `AGNT_PUBLIC_ADDR` set; when set, anonymous viewers reach it |
+| `agnt publish serve` (`cmd/agnt/publish_serve.go`) | **potentially-public** | `--tunnel` is a first-class flag |
+| Overlay (`cmd/agnt/overlay.go`, `ai_overlay.go`) | loopback | developer-initiated, no exposure path |
+| Daemon control socket / named pipe | loopback | Unix socket under `$HOME`, uid-scoped |
+
+**"Potentially-public" means hardened to public standard unconditionally** — caps hold in every posture, so widening exposure is purely a routing decision and never doubles as a hardening decision. Concretely, each such listener declares: `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout`, `IdleTimeout`, `MaxHeaderBytes`, a max-concurrent-connection cap, and a **request rate cap**. Unbounded is a defect, not a default.
+
+**Rate capping is not optional on these three.** Note the asymmetry to avoid: the anonymous feedback POST route is rate-limited (`internal/publish/feedback_ratelimit.go`, token bucket per (share, IP), bounded-memory reap) but the **artifact serve route is not**. With live-upstream publishing that is an amplification vector — each artifact request to an upstream-bearing share causes an outbound fetch, so unbounded request rate becomes unbounded outbound traffic at a third-party origin. INV-13 bounds *which* origins may be fetched; it does not bound *how often*.
+
+Widening a posture is a user decision, never an agent's.
+
 ### Platform Support
 
 - **Linux/macOS**: `Setpgid: true`, SIGTERM/SIGKILL, `creack/pty`, SIGWINCH resize, PPID chain walking via `/proc/<pid>/stat`.
