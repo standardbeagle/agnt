@@ -1,0 +1,157 @@
+{
+  "schema": "get_errors_oracle_golden_v1",
+  "note": [
+    "MEASURED gap inventory between get_errors (the reference) and get_incidents (the successor).",
+    "Produced by internal/tools/get_errors_oracle_test.go, which drives both tools' real filter",
+    "builders and real projections over one shared seeded state and reflects over both schemas.",
+    "This file is a RATCHET, not a snapshot. It fails in both directions:",
+    "  - a gap closes -\u003e shrink this file in the SAME commit that closes it;",
+    "  - a new divergence appears -\u003e that is a regression, fix the code, not this file.",
+    "Regenerate with: AGNT_ORACLE_REGOLD=1 go test ./internal/tools/ -run DivergenceMatchesGolden",
+    "(the regen still fails the test on purpose, so a stale golden cannot be laundered green).",
+    "STATUSES:",
+    "  to_be_closed          - get_errors can be deleted exactly when none of these remain.",
+    "  permanently_justified - owner decision, never to be closed; rationale is inline.",
+    "  get_errors_defect     - get_incidents is BETTER here; does not block the superset,",
+    "                          recorded so the migration does not port the defect forward."
+  ],
+  "divergences": [
+    {
+      "id": "counts.semantics",
+      "kind": "behavior",
+      "status": "to_be_closed",
+      "get_errors": "error_count/warning_count = the returned, deduped, filtered set (counted before the display limit)",
+      "get_incidents": "inbox_after = whole-inbox band occupancy after the query, independent of what this page returned",
+      "detail": "MEASURED, NOT ASSUMED — and they are NOT equivalent even when the numbers happen to coincide (5 vs 5 on this seed). They answer different questions: 'how many matched your filter' vs 'how full is the inbox'. Under any filter that excludes part of the inbox, or any limit, they diverge numerically too. A migration that maps error_count onto inbox_after.error is wrong."
+    },
+    {
+      "id": "filter.limit_scope",
+      "kind": "behavior",
+      "status": "to_be_closed",
+      "get_errors": "always requests 100, then limits for display after dedup+sort",
+      "get_incidents": "forwards the caller's limit and truncates server-side",
+      "detail": "Consequence for counts, not just page size: get_errors' error_count/warning_count describe the WHOLE matching set because it counts before trimming, whereas a limited get_incidents page reports a truncated page plus whole-inbox band stats. A caller migrating a limited query gets different totals. See counts.semantics."
+    },
+    {
+      "id": "filter.since_duration_unresolved",
+      "kind": "behavior",
+      "status": "get_errors_defect",
+      "get_errors": "forwards since verbatim (e.g. \"5m\")",
+      "get_incidents": "resolves the duration to an absolute RFC3339 timestamp first",
+      "detail": "Direction is REVERSED: get_incidents is correct and get_errors is broken. The hub parses Since strictly as RFC3339, so get_errors' shim path silently ignores the duration form its own schema advertises — an unfiltered result masquerading as a filtered one. Does not block the superset; recorded so the migration does not port the defect forward, and so nobody 'fixes' get_incidents to match the reference here."
+    },
+    {
+      "id": "granularity.frame_collapse",
+      "kind": "granularity",
+      "status": "to_be_closed",
+      "get_errors": "keeps 2 entries (frame_id is in dedupKey)",
+      "get_incidents": "keeps 1 entry (fingerprint = sha256(source|category|canonical_msg|url), no frame identity)",
+      "detail": "The superset fails here on GRANULARITY, not on fields — and this is strictly worse than a missing column. Adding frame_id to the incident record would not fix it: the two occurrences were already merged upstream at fingerprint time, so one of them no longer exists to be labelled. Closing this requires frame identity inside incident.NewIncidentEvent's fingerprint, not just in protocol.IncidentContext. Under the always-wrap model (docs/responsive-canonical-target.md §5.2/§6.2) each content frame is a distinct context, so collapsing them hides a real second failure."
+    },
+    {
+      "id": "input.action",
+      "kind": "input_field",
+      "status": "to_be_closed",
+      "get_errors": "action: query|pin|unpin|clear",
+      "get_incidents": "(absent)",
+      "detail": "get_incidents has no retention verb at all. Without pin/unpin/clear an agent cannot keep an error alive across an auto-clear, so the whole retention feature is unmigrated."
+    },
+    {
+      "id": "input.error_id",
+      "kind": "input_field",
+      "status": "to_be_closed",
+      "get_errors": "error_id: pin/unpin target",
+      "get_incidents": "(absent)",
+      "detail": "fingerprints[] is the identity analogue on the incidents side, but it only SELECTS records; there is no action to apply to the selection. Closing input.action without this leaves pins untargetable."
+    },
+    {
+      "id": "input.global",
+      "kind": "input_field",
+      "status": "permanently_justified",
+      "get_errors": "global: cross-project query",
+      "get_incidents": "(absent)",
+      "detail": "Deliberately excluded from the superset. get_errors keeps it; get_incidents must not gain it.",
+      "rationale": "Owner decision: global was a debugging affordance, not a production use case. The incident inbox is per-session hard-isolated (numbered contract 1, .claude/rules/daemon-architecture.md) — a stronger guarantee than project scoping. Closing this gap would mean weakening that isolation, which is expressly forbidden. This entry is permanent and must NOT be removed when the others are."
+    },
+    {
+      "id": "input.tag",
+      "kind": "input_field",
+      "status": "to_be_closed",
+      "get_errors": "tag: note stored with a pin",
+      "get_incidents": "(absent)",
+      "detail": "Agent-authored annotation attached at pin time. No incident-side store for caller-supplied metadata."
+    },
+    {
+      "id": "item.frame_id",
+      "kind": "item_field",
+      "status": "to_be_closed",
+      "get_errors": "frame_id: the emitting content frame (always-wrap model)",
+      "get_incidents": "(absent)",
+      "detail": "Absent from protocol.IncidentContext. This is the field gap; its consequence is the separate, worse granularity.frame_collapse divergence below."
+    },
+    {
+      "id": "item.location",
+      "kind": "item_field",
+      "status": "to_be_closed",
+      "get_errors": "location: file:line:col of the first app stack frame",
+      "get_incidents": "(absent)",
+      "detail": "MEASURED, NOT ASSUMED: protocol.IncidentContext carries process_id/proxy_id/session_id/project_path/url/pid/port and no location. Note the pipeline does not discard it out of ignorance — incident.NewIncidentEvent folds ctx.URL into the fingerprint as its 'location' argument — but the source-level file:line:col never enters the envelope and is therefore unrecoverable from a record."
+    },
+    {
+      "id": "item.pinned",
+      "kind": "item_field",
+      "status": "to_be_closed",
+      "get_errors": "pinned: entry survives limit and auto-clear",
+      "get_incidents": "(absent)",
+      "detail": "Without a per-item pinned flag, pinning is unobservable even if input.action lands — the agent cannot tell which entries it saved."
+    },
+    {
+      "id": "item.tag",
+      "kind": "item_field",
+      "status": "to_be_closed",
+      "get_errors": "tag: the note stored at pin time",
+      "get_incidents": "(absent)",
+      "detail": "Read side of input.tag. Same dependency: useless until item.pinned and input.action exist."
+    },
+    {
+      "id": "output.collection_warnings",
+      "kind": "output_field",
+      "status": "to_be_closed",
+      "get_errors": "collection_warnings[]: per-source query failures",
+      "get_incidents": "(absent)",
+      "detail": "THE ONE THAT MATTERS MOST. Its whole purpose is that a source which failed to answer never presents as a clean '0 errors'. get_incidents distinguishes only 'inbox unavailable' (pipeline_enabled=false) from 'inbox empty' — it cannot say 'the inbox answered but the proxy log query failed'. Retiring get_errors without this reintroduces a Silent Failure Prohibition violation."
+    },
+    {
+      "id": "output.summary",
+      "kind": "output_field",
+      "status": "to_be_closed",
+      "get_errors": "summary: rendered text in the typed output struct",
+      "get_incidents": "(absent)",
+      "detail": "Transport difference rather than lost information: get_incidents renders the same compact text into the CallToolResult content instead of a typed output field. Callers that read the struct (not the content) see nothing. Low severity, but it is a real shape change for the migration."
+    },
+    {
+      "id": "projection.severity_scale_critical",
+      "kind": "behavior",
+      "status": "get_errors_defect",
+      "get_errors": "folds critical → error (two-level error/warning scale)",
+      "get_incidents": "preserves critical as a distinct band",
+      "detail": "Direction is REVERSED: get_incidents carries strictly more information. A get_errors caller cannot tell a critical from an ordinary error. Recorded so the migration does not re-flatten the scale to match the reference."
+    },
+    {
+      "id": "projection.severity_scale_info",
+      "kind": "behavior",
+      "status": "get_errors_defect",
+      "get_errors": "folds info → warning (two-level error/warning scale)",
+      "get_incidents": "preserves info as a distinct band",
+      "detail": "Direction is REVERSED: get_incidents carries strictly more information. A get_errors caller cannot tell a critical from an ordinary error. Recorded so the migration does not re-flatten the scale to match the reference."
+    },
+    {
+      "id": "projection.source_vocabulary",
+      "kind": "behavior",
+      "status": "to_be_closed",
+      "get_errors": "colon-delimited: browser:js process: proxy:diagnostic proxy:http startup",
+      "get_incidents": "underscore enum: browser_js http_5xx http_4xx proxy_diag process_alert build_fail …",
+      "detail": "UNPREDICTED. get_errors itself speaks two vocabularies: its legacy collectors emit browser:js / proxy:http / proxy:diagnostic / process:\u003cid\u003e, while its incident shim passes the pipeline's enum through verbatim. So the same tool labels the same error differently depending on which path served it. Any caller (or doc, or saved filter) keyed on the legacy strings breaks on migration, and get_incidents' sources[] filter accepts only the enum form."
+    }
+  ]
+}
