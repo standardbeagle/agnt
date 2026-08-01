@@ -304,6 +304,7 @@ var declaredCovered = map[string]string{
 	"GetErrorsInput.include_warnings": "measured by the filter.severity_default and filter.severity_exclusion_inexpressible behaviour probes. severity[] is the incidents-side spelling, so a name probe would report a false gap; the probes instead assert that the DEFAULTS agree and that the exclusion round-trips — which is the substance of the claim.",
 	"GetErrorsOutput.error_count":     "measured by the counts.semantics behaviour probe, which compares the matched-set count against inbox band occupancy numerically. A name probe would double-count the same divergence.",
 	"GetErrorsOutput.warning_count":   "measured by the counts.semantics behaviour probe (same reason as error_count).",
+	"unifiedError.location":           "measured by the item.location REACHABILITY probe rather than by name. A name probe answers 'does a field bear this name', which is the wrong question for a fact that migrates into free text: the browser adapter concatenates the stack onto the message, so the location can arrive inside Summary even though nothing is called 'location'. The probe therefore drives the real adapter over several shapes and asks whether the value is recoverable at all.",
 }
 
 func probeFields(probes []fieldProbe, incidentNames map[string]bool) []divergence {
@@ -362,8 +363,10 @@ func inputGapProbes() []fieldProbe {
 			errDesc:      "action: query|pin|unpin|clear",
 			detail:       "get_incidents has no retention verb at all. Without pin/unpin/clear an agent cannot keep an error alive across an auto-clear, so the whole retention feature is unmigrated.",
 			availability: availabilityDataMissing,
-			availabilityReason: "Retention is the mechanism by which data stays reachable at all: the inbox evicts the oldest entry once a band hits its 100-entry cap (numbered contract 5), " +
-				"and with no pin verb a caller has no way to keep a specific incident alive. The entry is destroyed and no reshaping recovers it.",
+			availabilityReason: "MECHANISMS CONSULTED: capability absence plus a type scan of internal/incident — no pin verb exists on any surface, and no type in the " +
+				"package carries retention state, so there is no field, summary text or blob for the behaviour to hide in. Retention is what keeps data " +
+				"reachable at all: the inbox evicts the oldest entry once a band hits defaultBandCapacity (numbered contract 5), and with no way to mark an " +
+				"incident the agent needs, that entry is destroyed outright. Not a naming gap — there is no write path to rename.",
 		},
 		{
 			field: "error_id",
@@ -372,8 +375,9 @@ func inputGapProbes() []fieldProbe {
 			errDesc:      "error_id: pin/unpin target",
 			detail:       "fingerprints[] is the identity analogue on the incidents side, but it only SELECTS records; there is no action to apply to the selection. Closing input.action without this leaves pins untargetable.",
 			availability: availabilityDataMissing,
-			availabilityReason: "Blocks for the same reason as input.action and must not be demoted separately from it: a retention verb with nothing to address preserves nothing, " +
-				"so closing input.action alone would leave the eviction data loss fully open.",
+			availabilityReason: "MECHANISM CONSULTED: capability absence, same scan as input.action. fingerprints[] selects records but no verb applies anything to the " +
+				"selection. Blocks jointly with input.action and must not be demoted separately from it: a retention verb with nothing to address preserves " +
+				"nothing, so closing input.action alone would leave the eviction loss fully open.",
 		},
 		{
 			field: "tag",
@@ -382,8 +386,9 @@ func inputGapProbes() []fieldProbe {
 			errDesc:      "tag: note stored with a pin",
 			detail:       "Agent-authored annotation attached at pin time. No incident-side store for caller-supplied metadata.",
 			availability: availabilityDataMissing,
-			availabilityReason: "Caller-authored content that exists nowhere else: nothing in the incident pipeline stores caller-supplied metadata, so a tag written through get_errors " +
-				"is not reachable through get_incidents in any shape.",
+			availabilityReason: "MECHANISMS CONSULTED: store absence and provenance. A type scan of internal/incident finds nowhere to put caller-supplied metadata — no " +
+				"field, and no free-text carrier either, because the value ORIGINATES with the caller rather than with an upstream signal, so no message or " +
+				"blob could carry it even in principle. Unreachable in every shape, not renamed.",
 		},
 		{
 			field: "global",
@@ -408,8 +413,9 @@ func outputProbes() []fieldProbe {
 			candidates:   []string{"collection_warnings", "inbox_after.collection_warnings"},
 			errDesc:      "collection_warnings[]: per-source query failures",
 			availability: availabilityDataMissing,
-			availabilityReason: "No partial-collection signal is produced anywhere in the pipeline, so there is nothing for a caller to reach: a source that failed to answer is " +
-				"indistinguishable from a source with nothing to report. This is absence of information, not a different shape of it.",
+			availabilityReason: "MECHANISM CONSULTED: signal provenance, searched across internal/incident and internal/protocol — no partial-collection signal is " +
+				"PRODUCED anywhere, so there is no field, summary text or blob that could carry it under another name. The information is never created, " +
+				"which is the strongest form of unreachable: a source that failed to answer is indistinguishable from a source with nothing to report.",
 			detail: "THE ONE THAT MATTERS MOST. Its whole purpose is that a source which failed to answer never presents as a clean '0 errors'. get_incidents distinguishes only 'inbox unavailable' (pipeline_enabled=false) from 'inbox empty' — it cannot say 'the inbox answered but the proxy log query failed'. Retiring get_errors without this reintroduces a Silent Failure Prohibition violation.",
 		},
 		{
@@ -418,8 +424,8 @@ func outputProbes() []fieldProbe {
 			candidates:   []string{"summary"},
 			errDesc:      "summary: rendered text in the typed output struct",
 			availability: availabilityPresentationDiffers,
-			availabilityReason: "The same rendered text is returned, in the CallToolResult content instead of a typed struct field. Every caller receives it; only the transport " +
-				"differs, which is the definition of a presentation difference under the availability bar.",
+			availabilityReason: "MECHANISM CONSULTED: the CallToolResult content, not the typed struct. The same rendered text is returned there, so every caller " +
+				"receives it and only the transport differs — the definition of a presentation difference under the availability bar.",
 			detail: "Transport difference rather than lost information: get_incidents renders the same compact text into the CallToolResult content instead of a typed output field. Callers that read the struct (not the content) see nothing. Low severity, but it is a real shape change for the migration.",
 		},
 	}
@@ -464,28 +470,20 @@ func itemGapProbes() []fieldProbe {
 			candidates:   []string{"pinned", "context.pinned"},
 			errDesc:      "pinned: entry survives limit and auto-clear",
 			availability: availabilityDataMissing,
-			availabilityReason: "Read side of retention: with no per-item flag anywhere on the incidents side, which entries were preserved is not observable by any caller, " +
-				"so the retention state itself is unreachable rather than differently spelled.",
+			availabilityReason: "MECHANISMS CONSULTED: field name plus a type scan of IncidentEvent / IncidentRecord / protocol.IncidentContext, none of which carry " +
+				"retention state — and it is not derivable from summary text either, since no upstream signal knows about pinning. Which entries were " +
+				"preserved is therefore unobservable, not differently spelled.",
 			detail: "Without a per-item pinned flag, pinning is unobservable even if input.action lands — the agent cannot tell which entries it saved.",
 		},
 		{
 			field: "tag",
 			id:    "item.tag", kind: "item_field", status: statusToBeClosed,
-			candidates:         []string{"tag", "context.tag"},
-			errDesc:            "tag: the note stored at pin time",
-			availability:       availabilityDataMissing,
-			availabilityReason: "Read side of input.tag: the note is neither stored nor surfaced on the incidents side, so the caller's own annotation cannot be read back at all.",
-			detail:             "Read side of input.tag. Same dependency: useless until item.pinned and input.action exist.",
-		},
-		{
-			field: "location",
-			id:    "item.location", kind: "item_field", status: statusToBeClosed,
-			candidates:   []string{"location", "context.location"},
-			errDesc:      "location: file:line:col of the first app stack frame",
+			candidates:   []string{"tag", "context.tag"},
+			errDesc:      "tag: the note stored at pin time",
 			availability: availabilityDataMissing,
-			availabilityReason: "The source-level file:line:col never enters the envelope, so it is not present in any record a caller can read — unrecoverable, not reshaped. " +
-				"(ctx.URL is folded into the fingerprint as the event's 'location', which is a different fact.)",
-			detail: "MEASURED, NOT ASSUMED: protocol.IncidentContext carries process_id/proxy_id/session_id/project_path/url/pid/port and no location. Note the pipeline does not discard it out of ignorance — incident.NewIncidentEvent folds ctx.URL into the fingerprint as its 'location' argument — but the source-level file:line:col never enters the envelope and is therefore unrecoverable from a record.",
+			availabilityReason: "MECHANISMS CONSULTED: same type scan as input.tag, from the read side. The note is neither stored nor rendered anywhere, and being " +
+				"caller-authored it has no upstream text to ride in on, so it cannot be read back in any shape.",
+			detail: "Read side of input.tag. Same dependency: useless until item.pinned and input.action exist.",
 		},
 		{
 			field: "frame_id",
@@ -493,8 +491,10 @@ func itemGapProbes() []fieldProbe {
 			candidates:   []string{"frame_id", "context.frame_id"},
 			errDesc:      "frame_id: the emitting content frame (always-wrap model)",
 			availability: availabilityDataMissing,
-			availabilityReason: "Which content frame raised the error is never carried into incident.Context, so under the always-wrap model (where each content frame is a distinct " +
-				"context) the failing surface cannot be identified by any caller.",
+			availabilityReason: "MECHANISMS CONSULTED: context struct AND the adapter's own signature — the free-text route is checked, not assumed away. " +
+				"incident.Context has no frame field, and decisively FromFrontendError(fe, proxyID) is never PASSED the frame id, so unlike location it " +
+				"cannot appear in Summary or the hydrated blob either. Under the always-wrap model each content frame is a distinct failing surface, and " +
+				"which one failed is unidentifiable by any caller.",
 			detail: "Absent from protocol.IncidentContext. This is the field gap; its consequence is the separate, worse granularity.frame_collapse divergence below.",
 		},
 	}
@@ -502,6 +502,125 @@ func itemGapProbes() []fieldProbe {
 
 func computeItemDivergences() []divergence {
 	return probeFields(itemProbes(), nameSet(jsonFieldNames(reflect.TypeOf(incidentView{}), "")))
+}
+
+// computeLocationDivergence measures whether get_errors' location is REACHABLE
+// through get_incidents, which is a different question from whether any field
+// is named "location".
+//
+// It is a name probe's blind spot made explicit. incident.FromFrontendError
+// concatenates the stack onto the message, and Canonicalize deliberately keeps
+// the first app frame's line:col intact, so for a short error the file:line:col
+// arrives verbatim inside Summary and IS reachable — a name probe would have
+// scored that "missing" and over-blocked the deletion.
+//
+// So this drives the real adapter over the shapes that actually occur and asks,
+// per shape, whether the value survives anywhere a caller can read it: Summary
+// (capped at incident's 200-byte summary limit) or the full payload that
+// detail:"full" hydrates (kept only for messages over 1KB).
+func computeLocationDivergence() []divergence {
+	// A named field would carry it outright; that closes the gap regardless of
+	// what the text does, so it stays the first question.
+	names := nameSet(jsonFieldNames(reflect.TypeOf(incidentView{}), ""))
+	if names["location"] || names["context.location"] {
+		return nil
+	}
+
+	cases := []struct {
+		name string
+		fe   proxy.FrontendError
+	}{
+		{
+			// Short error: the whole message+stack fits under the summary cap.
+			name: "short stack",
+			fe: proxy.FrontendError{
+				Message:   "TypeError: Cannot read property 'id' of undefined",
+				Stack:     "at submitOrder (/src/checkout.js:42:15)",
+				URL:       seedPage,
+				Timestamp: seedClock,
+			},
+		},
+		{
+			// The ordinary real-world shape: framework frames precede the app
+			// frame, so the app frame is the part the summary cap cuts.
+			name: "deep stack behind vendor frames",
+			fe: proxy.FrontendError{
+				Message: "TypeError: Cannot read property 'id' of undefined",
+				Stack: strings.Join([]string{
+					"    at Object.invokeGuardedCallbackDev (/node_modules/react-dom/cjs/react-dom.development.js:4213:16)",
+					"    at invokeGuardedCallback (/node_modules/react-dom/cjs/react-dom.development.js:4277:31)",
+					"    at beginWork$1 (/node_modules/react-dom/cjs/react-dom.development.js:27451:7)",
+					"    at submitOrder (/src/checkout.js:42:15)",
+				}, "\n"),
+				URL:       seedPage,
+				Timestamp: seedClock,
+			},
+		},
+		{
+			// No stack at all: get_errors falls back to fe.Source:LineNo:ColNo,
+			// fields the adapter never reads.
+			name: "no stack, source/line/col fields only",
+			fe: proxy.FrontendError{
+				Message:   "TypeError: boom",
+				Source:    "/src/checkout.js",
+				LineNo:    42,
+				ColNo:     15,
+				URL:       seedPage,
+				Timestamp: seedClock,
+			},
+		},
+	}
+
+	var lost []string
+	reachable := 0
+	for _, c := range cases {
+		ues := convertJSErrorDirect(seedProxy, &c.fe, seedFrameA)
+		if len(ues) == 0 || ues[0].Location == "" {
+			continue // get_errors surfaces no location here, so nothing is owed
+		}
+		loc := ues[0].Location
+		ev := incident.FromFrontendError(c.fe, seedProxy)
+
+		// Everything a caller can read: the summary, plus the full payload that
+		// detail:"full" hydrates. NewIncidentEvent only preserves the full bytes
+		// past 1KB, so between the summary cap and that threshold the remainder
+		// is simply dropped.
+		full := c.fe.Message
+		if c.fe.Stack != "" {
+			full = c.fe.Message + "\n" + c.fe.Stack
+		}
+		hydratable := len(full) > 1024
+
+		if strings.Contains(ev.Summary, loc) || (hydratable && strings.Contains(full, loc)) {
+			reachable++
+			continue
+		}
+		lost = append(lost, c.name+" ("+strconv.Itoa(len(full))+"B message, summary capped at "+strconv.Itoa(len(ev.Summary))+"B)")
+	}
+
+	if len(lost) == 0 {
+		return nil // reachable in every shape measured — the gap is closed
+	}
+
+	return []divergence{{
+		ID: "item.location", Kind: "item_field", Status: statusToBeClosed,
+		Availability: availabilityDataMissing,
+		AvailabilityReason: "MECHANISMS CONSULTED: field name, summary text, blob hydration, and the adapter's own inputs — not the field name alone. " +
+			"The name check is genuinely refuted: incident.FromFrontendError appends the stack to the message and Canonicalize keeps the first app " +
+			"frame intact, so for a short error the file:line:col DOES arrive verbatim in Summary and is reachable (" + strconv.Itoa(reachable) +
+			" of " + strconv.Itoa(reachable+len(lost)) + " measured shapes). It still blocks because the remaining shapes destroy it outright: " +
+			strings.Join(lost, "; ") + ". Two distinct mechanisms do the destroying — a message over the 200-byte summary cap but under the 1KB " +
+			"blob threshold has its tail dropped with nothing to hydrate, and the stackless branch builds its location from fe.Source/LineNo/ColNo, " +
+			"fields FromFrontendError never reads at all. Both are ordinary shapes, not edge cases: framework frames routinely precede the app frame.",
+		GetErrors:    "location: file:line:col of the first app stack frame (extractFirstAppFrame, else fe.Source:LineNo:ColNo)",
+		GetIncidents: "(no field; recoverable from Summary text only while the message stays under the summary cap)",
+		Detail: "MEASURED THROUGH THE REAL ADAPTER, not by field name — the earlier claim that location 'never enters the envelope' was FALSE and is " +
+			"retracted. protocol.IncidentContext carries no location, but incident.FromFrontendError folds fe.Stack into the message, so the value " +
+			"reaches Summary for short errors. The gap is therefore narrower and better defined than a missing column: closing it means either a " +
+			"first-class location field, or a guarantee that the first app frame survives truncation (e.g. extracting it before the 200-byte cap " +
+			"applies). Note the pipeline does not discard it out of ignorance — NewIncidentEvent folds ctx.URL into the fingerprint as its " +
+			"'location' argument, which is a different fact.",
+	}}
 }
 
 // ─── measured behaviour ──────────────────────────────────────────────────────
@@ -551,8 +670,8 @@ func computeFilterDivergences() []divergence {
 		out = append(out, divergence{
 			ID: "filter.limit_scope", Kind: "behavior", Status: statusToBeClosed,
 			Availability: availabilityPresentationDiffers,
-			AvailabilityReason: "The whole matching set stays reachable: get_incidents is a cursor-based pull, so a caller that wants everything pages for it. " +
-				"Only where the truncation happens differs.",
+			AvailabilityReason: "MECHANISM CONSULTED: cursor paging. get_incidents is a cursor-based pull, so the whole matching set stays reachable to a caller that " +
+				"pages for it; only where the truncation happens differs.",
 			GetErrors:    "always requests 100, then limits for display after dedup+sort",
 			GetIncidents: "forwards the caller's limit and truncates server-side",
 			Detail:       "Consequence for counts, not just page size: get_errors' error_count/warning_count describe the WHOLE matching set because it counts before trimming, whereas a limited get_incidents page reports a truncated page plus whole-inbox band stats. A caller migrating a limited query gets different totals. See counts.semantics.",
@@ -666,8 +785,8 @@ func computeProjectionDivergences() []divergence {
 		out = append(out, divergence{
 			ID: "projection.source_vocabulary", Kind: "behavior", Status: statusToBeClosed,
 			Availability: availabilityPresentationDiffers,
-			AvailabilityReason: "Both vocabularies name the same sources and every legacy label has an enum counterpart, so the origin of an error is fully reachable; " +
-				"only the spelling differs. It is a migration cost for saved filters and docs, not lost information.",
+			AvailabilityReason: "MECHANISM CONSULTED: label mapping between the two vocabularies. Every legacy label has an enum counterpart naming the same source, so " +
+				"the origin of an error is fully reachable and only the spelling differs — a migration cost for saved filters and docs, not lost information.",
 			GetErrors:    "colon-delimited: " + strings.Join(unmatched, " "),
 			GetIncidents: "underscore enum: browser_js http_5xx http_4xx proxy_diag process_alert build_fail …",
 			Detail:       "UNPREDICTED. get_errors itself speaks two vocabularies: its legacy collectors emit browser:js / proxy:http / proxy:diagnostic / process:<id>, while its incident shim passes the pipeline's enum through verbatim. So the same tool labels the same error differently depending on which path served it. Any caller (or doc, or saved filter) keyed on the legacy strings breaks on migration, and get_incidents' sources[] filter accepts only the enum form.",
@@ -705,8 +824,8 @@ func computeProjectionDivergences() []divergence {
 		out = append(out, divergence{
 			ID: "counts.semantics", Kind: "behavior", Status: statusToBeClosed,
 			Availability: availabilityPresentationDiffers,
-			AvailabilityReason: "The matched records themselves are returned, so 'how many matched my filter' is countable by the caller from the response; " +
-				"only which count the tool chooses to report differs. No underlying fact is destroyed.",
+			AvailabilityReason: "MECHANISM CONSULTED: the returned record set. The matched records themselves come back, so 'how many matched my filter' is countable " +
+				"client-side; only which count the tool chooses to report differs. No underlying fact is destroyed.",
 			GetErrors:    "error_count/warning_count = the returned, deduped, filtered set (counted before the display limit)",
 			GetIncidents: "inbox_after = whole-inbox band occupancy after the query, independent of what this page returned",
 			Detail: "MEASURED, NOT ASSUMED, and genuinely closeable: this fires only while the two quantities actually disagree on the seed AND " +
@@ -762,7 +881,8 @@ func computeGranularityDivergences() []divergence {
 		out = append(out, divergence{
 			ID: "granularity.frame_collapse", Kind: "granularity", Status: statusToBeClosed,
 			Availability: availabilityDataMissing,
-			AvailabilityReason: "DELIBERATE BLOCKING CALL, not a default. The availability bar does not decide this one by itself, so the reasoning is recorded here. " +
+			AvailabilityReason: "MECHANISM CONSULTED: fingerprint computation in incident.NewIncidentEvent, measured above by building both occurrences through the " +
+				"real constructor and comparing fingerprints — not a field-name check. DELIBERATE BLOCKING CALL, not a default. The availability bar does not decide this one by itself, so the reasoning is recorded here. " +
 				"The merged incident still reports HOW MANY times the error fired, so that fact survives; what does not survive is 'it also fired in frame B', " +
 				"which is a distinct fact about a distinct failing surface and is destroyed at fingerprint time — no caller-side operation recovers it. " +
 				"It blocks INDEPENDENTLY of item.frame_id, and that independence is the point: the cheap fix to that field (adding frame_id to " +
@@ -785,6 +905,7 @@ func computeInventory() []divergence {
 	all = append(all, computeInputDivergences()...)
 	all = append(all, computeOutputDivergences()...)
 	all = append(all, computeItemDivergences()...)
+	all = append(all, computeLocationDivergence()...)
 	all = append(all, computeFilterDivergences()...)
 	all = append(all, computeProjectionDivergences()...)
 	all = append(all, computeGranularityDivergences()...)
