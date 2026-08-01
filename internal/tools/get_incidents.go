@@ -96,33 +96,7 @@ Examples:
 
 func makeGetIncidentsHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolRequest, GetIncidentsInput) (*mcp.CallToolResult, GetIncidentsOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input GetIncidentsInput) (*mcp.CallToolResult, GetIncidentsOutput, error) {
-		limit := input.Limit
-		if limit <= 0 {
-			limit = 20
-		}
-		if limit > 100 {
-			limit = 100
-		}
-
-		// The hub parses Since strictly as RFC3339, so a duration form like "5m"
-		// (which the schema advertises) would be silently ignored there. Resolve
-		// it to an absolute RFC3339 timestamp here where duration parsing lives.
-		since := input.Since
-		if t := parseSince(input.Since); t != nil && !t.IsZero() {
-			since = t.Format(time.RFC3339)
-		}
-
-		filter := protocol.IncidentQueryFilter{
-			Severities:   input.Severity,
-			Since:        since,
-			Fingerprints: input.Fingerprints,
-			Sources:      input.Sources,
-			ProxyID:      input.ProxyID,
-			ProcessID:    input.ProcessID,
-			Detail:       input.Detail,
-			MarkRead:     input.MarkRead,
-			Limit:        limit,
-		}
+		filter := buildGetIncidentsFilter(input)
 
 		if dt == nil {
 			return fail[GetIncidentsOutput]("incident query unavailable: no daemon client")
@@ -205,6 +179,40 @@ func makeGetIncidentsHandler(dt *DaemonTools) func(context.Context, *mcp.CallToo
 		}
 
 		return mcpText(formatIncidentsCompact(output)), output, nil
+	}
+}
+
+// buildGetIncidentsFilter translates a get_incidents query into an inbox
+// filter. Extracted from the handler so the get_errors/get_incidents oracle can
+// compare both tools' filter construction against the real code rather than a
+// re-derived copy of it — see get_errors_oracle_test.go.
+func buildGetIncidentsFilter(input GetIncidentsInput) protocol.IncidentQueryFilter {
+	limit := input.Limit
+	if limit <= 0 {
+		limit = 20
+	}
+	if limit > 100 {
+		limit = 100
+	}
+
+	// The hub parses Since strictly as RFC3339, so a duration form like "5m"
+	// (which the schema advertises) would be silently ignored there. Resolve
+	// it to an absolute RFC3339 timestamp here where duration parsing lives.
+	since := input.Since
+	if t := parseSince(input.Since); t != nil && !t.IsZero() {
+		since = t.Format(time.RFC3339)
+	}
+
+	return protocol.IncidentQueryFilter{
+		Severities:   input.Severity,
+		Since:        since,
+		Fingerprints: input.Fingerprints,
+		Sources:      input.Sources,
+		ProxyID:      input.ProxyID,
+		ProcessID:    input.ProcessID,
+		Detail:       input.Detail,
+		MarkRead:     input.MarkRead,
+		Limit:        limit,
 	}
 }
 

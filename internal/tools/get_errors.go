@@ -140,6 +140,24 @@ func resolveEffectiveGlobal(explicit *bool, resolveDefault func() (bool, error))
 // uses compatibility collectors. Incident fingerprints become the unified-error
 // ID so get_errors and get_incidents share IDs.
 func (dt *DaemonTools) collectIncidentErrors(input GetErrorsInput, includeWarnings bool) ([]unifiedError, bool) {
+	res, err := dt.client.IncidentQuery(buildGetErrorsIncidentFilter(input, includeWarnings))
+	if err != nil || res == nil || !res.PipelineEnabled {
+		return nil, false
+	}
+
+	out := make([]unifiedError, 0, len(res.Incidents))
+	for _, rec := range res.Incidents {
+		out = append(out, incidentRecordToUnifiedError(rec))
+	}
+	return out, true
+}
+
+// buildGetErrorsIncidentFilter translates a get_errors query into the inbox
+// filter its shim path issues. Extracted from collectIncidentErrors so the
+// get_errors/get_incidents oracle can compare the two tools' filter
+// construction directly instead of re-deriving (and thereby only asserting a
+// copy of) it — see get_errors_oracle_test.go.
+func buildGetErrorsIncidentFilter(input GetErrorsInput, includeWarnings bool) protocol.IncidentQueryFilter {
 	filter := protocol.IncidentQueryFilter{
 		ProcessID: input.ProcessID,
 		ProxyID:   input.ProxyID,
@@ -151,17 +169,7 @@ func (dt *DaemonTools) collectIncidentErrors(input GetErrorsInput, includeWarnin
 	if !includeWarnings {
 		filter.Severities = []string{"critical", "error"}
 	}
-
-	res, err := dt.client.IncidentQuery(filter)
-	if err != nil || res == nil || !res.PipelineEnabled {
-		return nil, false
-	}
-
-	out := make([]unifiedError, 0, len(res.Incidents))
-	for _, rec := range res.Incidents {
-		out = append(out, incidentRecordToUnifiedError(rec))
-	}
-	return out, true
+	return filter
 }
 
 // incidentRecordToUnifiedError maps an incident inbox record onto the unified
