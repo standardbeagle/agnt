@@ -46,7 +46,7 @@ const indexContent = `/**
  *   }
  *
  * For more information, see:
- *   https://standardbeagle.github.io/devtool-mcp/
+ *   https://dev.standardbeagle.com/devtool-mcp/
  */
 
 const path = require('path');

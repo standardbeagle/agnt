@@ -49,8 +49,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://standardbeagle.github.io/agnt/"
-Documentation = "https://standardbeagle.github.io/agnt/"
+Homepage = "https://dev.standardbeagle.com/agnt/"
+Documentation = "https://dev.standardbeagle.com/agnt/"
 Repository = "https://github.com/standardbeagle/agnt"
 Issues = "https://github.com/standardbeagle/agnt/issues"
 Changelog = "https://github.com/standardbeagle/agnt/blob/main/CHANGELOG.md"

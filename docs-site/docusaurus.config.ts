@@ -12,7 +12,7 @@ const config: Config = {
   },
 
   // GitHub Pages configuration
-  url: 'https://standardbeagle.github.io',
+  url: 'https://dev.standardbeagle.com',
   baseUrl: '/agnt/',
 
   // GitHub repository info
@@ -39,7 +39,7 @@ const config: Config = {
         applicationCategory: 'DeveloperApplication',
         operatingSystem: 'Linux, macOS, Windows',
         description: 'Browser superpowers for AI coding agents. Screenshots, DOM inspection, error capture, and visual debugging via MCP.',
-        url: 'https://standardbeagle.github.io/agnt/',
+        url: 'https://dev.standardbeagle.com/agnt/',
         offers: {
           '@type': 'Offer',
           price: '0',
@@ -80,7 +80,7 @@ const config: Config = {
     metadata: [
       {name: 'keywords', content: 'MCP server, browser debugging, AI coding agent, Claude Code, Cursor, Windsurf, frontend debugging, error tracking, DOM inspection, screenshots'},
       {name: 'og:type', content: 'website'},
-      {name: 'og:image', content: 'https://standardbeagle.github.io/agnt/img/docusaurus-social-card.jpg'},
+      {name: 'og:image', content: 'https://dev.standardbeagle.com/agnt/img/docusaurus-social-card.jpg'},
       {name: 'twitter:card', content: 'summary_large_image'},
     ],
     colorMode: {

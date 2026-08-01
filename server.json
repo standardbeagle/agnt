@@ -3,7 +3,7 @@
   "name": "io.github.standardbeagle/devtool-mcp",
   "description": "Development tooling MCP server with process management, proxy, and frontend diagnostics",
   "title": "DevTool MCP",
-  "websiteUrl": "https://standardbeagle.github.io/devtool-mcp/",
+  "websiteUrl": "https://dev.standardbeagle.com/devtool-mcp/",
   "repository": {
     "url": "https://github.com/standardbeagle/devtool-mcp",
     "source": "github"

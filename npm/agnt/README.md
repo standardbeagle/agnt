@@ -139,7 +139,7 @@ proxies {
 ## Documentation
 
 - [GitHub](https://github.com/standardbeagle/agnt)
-- [Full Docs](https://standardbeagle.github.io/agnt/)
+- [Full Docs](https://dev.standardbeagle.com/agnt/)
 
 ## License
 
