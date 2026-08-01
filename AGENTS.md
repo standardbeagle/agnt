@@ -197,17 +197,19 @@ Test startup contract (`Start()` vs `NewForTest`)：`.claude/rules/daemon-archit
 
 ### Exposure Posture (operator decision, recorded 2026-07-31)
 
-每 listener 之 exposure declared here；未declared者即 loopback，須 bind `127.0.0.1`，勿 `0.0.0.0`。
+**Shipped default is loopback for every listener, without exception.** Bind `127.0.0.1`, never `0.0.0.0`. Exposure widens only by explicit operator action, never by install default and never by an agent's choice.
 
-| Listener | Declared posture | Why |
+| Listener | Shipped default | Widened only by |
 |---|---|---|
-| Dev proxy (`internal/proxy/server.go`) | **potentially-public** | binds loopback, but `tunnel` (cloudflare/ngrok/tailscale) exists to expose it on request |
-| Public walkthrough plane (`internal/daemon/publish_public.go`) | **potentially-public** | off unless `AGNT_PUBLIC_ADDR` set; when set, anonymous viewers reach it |
-| `agnt publish serve` (`cmd/agnt/publish_serve.go`) | **potentially-public** | `--tunnel` is a first-class flag |
-| Overlay (`cmd/agnt/overlay.go`, `ai_overlay.go`) | loopback | developer-initiated, no exposure path |
-| Daemon control socket / named pipe | loopback | Unix socket under `$HOME`, uid-scoped |
+| Dev proxy (`internal/proxy/server.go`) | loopback | `tunnel` |
+| Public walkthrough plane (`internal/daemon/publish_public.go`) | **off** (no listener) | setting `AGNT_PUBLIC_ADDR` |
+| `agnt publish serve` (`cmd/agnt/publish_serve.go`) | loopback | `--tunnel` |
+| Overlay (`cmd/agnt/overlay.go`, `ai_overlay.go`) | loopback | nothing — no exposure path |
+| Daemon control socket / named pipe | loopback | nothing — uid-scoped socket under `$HOME` |
 
-**"Potentially-public" means hardened to public standard unconditionally** — caps hold in every posture, so widening exposure is purely a routing decision and never doubles as a hardening decision. Concretely, each such listener declares: `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout`, `IdleTimeout`, `MaxHeaderBytes`, a max-concurrent-connection cap, and a **request rate cap**. Unbounded is a defect, not a default.
+Widening targets are not equivalent: `tunnel cloudflare` / `ngrok` are genuinely **public**; `tunnel tailscale` (`tailscale serve`) is **tailnet-private** — authenticated, encrypted, device-scoped, closer to LAN-with-authn than to the open internet.
+
+**But the first three listeners are hardened to public standard unconditionally**, because the same listener can be pointed at cloudflare a moment later. Caps must hold in every posture so that widening stays purely a routing decision and never silently doubles as a hardening decision. Each declares: `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout`, `IdleTimeout`, `MaxHeaderBytes`, a max-concurrent-connection cap, and a **request rate cap**. Unbounded is a defect, not a default.
 
 **Rate capping is not optional on these three.** Note the asymmetry to avoid: the anonymous feedback POST route is rate-limited (`internal/publish/feedback_ratelimit.go`, token bucket per (share, IP), bounded-memory reap) but the **artifact serve route is not**. With live-upstream publishing that is an amplification vector — each artifact request to an upstream-bearing share causes an outbound fetch, so unbounded request rate becomes unbounded outbound traffic at a third-party origin. INV-13 bounds *which* origins may be fetched; it does not bound *how often*.
 
