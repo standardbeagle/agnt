@@ -58,15 +58,47 @@ const (
 	statusGetErrorsDefect = "get_errors_defect"
 )
 
+// Availability classes for a to_be_closed divergence.
+//
+// The owner's bar for retiring get_errors is AVAILABILITY, not exactness: the
+// information get_errors surfaced must be REACHABLE through get_incidents.
+// Identical ids, counts, labels, ordering and dedup granularity are explicitly
+// NOT required. So an open divergence blocks the deletion only when the
+// information itself is gone, not when it merely arrives in another shape.
+//
+// This field is a REVIEWED ARTIFACT, NOT A LEVER. Demoting an entry to
+// presentation_differs is the one cheap way to open the gate without closing a
+// gap, so it must never be a quiet edit: the measured value lives in this file,
+// the recorded value lives in the golden, and TestGetErrorsOracle_GoldenIsWellFormed
+// additionally pins the distribution. A demotion therefore has to change three
+// places at once and shows up as a reviewable diff in both files.
+const (
+	// availabilityDataMissing marks information that is absent, or destroyed
+	// upstream, and unrecoverable by any caller. BLOCKS the deletion.
+	availabilityDataMissing = "data_missing"
+	// availabilityPresentationDiffers marks information that is reachable, where
+	// only the shape, name or accounting differs. Does NOT block the deletion.
+	availabilityPresentationDiffers = "presentation_differs"
+)
+
 // divergence is one measured difference between the two tools.
 type divergence struct {
-	ID           string `json:"id"`
-	Kind         string `json:"kind"`
-	Status       string `json:"status"`
-	GetErrors    string `json:"get_errors"`
-	GetIncidents string `json:"get_incidents"`
-	Detail       string `json:"detail"`
-	Rationale    string `json:"rationale,omitempty"`
+	ID     string `json:"id"`
+	Kind   string `json:"kind"`
+	Status string `json:"status"`
+	// Availability is the blocking judgement for a to_be_closed entry:
+	// availabilityDataMissing or availabilityPresentationDiffers. Empty for
+	// every other status, and empty for a to_be_closed divergence nobody has
+	// classified yet — which the well-formedness test rejects, so a newly
+	// measured gap cannot slip into the golden unclassified and non-blocking.
+	Availability string `json:"availability,omitempty"`
+	// AvailabilityReason states, in the artifact, WHY the information is or is
+	// not reachable. Required whenever Availability is set.
+	AvailabilityReason string `json:"availability_reason,omitempty"`
+	GetErrors          string `json:"get_errors"`
+	GetIncidents       string `json:"get_incidents"`
+	Detail             string `json:"detail"`
+	Rationale          string `json:"rationale,omitempty"`
 }
 
 // goldenInventory is the committed shape of get_errors_oracle_golden.json.
@@ -255,6 +287,14 @@ type fieldProbe struct {
 	errDesc    string
 	detail     string
 	rationale  string
+	// availability / availabilityReason are set only on probes that actually
+	// fire today, i.e. that are classified from a measurement. A probe that is
+	// currently covered (or a hypothetical guard that has never fired) leaves
+	// them empty on purpose: if it ever starts firing, the resulting entry lands
+	// unclassified and the well-formedness test demands a human judgement rather
+	// than inheriting a guess made before anyone measured it.
+	availability       string
+	availabilityReason string
 }
 
 // declaredCovered lists reference fields deliberately NOT probed by name, each
@@ -280,13 +320,15 @@ func probeFields(probes []fieldProbe, incidentNames map[string]bool) []divergenc
 			continue // gap closed — the candidate exists on the incidents side
 		}
 		out = append(out, divergence{
-			ID:           p.id,
-			Kind:         p.kind,
-			Status:       p.status,
-			GetErrors:    p.errDesc,
-			GetIncidents: "(absent)",
-			Detail:       p.detail,
-			Rationale:    p.rationale,
+			ID:                 p.id,
+			Kind:               p.kind,
+			Status:             p.status,
+			Availability:       p.availability,
+			AvailabilityReason: p.availabilityReason,
+			GetErrors:          p.errDesc,
+			GetIncidents:       "(absent)",
+			Detail:             p.detail,
+			Rationale:          p.rationale,
 		})
 	}
 	return out
@@ -316,23 +358,32 @@ func inputGapProbes() []fieldProbe {
 		{
 			field: "action",
 			id:    "input.action", kind: "input_field", status: statusToBeClosed,
-			candidates: []string{"action"},
-			errDesc:    "action: query|pin|unpin|clear",
-			detail:     "get_incidents has no retention verb at all. Without pin/unpin/clear an agent cannot keep an error alive across an auto-clear, so the whole retention feature is unmigrated.",
+			candidates:   []string{"action"},
+			errDesc:      "action: query|pin|unpin|clear",
+			detail:       "get_incidents has no retention verb at all. Without pin/unpin/clear an agent cannot keep an error alive across an auto-clear, so the whole retention feature is unmigrated.",
+			availability: availabilityDataMissing,
+			availabilityReason: "Retention is the mechanism by which data stays reachable at all: the inbox evicts the oldest entry once a band hits its 100-entry cap (numbered contract 5), " +
+				"and with no pin verb a caller has no way to keep a specific incident alive. The entry is destroyed and no reshaping recovers it.",
 		},
 		{
 			field: "error_id",
 			id:    "input.error_id", kind: "input_field", status: statusToBeClosed,
-			candidates: []string{"error_id"},
-			errDesc:    "error_id: pin/unpin target",
-			detail:     "fingerprints[] is the identity analogue on the incidents side, but it only SELECTS records; there is no action to apply to the selection. Closing input.action without this leaves pins untargetable.",
+			candidates:   []string{"error_id"},
+			errDesc:      "error_id: pin/unpin target",
+			detail:       "fingerprints[] is the identity analogue on the incidents side, but it only SELECTS records; there is no action to apply to the selection. Closing input.action without this leaves pins untargetable.",
+			availability: availabilityDataMissing,
+			availabilityReason: "Blocks for the same reason as input.action and must not be demoted separately from it: a retention verb with nothing to address preserves nothing, " +
+				"so closing input.action alone would leave the eviction data loss fully open.",
 		},
 		{
 			field: "tag",
 			id:    "input.tag", kind: "input_field", status: statusToBeClosed,
-			candidates: []string{"tag"},
-			errDesc:    "tag: note stored with a pin",
-			detail:     "Agent-authored annotation attached at pin time. No incident-side store for caller-supplied metadata.",
+			candidates:   []string{"tag"},
+			errDesc:      "tag: note stored with a pin",
+			detail:       "Agent-authored annotation attached at pin time. No incident-side store for caller-supplied metadata.",
+			availability: availabilityDataMissing,
+			availabilityReason: "Caller-authored content that exists nowhere else: nothing in the incident pipeline stores caller-supplied metadata, so a tag written through get_errors " +
+				"is not reachable through get_incidents in any shape.",
 		},
 		{
 			field: "global",
@@ -354,16 +405,22 @@ func outputProbes() []fieldProbe {
 		{
 			field: "collection_warnings",
 			id:    "output.collection_warnings", kind: "output_field", status: statusToBeClosed,
-			candidates: []string{"collection_warnings", "inbox_after.collection_warnings"},
-			errDesc:    "collection_warnings[]: per-source query failures",
-			detail:     "THE ONE THAT MATTERS MOST. Its whole purpose is that a source which failed to answer never presents as a clean '0 errors'. get_incidents distinguishes only 'inbox unavailable' (pipeline_enabled=false) from 'inbox empty' — it cannot say 'the inbox answered but the proxy log query failed'. Retiring get_errors without this reintroduces a Silent Failure Prohibition violation.",
+			candidates:   []string{"collection_warnings", "inbox_after.collection_warnings"},
+			errDesc:      "collection_warnings[]: per-source query failures",
+			availability: availabilityDataMissing,
+			availabilityReason: "No partial-collection signal is produced anywhere in the pipeline, so there is nothing for a caller to reach: a source that failed to answer is " +
+				"indistinguishable from a source with nothing to report. This is absence of information, not a different shape of it.",
+			detail: "THE ONE THAT MATTERS MOST. Its whole purpose is that a source which failed to answer never presents as a clean '0 errors'. get_incidents distinguishes only 'inbox unavailable' (pipeline_enabled=false) from 'inbox empty' — it cannot say 'the inbox answered but the proxy log query failed'. Retiring get_errors without this reintroduces a Silent Failure Prohibition violation.",
 		},
 		{
 			field: "summary",
 			id:    "output.summary", kind: "output_field", status: statusToBeClosed,
-			candidates: []string{"summary"},
-			errDesc:    "summary: rendered text in the typed output struct",
-			detail:     "Transport difference rather than lost information: get_incidents renders the same compact text into the CallToolResult content instead of a typed output field. Callers that read the struct (not the content) see nothing. Low severity, but it is a real shape change for the migration.",
+			candidates:   []string{"summary"},
+			errDesc:      "summary: rendered text in the typed output struct",
+			availability: availabilityPresentationDiffers,
+			availabilityReason: "The same rendered text is returned, in the CallToolResult content instead of a typed struct field. Every caller receives it; only the transport " +
+				"differs, which is the definition of a presentation difference under the availability bar.",
+			detail: "Transport difference rather than lost information: get_incidents renders the same compact text into the CallToolResult content instead of a typed output field. Callers that read the struct (not the content) see nothing. Low severity, but it is a real shape change for the migration.",
 		},
 	}
 }
@@ -404,30 +461,41 @@ func itemGapProbes() []fieldProbe {
 		{
 			field: "pinned",
 			id:    "item.pinned", kind: "item_field", status: statusToBeClosed,
-			candidates: []string{"pinned", "context.pinned"},
-			errDesc:    "pinned: entry survives limit and auto-clear",
-			detail:     "Without a per-item pinned flag, pinning is unobservable even if input.action lands — the agent cannot tell which entries it saved.",
+			candidates:   []string{"pinned", "context.pinned"},
+			errDesc:      "pinned: entry survives limit and auto-clear",
+			availability: availabilityDataMissing,
+			availabilityReason: "Read side of retention: with no per-item flag anywhere on the incidents side, which entries were preserved is not observable by any caller, " +
+				"so the retention state itself is unreachable rather than differently spelled.",
+			detail: "Without a per-item pinned flag, pinning is unobservable even if input.action lands — the agent cannot tell which entries it saved.",
 		},
 		{
 			field: "tag",
 			id:    "item.tag", kind: "item_field", status: statusToBeClosed,
-			candidates: []string{"tag", "context.tag"},
-			errDesc:    "tag: the note stored at pin time",
-			detail:     "Read side of input.tag. Same dependency: useless until item.pinned and input.action exist.",
+			candidates:         []string{"tag", "context.tag"},
+			errDesc:            "tag: the note stored at pin time",
+			availability:       availabilityDataMissing,
+			availabilityReason: "Read side of input.tag: the note is neither stored nor surfaced on the incidents side, so the caller's own annotation cannot be read back at all.",
+			detail:             "Read side of input.tag. Same dependency: useless until item.pinned and input.action exist.",
 		},
 		{
 			field: "location",
 			id:    "item.location", kind: "item_field", status: statusToBeClosed,
-			candidates: []string{"location", "context.location"},
-			errDesc:    "location: file:line:col of the first app stack frame",
-			detail:     "MEASURED, NOT ASSUMED: protocol.IncidentContext carries process_id/proxy_id/session_id/project_path/url/pid/port and no location. Note the pipeline does not discard it out of ignorance — incident.NewIncidentEvent folds ctx.URL into the fingerprint as its 'location' argument — but the source-level file:line:col never enters the envelope and is therefore unrecoverable from a record.",
+			candidates:   []string{"location", "context.location"},
+			errDesc:      "location: file:line:col of the first app stack frame",
+			availability: availabilityDataMissing,
+			availabilityReason: "The source-level file:line:col never enters the envelope, so it is not present in any record a caller can read — unrecoverable, not reshaped. " +
+				"(ctx.URL is folded into the fingerprint as the event's 'location', which is a different fact.)",
+			detail: "MEASURED, NOT ASSUMED: protocol.IncidentContext carries process_id/proxy_id/session_id/project_path/url/pid/port and no location. Note the pipeline does not discard it out of ignorance — incident.NewIncidentEvent folds ctx.URL into the fingerprint as its 'location' argument — but the source-level file:line:col never enters the envelope and is therefore unrecoverable from a record.",
 		},
 		{
 			field: "frame_id",
 			id:    "item.frame_id", kind: "item_field", status: statusToBeClosed,
-			candidates: []string{"frame_id", "context.frame_id"},
-			errDesc:    "frame_id: the emitting content frame (always-wrap model)",
-			detail:     "Absent from protocol.IncidentContext. This is the field gap; its consequence is the separate, worse granularity.frame_collapse divergence below.",
+			candidates:   []string{"frame_id", "context.frame_id"},
+			errDesc:      "frame_id: the emitting content frame (always-wrap model)",
+			availability: availabilityDataMissing,
+			availabilityReason: "Which content frame raised the error is never carried into incident.Context, so under the always-wrap model (where each content frame is a distinct " +
+				"context) the failing surface cannot be identified by any caller.",
+			detail: "Absent from protocol.IncidentContext. This is the field gap; its consequence is the separate, worse granularity.frame_collapse divergence below.",
 		},
 	}
 }
@@ -482,6 +550,9 @@ func computeFilterDivergences() []divergence {
 	if errFilter.Limit != incFilter.Limit {
 		out = append(out, divergence{
 			ID: "filter.limit_scope", Kind: "behavior", Status: statusToBeClosed,
+			Availability: availabilityPresentationDiffers,
+			AvailabilityReason: "The whole matching set stays reachable: get_incidents is a cursor-based pull, so a caller that wants everything pages for it. " +
+				"Only where the truncation happens differs.",
 			GetErrors:    "always requests 100, then limits for display after dedup+sort",
 			GetIncidents: "forwards the caller's limit and truncates server-side",
 			Detail:       "Consequence for counts, not just page size: get_errors' error_count/warning_count describe the WHOLE matching set because it counts before trimming, whereas a limited get_incidents page reports a truncated page plus whole-inbox band stats. A caller migrating a limited query gets different totals. See counts.semantics.",
@@ -594,6 +665,9 @@ func computeProjectionDivergences() []divergence {
 		sort.Strings(unmatched)
 		out = append(out, divergence{
 			ID: "projection.source_vocabulary", Kind: "behavior", Status: statusToBeClosed,
+			Availability: availabilityPresentationDiffers,
+			AvailabilityReason: "Both vocabularies name the same sources and every legacy label has an enum counterpart, so the origin of an error is fully reachable; " +
+				"only the spelling differs. It is a migration cost for saved filters and docs, not lost information.",
 			GetErrors:    "colon-delimited: " + strings.Join(unmatched, " "),
 			GetIncidents: "underscore enum: browser_js http_5xx http_4xx proxy_diag process_alert build_fail …",
 			Detail:       "UNPREDICTED. get_errors itself speaks two vocabularies: its legacy collectors emit browser:js / proxy:http / proxy:diagnostic / process:<id>, while its incident shim passes the pipeline's enum through verbatim. So the same tool labels the same error differently depending on which path served it. Any caller (or doc, or saved filter) keyed on the legacy strings breaks on migration, and get_incidents' sources[] filter accepts only the enum form.",
@@ -630,6 +704,9 @@ func computeProjectionDivergences() []divergence {
 	if errOut.WarningCount != inboxWarn && !hasMatchedCount {
 		out = append(out, divergence{
 			ID: "counts.semantics", Kind: "behavior", Status: statusToBeClosed,
+			Availability: availabilityPresentationDiffers,
+			AvailabilityReason: "The matched records themselves are returned, so 'how many matched my filter' is countable by the caller from the response; " +
+				"only which count the tool chooses to report differs. No underlying fact is destroyed.",
 			GetErrors:    "error_count/warning_count = the returned, deduped, filtered set (counted before the display limit)",
 			GetIncidents: "inbox_after = whole-inbox band occupancy after the query, independent of what this page returned",
 			Detail: "MEASURED, NOT ASSUMED, and genuinely closeable: this fires only while the two quantities actually disagree on the seed AND " +
@@ -684,6 +761,15 @@ func computeGranularityDivergences() []divergence {
 	if legacyKept != incidentKept {
 		out = append(out, divergence{
 			ID: "granularity.frame_collapse", Kind: "granularity", Status: statusToBeClosed,
+			Availability: availabilityDataMissing,
+			AvailabilityReason: "DELIBERATE BLOCKING CALL, not a default. The availability bar does not decide this one by itself, so the reasoning is recorded here. " +
+				"The merged incident still reports HOW MANY times the error fired, so that fact survives; what does not survive is 'it also fired in frame B', " +
+				"which is a distinct fact about a distinct failing surface and is destroyed at fingerprint time — no caller-side operation recovers it. " +
+				"It blocks INDEPENDENTLY of item.frame_id, and that independence is the point: the cheap fix to that field (adding frame_id to " +
+				"protocol.IncidentContext) would satisfy the field probe while the two occurrences stay merged, so if this entry did not block, the cheap " +
+				"fix alone would open the gate over an unrecovered loss. Closing it requires frame identity inside incident.NewIncidentEvent's fingerprint. " +
+				"This is the most expensive item in the set; if the owner would rather ship the deletion and accept per-frame occurrence loss, that is an " +
+				"explicit owner override of this entry, not a reclassification anyone else should make quietly.",
 			GetErrors:    "keeps " + strconv.Itoa(legacyKept) + " entries (frame_id is in dedupKey)",
 			GetIncidents: "keeps " + strconv.Itoa(incidentKept) + " entry (fingerprint = sha256(source|category|canonical_msg|url), no frame identity)",
 			Detail:       "The superset fails here on GRANULARITY, not on fields — and this is strictly worse than a missing column. Adding frame_id to the incident record would not fix it: the two occurrences were already merged upstream at fingerprint time, so one of them no longer exists to be labelled. Closing this requires frame identity inside incident.NewIncidentEvent's fingerprint, not just in protocol.IncidentContext. Under the always-wrap model (docs/responsive-canonical-target.md §5.2/§6.2) each content frame is a distinct context, so collapsing them hides a real second failure.",
@@ -800,6 +886,7 @@ func TestGetErrorsOracle_GoldenIsWellFormed(t *testing.T) {
 
 	seen := map[string]bool{}
 	justified := 0
+	byAvailability := map[string]int{}
 	for _, d := range golden.Divergences {
 		if seen[d.ID] {
 			t.Errorf("duplicate divergence id %q", d.ID)
@@ -822,6 +909,48 @@ func TestGetErrorsOracle_GoldenIsWellFormed(t *testing.T) {
 		if d.Detail == "" {
 			t.Errorf("%s: every entry must explain what is lost", d.ID)
 		}
+
+		// Availability is only meaningful for entries that block, and every
+		// blocking-candidate entry must carry a judgement. An unclassified
+		// to_be_closed entry fails loudly rather than defaulting to the
+		// convenient non-blocking answer.
+		if d.Status == statusToBeClosed {
+			switch d.Availability {
+			case availabilityDataMissing, availabilityPresentationDiffers:
+				byAvailability[d.Availability]++
+			case "":
+				t.Errorf("%s: a %s entry must be classified %s or %s — an unclassified gap must not silently count as non-blocking",
+					d.ID, statusToBeClosed, availabilityDataMissing, availabilityPresentationDiffers)
+			default:
+				t.Errorf("%s: unknown availability %q", d.ID, d.Availability)
+			}
+			if d.Availability != "" && d.AvailabilityReason == "" {
+				t.Errorf("%s: the availability judgement must state its reason in the artifact", d.ID)
+			}
+		} else if d.Availability != "" || d.AvailabilityReason != "" {
+			t.Errorf("%s: availability applies only to %s entries (status %q)", d.ID, statusToBeClosed, d.Status)
+		}
+	}
+
+	// The distribution is PINNED, because availability is the one field that can
+	// open the deletion gate without any gap actually closing. Demoting an entry
+	// to presentation_differs must therefore be a three-place, review-visible
+	// change — the measurement in this file, the record in the golden, and these
+	// numbers — never a quiet edit to one of them.
+	//
+	// When a gap genuinely closes, drop its entry and decrement the matching
+	// number in the SAME commit; that is the ratchet working, not an obstacle.
+	const (
+		wantDataMissing         = 9
+		wantPresentationDiffers = 4
+	)
+	if got := byAvailability[availabilityDataMissing]; got != wantDataMissing {
+		t.Errorf("golden holds %d %s entries, expected %d — if a blocker genuinely closed, shrink the golden and this number together; "+
+			"if an entry was reclassified, that needs review, not a number bump",
+			got, availabilityDataMissing, wantDataMissing)
+	}
+	if got := byAvailability[availabilityPresentationDiffers]; got != wantPresentationDiffers {
+		t.Errorf("golden holds %d %s entries, expected %d", got, availabilityPresentationDiffers, wantPresentationDiffers)
 	}
 
 	// The `global` exclusion is an owner decision and must survive every future
