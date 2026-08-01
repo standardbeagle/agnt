@@ -1045,18 +1045,37 @@ func TestGetErrorsOracle_EveryReferenceFieldIsAccountedFor(t *testing.T) {
 }
 
 // TestGetErrorsOracle_SupersetHoldsWhenInventoryEmpty states the exit condition
-// in code: get_errors may be deleted exactly when no to_be_closed entry remains.
+// in code. The owner's bar is AVAILABILITY, not exactness, so the condition
+// counts only data_missing entries: get_errors may be deleted exactly when no
+// information it surfaced is unreachable through get_incidents. Entries that
+// merely reshape the same information (presentation_differs) are migration
+// notes, not blockers, and do not hold the deletion.
+//
+// open == 0 remains NECESSARY, NOT SUFFICIENT: this oracle measures projection
+// and schema, not live handler output, so adapter coverage for every source
+// must still be confirmed before deleting.
 func TestGetErrorsOracle_SupersetHoldsWhenInventoryEmpty(t *testing.T) {
 	t.Parallel()
 
-	open := 0
+	open, reshaped := 0, 0
 	for _, d := range computeInventory() {
-		if d.Status == statusToBeClosed {
+		if d.Status != statusToBeClosed {
+			continue
+		}
+		switch d.Availability {
+		case availabilityDataMissing:
 			open++
+		case availabilityPresentationDiffers:
+			reshaped++
+		default:
+			// Fail loud rather than counting an unclassified gap as harmless.
+			t.Errorf("%s: unclassified %s entry (availability %q) — classify it before the exit condition can mean anything",
+				d.ID, statusToBeClosed, d.Availability)
 		}
 	}
-	t.Logf("get_errors retirement blockers remaining: %d", open)
+	t.Logf("get_errors retirement blockers remaining (data_missing): %d; reshaped-but-reachable (presentation_differs): %d", open, reshaped)
 	if open == 0 {
-		t.Log("SUPERSET HOLDS — get_incidents now covers get_errors; the removal slice is unblocked")
+		t.Log("SUPERSET HOLDS on availability — every fact get_errors surfaced is reachable through get_incidents; " +
+			"the removal slice is unblocked once adapter coverage is confirmed")
 	}
 }
