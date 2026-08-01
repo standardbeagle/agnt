@@ -34,7 +34,7 @@
   "bugs": {
     "url": "https://github.com/standardbeagle/agnt/issues"
   },
-  "homepage": "https://standardbeagle.github.io/agnt/",
+  "homepage": "https://dev.standardbeagle.com/agnt/",
   "engines": {
     "node": ">=18.0.0"
   },

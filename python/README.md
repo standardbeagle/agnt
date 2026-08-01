@@ -52,7 +52,7 @@ The project has evolved beyond just development tooling into a full AI coding ag
 - Floating indicator panel
 - Toast notifications
 
-See the [agnt documentation](https://standardbeagle.github.io/agnt/) for details.
+See the [agnt documentation](https://dev.standardbeagle.com/agnt/) for details.
 
 ## Backward Compatibility
 

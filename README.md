@@ -412,7 +412,7 @@ agnt uses a daemon architecture for persistent state:
 
 ## Documentation
 
-**[Full Documentation →](https://standardbeagle.github.io/agnt/)**
+**[Full Documentation →](https://dev.standardbeagle.com/agnt/)**
 
 ```bash
 # Run docs locally
@@ -457,4 +457,4 @@ MIT
 
 ## Contributing
 
-Contributions welcome! See the [documentation](https://standardbeagle.github.io/agnt/) for architecture details.
+Contributions welcome! See the [documentation](https://dev.standardbeagle.com/agnt/) for architecture details.

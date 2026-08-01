@@ -33,7 +33,7 @@
   "bugs": {
     "url": "https://github.com/standardbeagle/devtool-mcp/issues"
   },
-  "homepage": "https://standardbeagle.github.io/devtool-mcp/",
+  "homepage": "https://dev.standardbeagle.com/devtool-mcp/",
   "engines": {
     "node": ">=18.0.0"
   },

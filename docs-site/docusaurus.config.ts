@@ -17,7 +17,7 @@ const config: Config = {
   },
 
   // GitHub Pages configuration
-  url: 'https://standardbeagle.github.io',
+  url: 'https://dev.standardbeagle.com',
   baseUrl: '/agnt/',
 
   // GitHub repository info
@@ -44,7 +44,7 @@ const config: Config = {
         applicationCategory: 'DeveloperApplication',
         operatingSystem: 'Linux, macOS, Windows',
         description: SITE_DESCRIPTION,
-        url: 'https://standardbeagle.github.io/agnt/',
+        url: 'https://dev.standardbeagle.com/agnt/',
         offers: {
           '@type': 'Offer',
           price: '0',
@@ -92,6 +92,10 @@ const config: Config = {
       // emitted per page by the theme (from the page title + front-matter
       // `description` + themeConfig.image) — do not duplicate them here or every
       // subpage unfurls with the homepage's copy.
+      // NOTE: no hardcoded absolute og:image here on purpose. themeConfig.image
+      // is a RELATIVE path that Docusaurus expands against `url` above, so a
+      // domain change (e.g. github.io → dev.standardbeagle.com) propagates on
+      // its own instead of needing this line edited in lockstep.
       {property: 'og:type', content: 'website'},
       {property: 'og:site_name', content: 'agnt'},
       {property: 'og:image:width', content: '1200'},

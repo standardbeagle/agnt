@@ -1,7 +1,7 @@
 // Example .agnt.kdl configuration
 // Place this file in your project root to auto-start scripts and proxies
 //
-// Full documentation: https://standardbeagle.github.io/agnt/getting-started
+// Full documentation: https://dev.standardbeagle.com/agnt/getting-started
 // Generate interactively: Run /setup-project in Claude Code
 
 // ============================================================================

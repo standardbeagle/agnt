@@ -34,7 +34,7 @@ headTags: [
       applicationCategory: 'DeveloperApplication',
       operatingSystem: 'Linux, macOS, Windows',
       description: 'Browser superpowers for AI coding agents. Screenshots, DOM inspection, error capture, and visual debugging via MCP.',
-      url: 'https://standardbeagle.github.io/agnt/',
+      url: 'https://dev.standardbeagle.com/agnt/',
       offers: {price: '0', priceCurrency: 'USD'},
     }),
   },

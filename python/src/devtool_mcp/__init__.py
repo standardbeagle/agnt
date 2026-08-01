@@ -29,7 +29,7 @@ Then update your MCP configuration:
     }
 
 For more information, see:
-    https://standardbeagle.github.io/agnt/
+    https://dev.standardbeagle.com/agnt/
 """
 
 import sys
@@ -49,7 +49,7 @@ warnings.warn(
     "    pip install agnt\n"
     "\n"
     "Then update your MCP configuration to use 'agnt' command.\n"
-    "See: https://standardbeagle.github.io/agnt/\n",
+    "See: https://dev.standardbeagle.com/agnt/\n",
     DeprecationWarning,
     stacklevel=2
 )
@@ -83,7 +83,7 @@ def main() -> None:
         "    agnt mcp     (for MCP server)\n"
         "    agnt run ...   (for PTY wrapper)\n"
         "\n"
-        "See: https://standardbeagle.github.io/agnt/\n"
+        "See: https://dev.standardbeagle.com/agnt/\n"
         "=" * 60 + "\n",
         file=sys.stderr
     )
