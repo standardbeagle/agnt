@@ -172,6 +172,10 @@ func seedIncidentRecords() []protocol.IncidentRecord {
 		rec("fp-diag", string(incident.SourceProxyDiag), "error", "UPSTREAM UNREACHABLE", "upstream 127.0.0.1:3000 refused connection"),
 		rec("fp-alert", string(incident.SourceProcessAlert), "error", "PROCESS ERROR", "panic: nil map write"),
 		rec("fp-build", string(incident.SourceBuildFail), "error", "COMPILE ERROR", "cmd/agnt/main.go:12: undefined: Foo"),
+		// A warning-band entry so matched-set counts and inbox band occupancy
+		// genuinely disagree under an exclusion filter — counts.semantics is
+		// gated on a real numeric divergence, not appended unconditionally.
+		rec("fp-4xx", string(incident.SourceHTTP4xx), "warning", "404 Not Found", "GET /api/missing"),
 	}
 }
 
@@ -215,10 +219,35 @@ func nameSet(names []string) map[string]bool {
 	return set
 }
 
+// topLevelJSONNames returns only the immediate json field names of a struct.
+// Used on the get_errors reference types, where the exhaustiveness check asks
+// "is this field accounted for", not "where did it move to".
+func topLevelJSONNames(t reflect.Type) []string {
+	var names []string
+	for i := 0; i < t.NumField(); i++ {
+		f := t.Field(i)
+		if f.PkgPath != "" {
+			continue
+		}
+		tag := strings.Split(f.Tag.Get("json"), ",")[0]
+		if tag == "" || tag == "-" {
+			tag = strings.ToLower(f.Name)
+		}
+		names = append(names, tag)
+	}
+	return names
+}
+
 // fieldProbe is one get_errors field and the get_incidents names that would
 // cover it. A gap exists only when NONE of the candidates is present on the
 // incidents side, so adding any of them closes the gap automatically.
+//
+// Every field of every get_errors reference type must have a probe, or an entry
+// in declaredCovered below. TestGetErrorsOracle_EveryReferenceFieldIsAccountedFor
+// fails otherwise: the inventory presents itself as the complete picture, so
+// discovery must be enumerated by the type system rather than by hand.
 type fieldProbe struct {
+	field      string // json name on the get_errors side; drives exhaustiveness
 	id         string
 	kind       string
 	candidates []string // checked against the get_incidents name set
@@ -226,6 +255,15 @@ type fieldProbe struct {
 	errDesc    string
 	detail     string
 	rationale  string
+}
+
+// declaredCovered lists reference fields deliberately NOT probed by name, each
+// with the reason. A field may only appear here when a behaviour probe already
+// measures it — a name probe would then double-count the same gap.
+var declaredCovered = map[string]string{
+	"GetErrorsInput.include_warnings": "measured by the filter.severity_default and filter.severity_exclusion_inexpressible behaviour probes. severity[] is the incidents-side spelling, so a name probe would report a false gap; the probes instead assert that the DEFAULTS agree and that the exclusion round-trips — which is the substance of the claim.",
+	"GetErrorsOutput.error_count":     "measured by the counts.semantics behaviour probe, which compares the matched-set count against inbox band occupancy numerically. A name probe would double-count the same divergence.",
+	"GetErrorsOutput.warning_count":   "measured by the counts.semantics behaviour probe (same reason as error_count).",
 }
 
 func probeFields(probes []fieldProbe, incidentNames map[string]bool) []divergence {
@@ -254,84 +292,148 @@ func probeFields(probes []fieldProbe, incidentNames map[string]bool) []divergenc
 	return out
 }
 
-func computeInputDivergences() []divergence {
-	incidentNames := nameSet(jsonFieldNames(reflect.TypeOf(GetIncidentsInput{}), ""))
-	return probeFields([]fieldProbe{
+// inputProbes covers every field of GetErrorsInput. The pass-through fields are
+// probed rather than declared so that removing any of them from
+// GetIncidentsInput immediately surfaces as a new divergence.
+func inputProbes() []fieldProbe {
+	passThrough := func(field, note string) fieldProbe {
+		return fieldProbe{
+			field: field, id: "input." + field, kind: "input_field", status: statusToBeClosed,
+			candidates: []string{field}, errDesc: field, detail: note,
+		}
+	}
+	return append([]fieldProbe{
+		passThrough("process_id", "Scope-to-process filter; also asserted to translate 1:1 by filter.resource_scope."),
+		passThrough("proxy_id", "Scope-to-proxy filter; also asserted to translate 1:1 by filter.resource_scope."),
+		passThrough("since", "Recency bound; its translation is separately measured by filter.since_forks_to_legacy."),
+		passThrough("limit", "Page bound; its differing scope is separately measured by filter.limit_scope."),
+		passThrough("raw", "Full-JSON rendering toggle."),
+	}, inputGapProbes()...)
+}
+
+func inputGapProbes() []fieldProbe {
+	return []fieldProbe{
 		{
-			id: "input.action", kind: "input_field", status: statusToBeClosed,
+			field: "action",
+			id:    "input.action", kind: "input_field", status: statusToBeClosed,
 			candidates: []string{"action"},
 			errDesc:    "action: query|pin|unpin|clear",
 			detail:     "get_incidents has no retention verb at all. Without pin/unpin/clear an agent cannot keep an error alive across an auto-clear, so the whole retention feature is unmigrated.",
 		},
 		{
-			id: "input.error_id", kind: "input_field", status: statusToBeClosed,
+			field: "error_id",
+			id:    "input.error_id", kind: "input_field", status: statusToBeClosed,
 			candidates: []string{"error_id"},
 			errDesc:    "error_id: pin/unpin target",
 			detail:     "fingerprints[] is the identity analogue on the incidents side, but it only SELECTS records; there is no action to apply to the selection. Closing input.action without this leaves pins untargetable.",
 		},
 		{
-			id: "input.tag", kind: "input_field", status: statusToBeClosed,
+			field: "tag",
+			id:    "input.tag", kind: "input_field", status: statusToBeClosed,
 			candidates: []string{"tag"},
 			errDesc:    "tag: note stored with a pin",
 			detail:     "Agent-authored annotation attached at pin time. No incident-side store for caller-supplied metadata.",
 		},
 		{
-			id: "input.global", kind: "input_field", status: statusPermanentlyJustified,
+			field: "global",
+			id:    "input.global", kind: "input_field", status: statusPermanentlyJustified,
 			candidates: []string{"global"},
 			errDesc:    "global: cross-project query",
 			detail:     "Deliberately excluded from the superset. get_errors keeps it; get_incidents must not gain it.",
 			rationale:  "Owner decision: global was a debugging affordance, not a production use case. The incident inbox is per-session hard-isolated (numbered contract 1, .claude/rules/daemon-architecture.md) — a stronger guarantee than project scoping. Closing this gap would mean weakening that isolation, which is expressly forbidden. This entry is permanent and must NOT be removed when the others are.",
 		},
-	}, incidentNames)
+	}
 }
 
-func computeOutputDivergences() []divergence {
-	incidentNames := nameSet(jsonFieldNames(reflect.TypeOf(GetIncidentsOutput{}), ""))
-	return probeFields([]fieldProbe{
+func computeInputDivergences() []divergence {
+	return probeFields(inputProbes(), nameSet(jsonFieldNames(reflect.TypeOf(GetIncidentsInput{}), "")))
+}
+
+func outputProbes() []fieldProbe {
+	return []fieldProbe{
 		{
-			id: "output.collection_warnings", kind: "output_field", status: statusToBeClosed,
+			field: "collection_warnings",
+			id:    "output.collection_warnings", kind: "output_field", status: statusToBeClosed,
 			candidates: []string{"collection_warnings", "inbox_after.collection_warnings"},
 			errDesc:    "collection_warnings[]: per-source query failures",
 			detail:     "THE ONE THAT MATTERS MOST. Its whole purpose is that a source which failed to answer never presents as a clean '0 errors'. get_incidents distinguishes only 'inbox unavailable' (pipeline_enabled=false) from 'inbox empty' — it cannot say 'the inbox answered but the proxy log query failed'. Retiring get_errors without this reintroduces a Silent Failure Prohibition violation.",
 		},
 		{
-			id: "output.summary", kind: "output_field", status: statusToBeClosed,
+			field: "summary",
+			id:    "output.summary", kind: "output_field", status: statusToBeClosed,
 			candidates: []string{"summary"},
 			errDesc:    "summary: rendered text in the typed output struct",
 			detail:     "Transport difference rather than lost information: get_incidents renders the same compact text into the CallToolResult content instead of a typed output field. Callers that read the struct (not the content) see nothing. Low severity, but it is a real shape change for the migration.",
 		},
-	}, incidentNames)
+	}
 }
 
-func computeItemDivergences() []divergence {
-	names := jsonFieldNames(reflect.TypeOf(incidentView{}), "")
-	incidentNames := nameSet(names)
-	return probeFields([]fieldProbe{
+func computeOutputDivergences() []divergence {
+	return probeFields(outputProbes(), nameSet(jsonFieldNames(reflect.TypeOf(GetIncidentsOutput{}), "")))
+}
+
+// itemProbes covers every field of unifiedError. The carried-over fields are
+// probed by name (not declared) so a refutation stays GUARDED: `page` is covered
+// today only because incidentView exposes context.url, and if that ever went
+// away the divergence would appear rather than the refutation going stale.
+func itemProbes() []fieldProbe {
+	carried := func(field, altName, note string) fieldProbe {
+		cands := []string{field}
+		if altName != "" {
+			cands = append(cands, altName)
+		}
+		return fieldProbe{
+			field: field, id: "item." + field, kind: "item_field", status: statusToBeClosed,
+			candidates: cands, errDesc: field, detail: note,
+		}
+	}
+	return append([]fieldProbe{
+		carried("id", "fingerprint", "Item identity; correlation of the two tools' ids is separately measured by projection.identity_uncorrelatable."),
+		carried("source", "", "Source label; its differing vocabulary is separately measured by projection.source_vocabulary."),
+		carried("severity", "", "Severity level; the two-level vs four-band scale is separately measured by projection.severity_scale_*."),
+		carried("category", "", "Finer-grained error class."),
+		carried("message", "summary", "Human-readable text; carried as incidentView.summary."),
+		carried("page", "context.url", "Page URL. REFUTED as a gap — covered by context.url, and incidentRecordToUnifiedError already reads Page from rec.Context.URL. Probed rather than assumed so the refutation cannot go stale."),
+		carried("count", "", "Occurrence count."),
+		carried("last_seen", "", "Most recent occurrence timestamp."),
+	}, itemGapProbes()...)
+}
+
+func itemGapProbes() []fieldProbe {
+	return []fieldProbe{
 		{
-			id: "item.pinned", kind: "item_field", status: statusToBeClosed,
+			field: "pinned",
+			id:    "item.pinned", kind: "item_field", status: statusToBeClosed,
 			candidates: []string{"pinned", "context.pinned"},
 			errDesc:    "pinned: entry survives limit and auto-clear",
 			detail:     "Without a per-item pinned flag, pinning is unobservable even if input.action lands — the agent cannot tell which entries it saved.",
 		},
 		{
-			id: "item.tag", kind: "item_field", status: statusToBeClosed,
+			field: "tag",
+			id:    "item.tag", kind: "item_field", status: statusToBeClosed,
 			candidates: []string{"tag", "context.tag"},
 			errDesc:    "tag: the note stored at pin time",
 			detail:     "Read side of input.tag. Same dependency: useless until item.pinned and input.action exist.",
 		},
 		{
-			id: "item.location", kind: "item_field", status: statusToBeClosed,
+			field: "location",
+			id:    "item.location", kind: "item_field", status: statusToBeClosed,
 			candidates: []string{"location", "context.location"},
 			errDesc:    "location: file:line:col of the first app stack frame",
 			detail:     "MEASURED, NOT ASSUMED: protocol.IncidentContext carries process_id/proxy_id/session_id/project_path/url/pid/port and no location. Note the pipeline does not discard it out of ignorance — incident.NewIncidentEvent folds ctx.URL into the fingerprint as its 'location' argument — but the source-level file:line:col never enters the envelope and is therefore unrecoverable from a record.",
 		},
 		{
-			id: "item.frame_id", kind: "item_field", status: statusToBeClosed,
+			field: "frame_id",
+			id:    "item.frame_id", kind: "item_field", status: statusToBeClosed,
 			candidates: []string{"frame_id", "context.frame_id"},
 			errDesc:    "frame_id: the emitting content frame (always-wrap model)",
 			detail:     "Absent from protocol.IncidentContext. This is the field gap; its consequence is the separate, worse granularity.frame_collapse divergence below.",
 		},
-	}, incidentNames)
+	}
+}
+
+func computeItemDivergences() []divergence {
+	return probeFields(itemProbes(), nameSet(jsonFieldNames(reflect.TypeOf(incidentView{}), "")))
 }
 
 // ─── measured behaviour ──────────────────────────────────────────────────────
@@ -347,12 +449,31 @@ func computeFilterDivergences() []divergence {
 	errFilter := buildGetErrorsIncidentFilter(GetErrorsInput{Since: "5m"}, true)
 	incFilter := buildGetIncidentsFilter(GetIncidentsInput{Since: "5m"})
 	if errFilter.Since != incFilter.Since {
-		out = append(out, divergence{
-			ID: "filter.since_duration_unresolved", Kind: "behavior", Status: statusGetErrorsDefect,
-			GetErrors:    "forwards since verbatim (e.g. \"5m\")",
-			GetIncidents: "resolves the duration to an absolute RFC3339 timestamp first",
-			Detail:       "Direction is REVERSED: get_incidents is correct and get_errors is broken. The hub parses Since strictly as RFC3339, so get_errors' shim path silently ignores the duration form its own schema advertises — an unfiltered result masquerading as a filtered one. Does not block the superset; recorded so the migration does not port the defect forward, and so nobody 'fixes' get_incidents to match the reference here.",
-		})
+		// Measure the consequence rather than inferring it: the hub accepts an
+		// incident cursor or RFC3339/RFC3339Nano only. A Since it cannot parse is
+		// REJECTED, not ignored — so the observable effect is a PATH FORK, and the
+		// projection difference below is what quantifies it.
+		_, rfcErr := time.Parse(time.RFC3339, errFilter.Since)
+		_, nanoErr := time.Parse(time.RFC3339Nano, errFilter.Since)
+		if rfcErr != nil && nanoErr != nil {
+			rec := seedIncidentRecords()[0]
+			shim := incidentRecordToUnifiedError(rec)
+			legacy := seedLegacyErrors()[0]
+			out = append(out, divergence{
+				ID: "filter.since_forks_to_legacy", Kind: "behavior", Status: statusGetErrorsDefect,
+				GetErrors:    "forwards since verbatim (e.g. \"5m\"), which the hub cannot parse",
+				GetIncidents: "resolves the duration to an absolute RFC3339 timestamp before querying",
+				Detail: "Direction is REVERSED: get_incidents is correct, get_errors is not. Nothing is silently dropped — " +
+					"incidentQueryFilterToInternal (internal/daemon/hub_incidents.go) explicitly REJECTS an unparseable since rather than " +
+					"returning the whole inbox, and the handler maps that to ErrInvalidArgs, so no Silent Failure Prohibition violation ships " +
+					"today. The real defect is a PATH FORK: the rejected query makes collectIncidentErrors return ok=false, and get_errors falls " +
+					"through to its legacy collectors, which DO parse durations correctly. So `since:\"5m\"` is answered by a different code path " +
+					"than the same query without it — different ids (" + legacy.ID + " vs " + shim.ID + "), different source vocabulary (" +
+					legacy.Source + " vs " + shim.Source + "), and legacy frame-aware dedup instead of fingerprint dedup. Same input, two code " +
+					"paths, two answers. Does not block the superset; recorded so the migration does not port the fork forward, and so nobody " +
+					"'fixes' get_incidents to match the reference here.",
+			})
+		}
 	}
 
 	// limit: forwarded to the inbox, or applied after the fact?
@@ -479,22 +600,46 @@ func computeProjectionDivergences() []divergence {
 		})
 	}
 
-	// Content: counts. Measure equivalence of error_count/warning_count against
-	// inbox_after rather than assuming it.
-	_, errOut := formatErrorsOutput(projectRecords(records), true, 25, false)
-	inboxErr := 0
+	// Content: counts. This entry MUST be able to close — "no to_be_closed entry
+	// remains" is the signal that authorises deleting get_errors, so appending it
+	// unconditionally would make the exit condition unreachable by construction.
+	// It is therefore gated on two live conditions: a real numeric divergence on
+	// the seed, AND the absence of any matched-set count on the incidents side.
+	// Adding e.g. matched_count to GetIncidentsOutput closes it.
+	//
+	// The seed deliberately mixes severities so the two quantities genuinely
+	// disagree: with warnings excluded, get_errors reports zero warnings while
+	// the inbox still holds a warning-band entry.
+	_, errOut := formatErrorsOutput(projectRecords(records), false, 25, false)
+	inboxWarn := 0
 	for _, rec := range records {
-		if rec.Severity == "error" {
-			inboxErr++
+		if rec.Severity == "warning" || rec.Severity == "info" {
+			inboxWarn++
 		}
 	}
-	out = append(out, divergence{
-		ID: "counts.semantics", Kind: "behavior", Status: statusToBeClosed,
-		GetErrors:    "error_count/warning_count = the returned, deduped, filtered set (counted before the display limit)",
-		GetIncidents: "inbox_after = whole-inbox band occupancy after the query, independent of what this page returned",
-		Detail: "MEASURED, NOT ASSUMED — and they are NOT equivalent even when the numbers happen to coincide (" +
-			strconv.Itoa(errOut.ErrorCount) + " vs " + strconv.Itoa(inboxErr) + " on this seed). They answer different questions: 'how many matched your filter' vs 'how full is the inbox'. Under any filter that excludes part of the inbox, or any limit, they diverge numerically too. A migration that maps error_count onto inbox_after.error is wrong.",
-	})
+
+	incidentOutNames := nameSet(jsonFieldNames(reflect.TypeOf(GetIncidentsOutput{}), ""))
+	hasMatchedCount := false
+	for _, cand := range []string{"matched_count", "match_count", "result_count", "returned_count", "error_count", "warning_count"} {
+		if incidentOutNames[cand] {
+			hasMatchedCount = true
+			break
+		}
+	}
+
+	if errOut.WarningCount != inboxWarn && !hasMatchedCount {
+		out = append(out, divergence{
+			ID: "counts.semantics", Kind: "behavior", Status: statusToBeClosed,
+			GetErrors:    "error_count/warning_count = the returned, deduped, filtered set (counted before the display limit)",
+			GetIncidents: "inbox_after = whole-inbox band occupancy after the query, independent of what this page returned",
+			Detail: "MEASURED, NOT ASSUMED, and genuinely closeable: this fires only while the two quantities actually disagree on the seed AND " +
+				"get_incidents exposes no matched-set count. With warnings excluded get_errors reports warning_count=" +
+				strconv.Itoa(errOut.WarningCount) + " while the inbox warning band still holds " + strconv.Itoa(inboxWarn) + ". They answer " +
+				"different questions — 'how many matched your filter' vs 'how full is the inbox' — so a migration that maps error_count onto " +
+				"inbox_after.error is wrong. Closing this means giving get_incidents a count of the matched set (e.g. matched_count), not " +
+				"reusing the band stats.",
+		})
+	}
 
 	return out
 }
@@ -688,6 +833,86 @@ func TestGetErrorsOracle_GoldenIsWellFormed(t *testing.T) {
 	if justified != 1 {
 		t.Errorf("expected exactly one permanently justified divergence (input.global), got %d", justified)
 	}
+}
+
+// TestGetErrorsOracle_EveryReferenceFieldIsAccountedFor makes discovery
+// exhaustive rather than hand-enumerated. Every json field of every get_errors
+// reference type must either carry a probe or an explicit declaredCovered
+// reason. A hand-maintained probe list rots silently and understates the gap
+// while the inventory presents itself as the complete picture; this converts
+// "I listed what I thought of" into "the type system enumerates it".
+func TestGetErrorsOracle_EveryReferenceFieldIsAccountedFor(t *testing.T) {
+	t.Parallel()
+
+	refs := []struct {
+		name   string
+		typ    reflect.Type
+		probes []fieldProbe
+	}{
+		{"GetErrorsInput", reflect.TypeOf(GetErrorsInput{}), inputProbes()},
+		{"GetErrorsOutput", reflect.TypeOf(GetErrorsOutput{}), outputProbes()},
+		{"unifiedError", reflect.TypeOf(unifiedError{}), itemProbes()},
+	}
+
+	total := 0
+	for _, ref := range refs {
+		probed := map[string]bool{}
+		for _, p := range ref.probes {
+			if p.field == "" {
+				t.Errorf("%s: probe %q declares no field, so it cannot prove coverage of anything", ref.name, p.id)
+				continue
+			}
+			if probed[p.field] {
+				t.Errorf("%s: field %q probed twice", ref.name, p.field)
+			}
+			probed[p.field] = true
+		}
+
+		fields := topLevelJSONNames(ref.typ)
+		for _, f := range fields {
+			total++
+			if probed[f] || declaredCovered[ref.name+"."+f] != "" {
+				continue
+			}
+			t.Errorf("%s.%s is neither probed nor declared covered — the inventory claims to be complete, "+
+				"so add a fieldProbe for it, or an entry in declaredCovered naming the behaviour probe that measures it",
+				ref.name, f)
+		}
+
+		// A probe naming a field that no longer exists is dead weight that would
+		// keep reporting a gap for something the reference no longer offers.
+		actual := nameSet(fields)
+		for f := range probed {
+			if !actual[f] {
+				t.Errorf("%s: probe for %q but the type has no such field — remove the stale probe", ref.name, f)
+			}
+		}
+	}
+
+	// declaredCovered must not accumulate entries for fields that vanished.
+	for key := range declaredCovered {
+		parts := strings.SplitN(key, ".", 2)
+		if len(parts) != 2 {
+			t.Errorf("declaredCovered key %q must be Type.field", key)
+			continue
+		}
+		found := false
+		for _, ref := range refs {
+			if ref.name != parts[0] {
+				continue
+			}
+			for _, f := range topLevelJSONNames(ref.typ) {
+				if f == parts[1] {
+					found = true
+				}
+			}
+		}
+		if !found {
+			t.Errorf("declaredCovered names %q, which no longer exists", key)
+		}
+	}
+
+	t.Logf("reference fields accounted for: %d", total)
 }
 
 // TestGetErrorsOracle_SupersetHoldsWhenInventoryEmpty states the exit condition

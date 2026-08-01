@@ -22,7 +22,7 @@
       "status": "to_be_closed",
       "get_errors": "error_count/warning_count = the returned, deduped, filtered set (counted before the display limit)",
       "get_incidents": "inbox_after = whole-inbox band occupancy after the query, independent of what this page returned",
-      "detail": "MEASURED, NOT ASSUMED — and they are NOT equivalent even when the numbers happen to coincide (5 vs 5 on this seed). They answer different questions: 'how many matched your filter' vs 'how full is the inbox'. Under any filter that excludes part of the inbox, or any limit, they diverge numerically too. A migration that maps error_count onto inbox_after.error is wrong."
+      "detail": "MEASURED, NOT ASSUMED, and genuinely closeable: this fires only while the two quantities actually disagree on the seed AND get_incidents exposes no matched-set count. With warnings excluded get_errors reports warning_count=0 while the inbox warning band still holds 1. They answer different questions — 'how many matched your filter' vs 'how full is the inbox' — so a migration that maps error_count onto inbox_after.error is wrong. Closing this means giving get_incidents a count of the matched set (e.g. matched_count), not reusing the band stats."
     },
     {
       "id": "filter.limit_scope",
@@ -33,12 +33,12 @@
       "detail": "Consequence for counts, not just page size: get_errors' error_count/warning_count describe the WHOLE matching set because it counts before trimming, whereas a limited get_incidents page reports a truncated page plus whole-inbox band stats. A caller migrating a limited query gets different totals. See counts.semantics."
     },
     {
-      "id": "filter.since_duration_unresolved",
+      "id": "filter.since_forks_to_legacy",
       "kind": "behavior",
       "status": "get_errors_defect",
-      "get_errors": "forwards since verbatim (e.g. \"5m\")",
-      "get_incidents": "resolves the duration to an absolute RFC3339 timestamp first",
-      "detail": "Direction is REVERSED: get_incidents is correct and get_errors is broken. The hub parses Since strictly as RFC3339, so get_errors' shim path silently ignores the duration form its own schema advertises — an unfiltered result masquerading as a filtered one. Does not block the superset; recorded so the migration does not port the defect forward, and so nobody 'fixes' get_incidents to match the reference here."
+      "get_errors": "forwards since verbatim (e.g. \"5m\"), which the hub cannot parse",
+      "get_incidents": "resolves the duration to an absolute RFC3339 timestamp before querying",
+      "detail": "Direction is REVERSED: get_incidents is correct, get_errors is not. Nothing is silently dropped — incidentQueryFilterToInternal (internal/daemon/hub_incidents.go) explicitly REJECTS an unparseable since rather than returning the whole inbox, and the handler maps that to ErrInvalidArgs, so no Silent Failure Prohibition violation ships today. The real defect is a PATH FORK: the rejected query makes collectIncidentErrors return ok=false, and get_errors falls through to its legacy collectors, which DO parse durations correctly. So `since:\"5m\"` is answered by a different code path than the same query without it — different ids (abcbbf1a vs fp-js), different source vocabulary (browser:js vs browser_js), and legacy frame-aware dedup instead of fingerprint dedup. Same input, two code paths, two answers. Does not block the superset; recorded so the migration does not port the fork forward, and so nobody 'fixes' get_incidents to match the reference here."
     },
     {
       "id": "granularity.frame_collapse",
