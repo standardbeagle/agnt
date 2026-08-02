@@ -232,3 +232,122 @@ func TestHubIncidents_SessionLifecycle_AttachAddsSession(t *testing.T) {
 	require.True(t, ok)
 	assert.True(t, d.incidentBus.HasSession(s.Code), "incident bus should have session pipeline after ATTACH")
 }
+
+// registerIncidentSession registers a session on the connection and returns its
+// code once the incident pipeline is wired.
+func registerIncidentSession(t *testing.T, d *Daemon, client *daemonclient.Client, name, dir string) string {
+	t.Helper()
+	_, err := client.Conn().Request("SESSION", "REGISTER", name, dir).WithJSON(map[string]interface{}{
+		"project_path": dir,
+	}).JSON()
+	require.NoError(t, err)
+
+	var sessionCode string
+	require.Eventually(t, func() bool {
+		s, ok := d.sessionRegistry.FindByDirectory(dir)
+		if !ok {
+			return false
+		}
+		sessionCode = s.Code
+		return d.incidentBus.HasSession(sessionCode)
+	}, 2*time.Second, 10*time.Millisecond, "session pipeline not registered")
+	return sessionCode
+}
+
+// TestHubIncidents_PinUnpinClear drives the retention verbs over the wire and
+// asserts the per-item pin state comes back on QUERY. Mutation check: drop
+// Pinned/Tag from incidentEntryToRecord and the observability assertions fail.
+func TestHubIncidents_PinUnpinClear(t *testing.T) {
+	t.Parallel()
+	d, client, tmpDir := newBootedDaemonWithClient(t)
+	sessionCode := registerIncidentSession(t, d, client, "inc-pin", tmpDir)
+
+	keep := incident.NewIncidentEvent(incident.SourceBrowserJS, incident.SeverityError, "TypeError",
+		"keep me", incident.Context{SessionID: sessionCode}, nil)
+	drop := incident.NewIncidentEvent(incident.SourceHTTP5xx, incident.SeverityError, "500",
+		"drop me", incident.Context{SessionID: sessionCode}, nil)
+	d.incidentBus.Publish(keep)
+	d.incidentBus.Publish(drop)
+	require.Eventually(t, func() bool {
+		entries, _ := d.incidentBus.QuerySession(sessionCode, incident.QueryFilter{})
+		return len(entries) == 2
+	}, 2*time.Second, 10*time.Millisecond, "incidents never landed")
+
+	// PIN reports the bound alongside the pin so the agent can see its budget.
+	pinRes, err := client.Conn().Request(protocol.VerbIncidents, "PIN").
+		WithJSON(protocol.IncidentPinPayload{Fingerprint: keep.Fingerprint, Tag: "under investigation"}).JSON()
+	require.NoError(t, err)
+	assert.Equal(t, true, pinRes["pinned"])
+	assert.Equal(t, "under investigation", pinRes["tag"])
+	assert.Equal(t, float64(1), pinRes["pinned_count"])
+	assert.Equal(t, float64(incident.MaxPinnedEntries), pinRes["pin_limit"])
+
+	// The per-item flags must be visible on QUERY, or pinning is unobservable.
+	byFingerprint := func() map[string]map[string]interface{} {
+		t.Helper()
+		res, err := client.Conn().Request(protocol.VerbIncidents, protocol.SubVerbQuery).
+			WithJSON(protocol.IncidentQueryFilter{}).JSON()
+		require.NoError(t, err)
+		out := map[string]map[string]interface{}{}
+		incs, _ := res["incidents"].([]interface{})
+		for _, raw := range incs {
+			m, ok := raw.(map[string]interface{})
+			require.True(t, ok)
+			out[m["fingerprint"].(string)] = m
+		}
+		return out
+	}
+
+	view := byFingerprint()
+	require.Contains(t, view, keep.Fingerprint)
+	assert.Equal(t, true, view[keep.Fingerprint]["pinned"], "pinned flag missing from the per-item view")
+	assert.Equal(t, "under investigation", view[keep.Fingerprint]["tag"], "tag missing from the per-item view")
+	require.Contains(t, view, drop.Fingerprint)
+	assert.Nil(t, view[drop.Fingerprint]["pinned"], "unpinned entry must not report a pin")
+
+	// CLEAR retires the unpinned entry and keeps the pinned one.
+	clearRes, err := client.Conn().Request(protocol.VerbIncidents, "CLEAR").JSON()
+	require.NoError(t, err)
+	assert.Equal(t, float64(1), clearRes["cleared"])
+	assert.Equal(t, float64(1), clearRes["kept"])
+
+	view = byFingerprint()
+	assert.Contains(t, view, keep.Fingerprint, "pinned incident was cleared")
+	assert.NotContains(t, view, drop.Fingerprint, "unpinned incident survived the clear")
+
+	// UNPIN restores ordinary retention, proven by a second clear removing it.
+	unpinRes, err := client.Conn().Request(protocol.VerbIncidents, "UNPIN").
+		WithJSON(protocol.IncidentPinPayload{Fingerprint: keep.Fingerprint}).JSON()
+	require.NoError(t, err)
+	assert.Equal(t, false, unpinRes["pinned"])
+	assert.Equal(t, float64(0), unpinRes["pinned_count"])
+
+	clearRes, err = client.Conn().Request(protocol.VerbIncidents, "CLEAR").JSON()
+	require.NoError(t, err)
+	assert.Equal(t, float64(1), clearRes["cleared"])
+	assert.Empty(t, byFingerprint(), "unpinned incident survived the clear")
+}
+
+// TestHubIncidents_PinFailsLoud — an unpinnable target and a session-less call
+// must both report why, never quietly succeed and preserve nothing.
+func TestHubIncidents_PinFailsLoud(t *testing.T) {
+	t.Parallel()
+	d, client, tmpDir := newBootedDaemonWithClient(t)
+
+	_, err := client.Conn().Request(protocol.VerbIncidents, "PIN").
+		WithJSON(protocol.IncidentPinPayload{Fingerprint: "fp-x"}).JSON()
+	assert.Error(t, err, "INCIDENTS PIN with no session must fail")
+
+	registerIncidentSession(t, d, client, "inc-pin-loud", tmpDir)
+
+	_, err = client.Conn().Request(protocol.VerbIncidents, "PIN").
+		WithJSON(protocol.IncidentPinPayload{Fingerprint: "fp-absent"}).JSON()
+	assert.Error(t, err, "pinning an absent fingerprint must fail")
+
+	_, err = client.Conn().Request(protocol.VerbIncidents, "PIN").WithJSON(protocol.IncidentPinPayload{}).JSON()
+	assert.Error(t, err, "PIN without a fingerprint must fail")
+
+	_, err = client.Conn().Request(protocol.VerbIncidents, "UNPIN").
+		WithJSON(protocol.IncidentPinPayload{Fingerprint: "fp-absent"}).JSON()
+	assert.Error(t, err, "unpinning an unpinned fingerprint must fail")
+}

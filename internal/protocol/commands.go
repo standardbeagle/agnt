@@ -640,6 +640,39 @@ type IncidentQueryFilter struct {
 	Limit        int      `json:"limit,omitempty"` // 0 → 20; max 100
 }
 
+// IncidentPinPayload addresses one inbox entry for INCIDENTS PIN / UNPIN.
+// Fingerprint is the id the agent saw in a prior get_incidents result.
+//
+// It carries NO scoping fields on purpose. The incident inbox is per-session
+// hard-isolated (numbered contract 1, .claude/rules/daemon-architecture.md), so
+// the target inbox is always the one bound to the caller's connection — a
+// session_code/directory override here would be a cross-session write path.
+type IncidentPinPayload struct {
+	Fingerprint string `json:"fingerprint"`
+	Tag         string `json:"tag,omitempty"` // agent note stored with the pin
+}
+
+// IncidentPinResult is the response payload for INCIDENTS PIN / UNPIN.
+// PinnedCount/PinLimit surface the bound so an agent can see how much
+// retention budget it has left before a pin is refused.
+type IncidentPinResult struct {
+	Fingerprint string `json:"fingerprint"`
+	Pinned      bool   `json:"pinned"`
+	Tag         string `json:"tag,omitempty"`
+	PinnedCount int    `json:"pinned_count"`
+	PinLimit    int    `json:"pin_limit"`
+	Message     string `json:"message,omitempty"`
+}
+
+// IncidentClearResult is the response payload for INCIDENTS CLEAR. Cleared is
+// the number of entries actually retired; pinned entries are never counted
+// because they are never cleared.
+type IncidentClearResult struct {
+	Cleared int    `json:"cleared"`
+	Kept    int    `json:"kept"` // pinned entries deliberately left in place
+	Message string `json:"message,omitempty"`
+}
+
 // IncidentQueryResult is the response payload for INCIDENTS QUERY.
 type IncidentQueryResult struct {
 	Incidents  []IncidentRecord `json:"incidents"`
@@ -668,6 +701,11 @@ type IncidentRecord struct {
 	Context     IncidentContext     `json:"context,omitempty"`
 	Remediation IncidentRemediation `json:"remediation,omitempty"`
 	Read        bool                `json:"read"`
+	// Pinned reports that this entry is exempt from eviction and from every
+	// retention clear; Tag is the note stored at pin time. Without these the
+	// pin is unobservable and the agent cannot tell which entries it saved.
+	Pinned bool   `json:"pinned,omitempty"`
+	Tag    string `json:"tag,omitempty"`
 }
 
 // IncidentContext is the wire shape for incident context fields.

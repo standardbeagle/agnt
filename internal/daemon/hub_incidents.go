@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -18,7 +19,118 @@ func (d *Daemon) incidentsActions() map[string]handlerFn {
 	return map[string]handlerFn{
 		"QUERY": noCtx(d.hubHandleIncidentsQuery),
 		"":      noCtx(d.hubHandleIncidentsQuery),
+		"PIN":   noCtx(d.hubHandleIncidentsPin),
+		"UNPIN": noCtx(d.hubHandleIncidentsUnpin),
+		"CLEAR": noCtx(d.hubHandleIncidentsClear),
 	}
+}
+
+// incidentSession resolves the inbox the caller may operate on. Retention is a
+// per-session inbox operation, so the ONLY addressable inbox is the one bound
+// to this connection — mirroring INCIDENTS QUERY and preserving numbered
+// contract 1 (per-session isolation). A session-less call fails loud rather
+// than falling back to some other session's inbox.
+func (d *Daemon) incidentSession(conn *hubpkg.Connection) (string, error) {
+	if d.incidentBus == nil {
+		return "", fmt.Errorf("incident pipeline not initialized")
+	}
+	sessionCode := conn.SessionCode()
+	if sessionCode == "" {
+		return "", fmt.Errorf("no session attached — call SESSION ATTACH first")
+	}
+	return sessionCode, nil
+}
+
+// hubHandleIncidentsPin handles INCIDENTS PIN: marks one inbox entry exempt
+// from band eviction and from every retention clear until it is unpinned.
+func (d *Daemon) hubHandleIncidentsPin(conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	sessionCode, err := d.incidentSession(conn)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+	}
+	payload, err := unmarshalCommand[protocol.IncidentPinPayload](cmd)
+	if err != nil || payload.Fingerprint == "" {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "INCIDENTS PIN requires {fingerprint}")
+	}
+
+	entry, err := d.incidentBus.PinSession(sessionCode, payload.Fingerprint, payload.Tag)
+	switch {
+	case errors.Is(err, incident.ErrPinLimitReached):
+		// Fail loud with the bound named: silently evicting an older pin to make
+		// room would destroy a record the agent explicitly asked to keep.
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf(
+			"pin limit reached (%d pinned entries) — unpin one before pinning another", incident.MaxPinnedEntries))
+	case errors.Is(err, incident.ErrPinTargetNotFound):
+		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf(
+			"no incident with fingerprint %q in this session's inbox", payload.Fingerprint))
+	case err != nil:
+		return conn.WriteErr(hubproto.ErrInternal, err.Error())
+	}
+
+	data, _ := json.Marshal(protocol.IncidentPinResult{
+		Fingerprint: entry.Fingerprint,
+		Pinned:      true,
+		Tag:         entry.Tag,
+		PinnedCount: d.incidentBus.PinnedCountSession(sessionCode),
+		PinLimit:    incident.MaxPinnedEntries,
+		Message: fmt.Sprintf("incident %s pinned%s — survives eviction and every retention clear until unpinned",
+			entry.Fingerprint, tagSuffix(entry.Tag)),
+	})
+	return conn.WriteJSON(data)
+}
+
+// hubHandleIncidentsUnpin handles INCIDENTS UNPIN: the entry becomes evictable
+// and clearable again.
+func (d *Daemon) hubHandleIncidentsUnpin(conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	sessionCode, err := d.incidentSession(conn)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+	}
+	payload, err := unmarshalCommand[protocol.IncidentPinPayload](cmd)
+	if err != nil || payload.Fingerprint == "" {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "INCIDENTS UNPIN requires {fingerprint}")
+	}
+	if !d.incidentBus.UnpinSession(sessionCode, payload.Fingerprint) {
+		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf(
+			"no pinned incident with fingerprint %q in this session's inbox", payload.Fingerprint))
+	}
+	data, _ := json.Marshal(protocol.IncidentPinResult{
+		Fingerprint: payload.Fingerprint,
+		Pinned:      false,
+		PinnedCount: d.incidentBus.PinnedCountSession(sessionCode),
+		PinLimit:    incident.MaxPinnedEntries,
+		Message:     fmt.Sprintf("incident %s unpinned — normal retention applies again", payload.Fingerprint),
+	})
+	return conn.WriteJSON(data)
+}
+
+// hubHandleIncidentsClear handles INCIDENTS CLEAR: retires the caller session's
+// current incidents, keeping pinned entries.
+//
+// It routes through the bus's existing FIFO control-clear path (the same one
+// the daemon's build-success / proc-stop retention triggers use) rather than
+// touching the inbox directly, so an incident published just before the request
+// cannot land after the clear and outlive a boundary it predates. There is
+// exactly one clear mechanism.
+func (d *Daemon) hubHandleIncidentsClear(conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	sessionCode, err := d.incidentSession(conn)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+	}
+
+	kept := d.incidentBus.PinnedCountSession(sessionCode)
+	cleared, ok := d.incidentBus.ClearSessionBeforeSync(sessionCode, time.Now())
+	if !ok {
+		// Never report a clear that did not run.
+		return conn.WriteErr(hubproto.ErrInternal,
+			"incident clear was not applied (bus saturated or shutting down) — retry")
+	}
+	data, _ := json.Marshal(protocol.IncidentClearResult{
+		Cleared: cleared,
+		Kept:    kept,
+		Message: fmt.Sprintf("%d incident(s) cleared, %d pinned kept", cleared, kept),
+	})
+	return conn.WriteJSON(data)
 }
 
 func (d *Daemon) hubHandleIncidents(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
@@ -255,6 +367,8 @@ func incidentEntryToRecord(e incident.InboxEntry, detail string, hydrate func(st
 		Count:       e.Count,
 		Severity:    string(e.Severity),
 		Read:        e.Read,
+		Pinned:      e.Pinned,
+		Tag:         e.Tag,
 	}
 
 	if e.Sample != nil {
