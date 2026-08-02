@@ -209,3 +209,94 @@ func TestGetIncidents_NextToolsPopulated(t *testing.T) {
 	}
 	_ = text
 }
+
+// ── retention (pin / unpin / clear) ───────────────────────────────────────────
+
+// TestGetIncidents_PinStateIsObservable is the read side of the retention
+// feature: a pin the caller cannot see is a pin the caller cannot act on.
+// Mutation check: drop Pinned/Tag from incidentView (or from recordToView) and
+// the projection assertions fail; drop the pin marker from
+// formatIncidentsCompact and the rendering assertions fail.
+func TestGetIncidents_PinStateIsObservable(t *testing.T) {
+	t.Parallel()
+	pinned := makeRecord("fp-pinned", "browser_js", "error", "TypeError", "kept on purpose", 3)
+	pinned.Pinned = true
+	pinned.Tag = "repro for #412"
+	plain := makeRecord("fp-plain", "http_5xx", "error", "500", "transient", 1)
+
+	views := []incidentView{recordToView(pinned), recordToView(plain)}
+
+	if !views[0].Pinned {
+		t.Error("pinned flag lost in projection — pinning is unobservable")
+	}
+	if views[0].Tag != "repro for #412" {
+		t.Errorf("tag lost in projection: %q", views[0].Tag)
+	}
+	if views[1].Pinned || views[1].Tag != "" {
+		t.Errorf("unpinned record projected as pinned: %+v", views[1])
+	}
+
+	out := formatIncidentsCompact(GetIncidentsOutput{Incidents: views, PipelineEnabled: true})
+	if !strings.Contains(out, "[pinned: repro for #412]") {
+		t.Errorf("compact view does not mark the pinned incident: %q", out)
+	}
+	if strings.Count(out, "[pinned") != 1 {
+		t.Errorf("compact view marks the wrong number of incidents pinned: %q", out)
+	}
+	// The pin target must be addressable from the default view, or the retention
+	// verbs are unreachable without raw:true.
+	if !strings.Contains(out, "id: fp-pinned") {
+		t.Errorf("compact view omits the fingerprint needed as error_id: %q", out)
+	}
+}
+
+// TestGetIncidents_RetentionActionRouting pins which actions are reads and which
+// are retention verbs. An unrecognised action must NOT fall through to a query:
+// silently answering a different question than the caller asked is the failure
+// mode this guards.
+func TestGetIncidents_RetentionActionRouting(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		action    string
+		retention bool
+	}{
+		{"", false},
+		{"query", false},
+		{"pin", true},
+		{"unpin", true},
+		{"clear", true},
+		{"pln", true}, // typo: routed to retention, where it is rejected by name
+	} {
+		if got := isIncidentRetentionAction(tc.action); got != tc.retention {
+			t.Errorf("isIncidentRetentionAction(%q)=%v, want %v", tc.action, got, tc.retention)
+		}
+	}
+}
+
+// TestGetIncidents_RetentionRejectsBadInput — a pin with nothing to pin, and an
+// unknown verb, must both fail loud rather than no-op.
+func TestGetIncidents_RetentionRejectsBadInput(t *testing.T) {
+	t.Parallel()
+	dt := &DaemonTools{}
+
+	for _, tc := range []struct {
+		name  string
+		input GetIncidentsInput
+		want  string
+	}{
+		{"pin without target", GetIncidentsInput{Action: "pin"}, "requires error_id"},
+		{"unpin without target", GetIncidentsInput{Action: "unpin"}, "requires error_id"},
+		{"unknown action", GetIncidentsInput{Action: "pln"}, "unknown action"},
+	} {
+		res, _, err := dt.handleIncidentRetentionAction(tc.input)
+		if err != nil {
+			t.Fatalf("%s: unexpected transport error: %v", tc.name, err)
+		}
+		if res == nil || !res.IsError {
+			t.Fatalf("%s: expected an error result, got %+v", tc.name, res)
+		}
+		if text := resultText(res); !strings.Contains(text, tc.want) {
+			t.Errorf("%s: error text %q does not explain the problem (want %q)", tc.name, text, tc.want)
+		}
+	}
+}

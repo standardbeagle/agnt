@@ -1062,7 +1062,7 @@ func TestGetErrorsOracle_GoldenIsWellFormed(t *testing.T) {
 	// When a gap genuinely closes, drop its entry and decrement the matching
 	// number in the SAME commit; that is the ratchet working, not an obstacle.
 	const (
-		wantDataMissing         = 9
+		wantDataMissing         = 4
 		wantPresentationDiffers = 4
 	)
 	if got := byAvailability[availabilityDataMissing]; got != wantDataMissing {

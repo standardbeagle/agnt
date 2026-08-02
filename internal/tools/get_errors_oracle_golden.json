@@ -72,26 +72,6 @@
       "detail": "The superset fails here on GRANULARITY, not on fields — and this is strictly worse than a missing column. Adding frame_id to the incident record would not fix it: the two occurrences were already merged upstream at fingerprint time, so one of them no longer exists to be labelled. Closing this requires frame identity inside incident.NewIncidentEvent's fingerprint, not just in protocol.IncidentContext. Under the always-wrap model (docs/responsive-canonical-target.md §5.2/§6.2) each content frame is a distinct context, so collapsing them hides a real second failure."
     },
     {
-      "id": "input.action",
-      "kind": "input_field",
-      "status": "to_be_closed",
-      "availability": "data_missing",
-      "availability_reason": "MECHANISMS CONSULTED: capability absence plus a type scan of internal/incident — no pin verb exists on any surface, and no type in the package carries retention state, so there is no field, summary text or blob for the behaviour to hide in. Retention is what keeps data reachable at all: the inbox evicts the oldest entry once a band hits defaultBandCapacity (numbered contract 5), and with no way to mark an incident the agent needs, that entry is destroyed outright. Not a naming gap — there is no write path to rename.",
-      "get_errors": "action: query|pin|unpin|clear",
-      "get_incidents": "(absent)",
-      "detail": "get_incidents has no retention verb at all. Without pin/unpin/clear an agent cannot keep an error alive across an auto-clear, so the whole retention feature is unmigrated."
-    },
-    {
-      "id": "input.error_id",
-      "kind": "input_field",
-      "status": "to_be_closed",
-      "availability": "data_missing",
-      "availability_reason": "MECHANISM CONSULTED: capability absence, same scan as input.action. fingerprints[] selects records but no verb applies anything to the selection. Blocks jointly with input.action and must not be demoted separately from it: a retention verb with nothing to address preserves nothing, so closing input.action alone would leave the eviction loss fully open.",
-      "get_errors": "error_id: pin/unpin target",
-      "get_incidents": "(absent)",
-      "detail": "fingerprints[] is the identity analogue on the incidents side, but it only SELECTS records; there is no action to apply to the selection. Closing input.action without this leaves pins untargetable."
-    },
-    {
       "id": "input.global",
       "kind": "input_field",
       "status": "permanently_justified",
@@ -99,16 +79,6 @@
       "get_incidents": "(absent)",
       "detail": "Deliberately excluded from the superset. get_errors keeps it; get_incidents must not gain it.",
       "rationale": "Owner decision: global was a debugging affordance, not a production use case. The incident inbox is per-session hard-isolated (numbered contract 1, .claude/rules/daemon-architecture.md) — a stronger guarantee than project scoping. Closing this gap would mean weakening that isolation, which is expressly forbidden. This entry is permanent and must NOT be removed when the others are."
-    },
-    {
-      "id": "input.tag",
-      "kind": "input_field",
-      "status": "to_be_closed",
-      "availability": "data_missing",
-      "availability_reason": "MECHANISMS CONSULTED: store absence and provenance. A type scan of internal/incident finds nowhere to put caller-supplied metadata — no field, and no free-text carrier either, because the value ORIGINATES with the caller rather than with an upstream signal, so no message or blob could carry it even in principle. Unreachable in every shape, not renamed.",
-      "get_errors": "tag: note stored with a pin",
-      "get_incidents": "(absent)",
-      "detail": "Agent-authored annotation attached at pin time. No incident-side store for caller-supplied metadata."
     },
     {
       "id": "item.frame_id",
@@ -129,26 +99,6 @@
       "get_errors": "location: file:line:col of the first app stack frame (extractFirstAppFrame, else fe.Source:LineNo:ColNo)",
       "get_incidents": "(no field; recoverable from Summary text only while the message stays under the summary cap)",
       "detail": "MEASURED THROUGH THE REAL ADAPTER, not by field name — the earlier claim that location 'never enters the envelope' was FALSE and is retracted. protocol.IncidentContext carries no location, but incident.FromFrontendError folds fe.Stack into the message, so the value reaches Summary for short errors. The gap is therefore narrower and better defined than a missing column: closing it means either a first-class location field, or a guarantee that the first app frame survives truncation (e.g. extracting it before the 200-byte cap applies). Note the pipeline does not discard it out of ignorance — NewIncidentEvent folds ctx.URL into the fingerprint as its 'location' argument, which is a different fact."
-    },
-    {
-      "id": "item.pinned",
-      "kind": "item_field",
-      "status": "to_be_closed",
-      "availability": "data_missing",
-      "availability_reason": "MECHANISMS CONSULTED: field name plus a type scan of IncidentEvent / IncidentRecord / protocol.IncidentContext, none of which carry retention state — and it is not derivable from summary text either, since no upstream signal knows about pinning. Which entries were preserved is therefore unobservable, not differently spelled.",
-      "get_errors": "pinned: entry survives limit and auto-clear",
-      "get_incidents": "(absent)",
-      "detail": "Without a per-item pinned flag, pinning is unobservable even if input.action lands — the agent cannot tell which entries it saved."
-    },
-    {
-      "id": "item.tag",
-      "kind": "item_field",
-      "status": "to_be_closed",
-      "availability": "data_missing",
-      "availability_reason": "MECHANISMS CONSULTED: same type scan as input.tag, from the read side. The note is neither stored nor rendered anywhere, and being caller-authored it has no upstream text to ride in on, so it cannot be read back in any shape.",
-      "get_errors": "tag: the note stored at pin time",
-      "get_incidents": "(absent)",
-      "detail": "Read side of input.tag. Same dependency: useless until item.pinned and input.action exist."
     },
     {
       "id": "output.collection_warnings",

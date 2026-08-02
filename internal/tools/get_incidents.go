@@ -15,6 +15,13 @@ import (
 
 // GetIncidentsInput is the input schema for the get_incidents tool.
 type GetIncidentsInput struct {
+	// Action selects the retention verb. Empty/"query" is the default read.
+	// error_id/tag mirror get_errors' spelling so a caller migrating off it does
+	// not have to rename anything; for incidents the id is the fingerprint from
+	// a prior result.
+	Action       string   `json:"action,omitempty"        jsonschema:"'query' (default) | 'pin' | 'unpin' | 'clear'. pin/unpin keep an incident alive past eviction and every retention clear; clear retires the session's unpinned incidents"`
+	ErrorID      string   `json:"error_id,omitempty"      jsonschema:"Pin/unpin target: the incident fingerprint (or id) from a prior get_incidents result"`
+	Tag          string   `json:"tag,omitempty"           jsonschema:"Note stored with a pin, returned on the pinned item"`
 	Severity     []string `json:"severity,omitempty"      jsonschema:"Filter by severity: critical/error/warning/info (default: all)"`
 	Since        string   `json:"since,omitempty"         jsonschema:"Cursor from prior pull (RFC3339 timestamp) or duration like '5m'"`
 	Fingerprints []string `json:"fingerprints,omitempty"  jsonschema:"Retrieve specific incident fingerprints"`
@@ -55,6 +62,12 @@ type incidentView struct {
 	Ctx         protocol.IncidentContext     `json:"context,omitempty"`
 	Remediation protocol.IncidentRemediation `json:"remediation,omitempty"`
 	Read        bool                         `json:"read"`
+	// Pinned reports that this incident is exempt from eviction and from every
+	// retention clear; Tag is the note stored at pin time. Both are required for
+	// pinning to be observable at all — without them the agent cannot tell which
+	// incidents it saved.
+	Pinned bool   `json:"pinned,omitempty"`
+	Tag    string `json:"tag,omitempty"`
 }
 
 type inboxStats struct {
@@ -108,6 +121,9 @@ func makeGetIncidentsHandler(dt *DaemonTools) func(context.Context, *mcp.CallToo
 		// from a registered inbox with no data).
 		if err := dt.ensureConnected(); err != nil {
 			return fail[GetIncidentsOutput]("incident query failed: cannot reach daemon: " + err.Error())
+		}
+		if isIncidentRetentionAction(input.Action) {
+			return dt.handleIncidentRetentionAction(input)
 		}
 		result, err := dt.client.IncidentQuery(filter)
 		if err != nil {
@@ -182,6 +198,71 @@ func makeGetIncidentsHandler(dt *DaemonTools) func(context.Context, *mcp.CallToo
 	}
 }
 
+// isIncidentRetentionAction reports whether action asks for a retention verb
+// rather than the default query. An unknown action is NOT swallowed as a query:
+// it routes here and is rejected, so a typo cannot silently return a read.
+func isIncidentRetentionAction(action string) bool {
+	switch action {
+	case "", "query":
+		return false
+	default:
+		return true
+	}
+}
+
+// handleIncidentRetentionAction executes pin/unpin/clear against the caller's
+// session inbox. Mirrors handleErrorRetentionAction (get_errors) so the two
+// tools behave the same way while both exist.
+//
+// The rendered message is returned as tool content only; GetIncidentsOutput
+// deliberately gains no summary field, because that would change a separate,
+// unrelated migration divergence.
+func (dt *DaemonTools) handleIncidentRetentionAction(input GetIncidentsInput) (*mcp.CallToolResult, GetIncidentsOutput, error) {
+	switch input.Action {
+	case "pin", "unpin":
+		if input.ErrorID == "" {
+			return fail[GetIncidentsOutput](validationError("get_incidents", fmt.Errorf(
+				"action %q requires error_id (the incident fingerprint from a prior get_incidents result)", input.Action)))
+		}
+		payload := protocol.IncidentPinPayload{Fingerprint: input.ErrorID, Tag: input.Tag}
+
+		if input.Action == "unpin" {
+			res, err := dt.client.IncidentUnpin(payload)
+			if err != nil {
+				return fail[GetIncidentsOutput]("unpin failed: " + err.Error())
+			}
+			return mcpText(incidentRetentionMessage(res.Message,
+				fmt.Sprintf("Incident %s unpinned — normal retention applies again.", input.ErrorID))), GetIncidentsOutput{}, nil
+		}
+
+		res, err := dt.client.IncidentPin(payload)
+		if err != nil {
+			return fail[GetIncidentsOutput]("pin failed: " + err.Error())
+		}
+		msg := incidentRetentionMessage(res.Message, fmt.Sprintf("Incident %s pinned.", input.ErrorID))
+		if res.PinLimit > 0 {
+			msg += fmt.Sprintf(" (%d/%d pins used)", res.PinnedCount, res.PinLimit)
+		}
+		return mcpText(msg), GetIncidentsOutput{}, nil
+
+	case "clear":
+		res, err := dt.client.IncidentClear()
+		if err != nil {
+			return fail[GetIncidentsOutput]("clear failed: " + err.Error())
+		}
+		return mcpText(incidentRetentionMessage(res.Message, "Incidents cleared (pinned entries kept).")), GetIncidentsOutput{}, nil
+	}
+	return fail[GetIncidentsOutput](validationError("get_incidents", fmt.Errorf(
+		"unknown action %q — want query, pin, unpin, or clear", input.Action)))
+}
+
+func incidentRetentionMessage(fromDaemon, fallback string) string {
+	if fromDaemon != "" {
+		return fromDaemon
+	}
+	return fallback
+}
+
 // buildGetIncidentsFilter translates a get_incidents query into an inbox
 // filter. Extracted from the handler so the get_errors/get_incidents oracle can
 // compare both tools' filter construction against the real code rather than a
@@ -229,6 +310,8 @@ func recordToView(rec protocol.IncidentRecord) incidentView {
 		Ctx:         rec.Context,
 		Remediation: rec.Remediation,
 		Read:        rec.Read,
+		Pinned:      rec.Pinned,
+		Tag:         rec.Tag,
 	}
 	if t, err := time.Parse(time.RFC3339, rec.FirstSeen); err == nil {
 		v.FirstSeen = t
@@ -259,8 +342,20 @@ func formatIncidentsCompact(out GetIncidentsOutput) string {
 			if !iv.LastSeen.IsZero() {
 				age = fmt.Sprintf(", %s ago", formatAge(time.Since(iv.LastSeen)))
 			}
-			sb.WriteString(fmt.Sprintf("[%s:%s] %s (%dx%s)\n",
-				iv.Severity, iv.Source, iv.Category, iv.Count, age))
+			pin := ""
+			if iv.Pinned {
+				pin = " [pinned"
+				if iv.Tag != "" {
+					pin += ": " + iv.Tag
+				}
+				pin += "]"
+			}
+			sb.WriteString(fmt.Sprintf("[%s:%s] %s (%dx%s)%s\n",
+				iv.Severity, iv.Source, iv.Category, iv.Count, age, pin))
+			// The fingerprint is the pin/unpin target, so compact mode has to
+			// render it: without an id here the retention verbs are unreachable
+			// from the default view.
+			sb.WriteString("  id: " + iv.Fingerprint + "\n")
 			if iv.Summary != "" {
 				sb.WriteString("  " + iv.Summary + "\n")
 			}

@@ -688,6 +688,22 @@ func (rc *ResilientClient) IncidentQuery(filter protocol.IncidentQueryFilter) (*
 	return withResult(rc, func(c *Client) (*protocol.IncidentQueryResult, error) { return c.IncidentQuery(filter) })
 }
 
+// IncidentPin pins an incident in the caller session's inbox so it survives
+// eviction and every retention clear until unpinned.
+func (rc *ResilientClient) IncidentPin(payload protocol.IncidentPinPayload) (*protocol.IncidentPinResult, error) {
+	return withResult(rc, func(c *Client) (*protocol.IncidentPinResult, error) { return c.IncidentPin(payload) })
+}
+
+// IncidentUnpin releases a pin previously created with IncidentPin.
+func (rc *ResilientClient) IncidentUnpin(payload protocol.IncidentPinPayload) (*protocol.IncidentPinResult, error) {
+	return withResult(rc, func(c *Client) (*protocol.IncidentPinResult, error) { return c.IncidentUnpin(payload) })
+}
+
+// IncidentClear retires the caller session's unpinned incidents.
+func (rc *ResilientClient) IncidentClear() (*protocol.IncidentClearResult, error) {
+	return withResult(rc, func(c *Client) (*protocol.IncidentClearResult, error) { return c.IncidentClear() })
+}
+
 // PublishCreate validates + publishes a walkthrough, returning the share id and
 // the plaintext token (returned once).
 func (rc *ResilientClient) PublishCreate(req protocol.PublishCreateRequest) (*protocol.PublishCreateResult, error) {
