@@ -385,3 +385,227 @@ func TestInbox_Stats_ExcludesReadEntries(t *testing.T) {
 		t.Errorf("after drain: OldestUnread should be zero, got %v", s.OldestUnread)
 	}
 }
+
+// ── pin retention ─────────────────────────────────────────────────────────────
+
+// TestInbox_PinnedEntrySurvivesBandEviction is the core of the retention
+// feature: without the eviction exemption a pin is cosmetic, because the record
+// the agent asked to keep is destroyed by ordinary traffic. Mutation check:
+// delete the `if !...Pinned` skip in oldestUnpinned (or restore the plain
+// lruList.Back() victim) and this test fails.
+func TestInbox_PinnedEntrySurvivesBandEviction(t *testing.T) {
+	t.Parallel()
+	inbox := NewInbox("sess")
+
+	inbox.Ingest(makeEntry("fp-keep", SeverityError))
+	if _, err := inbox.Pin("fp-keep", "regression under investigation"); err != nil {
+		t.Fatalf("Pin: %v", err)
+	}
+
+	// Push far past the band capacity with unpinned traffic.
+	for i := 0; i < defaultBandCapacity*2; i++ {
+		inbox.Ingest(makeEntry(fmt.Sprintf("fp-noise-%d", i), SeverityError))
+	}
+
+	kept := inbox.FindByFingerprint("fp-keep")
+	if kept == nil {
+		t.Fatal("pinned entry was evicted — the pin bought nothing")
+	}
+	if !kept.Pinned || kept.Tag != "regression under investigation" {
+		t.Fatalf("pin state lost: pinned=%v tag=%q", kept.Pinned, kept.Tag)
+	}
+	// The exemption must not weaken the cap for unpinned entries: the earliest
+	// noise entries are still gone, and the band still holds at most capacity.
+	if got := inbox.FindByFingerprint("fp-noise-0"); got != nil {
+		t.Error("unpinned entry survived overflow — the band cap was weakened")
+	}
+	if s := inbox.Stats(); s.Error > defaultBandCapacity {
+		t.Errorf("error band holds %d entries, capacity is %d", s.Error, defaultBandCapacity)
+	}
+	if s := inbox.Stats(); s.Dropped == 0 {
+		t.Error("expected unpinned evictions to be counted as drops")
+	}
+}
+
+// TestInbox_UnpinRestoresEviction proves the exemption is scoped to the pin and
+// released with it, rather than making an entry permanently immortal.
+func TestInbox_UnpinRestoresEviction(t *testing.T) {
+	t.Parallel()
+	inbox := NewInbox("sess")
+
+	inbox.Ingest(makeEntry("fp-keep", SeverityError))
+	if _, err := inbox.Pin("fp-keep", "note"); err != nil {
+		t.Fatalf("Pin: %v", err)
+	}
+	if !inbox.Unpin("fp-keep") {
+		t.Fatal("Unpin reported no pin removed")
+	}
+	if got := inbox.PinnedCount(); got != 0 {
+		t.Fatalf("PinnedCount=%d after unpin, want 0", got)
+	}
+	entry := inbox.FindByFingerprint("fp-keep")
+	if entry == nil || entry.Pinned || entry.Tag != "" {
+		t.Fatalf("unpin left state behind: %+v", entry)
+	}
+
+	for i := 0; i < defaultBandCapacity*2; i++ {
+		inbox.Ingest(makeEntry(fmt.Sprintf("fp-noise-%d", i), SeverityError))
+	}
+	if inbox.FindByFingerprint("fp-keep") != nil {
+		t.Error("unpinned entry still exempt from eviction")
+	}
+}
+
+// TestInbox_PinSetIsBounded pins the memory-leak policy: the bound is enforced
+// by REFUSING a new pin, never by discarding one the agent still holds.
+func TestInbox_PinSetIsBounded(t *testing.T) {
+	t.Parallel()
+	inbox := NewInbox("sess")
+
+	for i := 0; i < MaxPinnedEntries+1; i++ {
+		inbox.Ingest(makeEntry(fmt.Sprintf("fp-%d", i), SeverityError))
+	}
+	for i := 0; i < MaxPinnedEntries; i++ {
+		if _, err := inbox.Pin(fmt.Sprintf("fp-%d", i), ""); err != nil {
+			t.Fatalf("Pin %d: %v", i, err)
+		}
+	}
+	if _, err := inbox.Pin(fmt.Sprintf("fp-%d", MaxPinnedEntries), ""); err != ErrPinLimitReached {
+		t.Fatalf("pin past the bound returned %v, want ErrPinLimitReached", err)
+	}
+	if got := inbox.PinnedCount(); got != MaxPinnedEntries {
+		t.Fatalf("PinnedCount=%d, want %d", got, MaxPinnedEntries)
+	}
+	// The refusal must not have cost an existing pin.
+	if e := inbox.FindByFingerprint("fp-0"); e == nil || !e.Pinned {
+		t.Fatal("an existing pin was dropped to make room — pins must never be evicted")
+	}
+	// Re-pinning an existing pin updates the tag without consuming a slot, so a
+	// retrying caller cannot exhaust the bound.
+	if _, err := inbox.Pin("fp-0", "retagged"); err != nil {
+		t.Fatalf("re-pin: %v", err)
+	}
+	if got := inbox.PinnedCount(); got != MaxPinnedEntries {
+		t.Fatalf("re-pin changed PinnedCount to %d", got)
+	}
+	if e := inbox.FindByFingerprint("fp-0"); e == nil || e.Tag != "retagged" {
+		t.Fatal("re-pin did not update the tag")
+	}
+	// Freeing a slot must make the bound usable again.
+	inbox.Unpin("fp-0")
+	if _, err := inbox.Pin(fmt.Sprintf("fp-%d", MaxPinnedEntries), ""); err != nil {
+		t.Fatalf("pin after unpin: %v", err)
+	}
+}
+
+// TestInbox_PinUnknownFingerprintFailsLoud — a pin whose target is already gone
+// must report that, not report success and preserve nothing.
+func TestInbox_PinUnknownFingerprintFailsLoud(t *testing.T) {
+	t.Parallel()
+	inbox := NewInbox("sess")
+	if _, err := inbox.Pin("fp-absent", ""); err != ErrPinTargetNotFound {
+		t.Fatalf("Pin of an absent fingerprint returned %v, want ErrPinTargetNotFound", err)
+	}
+	if inbox.Unpin("fp-absent") {
+		t.Fatal("Unpin of an absent fingerprint reported success")
+	}
+}
+
+// TestInbox_PinSurvivesRetentionClears covers the auto-retire triggers that
+// already reach the inbox (build success / proc stop route through
+// ClearProcessBefore; the agent's explicit clear routes through ClearAllBefore).
+func TestInbox_PinSurvivesRetentionClears(t *testing.T) {
+	t.Parallel()
+	base := time.Now()
+
+	withSample := func(fp, processID string) *InboxEntry {
+		e := makeEntry(fp, SeverityError)
+		e.LastSeenAt = base
+		ev := NewIncidentEvent(SourceProcessAlert, SeverityError, "cat", "msg", Context{ProcessID: processID}, nil)
+		e.Sample = &ev
+		return e
+	}
+
+	t.Run("ClearAllBefore", func(t *testing.T) {
+		t.Parallel()
+		inbox := NewInbox("sess")
+		inbox.Ingest(withSample("fp-keep", "web"))
+		inbox.Ingest(withSample("fp-drop", "web"))
+		if _, err := inbox.Pin("fp-keep", "keep me"); err != nil {
+			t.Fatalf("Pin: %v", err)
+		}
+		if removed := inbox.ClearAllBefore(base.Add(time.Second)); removed != 1 {
+			t.Fatalf("ClearAllBefore removed %d, want 1 (the unpinned entry only)", removed)
+		}
+		if inbox.FindByFingerprint("fp-keep") == nil {
+			t.Error("pinned entry was cleared")
+		}
+		if inbox.FindByFingerprint("fp-drop") != nil {
+			t.Error("unpinned entry survived the clear")
+		}
+	})
+
+	t.Run("ClearProcessBefore", func(t *testing.T) {
+		t.Parallel()
+		inbox := NewInbox("sess")
+		inbox.Ingest(withSample("fp-keep", "web"))
+		inbox.Ingest(withSample("fp-drop", "web"))
+		if _, err := inbox.Pin("fp-keep", "keep me"); err != nil {
+			t.Fatalf("Pin: %v", err)
+		}
+		if removed := inbox.ClearProcessBefore("web", base.Add(time.Second)); removed != 1 {
+			t.Fatalf("ClearProcessBefore removed %d, want 1", removed)
+		}
+		if inbox.FindByFingerprint("fp-keep") == nil {
+			t.Error("pinned entry was retired by an auto-retire trigger")
+		}
+	})
+}
+
+// TestBus_PinIsSessionScoped enforces numbered contract 1 (per-session
+// isolation, .claude/rules/daemon-architecture.md): retention is a per-session
+// inbox operation, so a pin in session A must be invisible — and unreachable —
+// from session B, even for the same fingerprint.
+func TestBus_PinIsSessionScoped(t *testing.T) {
+	t.Parallel()
+	bus := NewMPSCBus(nil)
+	defer bus.Close()
+
+	bus.AddSession("sess-a", nil, nil, nil)
+	bus.AddSession("sess-b", nil, nil, nil)
+
+	plA := bus.getSessionPipeline("sess-a")
+	plB := bus.getSessionPipeline("sess-b")
+	plA.inbox.Ingest(makeEntry("fp-shared", SeverityError))
+	plB.inbox.Ingest(makeEntry("fp-shared", SeverityError))
+
+	if _, err := bus.PinSession("sess-a", "fp-shared", "a-only"); err != nil {
+		t.Fatalf("PinSession(A): %v", err)
+	}
+
+	a := bus.FindFingerprintSession("sess-a", "fp-shared")
+	if a == nil || !a.Pinned || a.Tag != "a-only" {
+		t.Fatalf("session A does not see its own pin: %+v", a)
+	}
+	b := bus.FindFingerprintSession("sess-b", "fp-shared")
+	if b == nil {
+		t.Fatal("session B lost its own entry")
+	}
+	if b.Pinned || b.Tag != "" {
+		t.Fatalf("session A's pin leaked into session B: pinned=%v tag=%q", b.Pinned, b.Tag)
+	}
+	if got := plB.inbox.PinnedCount(); got != 0 {
+		t.Fatalf("session B reports %d pins, want 0", got)
+	}
+	// The write path is scoped too: B cannot release A's pin.
+	if bus.UnpinSession("sess-b", "fp-shared") {
+		t.Fatal("session B unpinned an entry it never pinned")
+	}
+	if a := bus.FindFingerprintSession("sess-a", "fp-shared"); a == nil || !a.Pinned {
+		t.Fatal("session B's unpin reached session A's pin")
+	}
+	// An unknown session is a miss, never a fallback to some other inbox.
+	if _, err := bus.PinSession("sess-ghost", "fp-shared", ""); err == nil {
+		t.Fatal("PinSession on an unregistered session reported success")
+	}
+}

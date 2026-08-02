@@ -2,6 +2,7 @@ package incident
 
 import (
 	"container/list"
+	"errors"
 	"sort"
 	"sync"
 	"sync/atomic"
@@ -16,6 +17,33 @@ const (
 	subChanBuf          = 16
 	maxSampleURLs       = 10  // distinct sample URLs surfaced on a storm entry
 	maxDistinctURLs     = 128 // hard cap so a flood cannot grow the set unbounded
+	// MaxPinnedEntries bounds the pin set of one session inbox.
+	//
+	// A pin is an EXEMPTION from band eviction, not a capacity increase, so an
+	// unbounded pin set would be a memory leak with no reaper: unlike the
+	// bounded structures elsewhere in this repo (see
+	// internal/publish/feedback_ratelimit.go) there is no state a pin can decay
+	// into — its whole purpose is to keep holding data until the agent releases
+	// it. The house rule there is "never drop a bucket that is still
+	// throttling"; the equivalent here is "never drop a pin that is still
+	// holding a record", so the bound is enforced by REFUSING a new pin
+	// (fail loud, ErrPinLimitReached) rather than by evicting an existing one.
+	// Silently dropping the oldest pin would recreate exactly the loss pinning
+	// exists to prevent.
+	//
+	// The value is deliberately far below defaultBandCapacity: pins cannot fill
+	// a band, so unpinned traffic always has an evictable slot and the band cap
+	// is never weakened for unpinned entries.
+	MaxPinnedEntries = 25
+)
+
+// Pin errors. Both are reported to the caller; neither is ever swallowed.
+var (
+	// ErrPinTargetNotFound means no band holds the addressed fingerprint —
+	// typically the entry was already evicted or belongs to another session.
+	ErrPinTargetNotFound = errors.New("no inbox entry with that fingerprint")
+	// ErrPinLimitReached means the session already holds MaxPinnedEntries pins.
+	ErrPinLimitReached = errors.New("pin limit reached: unpin an entry first")
 )
 
 // InboxEntry is a deduplicated, severity-banded record of an incident fingerprint.
@@ -29,6 +57,12 @@ type InboxEntry struct {
 	DistinctURLs int            `json:"distinct_urls,omitempty"` // distinct URLs seen, capped
 	Severity     Severity       `json:"severity"`
 	Read         bool           `json:"read"`
+	// Pinned marks an entry the agent asked to keep. A pinned entry is exempt
+	// from band eviction and from every retention clear, so the record stays
+	// readable until it is explicitly unpinned or the session ends.
+	Pinned bool `json:"pinned,omitempty"`
+	// Tag is the caller-authored note stored at pin time.
+	Tag string `json:"tag,omitempty"`
 
 	urlSeen map[string]struct{} // unexported: distinct-URL set, capped at maxDistinctURLs
 }
@@ -104,6 +138,11 @@ type Inbox struct {
 	// move. This inbox-level lock makes the
 	// scan+insert atomic without widening any band lock's scope.
 	ingestMu sync.Mutex
+
+	// pinned counts entries currently marked Pinned across all bands. Guarded
+	// by ingestMu (the only lock every pin/unpin path takes), so the bound can
+	// be enforced atomically with the flag it bounds.
+	pinned int
 
 	cursorMu sync.Mutex
 	cursor   time.Time
@@ -250,19 +289,106 @@ func (inbox *Inbox) insertIntoBand(b *band, entry *InboxEntry) {
 	defer b.mu.Unlock()
 
 	for len(b.slots) >= b.capacity {
-		back := b.lruList.Back()
-		if back == nil {
+		// Evict the least-recently-updated UNPINNED entry. Skipping pinned slots
+		// is the whole point of a pin: without this the record the agent asked to
+		// keep is destroyed by ordinary traffic and the feature is cosmetic.
+		victim := oldestUnpinned(b)
+		if victim == nil {
+			// Defensive: MaxPinnedEntries is far below the band capacity, so a
+			// fully-pinned band is unreachable in production. Stop evicting rather
+			// than dropping a pin — the band then holds pins + one extra entry,
+			// which is bounded, whereas discarding a pin is unrecoverable.
 			break
 		}
-		evicted := back.Value.(*inboxSlot)
-		b.lruList.Remove(back)
-		delete(b.slots, evicted.entry.Fingerprint)
+		b.lruList.Remove(victim)
+		delete(b.slots, victim.Value.(*inboxSlot).entry.Fingerprint)
 		inbox.dropped.Add(1)
 	}
 
 	slot := &inboxSlot{entry: entry}
 	slot.elem = b.lruList.PushFront(slot)
 	b.slots[entry.Fingerprint] = slot
+}
+
+// oldestUnpinned returns the list element of the least-recently-updated
+// unpinned slot in b, or nil when every slot is pinned. Caller holds b.mu.
+func oldestUnpinned(b *band) *list.Element {
+	for e := b.lruList.Back(); e != nil; e = e.Prev() {
+		if !e.Value.(*inboxSlot).entry.Pinned {
+			return e
+		}
+	}
+	return nil
+}
+
+// Pin marks the entry with the given fingerprint as pinned and stores tag on
+// it, returning a snapshot of the pinned entry. A pinned entry survives band
+// eviction and every retention clear until it is unpinned or the session ends.
+//
+// Fails loud rather than silently: an unknown fingerprint returns
+// ErrPinTargetNotFound (the entry was already evicted, or belongs to another
+// session), and a session already holding MaxPinnedEntries pins returns
+// ErrPinLimitReached instead of evicting one of its existing pins.
+//
+// Re-pinning an already-pinned entry updates its tag and does not consume a
+// second slot, so a retrying caller cannot exhaust the bound.
+func (inbox *Inbox) Pin(fingerprint, tag string) (*InboxEntry, error) {
+	inbox.ingestMu.Lock()
+	defer inbox.ingestMu.Unlock()
+
+	for _, b := range inbox.bands {
+		b.mu.Lock()
+		slot, ok := b.slots[fingerprint]
+		if !ok {
+			b.mu.Unlock()
+			continue
+		}
+		if !slot.entry.Pinned {
+			if inbox.pinned >= MaxPinnedEntries {
+				b.mu.Unlock()
+				return nil, ErrPinLimitReached
+			}
+			slot.entry.Pinned = true
+			inbox.pinned++
+		}
+		slot.entry.Tag = tag
+		snapshot := snapshotInboxEntry(slot.entry)
+		b.mu.Unlock()
+		return snapshot, nil
+	}
+	return nil, ErrPinTargetNotFound
+}
+
+// Unpin clears the pin on fingerprint, returning whether a pin was removed.
+// The entry becomes evictable again and keeps no tag.
+func (inbox *Inbox) Unpin(fingerprint string) bool {
+	inbox.ingestMu.Lock()
+	defer inbox.ingestMu.Unlock()
+
+	for _, b := range inbox.bands {
+		b.mu.Lock()
+		slot, ok := b.slots[fingerprint]
+		if !ok {
+			b.mu.Unlock()
+			continue
+		}
+		was := slot.entry.Pinned
+		if was {
+			slot.entry.Pinned = false
+			slot.entry.Tag = ""
+			inbox.pinned--
+		}
+		b.mu.Unlock()
+		return was
+	}
+	return false
+}
+
+// PinnedCount returns how many entries this inbox currently holds pinned.
+func (inbox *Inbox) PinnedCount() int {
+	inbox.ingestMu.Lock()
+	defer inbox.ingestMu.Unlock()
+	return inbox.pinned
 }
 
 // Query returns entries matching filter. Results are sorted newest first.
@@ -449,7 +575,8 @@ func (inbox *Inbox) broadcast(delta InboxDelta) {
 // ClearProcessBefore removes entries attributed to processID whose LastSeenAt
 // is at or before the boundary. Entries that recurred after the boundary keep
 // a later LastSeenAt and survive — the error is still happening, so retiring
-// it would be lying to the agent. Returns the number of entries removed.
+// it would be lying to the agent. Pinned entries are never removed. Returns
+// the number of entries removed.
 func (inbox *Inbox) ClearProcessBefore(processID string, before time.Time) int {
 	if processID == "" {
 		return 0
@@ -465,6 +592,9 @@ func (inbox *Inbox) ClearProcessBefore(processID string, before time.Time) int {
 			if e.LastSeenAt.After(before) {
 				continue
 			}
+			if e.Pinned {
+				continue // a pin outranks every retention trigger
+			}
 			b.lruList.Remove(slot.elem)
 			delete(b.slots, fp)
 			removed++
@@ -477,7 +607,8 @@ func (inbox *Inbox) ClearProcessBefore(processID string, before time.Time) int {
 // ClearAllBefore removes every entry whose LastSeenAt is at or before the
 // boundary, regardless of source. Backs the agent's explicit project-wide
 // "clear": entries that recur after the boundary re-insert on their next
-// occurrence. Returns the number of entries removed.
+// occurrence. Pinned entries are never removed — that is what a pin buys.
+// Returns the number of entries removed.
 func (inbox *Inbox) ClearAllBefore(before time.Time) int {
 	removed := 0
 	for _, b := range inbox.bands {
@@ -485,6 +616,9 @@ func (inbox *Inbox) ClearAllBefore(before time.Time) int {
 		for fp, slot := range b.slots {
 			if slot.entry.LastSeenAt.After(before) {
 				continue
+			}
+			if slot.entry.Pinned {
+				continue // a pin outranks every retention trigger
 			}
 			b.lruList.Remove(slot.elem)
 			delete(b.slots, fp)

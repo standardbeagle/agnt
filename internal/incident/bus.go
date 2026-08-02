@@ -1,6 +1,7 @@
 package incident
 
 import (
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -72,6 +73,14 @@ type MPSCBus struct {
 	perSession map[string]*sessionPipeline
 	dispatchWg sync.WaitGroup
 
+	// acks lets a caller await a control op it enqueued on the FIFO inbound
+	// channel. Keyed by the control event's synthetic id (carried in its
+	// Fingerprint, which a control event never uses for dedup because deliver
+	// intercepts it before any inbox ingest).
+	ackMu  sync.Mutex
+	acks   map[string]chan int
+	ackSeq atomic.Uint64
+
 	// dispatchGate: when non-nil the dispatch goroutine waits on it before
 	// processing each event. Closed by resumeDispatch (test-only).
 	dispatchGate atomic.Pointer[chan struct{}]
@@ -86,6 +95,7 @@ func NewMPSCBus(pingConfig *PingConfig) *MPSCBus {
 		meta:       make(chan *IncidentEvent, 32),
 		closed:     make(chan struct{}),
 		perSession: make(map[string]*sessionPipeline),
+		acks:       make(map[string]chan int),
 	}
 	b.dispatchWg.Add(1)
 	go b.dispatchLoop()
@@ -95,21 +105,30 @@ func NewMPSCBus(pingConfig *PingConfig) *MPSCBus {
 // Fire is the single non-blocking entry point for signal producers.
 // It must complete in <1μs even when the bus is saturated.
 func (b *MPSCBus) Fire(ev *IncidentEvent) {
+	b.fire(ev)
+}
+
+// fire is Fire with an enqueued/not-enqueued answer, so a caller that waits for
+// the event to be applied can fail loud instead of blocking on a drop.
+func (b *MPSCBus) fire(ev *IncidentEvent) bool {
 	// Check closed state atomically before attempting to send.
 	select {
 	case <-b.closed:
-		return
+		return false
 	default:
 	}
 	select {
 	case b.inbound <- ev:
+		return true
 	case <-b.closed:
 		// Bus shut down mid-flight.
+		return false
 	default:
 		n := b.dropped.Add(1)
 		if n%metaOverflowEvery == 0 {
 			b.emitMetaOverflow(n)
 		}
+		return false
 	}
 }
 
@@ -273,6 +292,116 @@ func (b *MPSCBus) ClearSessionBefore(sessionID string, before time.Time) {
 	b.Fire(ev)
 }
 
+// controlAckTimeout bounds the wait for a control op to be applied. The
+// dispatch goroutine only ever blocks on the test-only gate, so this is a
+// liveness ceiling, not an expected latency — hitting it is reported to the
+// caller rather than silently treated as success.
+const controlAckTimeout = 5 * time.Second
+
+// ClearSessionBeforeSync is ClearSessionBefore that waits for the dispatch
+// goroutine to apply the clear, returning how many entries were retired.
+//
+// It deliberately reuses the SAME FIFO control-clear path as the daemon's
+// internal retention triggers rather than reaching into the inbox directly:
+// events already queued on the inbound channel were published BEFORE the
+// caller asked to clear, so a direct clear would let them land afterwards and
+// survive a boundary they are older than. One clear mechanism, one ordering
+// rule; the only thing added here is an acknowledgement.
+//
+// ok=false means the bus was saturated or shutting down and the clear did NOT
+// run — the caller must surface that, never report a clear that did not happen.
+func (b *MPSCBus) ClearSessionBeforeSync(sessionID string, before time.Time) (int, bool) {
+	if sessionID == "" {
+		return 0, false
+	}
+	id := "control:" + strconv.FormatUint(b.ackSeq.Add(1), 10)
+	ack := make(chan int, 1)
+
+	b.ackMu.Lock()
+	b.acks[id] = ack
+	b.ackMu.Unlock()
+
+	ev := &IncidentEvent{
+		Source:      sourceControlClear,
+		Fingerprint: id,
+		ReceivedAt:  before,
+		Ctx:         Context{SessionID: sessionID},
+	}
+	if !b.fire(ev) {
+		b.releaseAck(id)
+		return 0, false
+	}
+
+	timer := time.NewTimer(controlAckTimeout)
+	defer timer.Stop()
+	select {
+	case n := <-ack:
+		return n, true
+	case <-b.closed:
+		b.releaseAck(id)
+		return 0, false
+	case <-timer.C:
+		b.releaseAck(id)
+		return 0, false
+	}
+}
+
+// completeControl delivers the applied count to a waiting caller, if any.
+// Non-blocking (the ack channel is buffered), so the dispatch goroutine never
+// stalls on a caller that already gave up.
+func (b *MPSCBus) completeControl(id string, applied int) {
+	if id == "" {
+		return
+	}
+	b.ackMu.Lock()
+	ack, ok := b.acks[id]
+	delete(b.acks, id)
+	b.ackMu.Unlock()
+	if ok {
+		select {
+		case ack <- applied:
+		default:
+		}
+	}
+}
+
+func (b *MPSCBus) releaseAck(id string) {
+	b.ackMu.Lock()
+	delete(b.acks, id)
+	b.ackMu.Unlock()
+}
+
+// PinSession pins a fingerprint in one session's inbox so it survives band
+// eviction and every retention clear. Errors (ErrPinTargetNotFound,
+// ErrPinLimitReached) are returned to the caller, never swallowed. Scoped to
+// the named session: there is no cross-session pin path (numbered contract 1).
+func (b *MPSCBus) PinSession(sessionID, fingerprint, tag string) (*InboxEntry, error) {
+	pl := b.getSessionPipeline(sessionID)
+	if pl == nil {
+		return nil, ErrPinTargetNotFound
+	}
+	return pl.inbox.Pin(fingerprint, tag)
+}
+
+// UnpinSession releases a pin in one session's inbox, reporting whether a pin
+// was actually removed.
+func (b *MPSCBus) UnpinSession(sessionID, fingerprint string) bool {
+	pl := b.getSessionPipeline(sessionID)
+	if pl == nil {
+		return false
+	}
+	return pl.inbox.Unpin(fingerprint)
+}
+
+// PinnedCountSession reports how many pins one session currently holds.
+func (b *MPSCBus) PinnedCountSession(sessionID string) int {
+	pl := b.getSessionPipeline(sessionID)
+	if pl == nil {
+		return 0
+	}
+	return pl.inbox.PinnedCount()
+}
+
 // QueryAndMarkSession atomically queries a session inbox and marks the exact
 // returned selection chosen from that snapshot before duplicate ingestion can
 // mutate it.
@@ -400,6 +529,7 @@ func (b *MPSCBus) deliver(ev *IncidentEvent) {
 	b.mu.RLock()
 	defer b.mu.RUnlock()
 	if ev.Source == sourceControlClear {
+		applied := 0
 		for _, pl := range b.perSession {
 			select {
 			case <-pl.stopCh:
@@ -413,10 +543,12 @@ func (b *MPSCBus) deliver(ev *IncidentEvent) {
 			case ev.Ctx.SessionID == pl.inbox.SessionID:
 				n = pl.inbox.ClearAllBefore(ev.ReceivedAt)
 			}
+			applied += n
 			if n > 0 {
 				debug.Log("incident-retention", "cleared %d inbox entries (session %s)", n, pl.inbox.SessionID)
 			}
 		}
+		b.completeControl(ev.Fingerprint, applied)
 		return
 	}
 	if ev.Ctx.SessionID != "" {
