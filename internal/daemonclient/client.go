@@ -1003,6 +1003,38 @@ func (c *Client) IncidentQuery(filter protocol.IncidentQueryFilter) (*protocol.I
 	return &result, nil
 }
 
+// IncidentPin pins an inbox entry so it survives band eviction and every
+// retention clear until unpinned. The target is always the caller connection's
+// own session inbox — there is no cross-session pin path.
+func (c *Client) IncidentPin(payload protocol.IncidentPinPayload) (*protocol.IncidentPinResult, error) {
+	return incidentRequest[protocol.IncidentPinResult](c, "PIN", payload)
+}
+
+// IncidentUnpin releases a pin previously created with IncidentPin.
+func (c *Client) IncidentUnpin(payload protocol.IncidentPinPayload) (*protocol.IncidentPinResult, error) {
+	return incidentRequest[protocol.IncidentPinResult](c, "UNPIN", payload)
+}
+
+// IncidentClear retires the caller session's current incidents. Pinned entries
+// are kept and reported separately.
+func (c *Client) IncidentClear() (*protocol.IncidentClearResult, error) {
+	raw, err := c.conn.Request(protocol.VerbIncidents, "CLEAR").JSON()
+	if err != nil {
+		return nil, err
+	}
+	return decodeInto[protocol.IncidentClearResult](raw)
+}
+
+// incidentRequest sends an INCIDENTS sub-verb with a JSON payload and decodes
+// the typed response.
+func incidentRequest[T any](c *Client, sub string, payload any) (*T, error) {
+	raw, err := c.conn.Request(protocol.VerbIncidents, sub).WithJSON(payload).JSON()
+	if err != nil {
+		return nil, err
+	}
+	return decodeInto[T](raw)
+}
+
 // PublishCreate validates + publishes a walkthrough and returns the share id and
 // the plaintext token (returned exactly once).
 func (c *Client) PublishCreate(req protocol.PublishCreateRequest) (*protocol.PublishCreateResult, error) {
