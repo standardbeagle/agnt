@@ -1009,7 +1009,10 @@ func TestBuildSystemPrompt(t *testing.T) {
 
 		prompt := cfg.BuildSystemPrompt()
 		assert.Contains(t, prompt, "agnt Tools")
-		assert.Contains(t, prompt, "get_errors")
+		assert.Contains(t, prompt, "get_incidents")
+		// get_errors is retired; the prompt must not send an agent at a tool the
+		// MCP server no longer registers.
+		assert.NotContains(t, prompt, "get_errors")
 		assert.Contains(t, prompt, "proxy")
 		assert.Contains(t, prompt, "proc")
 		assert.Contains(t, prompt, "responsive_audit")

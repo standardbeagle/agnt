@@ -16,7 +16,7 @@ import (
 // chokepoint epic (01KSY0GMB56NCN88EEG14QPM3H) closes. They are RED on
 // purpose: `hubHandleAlertsQuery` (internal/daemon/hub_alerts.go) never
 // reads conn.SessionCode() and never sets AlertStoreFilter.ProjectPath,
-// so get_errors (ALERTS QUERY) walks the global alert ring buffer and
+// so an unscoped ALERTS QUERY walks the global alert ring buffer and
 // returns every project's alerts to every session.
 //
 // Expected failure mode until C3/C4 land: the per-session queries below
@@ -67,11 +67,11 @@ func reportAlert(t *testing.T, c *daemonclient.Client, projectPath, line, severi
 	}))
 }
 
-// TestSessionScope_GetErrorsLeaksAcrossProjects is the core leak proof:
+// TestSessionScope_AlertQueryLeaksAcrossProjects is the core leak proof:
 // two sessions on different project roots must each see ONLY their own
 // project's alerts through ALERTS QUERY. RED until the chokepoint gate
 // scopes the query by the connection's session project path.
-func TestSessionScope_GetErrorsLeaksAcrossProjects(t *testing.T) {
+func TestSessionScope_AlertQueryLeaksAcrossProjects(t *testing.T) {
 	// No t.Parallel(): shares the daemon's global alert ring buffer.
 	_, sockPath := newBootedDaemon(t)
 

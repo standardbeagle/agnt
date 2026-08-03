@@ -112,7 +112,7 @@ Available tools:
 - proxy: Reverse proxy with traffic logging and JS instrumentation
 - proxylog: Query proxy traffic logs
 - currentpage: View active page sessions
-- get_errors: Unified error view across processes and proxies
+- get_incidents: Unified incident view across processes and proxies
 - responsive_audit: Responsive design audits across multiple viewport sizes
 - snapshot: Visual regression testing (baseline/compare screenshots)
 - daemon: Manage the background daemon service`,

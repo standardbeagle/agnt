@@ -419,7 +419,7 @@ func (r *Renderer) DrawIndicator(status Status) {
 	}
 
 	// Muted marker: agent-inbound push is paused. Errors still accumulate and
-	// are pullable via get_errors/get_incidents — this only silences the push.
+	// are pullable via get_incidents — this only silences the push.
 	if status.ForwardPaused {
 		parts = append(parts, fmt.Sprintf("%s🔇 MUTED%s", FgYellow, Reset))
 	}

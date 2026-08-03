@@ -36,7 +36,7 @@ Use this skill when you need to find where something is implemented, understand 
 - **All tool registrations**: `grep -r "Register.*Tools\|mcp.NewTool" internal/tools/`
 - **Tool handler pattern**: `internal/tools/daemon_tools.go` — `handleProxy*`, `handleProc*`
 - **Tool schemas (input/output structs)**: `grep "json:\"" internal/tools/*.go`
-- **get_errors tool**: `internal/tools/get_errors.go`
+- **get_incidents tool**: `internal/tools/get_incidents.go`; the unified-error collectors `proc snapshot` still uses live in `internal/tools/unified_error.go`
 - **responsive_audit tool**: `internal/tools/responsive_audit.go`
 - **daemon MCP tools** (proc, proxy, proxylog, daemon): `internal/tools/daemon_tools.go`
 

@@ -249,7 +249,7 @@ type Daemon struct {
 	pinnedStore          *alert.PinnedStore                     // Agent-pinned errors; survive every retention clear
 	retentionCfg         atomic.Pointer[config.RetentionConfig] // Error-retention trigger gates
 	alertScanner         *overlay.AlertScanner                  // Scans daemon-managed process output for errors
-	processExitInfo      *processExitInfoStore                  // In-memory death records (proc status + get_errors)
+	processExitInfo      *processExitInfoStore                  // In-memory death records (proc status + get_incidents)
 	startupErrorStore    *StartupLogStore                       // Ring buffer for startup events
 	eventHub             *EventHub                              // Routes alerts to overlay/MCP/stream sinks
 	incidentBus          *incident.MPSCBus                      // Incident pipeline event bus (L8+)
@@ -260,7 +260,7 @@ type Daemon struct {
 	// forwardingPaused records per-session "stop pushing to the agent" toggles
 	// set from the overlay (OVERLAY FORWARDING verb). When a session is paused,
 	// the incident-digest MCP sink drops pings — but the inbox still accumulates
-	// them, so get_incidents/get_errors stay pullable. Keyed by session code.
+	// them, so get_incidents stays pullable. Keyed by session code.
 	forwardingPaused sync.Map // map[string]bool
 	forwardMappings  sync.Map // source -> []protocol.ForwardMapping
 
@@ -620,7 +620,7 @@ func New(config DaemonConfig) *Daemon {
 
 	// alertScanner scans daemon-managed process output (proc run) for error
 	// patterns and routes matches into alertStore + eventHub — the same
-	// surfaces get_errors and agnt monitor query. OnAlert fires after the
+	// surfaces get_incidents and agnt monitor query. OnAlert fires after the
 	// scanner's batch window (default 3s) to avoid per-line churn.
 	d.alertScanner = overlay.NewAlertScanner(overlay.AlertScannerConfig{
 		OnAlert: func(batch *overlay.AlertBatch) {
@@ -976,7 +976,7 @@ func (d *Daemon) AutoRestarter() *ProcessAutoRestarter {
 }
 
 // ingestProcessAlert routes a single AlertScanner match to every agent-facing
-// surface: the legacy alertStore (get_errors) AND the incident bus
+// surface: the alertStore (overlay + proc snapshot) AND the incident bus
 // (get_incidents). Before this, process alerts reached only alertStore + the
 // browser toast (EventHub.Deliver), so process errors appeared as toasts but
 // never entered registered session inboxes.

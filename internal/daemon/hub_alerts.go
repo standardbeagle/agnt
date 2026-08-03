@@ -137,7 +137,7 @@ func (d *Daemon) hubHandleAlertsClear(conn *hubpkg.Connection, cmd *hubproto.Com
 	}
 
 	// The agent's live view is the session incident inbox — sweep it too so
-	// a clear actually clears what get_errors/get_incidents show. Session
+	// a clear actually clears what get_incidents shows. Session
 	// resolution mirrors PIN: explicit session_code, else the connection's.
 	if clearFilter.ProcessID == "" && d.incidentBus != nil {
 		sessionID := clearFilter.SessionCode

@@ -576,14 +576,14 @@ func displayAutostartResults(ctx context.Context, handle *daemonSessionHandle, o
 		}
 	}
 	if hasErrors {
-		fmt.Fprintf(w, "\x1b[33m[agnt] tip: run the failed command directly to see full output, or use get_errors for details\x1b[0m\r\n")
+		fmt.Fprintf(w, "\x1b[33m[agnt] tip: run the failed command directly to see full output, or use get_incidents for details\x1b[0m\r\n")
 	}
 }
 
 // setupAlertScanner creates an AlertScanner from .agnt.kdl config.
 // Returns nil if alerts are disabled or config can't be loaded.
 // If daemonHandle is non-nil, alerts are also pushed to the daemon's alert store
-// so they can be queried by the get_errors MCP tool.
+// so they can be queried by the get_incidents MCP tool.
 func setupAlertScanner(projectPath, sessionCode string, netOverlay *Overlay, daemonHandle *daemonSessionHandle, actState func() overlay.ActivityState) *overlay.AlertScanner {
 	agntCfg, err := loadResolvedConfig(projectPath)
 	if err != nil {
@@ -616,7 +616,7 @@ func setupAlertScanner(projectPath, sessionCode string, netOverlay *Overlay, dae
 			}
 			// Forwarding pause gates only the PUSH (PTY injection) of
 			// auto-generated alerts. The AlertReport below still runs, so
-			// errors stay pullable via get_errors/get_incidents while the
+			// errors stay pullable via get_incidents while the
 			// agent is muted. Protected (explicit user action) matches are
 			// never dropped: a paused session still receives the protected
 			// subset of the batch.
@@ -636,9 +636,9 @@ func setupAlertScanner(projectPath, sessionCode string, netOverlay *Overlay, dae
 					})
 				}
 			}
-			// Push alert matches to daemon store for get_errors queries.
+			// Push alert matches to daemon store for get_incidents queries.
 			// Protected (explicit user action) matches are not errors — skip
-			// them so panel messages / sketches don't pollute get_errors.
+			// them so panel messages / sketches don't pollute get_incidents.
 			if daemonHandle != nil && daemonHandle.IsConnected() {
 				hc := daemonHandle.currentClient()
 				if hc == nil {
@@ -1388,7 +1388,7 @@ func buildAgntSystemPrompt(socketPath string) string {
 					cmd := pm["command"]
 					sb.WriteString(fmt.Sprintf("- **%s**: `%s` (state: %s)\n", id, cmd, state))
 					sb.WriteString(fmt.Sprintf("  - Output: `proc {action: \"output\", id: \"%s\"}`\n", id))
-					sb.WriteString(fmt.Sprintf("  - Errors: `get_errors {process_id: \"%s\"}`\n", id))
+					sb.WriteString(fmt.Sprintf("  - Errors: `get_incidents {process_id: \"%s\"}`\n", id))
 				}
 			}
 		}
@@ -1411,7 +1411,7 @@ func buildAgntSystemPrompt(socketPath string) string {
 					listen := pm["listen_addr"]
 					sb.WriteString(fmt.Sprintf("- **%s**: %s → %s\n", id, listen, target))
 					sb.WriteString(fmt.Sprintf("  - Logs: `proxylog {action: \"query\", proxy_id: \"%s\"}`\n", id))
-					sb.WriteString(fmt.Sprintf("  - Errors: `get_errors {proxy_id: \"%s\"}`\n", id))
+					sb.WriteString(fmt.Sprintf("  - Errors: `get_incidents {proxy_id: \"%s\"}`\n", id))
 				}
 			}
 		}

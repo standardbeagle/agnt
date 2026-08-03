@@ -963,10 +963,10 @@ func TestAlertBatch_Format_RenderedTextOverridesDefault(t *testing.T) {
 
 // --- [G1] RED: real errors that match no AlertScanner pattern are invisible ---
 //
-// These tests are RED on purpose (get_errors epic, child G1). They prove the
+// These tests are RED on purpose (unified-error epic, child G1). They prove the
 // confirmed gap: the pattern bank has ZERO database/ORM patterns and the
 // scanner is line-by-line with no unclassified catch-all, so a real Prisma
-// auth failure is silently dropped — get_errors then reports a false "all
+// auth failure is silently dropped — the agent then sees a false "all
 // clear" on the actual broken session. G2 (unparsed catch-all) + G3
 // (structured DB/ORM parsers) turn these GREEN.
 
@@ -984,14 +984,14 @@ var prismaAuthBlock = []string{
 const prismaAuthSignal = "Authentication failed against database server, the provided database credentials for 'ai_user' are not valid."
 
 // TestG1_DBAuthErrorSurfaced: a genuine Prisma DB-auth credential failure must
-// SURFACE through the scanner so get_errors never reports a false "all clear".
+// SURFACE through the scanner so the agent never sees a false "all clear".
 //
 // G2 calibration decision (option a, per the task handoff): this test asserts
 // BEHAVIOR (the error is surfaced, not dropped), not MECHANISM (a specific
 // pattern-bank anchor classifies it). The default pattern bank has no DB/ORM
 // anchor — adding one is G3's structured-parser job. G2 guarantees the line is
 // not silently lost via the unparsed catch-all, which is exactly the
-// "get_errors surfaces it" acceptance wording. When G3 lands a Prisma anchor,
+// "the agent surfaces it" acceptance wording. When G3 lands a Prisma anchor,
 // the surfaced match's category upgrades from "unparsed" to a DB category, but
 // the behavioral guarantee this test pins stays true.
 func TestG1_DBAuthErrorSurfaced(t *testing.T) {
@@ -1022,7 +1022,7 @@ func TestG1_DBAuthErrorSurfaced(t *testing.T) {
 		}
 	}
 	require.NotNil(t, matched,
-		"the Prisma DB-auth error %q must surface (it is a real credential failure) — get_errors must not report all-clear", prismaAuthSignal)
+		"the Prisma DB-auth error %q must surface (it is a real credential failure) — the agent must not report all-clear", prismaAuthSignal)
 	require.NotNil(t, matched.Pattern, "surfaced match must carry a pattern for severity/dedup keying")
 	assert.Equal(t, AlertSeverityError, matched.Pattern.Severity,
 		"a DB-auth failure must surface at error severity")

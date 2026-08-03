@@ -199,7 +199,7 @@ func (r *InputRouter) setForwarding(paused bool) {
 	}
 	r.overlay.SetForwardPaused(paused)
 	if paused {
-		r.overlay.DrawStatusBarMessage("🔇 agent forwarding paused — errors still pullable via get_errors")
+		r.overlay.DrawStatusBarMessage("🔇 agent forwarding paused — errors still pullable via get_incidents")
 	} else {
 		r.overlay.DrawStatusBarMessage("🔊 agent forwarding resumed")
 	}

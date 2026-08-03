@@ -368,12 +368,12 @@ var builtinBashSpecs = []bashSpec{
 		Reason:      "agnt.proxy exec runs in a real browser context and captures JS errors.",
 	},
 	{
-		// `grep -i error ...` across log files — redirect to get_errors
+		// `grep -i error ...` across log files — redirect to get_incidents
 		// which already aggregates and deduplicates.
 		Raw:         `(?m)(^|[;&|]\s*)grep\s+.*\b[Ee]rror\b`,
 		Action:      ActionSoftWarn,
-		Replacement: `agnt.get_errors {}`,
-		Reason:      "agnt.get_errors aggregates process + proxy errors with dedup.",
+		Replacement: `agnt.get_incidents {}`,
+		Reason:      "agnt.get_incidents aggregates process + proxy errors with dedup.",
 	},
 	{
 		// `ps aux | grep` — looking for our own managed process. Point
@@ -394,6 +394,6 @@ var builtinPromptSpecs = []promptSpec{
 	},
 	{
 		Raw:      `(check|look at|view|tail).*(logs?|errors?)`,
-		Reminder: "Use agnt.get_errors for aggregated error views or agnt.watch for live streaming, instead of tail -f / grep on log files.",
+		Reminder: "Use agnt.get_incidents for aggregated error views or agnt.watch for live streaming, instead of tail -f / grep on log files.",
 	},
 }

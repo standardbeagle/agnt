@@ -81,7 +81,7 @@ func TestAdd_StampsUnifiedID(t *testing.T) {
 	assert.Len(t, e.ID, 8)
 	assert.Equal(t, e.UnifiedID(), e.ID)
 
-	// Lifecycle entries merge description+line the way get_errors renders them.
+	// Lifecycle entries merge description+line the way the unified-error view renders them.
 	lifecycle := &AlertEntry{Category: "process_lifecycle", Description: "exited (code 1)", Line: "panic: boom", ScriptID: "web"}
 	plain := &AlertEntry{Category: "process_lifecycle", Description: "exited (code 1)", ScriptID: "web"}
 	assert.NotEqual(t, lifecycle.UnifiedID(), plain.UnifiedID())

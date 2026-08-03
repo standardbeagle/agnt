@@ -555,9 +555,9 @@ func TestResponsiveAuditToolDescription(t *testing.T) {
 }
 
 // TestFindingIDStableFromConverters verifies that the findingID helper used
-// by get_errors converters is stable: same inputs → same 8-char hex ID.
+// by the unified-error converters is stable: same inputs → same 8-char hex ID.
 // The responsive_audit tool uses JS-side IDs; Go-side stability is covered
-// by get_errors_test.go. This test confirms the shared helper is available
+// by unified_error_test.go. This test confirms the shared helper is available
 // and consistent from this package.
 func TestFindingIDConsistency(t *testing.T) {
 	t.Run("identical calls return same id", func(t *testing.T) {

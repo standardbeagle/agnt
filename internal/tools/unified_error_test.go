@@ -4,7 +4,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -218,28 +217,6 @@ func TestIsProxyReadinessSentinel(t *testing.T) {
 	})
 }
 
-func TestFormatTimeAgo(t *testing.T) {
-	t.Run("seconds", func(t *testing.T) {
-		result := formatTimeAgo(time.Now().Add(-5 * time.Second))
-		assert.Equal(t, "5s ago", result)
-	})
-
-	t.Run("minutes", func(t *testing.T) {
-		result := formatTimeAgo(time.Now().Add(-3 * time.Minute))
-		assert.Equal(t, "3m ago", result)
-	})
-
-	t.Run("hours", func(t *testing.T) {
-		result := formatTimeAgo(time.Now().Add(-2 * time.Hour))
-		assert.Equal(t, "2h ago", result)
-	})
-
-	t.Run("zero time", func(t *testing.T) {
-		result := formatTimeAgo(time.Time{})
-		assert.Equal(t, "unknown", result)
-	})
-}
-
 func TestDeduplicateErrors(t *testing.T) {
 	now := time.Now()
 
@@ -270,81 +247,6 @@ func TestDeduplicateErrors(t *testing.T) {
 	t.Run("empty input", func(t *testing.T) {
 		result := deduplicateErrors(nil)
 		assert.Empty(t, result)
-	})
-}
-
-func TestFormatCompactOutput(t *testing.T) {
-	now := time.Now()
-
-	t.Run("mixed errors and warnings", func(t *testing.T) {
-		errors := []unifiedError{
-			{
-				Source:   "process:dev-server",
-				Severity: "error",
-				Category: "COMPILE ERROR",
-				Message:  "CS1002: ; expected",
-				Location: "src/Controllers/HomeController.cs:42:15",
-				Count:    2,
-				LastSeen: now.Add(-3 * time.Second),
-			},
-			{
-				Source:   "browser:js",
-				Severity: "error",
-				Category: "TypeError",
-				Message:  "Cannot read properties of undefined (reading 'map')",
-				Location: "src/components/UserList.tsx:28:12",
-				Page:     "http://localhost:3000/users",
-				Count:    1,
-				LastSeen: now.Add(-12 * time.Second),
-			},
-			{
-				Source:   "process:dev-server",
-				Severity: "warning",
-				Category: "DEPRECATION",
-				Message:  "BrowserModule.withServerTransition deprecated",
-				Count:    1,
-				LastSeen: now.Add(-30 * time.Second),
-			},
-		}
-
-		result := formatCompactErrors(errors, 2, 1)
-
-		assert.Contains(t, result, "=== Errors (2) ===")
-		assert.Contains(t, result, "[process:dev-server] COMPILE ERROR")
-		assert.Contains(t, result, "2x, latest")
-		assert.Contains(t, result, "CS1002: ; expected")
-		assert.Contains(t, result, "→ src/Controllers/HomeController.cs:42:15")
-
-		assert.Contains(t, result, "[browser:js] TypeError")
-		assert.Contains(t, result, "Cannot read properties of undefined")
-		assert.Contains(t, result, "page: http://localhost:3000/users")
-
-		assert.Contains(t, result, "=== Warnings (1) ===")
-		assert.Contains(t, result, "[process:dev-server] DEPRECATION")
-		assert.Contains(t, result, "BrowserModule.withServerTransition deprecated")
-	})
-
-	t.Run("no errors", func(t *testing.T) {
-		result := formatCompactErrors(nil, 0, 0)
-		assert.Equal(t, "No errors found.", result)
-	})
-
-	t.Run("errors only, no warnings", func(t *testing.T) {
-		errors := []unifiedError{
-			{
-				Source:   "proxy:http",
-				Severity: "error",
-				Category: "500 Internal Server Error",
-				Message:  "POST /api/users → \"Validation failed\"",
-				Count:    3,
-				LastSeen: now.Add(-8 * time.Second),
-			},
-		}
-
-		result := formatCompactErrors(errors, 1, 0)
-		assert.Contains(t, result, "=== Errors (1) ===")
-		assert.NotContains(t, result, "=== Warnings")
-		assert.Contains(t, result, "3x, latest")
 	})
 }
 
@@ -1022,45 +924,4 @@ func TestAlertMapToUnifiedError_BackwardCompat_ProcessError(t *testing.T) {
 	assert.Equal(t, "process:web:dev", ue.Source)
 	assert.Equal(t, "COMPILE ERROR", ue.Category)
 	assert.Contains(t, ue.Message, "TS2304")
-}
-
-// TestIncidentRecordToUnifiedError pins the incident→unified projection used by
-// the pipeline shim: fingerprint becomes the ID (correlatable with
-// get_incidents), and severity folds to the error/warning scale get_errors
-// sorts and counts on.
-func TestIncidentRecordToUnifiedError(t *testing.T) {
-	cases := []struct {
-		name     string
-		severity string
-		wantSev  string
-	}{
-		{"critical folds to error", "critical", "error"},
-		{"error stays error", "error", "error"},
-		{"warning stays warning", "warning", "warning"},
-		{"info folds to warning", "info", "warning"},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			rec := protocol.IncidentRecord{
-				Fingerprint: "fp-abc123",
-				ID:          "sha-should-be-ignored",
-				Source:      "browser_js",
-				Severity:    tc.severity,
-				Category:    "TypeError",
-				Summary:     "boom",
-				Count:       0, // must be normalized to >= 1
-				LastSeen:    time.Now().UTC().Format(time.RFC3339),
-				Context:     protocol.IncidentContext{URL: "http://localhost:3000/x"},
-			}
-			ue := incidentRecordToUnifiedError(rec)
-			assert.Equal(t, "fp-abc123", ue.ID, "ID must be the fingerprint, not the sample sha")
-			assert.Equal(t, tc.wantSev, ue.Severity)
-			assert.Equal(t, "browser_js", ue.Source)
-			assert.Equal(t, "TypeError", ue.Category)
-			assert.Equal(t, "boom", ue.Message)
-			assert.Equal(t, "http://localhost:3000/x", ue.Page)
-			assert.Equal(t, 1, ue.Count, "zero count normalized to 1")
-			assert.False(t, ue.LastSeen.IsZero(), "LastSeen parsed from RFC3339")
-		})
-	}
 }

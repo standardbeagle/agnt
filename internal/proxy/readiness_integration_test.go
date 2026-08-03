@@ -192,7 +192,7 @@ func TestProxyServer_ReadinessGate_StatsExposeWaitState(t *testing.T) {
 
 // TestProxyServer_ReadinessGate_LogsGatedRequests verifies the
 // gate-generated 503 is recorded in the traffic log. `proxylog query`
-// should still surface these on demand even though `get_errors`
+// should still surface these on demand even though the incident adapter
 // filters them.
 func TestProxyServer_ReadinessGate_LogsGatedRequests(t *testing.T) {
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

@@ -68,7 +68,7 @@ Kill uses `ProcessManager.KillProcessByPort()` with process-group SIGTERM → 3s
 
 Controls which incident-pinger channels push alerts to the AI client. The
 incident inbox is always populated; disabling a channel suppresses only that
-interrupt path, not `get_incidents`/`get_errors` pull results.
+interrupt path, not `get_incidents` pull results.
 
 ```kdl
 alerts {
@@ -101,9 +101,9 @@ a parsed-but-inert channel toggle or delivering the same digest twice.
 ## Error Retention (`alerts.retention` in `.agnt.kdl`)
 
 Controls when the daemon retires stale errors from the agent-facing stores
-(alert ring + incident inboxes) so `get_errors`/`get_incidents` reflect the
+(alert ring + incident inboxes) so `get_incidents` reflects the
 code that is actually running. All triggers default to **enabled**; errors the
-agent pinned (`get_errors {action:"pin"}`) survive every trigger until
+agent pinned (`get_incidents {action:"pin"}`) survive every trigger until
 explicitly unpinned.
 
 ```kdl

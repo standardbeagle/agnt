@@ -24,7 +24,6 @@ func TestGatedMCPTools_ExposeGlobalFlagUniformly(t *testing.T) {
 		name string
 		typ  reflect.Type
 	}{
-		{"GetErrorsInput", reflect.TypeOf(GetErrorsInput{})},
 		{"ProcInput", reflect.TypeOf(ProcInput{})},
 		{"ProxyInput", reflect.TypeOf(ProxyInput{})},
 		{"TunnelInput", reflect.TypeOf(TunnelInput{})},

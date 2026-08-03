@@ -2,7 +2,7 @@ package daemon
 
 // SetForwardingPaused records whether a session has paused agent-inbound push
 // delivery. Paused sessions still accumulate incidents in their inbox (pullable
-// via get_incidents/get_errors); only the push sinks are gated. Idempotent.
+// via get_incidents); only the push sinks are gated. Idempotent.
 func (d *Daemon) SetForwardingPaused(sessionCode string, paused bool) {
 	if sessionCode == "" {
 		return

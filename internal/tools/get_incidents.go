@@ -16,9 +16,9 @@ import (
 // GetIncidentsInput is the input schema for the get_incidents tool.
 type GetIncidentsInput struct {
 	// Action selects the retention verb. Empty/"query" is the default read.
-	// error_id/tag mirror get_errors' spelling so a caller migrating off it does
-	// not have to rename anything; for incidents the id is the fingerprint from
-	// a prior result.
+	// error_id (rather than "fingerprint") is the retired get_errors spelling,
+	// kept so callers written against that tool need no rename; the value is the
+	// fingerprint from a prior result.
 	Action       string   `json:"action,omitempty"        jsonschema:"'query' (default) | 'pin' | 'unpin' | 'clear'. pin/unpin keep an incident alive past eviction and every retention clear; clear retires the session's unpinned incidents"`
 	ErrorID      string   `json:"error_id,omitempty"      jsonschema:"Pin/unpin target: the incident fingerprint (or id) from a prior get_incidents result"`
 	Tag          string   `json:"tag,omitempty"           jsonschema:"Note stored with a pin, returned on the pinned item"`
@@ -97,8 +97,8 @@ func RegisterGetIncidentsTool(server *mcp.Server, dt *DaemonTools) {
 		Name: "get_incidents",
 		Description: `[PREFERRED] Pull incidents from the session incident inbox.
 
-Supersedes get_errors. Provides cursor-based resumable pulls, remediation hints,
-next-tool suggestions, and skill hints for each incident.
+The single error/incident surface. Provides cursor-based resumable pulls,
+remediation hints, next-tool suggestions, and skill hints for each incident.
 
 Sources: browser JS errors, HTTP 4xx/5xx, transport errors, proxy diagnostics,
 process alerts, process crashes, build failures, port conflicts.
@@ -115,6 +115,9 @@ Examples:
 
 func makeGetIncidentsHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolRequest, GetIncidentsInput) (*mcp.CallToolResult, GetIncidentsOutput, error) {
 	return func(ctx context.Context, req *mcp.CallToolRequest, input GetIncidentsInput) (*mcp.CallToolResult, GetIncidentsOutput, error) {
+		if err := validateGetIncidentsInput(input); err != nil {
+			return fail[GetIncidentsOutput](validationError("get_incidents", err))
+		}
 		filter := buildGetIncidentsFilter(input)
 
 		if dt == nil {
@@ -218,12 +221,11 @@ func isIncidentRetentionAction(action string) bool {
 }
 
 // handleIncidentRetentionAction executes pin/unpin/clear against the caller's
-// session inbox. Mirrors handleErrorRetentionAction (get_errors) so the two
-// tools behave the same way while both exist.
+// session inbox.
 //
 // The rendered message is returned as tool content only; GetIncidentsOutput
-// deliberately gains no summary field, because that would change a separate,
-// unrelated migration divergence.
+// carries no summary field, so a caller reading the typed struct gets records
+// and nothing else.
 func (dt *DaemonTools) handleIncidentRetentionAction(input GetIncidentsInput) (*mcp.CallToolResult, GetIncidentsOutput, error) {
 	switch input.Action {
 	case "pin", "unpin":
@@ -271,9 +273,8 @@ func incidentRetentionMessage(fromDaemon, fallback string) string {
 }
 
 // buildGetIncidentsFilter translates a get_incidents query into an inbox
-// filter. Extracted from the handler so the get_errors/get_incidents oracle can
-// compare both tools' filter construction against the real code rather than a
-// re-derived copy of it — see get_errors_oracle_test.go.
+// filter. Extracted from the handler so tests can drive the real translation
+// rather than a re-derived copy of it.
 func buildGetIncidentsFilter(input GetIncidentsInput) protocol.IncidentQueryFilter {
 	limit := input.Limit
 	if limit <= 0 {

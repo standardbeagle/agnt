@@ -2,6 +2,40 @@
 
 ## [Unreleased]
 
+### Removed
+- **`get_errors` is gone. `get_incidents` is the only error surface.** The
+  migration was gated on a measured superset, not a judgement call: an oracle
+  drove both tools' real filter builders and projections over one seeded state
+  and reduced every difference to a recorded divergence. It was allowed to land
+  only once no divergence remained where information was *unreachable*.
+
+  Closing the last four blockers changed real behaviour, so read this even if
+  you never called `get_errors`:
+  - Incidents now carry `context.location` (`file:line:col`, resolved by the
+    browser adapter at ingest) and `context.frame_id`.
+  - **Browser incident fingerprints changed.** The emitting content frame is
+    part of the fingerprint, so the same error raised in two content frames is
+    now two incidents rather than one. Incidents with no frame attribution
+    fingerprint exactly as before.
+  - `get_incidents` returns `collection_warnings`, naming every way the view is
+    partial — events the bus dropped before reaching any inbox, and
+    `detail:"full"` payloads the blob store could not hydrate. The latter was
+    previously swallowed and rendered as an incident that simply had no payload.
+  - The readiness gate's `agnt_proxy_not_ready` 503 is filtered at ingest
+    (`incident.FromHTTPEntry`) instead of in `get_errors`. Without that move,
+    retiring the tool would have filled the inbox with agnt's own retry signal
+    for the whole startup race.
+
+  Migration is a rename in most cases: `get_incidents` already accepted
+  `error_id`/`tag`/`action` with `get_errors` spelling. Two things do not carry
+  over — `include_warnings:false` becomes `severity:["critical","error"]`, and
+  there is no `global`, because the inbox is per-session hard-isolated, which is
+  a stronger guarantee than the project scoping `global` overrode.
+
+  `proc {action:"snapshot"}` is unchanged: it kept the per-source collectors,
+  now in `internal/tools/unified_error.go`, because it is project-scoped and may
+  be global where the inbox cannot be.
+
 ### Fixed
 - **Background `run` no longer opens a dedicated daemon connection.** Only the
   foreground modes, which block until the process exits, need to stay off the

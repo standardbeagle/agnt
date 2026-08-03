@@ -9,8 +9,34 @@ import (
 	"strings"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
 )
+
+// unifiedError is the normalised error shape the per-source daemon collectors
+// below produce and `proc {action:"snapshot"}` consumes. It predates the
+// incident pipeline and survives get_errors' removal because the snapshot is
+// project-scoped and may be global, while the incident inbox is per-session
+// hard-isolated — the two cannot serve the same query.
+type unifiedError struct {
+	ID       string    `json:"id"`       // stable 8-char hex: sha256(source+category+message+location)[:4 bytes]
+	Source   string    `json:"source"`   // "process:<id>" or "browser:js" or "proxy:http" or "proxy:diagnostic"
+	Severity string    `json:"severity"` // "error" or "warning"
+	Category string    `json:"category"` // e.g. "TypeError", "COMPILE ERROR", "500 Internal Server Error"
+	Message  string    `json:"message"`
+	Location string    `json:"location,omitempty"` // file:line:col
+	Page     string    `json:"page,omitempty"`     // page URL
+	FrameID  string    `json:"frame_id,omitempty"` // emitting content frame (always-wrap model)
+	Count    int       `json:"count"`
+	LastSeen time.Time `json:"last_seen"`
+}
+
+// dedupKey identifies one logical error. FrameID is part of it so the same
+// error raised in two distinct content frames is not collapsed into one — each
+// frame is a distinct context (docs/responsive-canonical-target.md §5.2/§6.2).
+func (e *unifiedError) dedupKey() string {
+	return e.Source + "|" + e.Category + "|" + e.Message + "|" + e.Location + "|" + e.FrameID
+}
 
 // findingID generates a stable 8-char hex ID for a finding.
 // It hashes the concatenation of the provided parts with sha256 and
@@ -390,13 +416,6 @@ func deduplicateErrors(errors []unifiedError) []unifiedError {
 			if e.LastSeen.After(result[idx].LastSeen) {
 				result[idx].LastSeen = e.LastSeen
 			}
-			// Pinned status survives a merge regardless of arrival order.
-			if e.Pinned {
-				result[idx].Pinned = true
-				if result[idx].Tag == "" {
-					result[idx].Tag = e.Tag
-				}
-			}
 		} else {
 			seen[key] = len(result)
 			result = append(result, e)
@@ -404,78 +423,6 @@ func deduplicateErrors(errors []unifiedError) []unifiedError {
 	}
 
 	return result
-}
-
-// formatCompactErrors renders the compact text output.
-func formatCompactErrors(errors []unifiedError, totalErrors, totalWarnings int) string {
-	if len(errors) == 0 {
-		return "No errors found."
-	}
-
-	var b strings.Builder
-
-	// Split into errors and warnings
-	var errs, warns []unifiedError
-	for _, e := range errors {
-		if e.Severity == "error" {
-			errs = append(errs, e)
-		} else {
-			warns = append(warns, e)
-		}
-	}
-
-	if len(errs) > 0 {
-		fmt.Fprintf(&b, "=== Errors (%d) ===\n", totalErrors)
-		for _, e := range errs {
-			b.WriteString("\n")
-			formatSingleError(&b, e)
-		}
-	}
-
-	if len(warns) > 0 {
-		if len(errs) > 0 {
-			b.WriteString("\n")
-		}
-		fmt.Fprintf(&b, "=== Warnings (%d) ===\n", totalWarnings)
-		for _, e := range warns {
-			b.WriteString("\n")
-			formatSingleError(&b, e)
-		}
-	}
-
-	return b.String()
-}
-
-// formatSingleError writes one error entry in compact format.
-func formatSingleError(b *strings.Builder, e unifiedError) {
-	ago := formatTimeAgo(e.LastSeen)
-	countStr := ""
-	if e.Count > 1 {
-		countStr = fmt.Sprintf("%dx, latest ", e.Count)
-	} else {
-		countStr = "1x, "
-	}
-
-	idStr := ""
-	if e.ID != "" {
-		idStr = fmt.Sprintf(" #%s", e.ID)
-	}
-	pinStr := ""
-	if e.Pinned {
-		pinStr = " [pinned]"
-		if e.Tag != "" {
-			pinStr = fmt.Sprintf(" [pinned: %s]", e.Tag)
-		}
-	}
-	fmt.Fprintf(b, "[%s] %s (%s%s)%s%s\n", e.Source, e.Category, countStr, ago, idStr, pinStr)
-	fmt.Fprintf(b, "  %s\n", truncate(e.Message, 200))
-
-	if e.Location != "" {
-		fmt.Fprintf(b, "  → %s\n", e.Location)
-	}
-	if e.Page != "" {
-		fmt.Fprintf(b, "  page: %s\n", truncate(e.Page, 120))
-	}
 }
 
 // extractFirstAppFrame parses a JS/Go/Python stack trace and returns the first app-code frame.
@@ -663,26 +610,6 @@ func isProxyReadinessSentinel(responseBody, errField string) bool {
 	return false
 }
 
-// formatTimeAgo formats a duration since a timestamp as a human-readable string.
-func formatTimeAgo(t time.Time) string {
-	if t.IsZero() {
-		return "unknown"
-	}
-	d := time.Since(t)
-	if d < 0 {
-		d = 0
-	}
-
-	switch {
-	case d < time.Minute:
-		return fmt.Sprintf("%ds ago", int(d.Seconds()))
-	case d < time.Hour:
-		return fmt.Sprintf("%dm ago", int(d.Minutes()))
-	default:
-		return fmt.Sprintf("%dh ago", int(d.Hours()))
-	}
-}
-
 // categorizeHTTPError returns a human-readable category for an HTTP status code.
 func categorizeHTTPError(statusCode int) string {
 	text := http.StatusText(statusCode)
@@ -701,4 +628,167 @@ func truncate(s string, maxLen int) string {
 		return s[:maxLen]
 	}
 	return s[:maxLen-3] + "..."
+}
+
+// collectProcessAlerts queries the daemon alert store and converts to unified errors.
+// Scope: global bypasses the session-scope chokepoint (cross-project); otherwise
+// the query is scoped to the caller's session/project so other projects' alerts
+// don't leak in. The MCP daemon connection is not session-bound, so the project
+// is named explicitly via SessionCode/Directory (mirrors collectProxyErrors).
+func (dt *DaemonTools) collectProcessAlerts(processID, since string, global *bool) ([]unifiedError, string) {
+	filter := protocol.AlertQueryFilter{
+		ProcessID: processID,
+		Since:     since,
+		Global:    global,
+	}
+	if !globalEnabled(global) {
+		filter.SessionCode, filter.Directory = dt.sessionScope()
+	}
+
+	result, err := dt.client.AlertQuery(filter)
+	if err != nil {
+		// Non-fatal, but must be visible: a failed alert-store query would
+		// otherwise be indistinguishable from "no process errors".
+		return nil, "alert store query failed: " + err.Error()
+	}
+
+	alerts, ok := result["alerts"].([]interface{})
+	if !ok {
+		return nil, ""
+	}
+
+	var errors []unifiedError
+	for _, a := range alerts {
+		am, ok := a.(map[string]interface{})
+		if !ok {
+			continue
+		}
+		if ue := alertMapToUnifiedError(am); ue != nil {
+			errors = append(errors, *ue)
+		}
+	}
+
+	return errors, ""
+}
+
+// collectStartupErrors queries the daemon startup log for error-level entries.
+// Scope mirrors collectProcessAlerts: global bypasses the session-scope
+// chokepoint (cross-project); otherwise the query is scoped to the caller's
+// session/project so other projects' startup events don't leak in.
+func (dt *DaemonTools) collectStartupErrors(processID, since string, global *bool) ([]unifiedError, string) {
+	dirFilter := dt.scopeFilter(global)
+	result, err := dt.client.StartupLog(50, dirFilter)
+	if err != nil {
+		// Non-fatal, but must be visible rather than reported as no errors.
+		return nil, "startup log query failed: " + err.Error()
+	}
+
+	entries, ok := result["entries"].([]interface{})
+	if !ok {
+		return nil, ""
+	}
+
+	sinceTime := parseSince(since)
+
+	var errors []unifiedError
+	for _, e := range entries {
+		em, ok := e.(map[string]interface{})
+		if !ok {
+			continue
+		}
+
+		// Filter by process_id if specified
+		if processID != "" {
+			if getString(em, "process_id") != processID {
+				continue
+			}
+		}
+
+		// Filter by since if specified
+		ts := getTime(em, "timestamp")
+		if sinceTime != nil && !sinceTime.IsZero() && ts.Before(*sinceTime) {
+			continue
+		}
+
+		converted := convertStartupLogEntry(em)
+		if converted != nil {
+			errors = append(errors, *converted)
+		}
+	}
+
+	return errors, ""
+}
+
+// collectProxyErrors lists proxies and queries their logs for errors.
+// global bypasses the session-scope chokepoint (cross-project); otherwise the
+// proxy list is scoped to the caller's session/project so other projects'
+// proxy errors don't leak in — consistent with collectProcessAlerts /
+// collectStartupErrors so a single global snapshot is uniform.
+func (dt *DaemonTools) collectProxyErrors(proxyID, since string, global *bool) ([]unifiedError, []string) {
+	// Build directory filter for proxy list
+	dirFilter := dt.scopeFilter(global)
+
+	var warnings []string
+	var proxyIDs []string
+
+	if proxyID != "" {
+		proxyIDs = []string{proxyID}
+	} else {
+		// List all active proxies
+		result, err := dt.client.ProxyList(dirFilter)
+		if err != nil {
+			// Non-fatal, but visible: without the proxy list we cannot tell
+			// "no proxy errors" from "could not enumerate proxies".
+			return nil, []string{"proxy list query failed: " + err.Error()}
+		}
+
+		if proxies, ok := result["proxies"].([]interface{}); ok {
+			for _, p := range proxies {
+				if pm, ok := p.(map[string]interface{}); ok {
+					if id := getString(pm, "id"); id != "" {
+						proxyIDs = append(proxyIDs, id)
+					}
+				}
+			}
+		}
+	}
+
+	if len(proxyIDs) == 0 {
+		return nil, warnings
+	}
+
+	var allErrors []unifiedError
+
+	for _, pid := range proxyIDs {
+		filter := protocol.LogQueryFilter{
+			Types: []string{"error", "http", "diagnostic", "custom"},
+			Since: since,
+		}
+
+		result, err := dt.client.ProxyLogQuery(pid, filter)
+		if err != nil {
+			// Tolerate a single bad proxy, but count it so the caller knows
+			// this proxy's errors are missing from the view.
+			warnings = append(warnings, "proxy log query failed for "+pid+": "+err.Error())
+			continue
+		}
+
+		logs, ok := result["entries"].([]interface{})
+		if !ok {
+			continue
+		}
+
+		for _, entry := range logs {
+			em, ok := entry.(map[string]interface{})
+			if !ok {
+				continue
+			}
+
+			entryType := getString(em, "type")
+			errors := convertProxyEntry(pid, entryType, em)
+			allErrors = append(allErrors, errors...)
+		}
+	}
+
+	return allErrors, warnings
 }

@@ -6,7 +6,7 @@
 // ways:
 //
 //  1. A process:lifecycle AlertEntry is pushed into the daemon's alertStore
-//     so get_errors surfaces the death alongside proxy-side effects. This
+//     so get_incidents surfaces the death alongside proxy-side effects. This
 //     closes the diagnostic gap where an agent sees proxy 502s but no
 //     breadcrumb that the upstream dev server actually died.
 //
@@ -44,7 +44,7 @@ import (
 // CategoryProcessLifecycle is the AlertEntry category used for
 // process-death events. Keeping it distinct from the AlertScanner-derived
 // "process error" / "compile error" / etc. categories lets dedup in
-// get_errors collapse a single death into exactly one unified error rather
+// get_incidents collapse a single death into exactly one unified error rather
 // than merging it with unrelated output.
 const CategoryProcessLifecycle = "process_lifecycle"
 
@@ -156,7 +156,7 @@ func classifyExitReason(exitCode int) string {
 
 // buildLifecycleAlert converts an exit info snapshot into an AlertEntry
 // that flows through the existing alertStore → collectProcessAlerts path
-// in get_errors. A crash or signal is an error; a clean stop is info so
+// in get_incidents. A crash or signal is an error; a clean stop is info so
 // it does not pollute the error list.
 func buildLifecycleAlert(info *ProcessExitInfo) *AlertEntry {
 	if info == nil {
@@ -173,7 +173,7 @@ func buildLifecycleAlert(info *ProcessExitInfo) *AlertEntry {
 		info.ProcessID, info.ExitCode, info.Reason, formatExitUptime(info.Uptime),
 	)
 
-	// The "line" field is rendered as the error message in get_errors —
+	// The "line" field is rendered as the error message in get_incidents —
 	// we want agents to see WHY it died, so prefer the last stderr line.
 	line := info.StderrTail
 	if line == "" {
@@ -309,7 +309,7 @@ func (d *Daemon) watchProcessExit(proc *goprocess.ManagedProcess) {
 		// Only push an alert for real deaths. A clean exit (reason
 		// "stopped") is always either user-initiated or an expected
 		// short-lived script — pushing those as lifecycle entries
-		// would pollute get_errors with noise. Clean exits are still
+		// would pollute get_incidents with noise. Clean exits are still
 		// recorded in processExitInfo so proc status can show them.
 		if d.alertStore != nil && info.Reason != "stopped" {
 			if alert := buildLifecycleAlert(info); alert != nil {
@@ -317,7 +317,7 @@ func (d *Daemon) watchProcessExit(proc *goprocess.ManagedProcess) {
 			}
 		}
 
-		// Lifecycle entries make a crash pull-visible via get_errors, but agents
+		// Lifecycle entries make a crash pull-visible via get_incidents, but agents
 		// also need the immediate incident ping. Use the exact owner captured at
 		// watcher creation so a recycled process ID cannot leak into another
 		// session's inbox.

@@ -12,7 +12,7 @@ import (
 // AlertEntry represents a single alert stored in the daemon.
 type AlertEntry struct {
 	// ID is the stable unified-error id (8-char hex) stamped by the store at
-	// Add time. It is the same id get_errors presents, so retention actions
+	// Add time. It is the same id the unified-error view presents, so retention actions
 	// (pin/unpin) can address an entry by the id the agent already saw.
 	ID          string    `json:"id,omitempty"`
 	PatternID   string    `json:"pattern_id"`
@@ -26,7 +26,7 @@ type AlertEntry struct {
 }
 
 // UnifiedID computes the stable unified-error id for the entry — the same
-// recipe get_errors uses (sha256("process:<script>"|CATEGORY|message|"")[:4]
+// recipe the unified-error view uses (sha256("process:<script>"|CATEGORY|message|"")[:4]
 // as hex), so the daemon and the MCP tool agree on ids without a round trip.
 // The category/message derivation mirrors tools.alertMapToUnifiedError; a
 // parity test in internal/tools pins the two together.

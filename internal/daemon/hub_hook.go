@@ -146,7 +146,7 @@ func (r *hookRingBuffer) Len() int {
 }
 
 // OverflowCount returns the total number of drop-oldest events since the
-// ring buffer was created. Exposed so diagnostic code (doctor, get_errors)
+// ring buffer was created. Exposed so diagnostic code (doctor, proc snapshot)
 // can surface buffer pressure to the AI agent.
 func (r *hookRingBuffer) OverflowCount() int64 {
 	return r.overflow.Load()

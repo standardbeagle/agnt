@@ -3,7 +3,7 @@
 The `agnt hook check-bash` and `agnt hook check-prompt` subcommands are
 Claude Code hook interceptors that nudge LLM behavior away from raw Bash
 (`npm run dev`, `kill`, `lsof`, `tail -f`, `curl`, `grep error`) and
-toward agnt's `run` / `proc` / `proxy` / `proxylog` / `get_errors` MCP
+toward agnt's `run` / `proc` / `proxy` / `proxylog` / `get_incidents` MCP
 tools. They complement the existing `agnt hook` telemetry forwarder with
 a push-model interception layer.
 
@@ -43,7 +43,7 @@ must never block the agent's tool call.
 | 5 | `ss` / `netstat` `-…l…` | soft-warn | `agnt.proc {action: "list"}` |
 | 6 | `tail -f` | **block** | `agnt.proxylog {action: "query"}` or `agnt.watch` |
 | 7 | `curl … localhost` | soft-warn | `agnt.proxy {action: "exec", code: "…"}` |
-| 8 | `grep … error` | soft-warn | `agnt.get_errors {}` |
+| 8 | `grep … error` | soft-warn | `agnt.get_incidents {}` |
 | 9 | `ps aux \| grep` | soft-warn | `agnt.proc {action: "status", name: "<script>"}` |
 
 The first match wins. Soft-warn rules emit a stderr nudge and return 0
@@ -55,7 +55,7 @@ that cites the replacement MCP invocation.
 | Pattern | Reminder |
 |---------|----------|
 | `start.*(server\|dev\|app)` … | "Use agnt.run or agnt.proc to start dev servers …" |
-| `(check\|view\|tail).*(logs?\|errors?)` | "Use agnt.get_errors or agnt.watch instead of tail -f …" |
+| `(check\|view\|tail).*(logs?\|errors?)` | "Use agnt.get_incidents or agnt.watch instead of tail -f …" |
 
 Prompt rules are additive — a single prompt can trigger multiple reminders.
 

@@ -5,13 +5,14 @@
 // projects the front end often depends on a back end that has not yet
 // bound its port. Without a gate, requests forwarded through the proxy
 // reach the front end, which proxies API calls to the not-yet-listening
-// back end, producing `ECONNREFUSED` errors in `get_errors` for the full
+// back end, producing `ECONNREFUSED` errors in `get_incidents` for the full
 // duration of the startup race.
 //
 // The readiness gate holds the proxy in a "waiting for dependencies"
 // state: it is running and bound (visible to `proxy list`), but every
 // incoming request receives a 503 with the `agnt_proxy_not_ready`
-// sentinel body. `get_errors` filters the sentinel so it never reaches
+// sentinel body. The incident HTTP adapter filters the sentinel at ingest
+// (`incident.FromHTTPEntry`) so it never reaches
 // the AI agent. When every dependency in the wait-list signals ready,
 // the gate opens atomically and normal forwarding resumes.
 //
@@ -36,8 +37,8 @@ import (
 )
 
 // ReadinessSentinel is the stable error code in the 503 JSON body
-// emitted by the readiness gate. `get_errors` matches this string to
-// drop gate-generated responses from its error feed.
+// emitted by the readiness gate. `incident.FromHTTPEntry` matches this
+// string to drop gate-generated responses before they become incidents.
 const ReadinessSentinel = "agnt_proxy_not_ready"
 
 // ReadinessRetryAfterMs is the retry interval suggested to clients in
@@ -207,7 +208,7 @@ func writeReadinessNotReady(w http.ResponseWriter, pending []string) {
 	payload, err := json.Marshal(body)
 	if err != nil {
 		// Marshalling a plain struct cannot fail in practice; if it
-		// somehow does, fall back to a bare sentinel so `get_errors`
+		// somehow does, fall back to a bare sentinel so the incident adapter
 		// can still filter the response.
 		payload = []byte(`{"error":"` + ReadinessSentinel + `"}`)
 	}

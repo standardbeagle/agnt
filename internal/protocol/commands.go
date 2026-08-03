@@ -445,7 +445,7 @@ type AlertReportPayload struct {
 
 // AlertPinPayload addresses one error for ALERTS PIN / UNPIN. ID is the
 // unified-error id (alert store) or incident fingerprint the agent saw in a
-// prior get_errors/get_incidents result. Scoping fields mirror
+// prior get_incidents result. Scoping fields mirror
 // AlertQueryFilter (session-scope chokepoint; the MCP connection names the
 // project explicitly).
 type AlertPinPayload struct {

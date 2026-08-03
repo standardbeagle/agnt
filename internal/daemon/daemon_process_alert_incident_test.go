@@ -12,7 +12,7 @@ import (
 
 // TestIngestProcessAlert_ReachesIncidentInbox pins that a process AlertScanner
 // match is published to the incident bus (get_incidents), not only the legacy
-// alertStore (get_errors) and the browser toast (EventHub.Deliver). Regression
+// alertStore (proc snapshot) and the browser toast (EventHub.Deliver). Regression
 // guard for the report that process errors popped as proxy toasts but never
 // reached an agent running the incident pipeline — FromAlertMatch existed and
 // was unit-tested but was never wired into a production publish.
@@ -53,7 +53,7 @@ func TestIngestProcessAlert_ReachesIncidentInbox(t *testing.T) {
 	}, 3*time.Second, 20*time.Millisecond,
 		"process alert never reached the incident inbox")
 
-	// It must still also land in the legacy alertStore (get_errors), so the
+	// It must still also land in the alertStore (proc snapshot reads it), so the
 	// fix adds the incident path without removing the existing one.
 	require.NotZero(t, d.alertStore.Len(),
 		"process alert must also reach the legacy alertStore")

@@ -29,7 +29,7 @@ type SnapshotData struct {
 // failed, starting). UptimeMs is preferred over a string so callers can
 // do arithmetic; the formatted string lives only in the compact text
 // output. URLs come from the daemon's URLTracker; ErrorCount comes from
-// the unified error pipeline (same source as get_errors).
+// the unified error pipeline.
 type SnapshotProcess struct {
 	ID         string   `json:"id"`
 	State      string   `json:"state"`
@@ -142,8 +142,9 @@ func (dt *DaemonTools) handleProcSnapshot(input ProcInput) (*mcp.CallToolResult,
 
 	go func() {
 		defer wg.Done()
-		// Reuse the get_errors per-source collectors so error counts
-		// match get_errors output exactly (acceptance criterion #2).
+		// The per-source collectors in unified_error.go. They outlived
+		// get_errors because this snapshot is project-scoped and may be
+		// global, while the incident inbox is per-session hard-isolated.
 		// Each collector is non-fatal — a daemon that doesn't support a
 		// store returns nil, nil and we move on. Only a structured
 		// CallToolResult signals "this should reach the user".
@@ -176,8 +177,8 @@ func (dt *DaemonTools) handleProcSnapshot(input ProcInput) (*mcp.CallToolResult,
 	if procs.err != nil {
 		return formatDaemonError(procs.err, "proc"), ProcOutput{}, nil
 	}
-	// Deduplicate errors using the same logic as get_errors so counts
-	// match the user-visible numbers.
+	// Deduplicate with the same key the collectors stamp, so counts match
+	// the numbers rendered below.
 	deduped := deduplicateErrors(errs.errors)
 
 	snapshot := buildSnapshot(procs.entries, proxies.entries, deduped)

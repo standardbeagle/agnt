@@ -1295,7 +1295,7 @@ Pattern: ` + "`proc run`" + ` to start, ` + "`proc output`" + ` to inspect, ` + 
 	// the `/agnt:*` skills carry the depth and activate on demand. Keep tool
 	// names + section headers intact (pinned by TestBuildSystemPrompt).
 	sb.WriteString("\n## agnt Tools (trigger → tool → skill for depth)\n\n")
-	sb.WriteString("- errors anywhere → `get_errors {}` (legacy) / `get_incidents {}` (authoritative, pipeline on) · skill: `/agnt:check-errors`, `/agnt:error-monitor`\n")
+	sb.WriteString("- errors anywhere → `get_incidents {}` · skill: `/agnt:check-errors`, `/agnt:error-monitor`\n")
 	sb.WriteString("- dev server / process → `proc` (run/output/stop/list) · skill: `/agnt:process-proxy`\n")
 	sb.WriteString("- what user sees now → `currentpage {}` · skill: `/agnt:current-page`\n")
 	sb.WriteString("- reverse proxy + browser JS → `proxy` (start/list/exec/screenshot) · skill: `/agnt:dev-proxy`, `/agnt:browser-debug`\n")
@@ -1304,7 +1304,7 @@ Pattern: ` + "`proc run`" + ` to start, ` + "`proc output`" + ` to inspect, ` + 
 	sb.WriteString("- headless drive → `automation` (screenshot/navigate/evaluate)\n")
 	sb.WriteString("\n## Debugging Workflow\n\n")
 	sb.WriteString("Broken thing → MCP tools, this order:\n\n")
-	sb.WriteString("1. `get_incidents {}` / `get_errors {}` — first always\n")
+	sb.WriteString("1. `get_incidents {}` — first always\n")
 	sb.WriteString("2. `currentpage {}` — what user sees\n")
 	sb.WriteString("3. `proc {action:\"output\", id:\"...\"}` — crash/build output\n")
 	sb.WriteString("4. `proxylog {action:\"query\", types:[\"error\"]}` — HTTP/API fail\n")
@@ -1312,7 +1312,7 @@ Pattern: ` + "`proc run`" + ` to start, ` + "`proc output`" + ` to inspect, ` + 
 	sb.WriteString("6. screenshot if visual\n")
 	sb.WriteString("\nBrowser messages include `proxy: <id>` as tool scope. Copy it into `proxy_id` (or `id` for proxy actions). A `proxy_id required` response is an argument-validation error and often lists a running proxy; it is not evidence that the dev server is down. Check `proc` status/output before claiming a process stopped.\n")
 	sb.WriteString("\n## Common Patterns\n\n")
-	sb.WriteString("- page blank → get_errors → proc output\n")
+	sb.WriteString("- page blank → get_incidents → proc output\n")
 	sb.WriteString("- API 500 → proxylog query endpoint\n")
 	sb.WriteString("- style wrong → responsive_audit + screenshot\n")
 	sb.WriteString("- click dead → proxy exec → pointer-events / overlays / z-index\n")

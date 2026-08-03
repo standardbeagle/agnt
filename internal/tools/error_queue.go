@@ -17,8 +17,8 @@ type ErrorQueueInput struct {
 	Source      string `json:"source,omitempty" jsonschema:"Source identifier, e.g. github-actions, buildkite, deploy, ci"`
 	Severity    string `json:"severity,omitempty" jsonschema:"Severity: one of error, warning, info (default: error)"`
 	Category    string `json:"category,omitempty" jsonschema:"Category for grouping (default: external)"`
-	Description string `json:"description,omitempty" jsonschema:"Short description shown in get_errors"`
-	ProjectPath string `json:"project_path,omitempty" jsonschema:"Project path for get_errors filtering (default: current directory)"`
+	Description string `json:"description,omitempty" jsonschema:"Short description shown in get_incidents"`
+	ProjectPath string `json:"project_path,omitempty" jsonschema:"Project path for get_incidents filtering (default: current directory)"`
 }
 
 type ErrorQueueOutput struct {
@@ -33,7 +33,7 @@ func RegisterErrorQueueTool(server *mcp.Server, dt *DaemonTools) {
 		Name: "error_queue",
 		Description: `Add an external CI/CD or infrastructure failure to agnt's unified error queue.
 
-Use this when a failure came from GitHub Actions, Buildkite, deploy logs, a hosted service, or any source outside agnt's proxy/process monitors. The entry appears in get_errors.
+Use this when a failure came from GitHub Actions, Buildkite, deploy logs, a hosted service, or any source outside agnt's proxy/process monitors. The entry appears in get_incidents.
 
 Examples:
   error_queue {message: "GitHub Actions build failed: go test ./...", source: "github-actions", category: "ci"}

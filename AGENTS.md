@@ -96,7 +96,7 @@ State transitions 必由 `CompareAndSwapState()` atomic。Child cleanup：proces
 
 ### StreamEvents Hub
 
-Agent-bound alerts always enter the incident pipeline. Push channel config = `alerts.push` in `.agnt.kdl`；presets `claude-code` = project-scoped digest only, `universal` = digest + PTY injection；default = `universal`。Policy is keyed by normalized project path so concurrent projects cannot change each other's sinks；`get_incidents` 為 authoritative pull surface，`get_errors` 為 shim。
+Agent-bound alerts always enter the incident pipeline. Push channel config = `alerts.push` in `.agnt.kdl`；presets `claude-code` = project-scoped digest only, `universal` = digest + PTY injection；default = `universal`。Policy is keyed by normalized project path so concurrent projects cannot change each other's sinks；`get_incidents` 為唯一 pull surface（`get_errors` 已除）。
 
 **STREAM-EVENTS** (`internal/daemon/hub_stream.go`)：daemon handler 以 type/proxy/process/severity/grep filters 註冊 `StreamSink`；30s keepalive；`BroadcastLogEntry()` / `BroadcastProcessOutput()` 推 filtered events 至 matching sinks。
 
@@ -125,8 +125,7 @@ PTY overlay components：command palette (`:`/`/` filterable, **not** a shell bo
 | `proxylog` | Query proxy logs (query, clear, stats) |
 | `tunnel` | Tunnel management (cloudflare/ngrok) |
 | `currentpage` | Page session tracking |
-| `get_errors` | Unified error view (legacy; superseded by `get_incidents`) + retention actions (`pin`/`unpin`/`clear`; auto-retire on build success, proc stop, session end — `alerts.retention`) |
-| `get_incidents` | Incident inbox pull — cursor-based, priority-ordered, remediation hints |
+| `get_incidents` | Incident inbox pull — cursor-based, priority-ordered, remediation hints, partial-view warnings + retention actions (`pin`/`unpin`/`clear`; auto-retire on build success, proc stop, session end — `alerts.retention`) |
 | `responsive_audit` | Responsive design audits across viewport sizes |
 | `api_audit` | API efficiency audit (waterfall, N+1, duplicate, chatty-load) over the fetch/XHR buffer |
 | `loading_audit` | Loading-UX audit (spinner cascade + concurrent fragmentation) over the spinner timeline |

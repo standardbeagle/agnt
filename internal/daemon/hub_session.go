@@ -429,7 +429,7 @@ func progressProtoEvents(events []AutostartProgress) []map[string]interface{} {
 }
 
 // emitAutostartErrorsToAlertStore pushes autostart errors into the
-// agent-facing alert store so `get_errors` surfaces them immediately.
+// agent-facing alert store so `get_incidents` surfaces them immediately.
 // Idempotent for the caller: safe to invoke multiple times if errors change.
 func emitAutostartErrorsToAlertStore(d *Daemon, projectPath string, result *AutostartResult) {
 	if result == nil || len(result.Errors) == 0 || d.alertStore == nil {

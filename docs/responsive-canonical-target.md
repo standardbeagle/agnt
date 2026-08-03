@@ -151,7 +151,7 @@ draft — now the design):
 | Exec reply | `files.go:134,360`, `ws_handler.go:333` | reply tagged with `frameId`; resolve the right pending exec |
 | PageTracker | `pagetracker.go:177` `ResolveSession` | resolve by `frameId` when present, URL fallback |
 | Log filter | `logger.go:780-792` `LogFilter` | add `Frames []string` |
-| Dedup | `get_errors.go:49` `dedupKey` | include `frameId` so same error in two frames isn't collapsed |
+| Dedup | `incident/envelope.go` `fingerprintLocation` | fold `frameId` into the fingerprint so the same error in two frames isn't collapsed |
 
 ### 5.3 Active-target resolution for tools (Slice 5)
 MCP `proxy exec` / `responsive_audit` / `snapshot` / `screenshot` / `api_audit` /

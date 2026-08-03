@@ -293,7 +293,7 @@ func (d *Daemon) handleExplicitStart(event ProxyEvent) {
 	}
 
 	// Surface the missing overlay wire-up as a visible startup warning so
-	// the AI agent sees it via get_errors — browser→agent messages (panel
+	// the AI agent sees it via get_incidents — browser→agent messages (panel
 	// input, sketch JSON, design-mode state) silently fail to reach the
 	// agent without an overlay endpoint. Moved from hubHandleProxyStart in
 	// T3 so every ExplicitStart path (MCP tool, autostart, future fallback)
@@ -344,7 +344,7 @@ func (d *Daemon) handleExplicitStart(event ProxyEvent) {
 //     on failure.
 //
 // Both success and failure entries flow through startupErrorStore so the
-// decision is visible via get_errors and the overlay — no silent drops.
+// decision is visible via get_incidents and the overlay — no silent drops.
 func (d *Daemon) handleFallbackPortCheck(event ProxyEvent) {
 	if event.Config == nil || event.ProxyName == "" || event.Path == "" {
 		debug.Warn("daemon", "Invalid FallbackPortCheck event: missing config, proxyName, or path")

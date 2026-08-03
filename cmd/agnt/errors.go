@@ -23,7 +23,7 @@ import (
 var errorsCmd = &cobra.Command{
 	Use:   "errors",
 	Short: "Add external failures to the agnt error queue",
-	Long: `Add CI/CD, log, and arbitrary external failures to the same queue used by get_errors.
+	Long: `Add CI/CD, log, and arbitrary external failures to the same queue used by get_incidents.
 
 Use add for one explicit error, or ingest to scan stdin and enqueue matching lines.`,
 }
@@ -80,7 +80,7 @@ func addErrorFlags(cmd *cobra.Command) {
 	cmd.Flags().StringVar(&errorSeverity, "severity", "error", "Severity: error, warning, or info")
 	cmd.Flags().StringVar(&errorCategory, "category", "external", "Error category")
 	cmd.Flags().StringVar(&errorDescription, "description", "external error", "Short error description")
-	cmd.Flags().StringVar(&errorProjectPath, "project", "", "Project path for get_errors filtering (default: current directory)")
+	cmd.Flags().StringVar(&errorProjectPath, "project", "", "Project path for get_incidents filtering (default: current directory)")
 }
 
 var errorsAddCmd = &cobra.Command{

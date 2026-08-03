@@ -48,7 +48,7 @@ type SignalSet struct {
 // strokes (ERROR, panic, traceback, WARN) but stay simpler so the
 // extract-action behaviour is predictable across languages. If a caller
 // needs framework-specific structured errors they should use `proc snapshot`
-// (which feeds through get_errors → AlertScanner classifications).
+// (which feeds through the unified-error pipeline → AlertScanner classifications).
 var (
 	urlRegex = regexp.MustCompile(`https?://[^\s,;'"<>)]+`)
 	// readyRegex matches the canonical ready phrases. (?i) for case

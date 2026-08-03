@@ -143,7 +143,7 @@ func (d *Daemon) recordStartupEntry(processID, scriptName, level, eventType, mes
 // prefix (makeProcessID(projectPath, scriptName)).
 //
 // Project scoping of the startup log is a structural property of this type:
-// the default startup_log / get_errors query is project-scoped and filters
+// the default startup_log query is project-scoped and filters
 // by the "basename-hash:" ProcessID prefix (see StartupLogFilter.ProjectPath).
 // The raw store helpers take a free-form ProcessID, which made it easy to
 // record a project event with an empty ProcessID — those entries silently

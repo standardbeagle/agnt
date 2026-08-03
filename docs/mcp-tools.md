@@ -14,8 +14,7 @@ only the summary table + handler pattern; this is the detailed reference.
 | `proxylog` | Query proxy logs (query, summary, clear, stats) |
 | `tunnel` | Tunnel management (cloudflare/ngrok/tailscale) |
 | `currentpage` | Inner/content-page inspection: framework triage (default) + layout diagnostics + list/get/summary/clear; responses identify `execution_context` and `frame_id` |
-| `get_errors` | Unified error view across processes and proxies (legacy; superseded by `get_incidents`) |
-| `get_incidents` | Incident inbox pull — cursor-based, priority-ordered, with remediation hints |
+| `get_incidents` | The error/incident surface — cursor-based, priority-ordered, with remediation hints and retention actions |
 | `responsive_audit` | Responsive design audits across viewport sizes |
 | `api_audit` | API efficiency audit (waterfall, N+1, duplicate, chatty-load) over the fetch/XHR buffer |
 | `loading_audit` | Loading-UX audit (spinner cascade + concurrent fragmentation) over the spinner timeline |
@@ -25,7 +24,7 @@ only the summary table + handler pattern; this is the detailed reference.
 | `channel_reply` | Send messages to developer's browser overlay (channel mode beta) |
 | `publish` | Public walkthrough shares — create/status/list/revoke/rotate + owner-scoped feedback read |
 
-**Session scoping & `global` flag**: query/list tools use the project's `scope.default-global` setting (default `false`; daemon-side session-scope chokepoint — see `.claude/rules/daemon-architecture.md` § Tool session-scoping). Every gated tool (`get_errors`, `proc`, `proxy`, `tunnel`, `session`, `daemon` startup_log) accepts an optional `global`; explicit `true` or `false` overrides project config in either direction, while omission uses config. `get_incidents` (per-session isolated) and `watch` (monitor stream) intentionally omit it.
+**Session scoping & `global` flag**: query/list tools use the project's `scope.default-global` setting (default `false`; daemon-side session-scope chokepoint — see `.claude/rules/daemon-architecture.md` § Tool session-scoping). Every gated tool (`proc`, `proxy`, `tunnel`, `session`, `daemon` startup_log) accepts an optional `global`; explicit `true` or `false` overrides project config in either direction, while omission uses config. `get_incidents` (per-session isolated) and `watch` (monitor stream) intentionally omit it.
 
 **Handler pattern**:
 - Input/Output structs with JSON schema tags
@@ -48,6 +47,32 @@ Cursor-based pull from the always-active incident inbox. This is the authoritati
 | `mark_read` | bool | false | Advance cursor and mark returned incidents read |
 | `limit` | int | 20 (max 100) | Max incidents returned |
 | `raw` | bool | false | Return full JSON instead of compact text |
+| `action` | string | `query` | Retention verb: `pin`, `unpin`, `clear` |
+| `error_id` | string | — | Pin/unpin target: the fingerprint from a prior result |
+| `tag` | string | — | Note stored with a pin, returned on the pinned item |
+
+There is no `global` flag: the inbox is per-session hard-isolated (numbered
+contract 1), which is a stronger guarantee than project scoping.
+
+**Retention actions** (`action` param; default `query`):
+
+| Action | Params | Effect |
+|--------|--------|--------|
+| `pin` | `error_id`, optional `tag` | Exempts the incident from band eviction and from every retention clear until unpinned. Bounded by `incident.MaxPinnedEntries`; pinning past the bound fails loud rather than silently evicting an older pin. |
+| `unpin` | `error_id` | Releases the pin; normal retention applies again. |
+| `clear` | — | Retires the caller session's unpinned incidents, routed through the bus's FIFO control-clear so an incident published just before the request cannot outlive a boundary it predates. |
+
+Automatic retention (config: `alerts.retention`, see `docs/configuration.md`):
+build success retires a process's earlier errors (timestamp-bounded, FIFO with
+in-flight incident events), explicit `proc stop/restart` starts a fresh slate,
+and a project's last session disconnecting clears its ring. Crash restarts
+never clear.
+
+**`collection_warnings`**: names every way the returned view is known to be
+partial — events the bus dropped before reaching any inbox, and `detail:"full"`
+payloads the blob store could not hydrate. Non-empty means incidents are
+missing from the answer, and it renders above the incident list so a degraded
+view cannot read as an all-clear.
 
 **Compact Output Format** (`detail:"full"` payloads and the aggregate `=== Next ===` block render in compact mode too, not only under `raw:true`):
 ```
@@ -149,30 +174,6 @@ CSP/SSRF caveats apply. See [public-walkthroughs.md §6](public-walkthroughs.md)
 **Key Files**: `internal/tools/publish_tools.go`, `internal/daemon/hub_publish.go`,
 `internal/daemon/publish_public.go`, `internal/daemon/feedback_events.go`,
 `internal/proxy/public_routes.go`, `internal/publish/feedback_store.go`
-
-## get_errors Tool (Legacy)
-
-Superseded by `get_incidents`. Kept for backwards compatibility and daemon-less mode.
-
-**Dual Mode**:
-- **Daemon mode**: Full — process alerts via daemon IPC + proxy errors
-- **Legacy mode** (no daemon): Proxy errors only, process alerts unavailable
-
-**Key Files**: `internal/tools/get_errors.go`, `internal/tools/get_errors_test.go`
-
-**Retention actions** (`action` param; default `query`):
-
-| Action | Params | Effect |
-|--------|--------|--------|
-| `pin` | `error_id` (the `#id` from a prior result), optional `tag` | Copies the error into the daemon's pinned store (`internal/alert/pinned.go`, cap 50/project). Pinned errors survive every automatic clear, ignore `since`/`limit`/`include_warnings` filtering, and render with `[pinned: <tag>]` until unpinned. |
-| `unpin` | `error_id` | Releases the pin; normal retention applies again. |
-| `clear` | optional `process_id`, `global` | Retires current unpinned errors now (project-scoped through the session-scope chokepoint; `process_id` narrows to one process, `global:true` widens). |
-
-Automatic retention (config: `alerts.retention`, see `docs/configuration.md`):
-build success retires a process's earlier errors (timestamp-bounded, FIFO with
-in-flight incident events), explicit `proc stop/restart` starts a fresh slate,
-and a project's last session disconnecting clears its ring. Crash restarts
-never clear.
 
 ## responsive_audit Tool
 
@@ -446,7 +447,7 @@ chrome from page content and gives a stable interaction target. Full design:
     resets). Resize, then run `api_audit`/`loading_audit`/`responsive_audit`
     (they target the inner frame) to measure the page at that viewport.
 - **Telemetry** (error/fetch/xhr/interaction/mutation) is tagged with the
-  emitting `frame_id`; `get_errors` dedup and `proxylog`'s `LogFilter.Frames`
+  emitting `frame_id`; the incident fingerprint and `proxylog`'s `LogFilter.Frames`
   are frame-aware so the same error in two frames is not collapsed.
 
 ### Responsive Mode

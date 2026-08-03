@@ -406,7 +406,7 @@ func (d *Daemon) hubHandleRun(ctx context.Context, conn *hubpkg.Connection, cmd 
 
 	proc := result.Process
 
-	// Register process-death watcher so proc status / get_errors surface
+	// Register process-death watcher so proc status / get_incidents surface
 	// the exit when this process dies. Skip if we reused an existing
 	// process — it already has a watcher from the original start.
 	if !result.Reused {

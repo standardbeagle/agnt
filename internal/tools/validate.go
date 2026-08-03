@@ -242,8 +242,10 @@ func validateDetectInput(input DetectInput) error {
 	return validateStringLen("path", input.Path, maxPathLength)
 }
 
-// validateGetErrorsInput validates GetErrorsInput fields.
-func validateGetErrorsInput(input GetErrorsInput) error {
+// validateGetIncidentsInput validates GetIncidentsInput fields. It inherits the
+// bounds get_errors enforced: retiring that tool must not leave its successor
+// as the one unbounded query surface.
+func validateGetIncidentsInput(input GetIncidentsInput) error {
 	checks := []error{
 		validateStringLen("action", input.Action, maxIDLength),
 		validateStringLen("error_id", input.ErrorID, maxIDLength),
@@ -251,6 +253,7 @@ func validateGetErrorsInput(input GetErrorsInput) error {
 		validateStringLen("process_id", input.ProcessID, maxIDLength),
 		validateStringLen("proxy_id", input.ProxyID, maxIDLength),
 		validateStringLen("since", input.Since, maxStringField),
+		validateStringLen("detail", input.Detail, maxIDLength),
 		validatePositiveLimit("limit", input.Limit, maxLimit),
 	}
 	for _, err := range checks {

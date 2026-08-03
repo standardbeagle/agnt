@@ -86,7 +86,7 @@ func TestReadinessGate_EmptyStringDependenciesIgnored(t *testing.T) {
 
 // TestWriteReadinessNotReady verifies the 503 response body contains the
 // stable sentinel, pending list, and Retry-After header. The sentinel is
-// the contract point for get_errors filtering.
+// the contract point for the incident adapter's filtering.
 func TestWriteReadinessNotReady(t *testing.T) {
 	rec := httptest.NewRecorder()
 	writeReadinessNotReady(rec, []string{"dev-backend", "dev-lib"})

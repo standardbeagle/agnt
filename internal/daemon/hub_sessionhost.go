@@ -170,7 +170,7 @@ func (d *Daemon) hubHandleSessionHostCreate(conn *hubpkg.Connection, cmd *hubpro
 			// anomaly, not a benign no-op, and silently swallowing it would violate
 			// the Silent Failure Prohibition (.claude/rules/daemon-architecture.md).
 			// Surface it on the agent-visible startup log (queryable via
-			// get_errors). Scope it to the project so the owning session's default
+			// get_incidents). Scope it to the project so the owning session's default
 			// (project-scoped) query sees it; a daemon-wide (empty-ProcessID) entry
 			// would be visible only to a global query. Fall back to the daemon-wide
 			// log only when there is no project path to scope by.

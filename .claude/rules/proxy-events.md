@@ -66,7 +66,7 @@ autostart → scheduleFallbackPortChecks spawns one goroutine per
 
 Fallback handler uses same proxy-id scheme as explicit-start path (`makeProcessID(projectPath, proxyName)`) so idempotency checks align, and so late URL-detection event (uses `makeProxyIDFromURL`) can still create own distinct entry.
 
-Both success and failure entries flow through `startupErrorStore` — outcome surfaces in `get_errors` and overlay, never silent.
+Both success and failure entries flow through `startupErrorStore` — outcome surfaces in `get_incidents` and overlay, never silent.
 
 30s timer constant must not shorten for production. Tests exercise `handleFallbackPortCheck` directly or deliver `FallbackPortCheck` events to channel, bypassing timer.
 

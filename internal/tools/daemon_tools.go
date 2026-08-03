@@ -540,7 +540,7 @@ Multi-stream output and signals:
   proc {action:"output", process_ids:["build","server","test"]}
   Pulls output from N processes in one call. Each line tagged "[id]" in compact output, NDJSON in raw mode.
   Add extract:["url","error","warning","ready","port"] to scan for structured signals — surfaced per-process under multi_stream[*].signals (or top-level signals when single process_id is used).
-  Coordinates with proc snapshot: snapshot uses the get_errors classification pipeline (framework-aware), extract scans raw line buffers (regex, framework-agnostic).
+  Coordinates with proc snapshot: snapshot uses the unified-error classification pipeline (framework-aware), extract scans raw line buffers (regex, framework-agnostic).
 
 Restarting dev servers:
   proc {action: "restart", process_id: "dev"}
@@ -698,48 +698,6 @@ The get action returns full interaction and mutation history (may be large).
 
 This provides a high-level view of active pages and their resources.`,
 	}, dt.makeCurrentPageHandler())
-
-	// Error aggregation tool
-	addLenientTool(server, &mcp.Tool{
-		Name: "get_errors",
-		Description: `Get all current errors across processes and proxies.
-
-Note: the incident pipeline is always active. For session-scoped queries this
-tool is a shim — it reads the same session incident inbox as get_incidents
-(shared fingerprint IDs, no double-reporting) and returns the compact error
-view. Prefer get_incidents for cursor-based pulls, remediation hints, and
-next-tool suggestions. Daemon-less mode and global:true cross-project queries
-retain the legacy alert/proxy/startup aggregate view. alerts.push changes only
-live project-isolated interrupts, never inbox recording.
-
-Collects errors from: process output (compile errors, panics, exceptions),
-autostart failures (script start failures, port conflicts, proxy errors),
-browser JavaScript errors, HTTP 4xx/5xx responses, and proxy transport errors.
-
-Default behavior:
-  - Deduplicates identical errors (shows count)
-  - Reduces stack traces to first application code frame
-  - Filters out noise (static asset 404s, redirects)
-  - Sorts by severity (errors first) then recency
-
-Retention: errors are retired automatically when they go stale — a successful
-rebuild clears a process's earlier errors, an explicit proc stop/restart
-starts a fresh slate, and a project's last session disconnecting clears its
-ring. Use the retention actions to override:
-  - action: "pin" + error_id (+ optional tag) — save an error so it survives
-    every automatic clear and always shows in results until unpinned
-  - action: "unpin" + error_id — release a pinned error
-  - action: "clear" (+ optional process_id) — retire current unpinned errors now
-
-Examples:
-  get_errors {}
-  get_errors {proxy_id: "dev"}
-  get_errors {process_id: "dev-server", since: "5m"}
-  get_errors {include_warnings: false}
-  get_errors {raw: true, limit: 50}
-  get_errors {action: "pin", error_id: "a1b2c3d4", tag: "flaky-db-timeout"}
-  get_errors {action: "clear", process_id: "dev-server"}`,
-	}, dt.makeGetErrorsHandler())
 
 	// Watch tool - returns monitor command for Claude's Monitor tool
 	addLenientTool(server, &mcp.Tool{

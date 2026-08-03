@@ -1011,7 +1011,7 @@ func reserveFreePort(t *testing.T) int {
 // port is already held by an unmanaged process, autostartProxy
 // emits a `proxy_listen_port_conflict` entry to startupErrorStore
 // BEFORE handing off to the ExplicitStart handler. This preflight
-// surfaces the owning process hint via get_errors so the AI agent
+// surfaces the owning process hint via get_incidents so the AI agent
 // doesn't have to correlate a terse runtime bind error back to the
 // declared config.
 func TestAutostartProxy_ListenPortConflict_EmitsStartupError(t *testing.T) {

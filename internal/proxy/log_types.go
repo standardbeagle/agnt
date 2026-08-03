@@ -558,7 +558,7 @@ type ProcessOutputEvent struct {
 // LogEntry. The proxy package cannot import daemon (the import graph is
 // daemon → proxy), so this struct mirrors the wire shape of HookEvent
 // without introducing a cycle. Fields are flat by design — StreamSink
-// consumers (monitor, get_errors) need direct access to event/payload/
+// consumers (monitor, get_incidents) need direct access to event/payload/
 // session_id without unwrapping a nested map.
 type HookLogEntry struct {
 	Event       string          `json:"event"`

@@ -2,6 +2,7 @@ package incident
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/standardbeagle/agnt/internal/proxy"
 )
@@ -27,6 +28,15 @@ func FromHTTPEntry(he proxy.HTTPLogEntry, proxyID string) (IncidentEvent, bool) 
 		return IncidentEvent{}, false
 	}
 
+	// The readiness gate's own 503 is not a backend error to chase — it is agnt
+	// telling the browser to retry while a dependency finishes binding. Left
+	// unfiltered it produces one incident per request for the whole startup
+	// race. This filter used to live only in get_errors; it belongs at ingest so
+	// every agent-facing surface inherits it.
+	if isReadinessSentinel(he.ResponseBody, he.Error) {
+		return IncidentEvent{}, false
+	}
+
 	msg := fmt.Sprintf("%s %s → %d", he.Method, he.URL, he.StatusCode)
 	if he.Error != "" {
 		msg += "\n" + he.Error
@@ -47,4 +57,17 @@ func FromHTTPEntry(he proxy.HTTPLogEntry, proxyID string) (IncidentEvent, bool) 
 	// independent of the URL that NewIncidentEvent folded in.
 	ev.Fingerprint = computeStormFingerprint(string(src), statusClass, proxyID)
 	return ev, true
+}
+
+// isReadinessSentinel reports whether a logged response carries the proxy
+// readiness gate's `agnt_proxy_not_ready` marker. The proxy handler writes it
+// to both the body and the entry's synthetic Error field, so both are checked.
+//
+// A substring match rather than a JSON parse: the marker is unique enough that
+// a false positive needs an upstream to return the literal deliberately, and
+// the body is truncated in the log, so a parse would fail on exactly the large
+// responses it would need to handle.
+func isReadinessSentinel(responseBody, errField string) bool {
+	return strings.Contains(errField, proxy.ReadinessSentinel) ||
+		strings.Contains(responseBody, proxy.ReadinessSentinel)
 }

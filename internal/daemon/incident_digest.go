@@ -59,7 +59,7 @@ func (d *Daemon) addIncidentSession(sessionCode string) {
 func (d *Daemon) incidentSinkCallbacks(sessionCode string) (incident.MCPNotifyFn, incident.ChannelNotifyFn, incident.PTYInjectFn) {
 	mcpNotify := func(level string, payload incident.PingPayload) error {
 		// Pause = drop the push, not the record. The incident already landed in
-		// this session's inbox upstream of the pinger, so get_incidents/get_errors
+		// this session's inbox upstream of the pinger, so get_incidents
 		// stay pullable; we only suppress the interrupt into the agent.
 		if d.IsForwardingPaused(sessionCode) {
 			return nil
@@ -74,7 +74,7 @@ func (d *Daemon) incidentSinkCallbacks(sessionCode string) (incident.MCPNotifyFn
 		// empty project path would degrade to an UNSCOPED broadcast, leaking
 		// this session's digest into every other project's STREAM-EVENTS
 		// stream. Drop the push instead — the incident already landed in the
-		// inbox upstream, so it stays pullable via get_incidents/get_errors.
+		// inbox upstream, so it stays pullable via get_incidents.
 		s, ok := d.sessionRegistry.Get(sessionCode)
 		if !ok || s.ProjectPath == "" {
 			return nil

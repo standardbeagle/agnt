@@ -401,7 +401,7 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 
 	// Readiness gate: if the proxy is still waiting on declared
 	// dependencies, reject with a sentinel 503 instead of forwarding.
-	// The body marker (`agnt_proxy_not_ready`) lets `get_errors` drop
+	// The body marker (`agnt_proxy_not_ready`) lets the incident adapter drop
 	// these responses from its error feed during the startup race.
 	if ps.readiness != nil && !ps.readiness.IsReady() {
 		pending := ps.readiness.PendingDependencies()

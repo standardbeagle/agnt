@@ -15,7 +15,7 @@ import (
 // that is now down or, worse, to whichever dev server next grabs the port. The
 // developer sees "two projects serving the same site" with no explanation.
 //
-// Two notices, both project-scoped and agent-visible via get_errors:
+// Two notices, both project-scoped and agent-visible via get_incidents:
 //   - killer side: which process it killed and on what port.
 //   - victim side: every OTHER project whose proxy targets that port learns its
 //     dev server was killed out from under it and must be restarted.

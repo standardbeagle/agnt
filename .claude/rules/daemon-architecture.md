@@ -6,7 +6,7 @@ Four participants interact with daemon. Every feature must consider all four:
 
 1. **Developer** — configures `.agnt.kdl`, runs `agnt run` or opens Claude Code session, expects dev servers and proxies to "just work." Needs "doctor" command for manual verification and cleanup.
 
-2. **AI Agent** — calls MCP tools (`proc`, `proxy`, `proxylog`, `get_errors`, `get_incidents`), decides based on state. Needs verified-accurate state — stale or contradictory data makes agent take wrong actions, worse than no data.
+2. **AI Agent** — calls MCP tools (`proc`, `proxy`, `proxylog`, `get_incidents`), decides based on state. Needs verified-accurate state — stale or contradictory data makes agent take wrong actions, worse than no data.
 
 3. **Daemon** — long-running background process outliving any session. Orchestrates lifecycles, manages event system, serves as state cache.
 
@@ -154,7 +154,7 @@ Call that cannot resolve a project is rejected with `invalid_args: no session at
 
 ### Uniform `global` override on MCP tools (C6)
 
-Every gated MCP tool exposes the **same** optional `global *bool` override (`json:"global,omitempty"`, documented in jsonschema). The pointer is required to preserve three states: omitted uses project config, explicit `true` is cross-project, and explicit `false` forces project scope. MCP daemon connection not session-bound, so each tool names the project on wire whenever it is not explicitly global; this lets the daemon load that project's config. Reflection contract test (`internal/tools/global_scope_uniform_test.go`, `TestGatedMCPTools_ExposeGlobalFlagUniformly`) pins the six gated inputs.
+Every gated MCP tool exposes the **same** optional `global *bool` override (`json:"global,omitempty"`, documented in jsonschema). The pointer is required to preserve three states: omitted uses project config, explicit `true` is cross-project, and explicit `false` forces project scope. MCP daemon connection not session-bound, so each tool names the project on wire whenever it is not explicitly global; this lets the daemon load that project's config. Reflection contract test (`internal/tools/global_scope_uniform_test.go`, `TestGatedMCPTools_ExposeGlobalFlagUniformly`) pins the five gated inputs.
 
 Two tools intentionally do **not** take cross-project `global`, excluded from contract test:
 
@@ -167,8 +167,8 @@ Default project-scoped, `global`-overridable, session-less non-global rejected.
 
 | Verb | MCP tool | Filter field | Notes |
 |------|----------|--------------|-------|
-| `ALERTS QUERY` | `get_errors` (process alerts) | `AlertStoreFilter.ProjectPath` | C4 |
-| `ALERTS STARTUP-LOG` | `get_errors` (startup errors), `daemon startup_log` | `StartupLogFilter.ProjectPath` (matched via `basename-hash:` ProcessID prefix — entries not stamped at ingest) | C5 |
+| `ALERTS QUERY` | `proc {action:"snapshot"}` (process alerts) | `AlertStoreFilter.ProjectPath` | C4 |
+| `ALERTS STARTUP-LOG` | `proc {action:"snapshot"}` (startup errors), `daemon startup_log` | `StartupLogFilter.ProjectPath` (matched via `basename-hash:` ProcessID prefix — entries not stamped at ingest) | C5 |
 | `PROC LIST` | `proc {action:"list"}` | `ProjectPath` compare on each process | C5 (migrated off inline logic) |
 | `PROXY LIST` | `proxy {action:"list"}` | `ProjectPath` compare on each proxy | C5 (migrated off inline logic) |
 | `TUNNEL LIST` | `tunnel {action:"list"}` | `tunnelm.ListByPath` | C5 (migrated off `getSessionProjectPath` fallback-to-all) |

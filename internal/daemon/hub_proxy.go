@@ -144,7 +144,7 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 		if detail != "" {
 			msg += " — cause: " + detail
 		}
-		msg += " (see get_errors or `daemon startup_log` for the full proxy_creation_failed record)"
+		msg += " (see get_incidents or `daemon startup_log` for the full proxy_creation_failed record)"
 		return conn.WriteErr(hubproto.ErrInternal, msg)
 	}
 

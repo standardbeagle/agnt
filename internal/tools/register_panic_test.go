@@ -40,7 +40,7 @@ func TestRegisterMCPTools_NoSchemaPanic(t *testing.T) {
 		{"error_queue", func(s *mcp.Server) { RegisterErrorQueueTool(s, dt) }},
 		{"store", func(s *mcp.Server) { RegisterStoreTool(s, dt) }},
 		{"session", func(s *mcp.Server) { RegisterSessionTool(s, dt) }},
-		// get_errors, detect, proc, run, proxy, proxylog and currentpage are
+		// get_incidents, detect, proc, run, proxy, proxylog and currentpage are
 		// registered by RegisterDaemonTools (the "daemon" case above), so their
 		// schemas are already exercised by this guard.
 	}

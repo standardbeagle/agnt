@@ -23,17 +23,17 @@ func testContext(t *testing.T) context.Context {
 	return ctx
 }
 
-// TestGetErrors_SuppressesProxyReadinessSentinel is the end-to-end
+// TestUnifiedErrors_SuppressProxyReadinessSentinel is the end-to-end
 // repro for the 17:43 startup race described in the Dart task. A
 // real proxy is created with a `wait-for` dependency closed; the
 // test hits the proxy several times to generate 503 sentinel logs,
 // then asserts that convertHTTPErrorDirect filters all of them out
-// — mimicking what `get_errors` would see during the gating window.
+// — mimicking what the snapshot collectors see during the gating window.
 //
 // The same proxy is then re-tested with a genuine 500 response body
 // (no sentinel) to verify the filter does NOT suppress real upstream
 // errors by status code alone.
-func TestGetErrors_SuppressesProxyReadinessSentinel(t *testing.T) {
+func TestUnifiedErrors_SuppressProxyReadinessSentinel(t *testing.T) {
 	// Backend is never reached because the gate is closed, but we
 	// still need a valid target URL for ProxyServer construction.
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -66,7 +66,7 @@ func TestGetErrors_SuppressesProxyReadinessSentinel(t *testing.T) {
 		assert.Equal(t, http.StatusServiceUnavailable, resp.StatusCode)
 	}
 
-	// Pull the log entries and run them through the get_errors
+	// Pull the log entries and run them through the unified-error
 	// converter. All sentinel-bearing 503s must be dropped — that's
 	// the contract the AI agent depends on.
 	entries := ps.Logger().Query(proxy.LogFilter{Types: []proxy.LogEntryType{proxy.LogTypeHTTP}, Limit: 10})
@@ -77,7 +77,7 @@ func TestGetErrors_SuppressesProxyReadinessSentinel(t *testing.T) {
 		surfaced = append(surfaced, convertHTTPErrorDirect("gated-repro", e.HTTP)...)
 	}
 	assert.Empty(t, surfaced,
-		"readiness 503s should be filtered from get_errors even though they are logged; got %v",
+		"readiness 503s should be filtered from the unified-error view even though they are logged; got %v",
 		surfaced)
 
 	// Now flip the gate and synthesize a real 500 response. The
@@ -95,7 +95,7 @@ func TestGetErrors_SuppressesProxyReadinessSentinel(t *testing.T) {
 		ResponseBody: `{"error":"database connection timeout"}`,
 	}
 	realUnified := convertHTTPErrorDirect("gated-repro", realErr)
-	require.Len(t, realUnified, 1, "real 500 must surface in get_errors")
+	require.Len(t, realUnified, 1, "real 500 must surface in the unified-error view")
 	assert.Equal(t, "error", realUnified[0].Severity)
 	assert.Contains(t, realUnified[0].Message, "database connection timeout")
 }

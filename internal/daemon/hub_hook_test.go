@@ -402,7 +402,7 @@ func (s *countingHookSink) EmitHookEvent(ev HookEvent) { s.count.Add(1) }
 // --- phase 3: drain fan-out tests --------------------------------------------
 //
 // These tests cover the three new fan-out paths added by phase 3:
-//   1. synthetic LogEntry → StreamSink (monitor / get_errors)
+//   1. synthetic LogEntry → StreamSink (monitor / get_incidents)
 //   2. session heartbeat (LastSeen bump on the SessionRegistry)
 //   3. notification toast broadcast to every active proxy
 //

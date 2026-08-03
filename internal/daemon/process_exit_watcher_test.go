@@ -145,7 +145,7 @@ func TestBuildLifecycleAlert(t *testing.T) {
 	assert.Equal(t, CategoryProcessLifecycle, alert.Category)
 	// A crash is an error; a clean stop is info-level.
 	assert.Equal(t, "error", alert.Severity)
-	// The description carries the human-readable exit summary for get_errors.
+	// The description carries the human-readable exit summary for get_incidents.
 	assert.Contains(t, alert.Description, "exited")
 	assert.Contains(t, alert.Description, "code 1")
 	// The line carries the stderr tail so agents see WHY it died.
@@ -460,7 +460,7 @@ func TestExitInfoToResponse_NoStderrTail(t *testing.T) {
 
 // TestWatchProcessExit_CleanExit verifies a clean exit (code 0) records
 // the death in the exit-info store (so proc status can show it) but does
-// NOT push a lifecycle alert (so get_errors isn't polluted with noise
+// NOT push a lifecycle alert (so get_incidents isn't polluted with noise
 // from every user-initiated stop).
 func TestWatchProcessExit_CleanExit(t *testing.T) {
 	t.Parallel()
@@ -511,7 +511,7 @@ func TestWatchProcessExit_CleanExit(t *testing.T) {
 	assert.Equal(t, "stopped", info.Reason)
 
 	// Clean exits must NOT produce a lifecycle alert — they would
-	// pollute get_errors with every user-initiated stop.
+	// pollute get_incidents with every user-initiated stop.
 	alerts := d.alertStore.Query(AlertStoreFilter{ProcessID: "test-clean-exit"})
 	for _, a := range alerts {
 		assert.NotEqual(t, CategoryProcessLifecycle, a.Category,

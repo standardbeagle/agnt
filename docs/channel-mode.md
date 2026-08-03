@@ -9,7 +9,7 @@ Push-based event forwarding via MCP `claude/channel` protocol. When enabled, dae
 | | Channel mode | `agnt run` |
 |--|-------------|------------|
 | Works with | Claude Code v2.1.80+ | Any terminal agent |
-| Event delivery | Push (real-time XML tags in context) | Pull (poll `get_errors`, `proxylog`) or PTY stdin injection |
+| Event delivery | Push (real-time XML tags in context) | Pull (poll `get_incidents`, `proxylog`) or PTY stdin injection |
 | Setup | Add `channel { enabled true }` to `.agnt.kdl` | Wrap agent: `agnt run claude` |
 | Browser overlay | Yes (via `channel_reply` tool) | Yes (via PTY indicator) |
 | Login requirement | claude.ai account (Console/API key not supported) | None |

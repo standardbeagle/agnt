@@ -175,22 +175,33 @@ func TestValidateProxyLogInput(t *testing.T) {
 	}))
 }
 
-func TestValidateGetErrorsInput(t *testing.T) {
+func TestValidateGetIncidentsInput(t *testing.T) {
 	// Normal input passes
-	assert.NoError(t, validateGetErrorsInput(GetErrorsInput{
+	assert.NoError(t, validateGetIncidentsInput(GetIncidentsInput{
 		ProcessID: "dev",
 		ProxyID:   "proxy-dev",
 		Since:     "5m",
+		Detail:    "full",
 		Limit:     25,
 	}))
 
 	// Oversized process_id
-	assert.Error(t, validateGetErrorsInput(GetErrorsInput{
+	assert.Error(t, validateGetIncidentsInput(GetIncidentsInput{
 		ProcessID: strings.Repeat("x", maxIDLength+1),
 	}))
 
+	// Oversized retention fields — the pin target and its note are caller-supplied.
+	assert.Error(t, validateGetIncidentsInput(GetIncidentsInput{
+		Action:  "pin",
+		ErrorID: strings.Repeat("x", maxIDLength+1),
+	}))
+	assert.Error(t, validateGetIncidentsInput(GetIncidentsInput{
+		Action: "pin",
+		Tag:    strings.Repeat("x", maxStringField+1),
+	}))
+
 	// Negative limit
-	assert.Error(t, validateGetErrorsInput(GetErrorsInput{
+	assert.Error(t, validateGetIncidentsInput(GetIncidentsInput{
 		Limit: -1,
 	}))
 }

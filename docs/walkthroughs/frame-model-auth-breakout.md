@@ -27,7 +27,7 @@ Resize and navigation are **reload-free**: because the page is an iframe inside
 a shell you control, the shell can resize the frame or drive its history in
 place, keeping page state (form fields, cart contents, open modals) intact. And
 because telemetry is tagged with the emitting `frame_id`, the same error in two
-frames is not collapsed — `get_errors` dedup and `proxylog`'s `LogFilter.Frames`
+frames is not collapsed — the incident fingerprint and `proxylog`'s `LogFilter.Frames`
 are frame-aware.
 
 Auth breakout is unique because it solves the framing conflict *without*
