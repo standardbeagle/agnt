@@ -443,30 +443,6 @@ type AlertReportPayload struct {
 	Timestamp   string `json:"timestamp"` // RFC3339
 }
 
-// AlertPinPayload addresses one error for ALERTS PIN / UNPIN. ID is the
-// unified-error id (alert store) or incident fingerprint the agent saw in a
-// prior get_incidents result. Scoping fields mirror
-// AlertQueryFilter (session-scope chokepoint; the MCP connection names the
-// project explicitly).
-type AlertPinPayload struct {
-	ID  string `json:"id"`
-	Tag string `json:"tag,omitempty"` // agent note stored with the pin
-
-	SessionCode string `json:"session_code,omitempty"`
-	Directory   string `json:"directory,omitempty"`
-}
-
-// AlertClearFilter scopes ALERTS CLEAR. By default the clear is bounded to
-// the caller's project; ProcessID narrows it to one process; Global clears
-// every project (audited loud path). Pinned errors are never cleared.
-type AlertClearFilter struct {
-	ProcessID string `json:"process_id,omitempty"`
-
-	Global      *bool  `json:"global,omitempty"`
-	SessionCode string `json:"session_code,omitempty"`
-	Directory   string `json:"directory,omitempty"`
-}
-
 // AlertQueryFilter filters for ALERTS QUERY.
 //
 // Scoping fields (Global / SessionCode / Directory) feed the session-scope

@@ -170,7 +170,7 @@ func TestSessionScope_GlobalOverrideAndSessionlessRejected(t *testing.T) {
 // across every case. RED until ALERTS QUERY is routed through the gate.
 func TestSessionScope_NonDebugQueryVerbsRejectCrossProject(t *testing.T) {
 	// No t.Parallel(): shares the daemon's global alert ring buffer.
-	_, sockPath := newBootedDaemon(t)
+	d, sockPath := newBootedDaemon(t)
 
 	projOwn := normalizePath(t.TempDir())
 	projForeign := normalizePath(t.TempDir())
@@ -195,8 +195,10 @@ func TestSessionScope_NonDebugQueryVerbsRejectCrossProject(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			_, err := reporter.AlertClear(protocol.AlertClearFilter{Global: protocol.Bool(true)})
-			require.NoError(t, err)
+			// Reset the shared ring in-process. The wire verb this used to call
+			// (ALERTS CLEAR) went with get_errors, and a test fixture is the
+			// wrong reason to keep a client-facing verb alive.
+			d.alertStore.Clear()
 			for i := 0; i < tc.ownCount; i++ {
 				reportAlert(t, reporter, projOwn, "own-"+tc.name+"-"+itoa(i), "error")
 			}

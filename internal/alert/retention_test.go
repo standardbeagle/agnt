@@ -86,39 +86,3 @@ func TestAdd_StampsUnifiedID(t *testing.T) {
 	plain := &AlertEntry{Category: "process_lifecycle", Description: "exited (code 1)", ScriptID: "web"}
 	assert.NotEqual(t, lifecycle.UnifiedID(), plain.UnifiedID())
 }
-
-func TestPinnedStore_PinUnpinListCap(t *testing.T) {
-	ps := NewPinnedStore()
-
-	require.Error(t, ps.Pin(PinnedError{}), "empty id must fail loud")
-
-	p := PinnedError{ID: "abc", ProjectPath: "/p", Message: "boom", Tag: "keep"}
-	require.NoError(t, ps.Pin(p))
-
-	// Re-pin updates the tag, no duplicate.
-	p.Tag = "updated"
-	require.NoError(t, ps.Pin(p))
-	list := ps.List("/p", false)
-	require.Len(t, list, 1)
-	assert.Equal(t, "updated", list[0].Tag)
-	assert.False(t, list[0].PinnedAt.IsZero())
-
-	// Project isolation: another project sees nothing non-globally.
-	assert.Empty(t, ps.List("/other", false))
-	require.NoError(t, ps.Pin(PinnedError{ID: "zzz", ProjectPath: "/other"}))
-	assert.Len(t, ps.List("/p", true), 2, "global list spans projects")
-
-	// Unpin.
-	assert.True(t, ps.Unpin("/p", "abc"))
-	assert.False(t, ps.Unpin("/p", "abc"), "second unpin reports not-found")
-	assert.Empty(t, ps.List("/p", false))
-
-	// Cap fails loud, and re-pinning an existing id still works at cap.
-	for i := 0; i < MaxPinnedPerProject; i++ {
-		require.NoError(t, ps.Pin(PinnedError{ID: fmt.Sprintf("id-%d", i), ProjectPath: "/cap"}))
-	}
-	err := ps.Pin(PinnedError{ID: "overflow", ProjectPath: "/cap"})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "pin cap")
-	require.NoError(t, ps.Pin(PinnedError{ID: "id-0", ProjectPath: "/cap", Tag: "retag"}), "existing id bypasses cap")
-}

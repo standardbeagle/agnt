@@ -1097,23 +1097,6 @@ func decodeInto[T any](raw any) (*T, error) {
 	return &out, nil
 }
 
-// AlertClear clears alerts, scoped by the filter (project by default,
-// process_id to narrow, global:true to widen). Pinned errors are kept.
-func (c *Client) AlertClear(filter protocol.AlertClearFilter) (map[string]interface{}, error) {
-	return c.conn.Request(protocol.VerbAlerts, protocol.SubVerbClear).WithJSON(filter).JSON()
-}
-
-// AlertPin pins the error with the given id so it survives every automatic
-// retention clear until explicitly unpinned.
-func (c *Client) AlertPin(payload protocol.AlertPinPayload) (map[string]interface{}, error) {
-	return c.conn.Request(protocol.VerbAlerts, "PIN").WithJSON(payload).JSON()
-}
-
-// AlertUnpin removes a pin previously created with AlertPin.
-func (c *Client) AlertUnpin(payload protocol.AlertPinPayload) error {
-	return c.conn.Request(protocol.VerbAlerts, "UNPIN").WithJSON(payload).OK()
-}
-
 // StartupLog queries the startup log from the daemon. The dirFilter carries
 // the session-scope fields (Global / SessionCode / Directory) the daemon's
 // STARTUP-LOG handler routes through resolveProjectScope; a non-global call

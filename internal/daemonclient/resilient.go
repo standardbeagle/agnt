@@ -736,21 +736,6 @@ func (rc *ResilientClient) PublishFeedback(id, cursor string, limit int) (*proto
 	return withResult(rc, func(c *Client) (*protocol.PublishFeedbackResult, error) { return c.PublishFeedback(id, cursor, limit) })
 }
 
-// AlertClear clears alerts, scoped by the filter. Pinned errors are kept.
-func (rc *ResilientClient) AlertClear(filter protocol.AlertClearFilter) (map[string]interface{}, error) {
-	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.AlertClear(filter) })
-}
-
-// AlertPin pins an error so it survives automatic retention clears.
-func (rc *ResilientClient) AlertPin(payload protocol.AlertPinPayload) (map[string]interface{}, error) {
-	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.AlertPin(payload) })
-}
-
-// AlertUnpin removes a pin previously created with AlertPin.
-func (rc *ResilientClient) AlertUnpin(payload protocol.AlertPinPayload) error {
-	return rc.WithClient(func(c *Client) error { return c.AlertUnpin(payload) })
-}
-
 // StartupLog queries the startup log from the daemon.
 func (rc *ResilientClient) StartupLog(limit int, dirFilter protocol.DirectoryFilter) (map[string]interface{}, error) {
 	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.StartupLog(limit, dirFilter) })

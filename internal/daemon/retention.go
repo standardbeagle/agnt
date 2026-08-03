@@ -3,7 +3,6 @@ package daemon
 import (
 	"time"
 
-	"github.com/standardbeagle/agnt/internal/alert"
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 )
@@ -24,8 +23,8 @@ import (
 //  3. Last-session disconnect — doCleanup clears the project's alert-ring
 //     entries alongside the startup log it already clears.
 //
-// Errors the agent pinned (ALERTS PIN) live in d.pinnedStore, outside every
-// ring, and are untouched by all three triggers.
+// Incidents the agent pinned (INCIDENTS PIN) are exempt from the inbox side of
+// these triggers; the alert ring has no pin concept.
 
 // buildSuccessPatternID is the classify pattern that certifies a clean build.
 // Start-of-build signals (rebuild-generic etc.) intentionally do not clear.
@@ -40,11 +39,6 @@ func (d *Daemon) SetRetentionConfig(cfg *config.RetentionConfig) {
 
 func (d *Daemon) retention() *config.RetentionConfig {
 	return d.retentionCfg.Load() // nil is valid: all getters default to enabled
-}
-
-// PinnedStore returns the daemon-lifetime pinned-error store.
-func (d *Daemon) PinnedStore() *alert.PinnedStore {
-	return d.pinnedStore
 }
 
 // retireProcessErrors clears processID's errors stamped at or before the

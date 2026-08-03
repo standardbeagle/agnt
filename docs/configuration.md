@@ -102,9 +102,10 @@ a parsed-but-inert channel toggle or delivering the same digest twice.
 
 Controls when the daemon retires stale errors from the agent-facing stores
 (alert ring + incident inboxes) so `get_incidents` reflects the
-code that is actually running. All triggers default to **enabled**; errors the
-agent pinned (`get_incidents {action:"pin"}`) survive every trigger until
-explicitly unpinned.
+code that is actually running. All triggers default to **enabled**. Incidents
+the agent pinned (`get_incidents {action:"pin"}`) survive every trigger until
+explicitly unpinned; the alert ring has no pin concept of its own, so its
+entries are always retired.
 
 ```kdl
 alerts {

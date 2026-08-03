@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/standardbeagle/agnt/internal/alert"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
@@ -17,9 +16,6 @@ func (d *Daemon) alertsActions() map[string]handlerFn {
 		"REPORT":         noCtx(d.hubHandleAlertsReport),
 		"QUERY":          noCtx(d.hubHandleAlertsQuery),
 		"":               noCtx(d.hubHandleAlertsQuery),
-		"CLEAR":          noCtx(d.hubHandleAlertsClear),
-		"PIN":            noCtx(d.hubHandleAlertsPin),
-		"UNPIN":          noCtx(d.hubHandleAlertsUnpin),
 		"STARTUP-LOG":    noCtx(d.hubHandleStartupLog),
 		"STARTUP-ERRORS": noCtx(d.hubHandleStartupLog), // legacy alias
 	}
@@ -100,151 +96,11 @@ func (d *Daemon) hubHandleAlertsQuery(conn *hubpkg.Connection, cmd *hubproto.Com
 
 	entries := d.alertStore.Query(filter)
 
-	// Pinned errors ride along on every query: a pin means "keep showing me
-	// this until I unpin it", independent of Since/severity filters.
-	pinned := d.pinnedStore.List(projectPath, global)
-
 	data, _ := json.Marshal(map[string]interface{}{
 		"alerts": entries,
 		"count":  len(entries),
-		"pinned": pinned,
 	})
 	return conn.WriteJSON(data)
-}
-
-// hubHandleAlertsClear handles ALERTS CLEAR. The clear is project-scoped by
-// default (session-scope chokepoint, same as QUERY); an optional process_id
-// narrows it to one process and global:true widens it to every project.
-// Pinned errors are never touched.
-func (d *Daemon) hubHandleAlertsClear(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	clearFilter, _ := unmarshalCommand[protocol.AlertClearFilter](cmd)
-	scopeFilter, _ := unmarshalCommand[protocol.DirectoryFilter](cmd)
-
-	projectPath, global, err := d.resolveProjectScope(scopeFilter, conn.SessionCode())
-	if err != nil {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
-	}
-
-	var removed int
-	switch {
-	case clearFilter.ProcessID != "":
-		removed = d.retireProcessErrors(clearFilter.ProcessID, time.Now(), "agent-clear")
-	case global:
-		removed = d.alertStore.Len()
-		d.alertStore.Clear()
-	default:
-		removed = d.alertStore.ClearProject(projectPath)
-	}
-
-	// The agent's live view is the session incident inbox — sweep it too so
-	// a clear actually clears what get_incidents shows. Session
-	// resolution mirrors PIN: explicit session_code, else the connection's.
-	if clearFilter.ProcessID == "" && d.incidentBus != nil {
-		sessionID := clearFilter.SessionCode
-		if sessionID == "" {
-			sessionID = conn.SessionCode()
-		}
-		if sessionID != "" {
-			d.incidentBus.ClearSessionBefore(sessionID, time.Now())
-		}
-	}
-
-	data, _ := json.Marshal(map[string]interface{}{
-		"cleared": removed,
-		"message": fmt.Sprintf("%d alert(s) cleared (pinned errors kept)", removed),
-	})
-	return conn.WriteJSON(data)
-}
-
-// hubHandleAlertsPin handles ALERTS PIN <id>: copies the addressed error out
-// of the ring buffers into the pinned store, where no retention trigger can
-// touch it. The id is whatever the agent saw — an alert-store unified id or
-// an incident-inbox fingerprint; both stores are searched.
-func (d *Daemon) hubHandleAlertsPin(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	payload, err := unmarshalCommand[protocol.AlertPinPayload](cmd)
-	if err != nil || payload.ID == "" {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, "ALERTS PIN requires {id}")
-	}
-	scopeFilter, _ := unmarshalCommand[protocol.DirectoryFilter](cmd)
-	projectPath, _, err := d.resolveProjectScope(scopeFilter, conn.SessionCode())
-	if err != nil {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
-	}
-
-	pin, found := d.findErrorByID(payload.ID, projectPath, scopeFilter.SessionCode, conn.SessionCode())
-	if !found {
-		return conn.WriteErr(hubproto.ErrNotFound,
-			fmt.Sprintf("no current error with id %q — only process errors and incident-inbox entries can be pinned", payload.ID))
-	}
-	pin.Tag = payload.Tag
-	pin.ProjectPath = projectPath
-	if err := d.pinnedStore.Pin(pin); err != nil {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
-	}
-
-	data, _ := json.Marshal(map[string]interface{}{
-		"pinned":  pin,
-		"message": fmt.Sprintf("error %s pinned%s — survives builds, restarts, and clears until unpinned", pin.ID, tagSuffix(pin.Tag)),
-	})
-	return conn.WriteJSON(data)
-}
-
-// hubHandleAlertsUnpin handles ALERTS UNPIN <id>.
-func (d *Daemon) hubHandleAlertsUnpin(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	payload, err := unmarshalCommand[protocol.AlertPinPayload](cmd)
-	if err != nil || payload.ID == "" {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, "ALERTS UNPIN requires {id}")
-	}
-	scopeFilter, _ := unmarshalCommand[protocol.DirectoryFilter](cmd)
-	projectPath, _, err := d.resolveProjectScope(scopeFilter, conn.SessionCode())
-	if err != nil {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
-	}
-
-	if !d.pinnedStore.Unpin(projectPath, payload.ID) {
-		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("no pinned error with id %q in this project", payload.ID))
-	}
-	return conn.WriteOK(fmt.Sprintf("error %s unpinned", payload.ID))
-}
-
-// findErrorByID searches the alert ring (by unified id) and the caller's
-// session incident inbox (by fingerprint) for the addressed error, returning
-// it as a PinnedError copy.
-func (d *Daemon) findErrorByID(id, projectPath, explicitSession, connSession string) (alert.PinnedError, bool) {
-	for _, e := range d.alertStore.Query(AlertStoreFilter{ProjectPath: projectPath}) {
-		if e.ID == id {
-			return alert.PinnedError{
-				ID:        e.ID,
-				Source:    "process:" + e.ScriptID,
-				Severity:  e.Severity,
-				Category:  e.Category,
-				Message:   firstNonEmpty(e.Line, e.Description),
-				FirstSeen: e.Timestamp,
-			}, true
-		}
-	}
-
-	sessionID := explicitSession
-	if sessionID == "" {
-		sessionID = connSession
-	}
-	if d.incidentBus != nil && sessionID != "" {
-		if entry := d.incidentBus.FindFingerprintSession(sessionID, id); entry != nil {
-			pin := alert.PinnedError{
-				ID:        entry.Fingerprint,
-				Severity:  string(entry.Severity),
-				FirstSeen: entry.FirstSeenAt,
-			}
-			if entry.Sample != nil {
-				pin.Source = string(entry.Sample.Source)
-				pin.Category = entry.Sample.Category
-				pin.Message = entry.Sample.Summary
-				pin.Page = entry.Sample.Ctx.URL
-			}
-			return pin, true
-		}
-	}
-	return alert.PinnedError{}, false
 }
 
 func firstNonEmpty(values ...string) string {

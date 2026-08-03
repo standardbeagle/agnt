@@ -36,6 +36,14 @@
   now in `internal/tools/unified_error.go`, because it is project-scoped and may
   be global where the inbox cannot be.
 
+- **`ALERTS PIN` / `UNPIN` / `CLEAR` and the alert-store pin are gone with it.**
+  `get_errors` was their only client, so nothing could set an alert-store pin
+  any more — `internal/alert/pinned.go`, the `pinned` field on `ALERTS QUERY`,
+  and the `AlertPin`/`AlertUnpin`/`AlertClear` daemonclient methods were
+  unreachable code. Pinning lives on `get_incidents`, which is per-session
+  rather than per-project. The automatic retention triggers (`alerts.retention`)
+  are untouched; they call the store directly and never used these verbs.
+
 ### Fixed
 - **Background `run` no longer opens a dedicated daemon connection.** Only the
   foreground modes, which block until the process exits, need to stay off the

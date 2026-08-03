@@ -53,7 +53,6 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/protocol"
 
-	"github.com/standardbeagle/agnt/internal/alert"
 	"github.com/standardbeagle/agnt/internal/automation"
 	"github.com/standardbeagle/agnt/internal/browser"
 	"github.com/standardbeagle/agnt/internal/chromedp"
@@ -246,7 +245,6 @@ type Daemon struct {
 	automator            *automation.Processor
 	autoRestarter        *ProcessAutoRestarter                  // Process auto-restart manager
 	alertStore           *ProcessAlertStore                     // Ring buffer store for process output alerts
-	pinnedStore          *alert.PinnedStore                     // Agent-pinned errors; survive every retention clear
 	retentionCfg         atomic.Pointer[config.RetentionConfig] // Error-retention trigger gates
 	alertScanner         *overlay.AlertScanner                  // Scans daemon-managed process output for errors
 	processExitInfo      *processExitInfoStore                  // In-memory death records (proc status + get_incidents)
@@ -534,7 +532,6 @@ func New(config DaemonConfig) *Daemon {
 		sessionm:           chromedp.NewSessionManager(),
 		storem:             store.NewStoreManager(),
 		alertStore:         NewProcessAlertStore(500),
-		pinnedStore:        alert.NewPinnedStore(),
 		processExitInfo:    newProcessExitInfoStore(defaultExitInfoRetention),
 		startupErrorStore:  NewStartupLogStore(100),
 		eventHub:           eventHub,
