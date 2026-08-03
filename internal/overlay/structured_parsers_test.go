@@ -10,13 +10,33 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// collectBatches runs the block through a scanner and returns all matches.
+// batchWindow is the scanner's flush interval for these tests. Named so the
+// quiescence poll below is derived from it rather than from a second, silently
+// drifting constant.
+const batchWindow = 30 * time.Millisecond
+
+// collectBatches runs the block through a scanner and returns every match it
+// emitted, waiting for the scanner to QUIESCE rather than sleeping a fixed
+// multiple of the batch window.
+//
+// The fixed sleep this replaces was the flake: a loaded box routinely stretches
+// the flush past any hand-picked wall-clock value, and the empty slice that
+// comes back then reads as a parser regression rather than a scheduling miss
+// (.claude/rules/testing-timing-assertion-flakes.md — no absolute wall-clock
+// value may be a primary invariant here).
+//
+// Quiescence is judged from OBSERVED batches: the count must hold still across
+// several consecutive samples. Under load the samples stretch with the same
+// scheduler that stretched the flush, so this cannot be outrun the way a sleep
+// can. The deadline is a generous liveness ceiling, not the invariant — the
+// deliberate no-alert case (TestG3_StructuralPrefixWithoutCauseIsDropped)
+// settles at zero and returns as soon as it is stable, without paying it.
 func collectBatches(t *testing.T, lines []string, scriptID string) []*AlertMatch {
 	t.Helper()
 	var got []*AlertMatch
 	var mu sync.Mutex
 	scanner := NewAlertScanner(AlertScannerConfig{
-		BatchWindow:  30 * time.Millisecond,
+		BatchWindow:  batchWindow,
 		DedupeWindow: 60 * time.Second,
 		OnAlert: func(b *AlertBatch) {
 			mu.Lock()
@@ -28,7 +48,28 @@ func collectBatches(t *testing.T, lines []string, scriptID string) []*AlertMatch
 	for _, l := range lines {
 		scanner.ProcessLine(l, scriptID)
 	}
-	time.Sleep(120 * time.Millisecond)
+
+	// Four agreeing samples one batch window apart. Fewer would let a block
+	// whose second batch is still in flight report the first batch as the whole
+	// answer, which would silently weaken every exactly-one assertion here.
+	const wantStable = 4
+	deadline := time.Now().Add(5 * time.Second)
+	stable, last := 0, -1
+	for stable < wantStable && time.Now().Before(deadline) {
+		time.Sleep(batchWindow)
+		mu.Lock()
+		n := len(got)
+		mu.Unlock()
+		if n == last {
+			stable++
+			continue
+		}
+		stable, last = 0, n
+	}
+	if stable < wantStable {
+		t.Fatalf("scanner never quiesced within %s (last observed %d batches) — the scanner is stuck, not slow", 5*time.Second, last)
+	}
+
 	mu.Lock()
 	defer mu.Unlock()
 	out := make([]*AlertMatch, len(got))
