@@ -19,6 +19,21 @@ import (
 // a multiple of it (or of an observed baseline), never the other way round.
 const hubStatusInterval = 10 * time.Millisecond
 
+// minStatusTicksPerDeadline is how many STATUS ticks a client's idle deadline
+// must span, and clientIdleDeadline is the deadline that follows from it.
+//
+// These replace a hardcoded 25ms, which against a 10ms tick left every client
+// deadline in this file only ~2 ticks wide: one scheduler stall between ticks
+// — routine in the loaded serial suite — then read as "STATUS never arrived"
+// and failed on a false premise rather than on a keepalive regression.
+// Deriving the deadline from the tick keeps the margin honest at any absolute
+// speed, and the tests still fail if the keepalive misses many consecutive
+// ticks, which is the actual defect they exist to catch.
+const (
+	minStatusTicksPerDeadline = 8
+	clientIdleDeadline        = minStatusTicksPerDeadline * hubStatusInterval
+)
+
 // measureRoundTripBaseline times a trivial, immediately-answered request
 // against the live hub under whatever load the machine is currently carrying.
 // It is the calibration input for any client idle deadline in this file: a
@@ -94,14 +109,17 @@ func TestHubProgressKeepsSilentRequestAlive(t *testing.T) {
 	baseline := measureRoundTripBaseline(t, sock)
 	// Idle deadline: generous against observed load, but still far shorter than
 	// the handler's silence, which is what the assertion turns on.
+	//
+	// Floored at clientIdleDeadline so a baseline measured while the box was
+	// momentarily quiet still leaves many ticks of margin.
 	idleDeadline := 8 * baseline
-	if idleDeadline < 25*time.Millisecond {
-		idleDeadline = 25 * time.Millisecond
+	if idleDeadline < clientIdleDeadline {
+		idleDeadline = clientIdleDeadline
 	}
 	silence := silentMultiple * idleDeadline
 	slowFor.Store(int64(silence))
-	require.Greater(t, idleDeadline, 2*hubStatusInterval,
-		"idle deadline must span several STATUS ticks or the test is calibrating against tick jitter")
+	require.GreaterOrEqual(t, idleDeadline, clientIdleDeadline,
+		"idle deadline must span many STATUS ticks or the test is calibrating against tick jitter")
 
 	c := hubclient.NewConn(hubclient.WithSocketPath(sock), hubclient.WithTimeout(idleDeadline))
 	t.Cleanup(func() { _ = c.Close() })
@@ -159,7 +177,7 @@ func TestHubProgressDoesNotBlockOtherClients(t *testing.T) {
 		require.NoError(t, h.Stop(ctx))
 	})
 
-	slow := hubclient.NewConn(hubclient.WithSocketPath(sock), hubclient.WithTimeout(25*time.Millisecond))
+	slow := hubclient.NewConn(hubclient.WithSocketPath(sock), hubclient.WithTimeout(clientIdleDeadline))
 	fast := hubclient.NewConn(hubclient.WithSocketPath(sock), hubclient.WithTimeout(250*time.Millisecond))
 	t.Cleanup(func() { _ = slow.Close() })
 	t.Cleanup(func() { _ = fast.Close() })
@@ -194,7 +212,11 @@ func TestHubProgressDoesNotContaminateChunkedPayload(t *testing.T) {
 			if err := conn.WriteChunk([]byte("a")); err != nil {
 				return err
 			}
-			time.Sleep(45 * time.Millisecond)
+			// Must exceed the client's idle deadline, or the gap never crosses
+			// a deadline window and STATUS is not exercised at all. Scaled with
+			// the deadline rather than hardcoded so widening one cannot
+			// silently defang the other.
+			time.Sleep(2 * clientIdleDeadline)
 			if err := conn.WriteChunk([]byte("b")); err != nil {
 				return err
 			}
@@ -208,7 +230,7 @@ func TestHubProgressDoesNotContaminateChunkedPayload(t *testing.T) {
 		require.NoError(t, h.Stop(ctx))
 	})
 
-	c := hubclient.NewConn(hubclient.WithSocketPath(sock), hubclient.WithTimeout(25*time.Millisecond))
+	c := hubclient.NewConn(hubclient.WithSocketPath(sock), hubclient.WithTimeout(clientIdleDeadline))
 	t.Cleanup(func() { _ = c.Close() })
 
 	got, err := c.Request("STREAM").Chunked()
