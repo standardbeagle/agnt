@@ -19,7 +19,7 @@ func TestFromFrontendError_ExtractsCategory(t *testing.T) {
 		Stack:   "    at ProductList (src/components/List.tsx:42:15)",
 		URL:     "http://localhost:3000/dashboard",
 	}
-	ev := FromFrontendError(fe, "dev")
+	ev := FromFrontendError(fe, "dev", "")
 	if ev.Source != SourceBrowserJS {
 		t.Errorf("Source: got %q, want %q", ev.Source, SourceBrowserJS)
 	}
@@ -43,7 +43,7 @@ func TestFromFrontendError_ExtractsCategory(t *testing.T) {
 func TestFromFrontendError_FallbackCategory(t *testing.T) {
 	t.Parallel()
 	fe := proxy.FrontendError{Message: "some error without type prefix"}
-	ev := FromFrontendError(fe, "")
+	ev := FromFrontendError(fe, "", "")
 	if ev.Category != "Error" {
 		t.Errorf("Category fallback: got %q, want Error", ev.Category)
 	}
@@ -55,7 +55,7 @@ func TestFromFrontendError_StackAppended(t *testing.T) {
 		Message: "oops",
 		Stack:   "at foo (bar.js:1:1)",
 	}
-	ev := FromFrontendError(fe, "")
+	ev := FromFrontendError(fe, "", "")
 	if !strings.Contains(ev.Summary, "at foo") {
 		t.Errorf("stack not in summary: %q", ev.Summary)
 	}
@@ -372,4 +372,114 @@ func TestNopBus_Publish(t *testing.T) {
 	var b Bus = NopBus{}
 	// Must not panic or block.
 	b.Publish(NewIncidentEvent(SourceShutdown, SeverityInfo, "test", "test", Context{}, nil))
+}
+
+// ── browser location + frame identity ────────────────────────────────────────
+
+// TestFrontendErrorLocation covers every shape the browser adapter has to
+// resolve a source position from. The stackless case is the one that motivated
+// extracting this at ingest: the summary text cannot carry a location that was
+// never in the message to begin with.
+func TestFrontendErrorLocation(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		fe   proxy.FrontendError
+		want string
+	}{
+		{
+			name: "js frame in parens",
+			fe:   proxy.FrontendError{Stack: "    at submitOrder (/src/checkout.js:42:15)"},
+			want: "/src/checkout.js:42:15",
+		},
+		{
+			name: "js frame without parens",
+			fe:   proxy.FrontendError{Stack: "at /src/checkout.js:42:15"},
+			want: "/src/checkout.js:42:15",
+		},
+		{
+			name: "app frame behind vendor frames",
+			fe: proxy.FrontendError{Stack: strings.Join([]string{
+				"    at invokeGuardedCallback (/node_modules/react-dom/cjs/react-dom.development.js:4277:31)",
+				"    at beginWork$1 (/node_modules/react-dom/cjs/react-dom.development.js:27451:7)",
+				"    at submitOrder (/src/checkout.js:42:15)",
+			}, "\n")},
+			want: "/src/checkout.js:42:15",
+		},
+		{
+			name: "no stack falls back to source/line/col",
+			fe:   proxy.FrontendError{Source: "/src/checkout.js", LineNo: 42, ColNo: 15},
+			want: "/src/checkout.js:42:15",
+		},
+		{
+			name: "stack wins over source/line/col",
+			fe: proxy.FrontendError{
+				Stack:  "    at submitOrder (/src/checkout.js:42:15)",
+				Source: "/src/other.js", LineNo: 1, ColNo: 1,
+			},
+			want: "/src/checkout.js:42:15",
+		},
+		{
+			name: "go frame drops the instruction offset",
+			fe:   proxy.FrontendError{Stack: "\t/src/handler.go:88 +0x1f"},
+			want: "/src/handler.go:88",
+		},
+		{
+			name: "nothing to locate",
+			fe:   proxy.FrontendError{Message: "boom"},
+			want: "",
+		},
+		{
+			name: "vendor-only stack yields no app frame",
+			fe:   proxy.FrontendError{Stack: "    at x (/node_modules/react/index.js:1:1)"},
+			want: "",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if got := FrontendErrorLocation(tc.fe); got != tc.want {
+				t.Errorf("FrontendErrorLocation: got %q, want %q", got, tc.want)
+			}
+			// The adapter must carry whatever the resolver found, not re-derive it.
+			if got := FromFrontendError(tc.fe, "dev", "").Ctx.Location; got != tc.want {
+				t.Errorf("Ctx.Location: got %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestFromFrontendError_FrameIdentityIsFingerprinted pins the always-wrap
+// invariant: two content frames are two failing surfaces. Without the frame in
+// the fingerprint the second occurrence is merged upstream of the inbox and
+// stops existing — no downstream field can recover it.
+func TestFromFrontendError_FrameIdentityIsFingerprinted(t *testing.T) {
+	t.Parallel()
+	fe := proxy.FrontendError{
+		Message: "TypeError: Cannot read property 'id' of undefined",
+		Stack:   "    at submitOrder (/src/checkout.js:42:15)",
+		URL:     "http://localhost:3000/checkout",
+	}
+
+	a := FromFrontendError(fe, "dev", "frame-a")
+	b := FromFrontendError(fe, "dev", "frame-b")
+	again := FromFrontendError(fe, "dev", "frame-a")
+
+	if a.Fingerprint == b.Fingerprint {
+		t.Errorf("distinct frames must not collapse: both fingerprinted %s", a.Fingerprint)
+	}
+	if a.Fingerprint != again.Fingerprint {
+		t.Errorf("same frame must be stable: %s vs %s", a.Fingerprint, again.Fingerprint)
+	}
+	if a.Ctx.FrameID != "frame-a" || b.Ctx.FrameID != "frame-b" {
+		t.Errorf("frame not carried on context: %q / %q", a.Ctx.FrameID, b.Ctx.FrameID)
+	}
+
+	// A caller with no frame attribution must fingerprint exactly as it did
+	// before frames existed — only frame-attributed sources move.
+	none := FromFrontendError(fe, "dev", "")
+	want := computeFingerprint(string(SourceBrowserJS), none.Category, Canonicalize(fe.Message+"\n"+fe.Stack), fe.URL)
+	if none.Fingerprint != want {
+		t.Errorf("frameless fingerprint changed: got %s, want %s", none.Fingerprint, want)
+	}
 }

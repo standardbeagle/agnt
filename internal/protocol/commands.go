@@ -682,8 +682,13 @@ type IncidentQueryResult struct {
 	// PipelineEnabled reports whether the caller currently has a registered
 	// session inbox. It distinguishes an empty inbox from an unavailable session
 	// pipeline (for example during teardown); project config never disables it.
-	// get_errors uses this to decide whether the inbox shim is available.
 	PipelineEnabled bool `json:"pipeline_enabled"`
+	// CollectionWarnings names every way this result is known to be PARTIAL, so
+	// a degraded view is never presented as a clean "no incidents". Empty means
+	// nothing was lost between the signal sources and this page. Two things can
+	// make it non-empty: events the bus dropped before they reached any inbox,
+	// and payloads a detail:"full" pull could not hydrate.
+	CollectionWarnings []string `json:"collection_warnings,omitempty"`
 }
 
 // IncidentRecord is the wire shape for a single incident in a query result.
@@ -715,8 +720,15 @@ type IncidentContext struct {
 	SessionID   string `json:"session_id,omitempty"`
 	ProjectPath string `json:"project_path,omitempty"`
 	URL         string `json:"url,omitempty"`
-	PID         int    `json:"pid,omitempty"`
-	Port        int    `json:"port,omitempty"`
+	// Location is the source position (file:line:col) the incident points at,
+	// resolved at ingest by the adapter rather than recovered from summary text.
+	Location string `json:"location,omitempty"`
+	// FrameID names the content frame that raised a browser-sourced incident.
+	// Distinct frames are distinct failing surfaces under the always-wrap model,
+	// so this is also part of the fingerprint.
+	FrameID string `json:"frame_id,omitempty"`
+	PID     int    `json:"pid,omitempty"`
+	Port    int    `json:"port,omitempty"`
 }
 
 // IncidentRemediation is the wire shape for remediation hints.

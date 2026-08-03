@@ -47,9 +47,21 @@ type Context struct {
 	SessionID   string
 	ProjectPath string
 	URL         string
-	PID         int
-	PGID        int
-	Port        int
+	// Location is the source position the incident points at, as
+	// file:line:col. Adapters that can identify one (the browser adapter reads
+	// the first app stack frame) set it; it is carried as a first-class field
+	// rather than left to survive inside Summary, which truncates at 200 bytes
+	// and routinely cuts the app frame off behind framework frames.
+	Location string
+	// FrameID attributes a browser-sourced incident to the content frame that
+	// raised it. Under the always-wrap model each content frame is a distinct
+	// failing surface (docs/responsive-canonical-target.md §5.2/§6.2), so it is
+	// also folded into the fingerprint: the same error in two frames is two
+	// failures, not one.
+	FrameID string
+	PID     int
+	PGID    int
+	Port    int
 }
 
 // Remediation hints which MCP tool and skill should address this incident.
@@ -97,7 +109,7 @@ const maxSummaryBytes = 200
 // truncated into Summary.
 func NewIncidentEvent(src Source, sev Severity, category, msg string, ctx Context, store *BlobStore) IncidentEvent {
 	canonical := Canonicalize(msg)
-	fp := computeFingerprint(string(src), category, canonical, ctx.URL)
+	fp := computeFingerprint(string(src), category, canonical, fingerprintLocation(ctx))
 
 	summary := truncateToBytes(msg, maxSummaryBytes)
 
@@ -153,6 +165,22 @@ func newID() string {
 		return uuid.NewString()
 	}
 	return id.String()
+}
+
+// fingerprintLocation is the location component of the fingerprint: the page
+// URL, qualified by the emitting content frame when one is known.
+//
+// The frame is appended rather than added as a separate hash component so that
+// an incident with no frame identity fingerprints exactly as before — only
+// frame-attributed sources move. Folding it in at all is the point: without it
+// the same error raised in two distinct content frames collapses to one entry
+// upstream of the inbox, and the second failing surface no longer exists to be
+// labelled by any downstream field.
+func fingerprintLocation(ctx Context) string {
+	if ctx.FrameID == "" {
+		return ctx.URL
+	}
+	return ctx.URL + "#" + ctx.FrameID
 }
 
 func computeFingerprint(source, category, canonMsg, location string) string {

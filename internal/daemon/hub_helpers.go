@@ -574,7 +574,7 @@ func (d *Daemon) fireToIncidentBusForOwner(entry proxy.LogEntry, proxyID string,
 		if entry.Error == nil {
 			return
 		}
-		ev := incident.FromFrontendError(*entry.Error, proxyID)
+		ev := incident.FromFrontendError(*entry.Error, proxyID, entry.FrameID)
 		if d.stampIncidentOwner(&ev, &d.incidentProxyOwner, proxyID, owner) {
 			d.incidentBus.Publish(ev)
 		}

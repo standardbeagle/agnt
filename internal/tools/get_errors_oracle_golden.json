@@ -62,16 +62,6 @@
       "detail": "Direction is REVERSED: get_incidents is correct, get_errors is not. Nothing is silently dropped — incidentQueryFilterToInternal (internal/daemon/hub_incidents.go) explicitly REJECTS an unparseable since rather than returning the whole inbox, and the handler maps that to ErrInvalidArgs, so no Silent Failure Prohibition violation ships today. The real defect is a PATH FORK: the rejected query makes collectIncidentErrors return ok=false, and get_errors falls through to its legacy collectors, which DO parse durations correctly. So `since:\"5m\"` is answered by a different code path than the same query without it — different ids (abcbbf1a vs fp-js), different source vocabulary (browser:js vs browser_js), and legacy frame-aware dedup instead of fingerprint dedup. Same input, two code paths, two answers. Does not block the superset; recorded so the migration does not port the fork forward, and so nobody 'fixes' get_incidents to match the reference here."
     },
     {
-      "id": "granularity.frame_collapse",
-      "kind": "granularity",
-      "status": "to_be_closed",
-      "availability": "data_missing",
-      "availability_reason": "MECHANISM CONSULTED: fingerprint computation in incident.NewIncidentEvent, measured above by building both occurrences through the real constructor and comparing fingerprints — not a field-name check. DELIBERATE BLOCKING CALL, not a default. The availability bar does not decide this one by itself, so the reasoning is recorded here. The merged incident still reports HOW MANY times the error fired, so that fact survives; what does not survive is 'it also fired in frame B', which is a distinct fact about a distinct failing surface and is destroyed at fingerprint time — no caller-side operation recovers it. It blocks INDEPENDENTLY of item.frame_id, and that independence is the point: the cheap fix to that field (adding frame_id to protocol.IncidentContext) would satisfy the field probe while the two occurrences stay merged, so if this entry did not block, the cheap fix alone would open the gate over an unrecovered loss. Closing it requires frame identity inside incident.NewIncidentEvent's fingerprint. This is the most expensive item in the set; if the owner would rather ship the deletion and accept per-frame occurrence loss, that is an explicit owner override of this entry, not a reclassification anyone else should make quietly.",
-      "get_errors": "keeps 2 entries (frame_id is in dedupKey)",
-      "get_incidents": "keeps 1 entry (fingerprint = sha256(source|category|canonical_msg|url), no frame identity)",
-      "detail": "The superset fails here on GRANULARITY, not on fields — and this is strictly worse than a missing column. Adding frame_id to the incident record would not fix it: the two occurrences were already merged upstream at fingerprint time, so one of them no longer exists to be labelled. Closing this requires frame identity inside incident.NewIncidentEvent's fingerprint, not just in protocol.IncidentContext. Under the always-wrap model (docs/responsive-canonical-target.md §5.2/§6.2) each content frame is a distinct context, so collapsing them hides a real second failure."
-    },
-    {
       "id": "input.global",
       "kind": "input_field",
       "status": "permanently_justified",
@@ -79,36 +69,6 @@
       "get_incidents": "(absent)",
       "detail": "Deliberately excluded from the superset. get_errors keeps it; get_incidents must not gain it.",
       "rationale": "Owner decision: global was a debugging affordance, not a production use case. The incident inbox is per-session hard-isolated (numbered contract 1, .claude/rules/daemon-architecture.md) — a stronger guarantee than project scoping. Closing this gap would mean weakening that isolation, which is expressly forbidden. This entry is permanent and must NOT be removed when the others are."
-    },
-    {
-      "id": "item.frame_id",
-      "kind": "item_field",
-      "status": "to_be_closed",
-      "availability": "data_missing",
-      "availability_reason": "MECHANISMS CONSULTED: context struct AND the adapter's own signature — the free-text route is checked, not assumed away. incident.Context has no frame field, and decisively FromFrontendError(fe, proxyID) is never PASSED the frame id, so unlike location it cannot appear in Summary or the hydrated blob either. Under the always-wrap model each content frame is a distinct failing surface, and which one failed is unidentifiable by any caller.",
-      "get_errors": "frame_id: the emitting content frame (always-wrap model)",
-      "get_incidents": "(absent)",
-      "detail": "Absent from protocol.IncidentContext. This is the field gap; its consequence is the separate, worse granularity.frame_collapse divergence below."
-    },
-    {
-      "id": "item.location",
-      "kind": "item_field",
-      "status": "to_be_closed",
-      "availability": "data_missing",
-      "availability_reason": "MECHANISMS CONSULTED: field name, summary text, blob hydration, and the adapter's own inputs — not the field name alone. The name check is genuinely refuted: incident.FromFrontendError appends the stack to the message and Canonicalize keeps the first app frame intact, so for a short error the file:line:col DOES arrive verbatim in Summary and is reachable (1 of 3 measured shapes). It still blocks because the remaining shapes destroy it outright: deep stack behind vendor frames (369B message, summary capped at 200B); no stack, source/line/col fields only (15B message, summary capped at 15B). Two distinct mechanisms do the destroying — a message over the 200-byte summary cap but under the 1KB blob threshold has its tail dropped with nothing to hydrate, and the stackless branch builds its location from fe.Source/LineNo/ColNo, fields FromFrontendError never reads at all. Both are ordinary shapes, not edge cases: framework frames routinely precede the app frame.",
-      "get_errors": "location: file:line:col of the first app stack frame (extractFirstAppFrame, else fe.Source:LineNo:ColNo)",
-      "get_incidents": "(no field; recoverable from Summary text only while the message stays under the summary cap)",
-      "detail": "MEASURED THROUGH THE REAL ADAPTER, not by field name — the earlier claim that location 'never enters the envelope' was FALSE and is retracted. protocol.IncidentContext carries no location, but incident.FromFrontendError folds fe.Stack into the message, so the value reaches Summary for short errors. The gap is therefore narrower and better defined than a missing column: closing it means either a first-class location field, or a guarantee that the first app frame survives truncation (e.g. extracting it before the 200-byte cap applies). Note the pipeline does not discard it out of ignorance — NewIncidentEvent folds ctx.URL into the fingerprint as its 'location' argument, which is a different fact."
-    },
-    {
-      "id": "output.collection_warnings",
-      "kind": "output_field",
-      "status": "to_be_closed",
-      "availability": "data_missing",
-      "availability_reason": "MECHANISM CONSULTED: signal provenance, searched across internal/incident and internal/protocol — no partial-collection signal is PRODUCED anywhere, so there is no field, summary text or blob that could carry it under another name. The information is never created, which is the strongest form of unreachable: a source that failed to answer is indistinguishable from a source with nothing to report.",
-      "get_errors": "collection_warnings[]: per-source query failures",
-      "get_incidents": "(absent)",
-      "detail": "THE ONE THAT MATTERS MOST. Its whole purpose is that a source which failed to answer never presents as a clean '0 errors'. get_incidents distinguishes only 'inbox unavailable' (pipeline_enabled=false) from 'inbox empty' — it cannot say 'the inbox answered but the proxy log query failed'. Retiring get_errors without this reintroduces a Silent Failure Prohibition violation."
     },
     {
       "id": "output.summary",

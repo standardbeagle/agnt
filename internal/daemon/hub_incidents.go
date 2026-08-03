@@ -182,6 +182,17 @@ func (d *Daemon) hubHandleIncidentsQuery(conn *hubpkg.Connection, cmd *hubproto.
 	// disables incident recording; alerts.push controls interrupts only.
 	result.PipelineEnabled = d.incidentBus.HasSession(sessionCode)
 
+	// Bus overflow is the one loss the inbox itself cannot show: a dropped event
+	// never reached a band, so it is absent from both the records and the band
+	// stats. Reported as a collection warning so an overloaded pipeline does not
+	// present as a complete view. It is cumulative since daemon start, which the
+	// wording says outright rather than implying it describes this page.
+	if dropped := d.incidentBus.Dropped(); dropped > 0 {
+		result.CollectionWarnings = append(result.CollectionWarnings, fmt.Sprintf(
+			"%d incident(s) dropped at the bus since daemon start (drop-newest under overflow) — some signals never reached any inbox",
+			dropped))
+	}
+
 	data, _ := json.Marshal(result)
 	return conn.WriteJSON(data)
 }
@@ -237,9 +248,12 @@ func buildIncidentQueryResultWithHydrator(entries []incident.InboxEntry, stats i
 	examined, truncated := examinedIncidentEntries(entries, filter)
 	filtered := returnedIncidentEntries(entries, filter)
 
+	var warnings []string
 	records := make([]protocol.IncidentRecord, 0, len(filtered))
 	for _, e := range filtered {
-		records = append(records, incidentEntryToRecord(e, filter.Detail, hydrate))
+		records = append(records, incidentEntryToRecord(e, filter.Detail, hydrate, func(w string) {
+			warnings = append(warnings, w)
+		}))
 	}
 
 	// Cursor = newest entry examined, not newest returned. Everything older was
@@ -264,8 +278,9 @@ func buildIncidentQueryResultWithHydrator(entries []incident.InboxEntry, stats i
 			New:     stats.New,
 			Dropped: stats.Dropped,
 		},
-		Cursor:    cursor,
-		Truncated: truncated,
+		Cursor:             cursor,
+		Truncated:          truncated,
+		CollectionWarnings: warnings,
 	}
 }
 
@@ -359,7 +374,12 @@ func applySecondaryFilters(entries []incident.InboxEntry, filter protocol.Incide
 }
 
 // incidentEntryToRecord converts an InboxEntry to the wire IncidentRecord.
-func incidentEntryToRecord(e incident.InboxEntry, detail string, hydrate func(string) ([]byte, error)) protocol.IncidentRecord {
+// A hydration failure is reported through onWarning rather than swallowed: a
+// detail:"full" pull that silently returns no payload is indistinguishable from
+// an incident that never had one.
+func incidentEntryToRecord(e incident.InboxEntry, detail string, hydrate func(string) ([]byte, error),
+	onWarning func(string),
+) protocol.IncidentRecord {
 	r := protocol.IncidentRecord{
 		Fingerprint: e.Fingerprint,
 		FirstSeen:   e.FirstSeenAt.Format(time.RFC3339),
@@ -382,6 +402,8 @@ func incidentEntryToRecord(e incident.InboxEntry, detail string, hydrate func(st
 			SessionID:   e.Sample.Ctx.SessionID,
 			ProjectPath: e.Sample.Ctx.ProjectPath,
 			URL:         e.Sample.Ctx.URL,
+			Location:    e.Sample.Ctx.Location,
+			FrameID:     e.Sample.Ctx.FrameID,
 			PID:         e.Sample.Ctx.PID,
 			Port:        e.Sample.Ctx.Port,
 		}
@@ -391,12 +413,16 @@ func incidentEntryToRecord(e incident.InboxEntry, detail string, hydrate func(st
 			FallbackTool: e.Sample.Remediation.FallbackTool,
 			SkillHint:    e.Sample.Remediation.SkillHint,
 		}
-		if detail == "full" && e.Sample.PayloadRef != nil {
-			if hydrate != nil {
-				if payload, err := hydrate(e.Sample.PayloadRef.Hash); err == nil {
-					full := string(payload)
-					r.Payload = &full
+		if detail == "full" && e.Sample.PayloadRef != nil && hydrate != nil {
+			payload, err := hydrate(e.Sample.PayloadRef.Hash)
+			switch {
+			case err != nil:
+				if onWarning != nil {
+					onWarning(fmt.Sprintf("payload hydration failed for incident %s: %v", e.Fingerprint, err))
 				}
+			default:
+				full := string(payload)
+				r.Payload = &full
 			}
 		}
 	}

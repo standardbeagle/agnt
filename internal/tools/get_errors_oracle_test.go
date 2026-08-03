@@ -579,7 +579,7 @@ func computeLocationDivergence() []divergence {
 			continue // get_errors surfaces no location here, so nothing is owed
 		}
 		loc := ues[0].Location
-		ev := incident.FromFrontendError(c.fe, seedProxy)
+		ev := incident.FromFrontendError(c.fe, seedProxy, seedFrameA)
 
 		// Everything a caller can read: the summary, plus the full payload that
 		// detail:"full" hydrates. NewIncidentEvent only preserves the full bytes
@@ -867,11 +867,12 @@ func computeGranularityDivergences() []divergence {
 	)
 	legacyKept := len(deduplicateErrors(legacy))
 
-	// Build the same two occurrences as real incident events. Nothing about the
-	// frame can be expressed in incident.Context, which is the point.
-	ctx := incident.Context{URL: seedPage, ProxyID: seedProxy}
-	evA := incident.NewIncidentEvent(incident.SourceBrowserJS, incident.SeverityError, "TypeError", fe.Message, ctx, nil)
-	evB := incident.NewIncidentEvent(incident.SourceBrowserJS, incident.SeverityError, "TypeError", fe.Message, ctx, nil)
+	// Build the same two occurrences as real incident events, through the same
+	// adapter and with the same frame attribution the daemon passes in — so this
+	// measures whether the SHIPPING pipeline keeps the two frames apart, not
+	// whether a hand-built context happens to.
+	evA := incident.FromFrontendError(*fe, seedProxy, seedFrameA)
+	evB := incident.FromFrontendError(*fe, seedProxy, seedFrameB)
 	incidentKept := 1
 	if evA.Fingerprint != evB.Fingerprint {
 		incidentKept = 2
@@ -1062,7 +1063,10 @@ func TestGetErrorsOracle_GoldenIsWellFormed(t *testing.T) {
 	// When a gap genuinely closes, drop its entry and decrement the matching
 	// number in the SAME commit; that is the ratchet working, not an obstacle.
 	const (
-		wantDataMissing         = 4
+		// Zero blockers remain: every fact get_errors surfaced is now reachable
+		// through get_incidents. This number must stay at 0 — a new data_missing
+		// entry would mean the migration regressed and the deletion was premature.
+		wantDataMissing         = 0
 		wantPresentationDiffers = 4
 	)
 	if got := byAvailability[availabilityDataMissing]; got != wantDataMissing {

@@ -46,6 +46,12 @@ type GetIncidentsOutput struct {
 	// session inbox. False means the session pipeline is unavailable (for
 	// example during teardown), never that project config disabled recording.
 	PipelineEnabled bool `json:"pipeline_enabled"`
+	// CollectionWarnings names every way this view is known to be PARTIAL —
+	// events the bus dropped before they reached any inbox, and payloads a
+	// detail:"full" pull could not hydrate. A non-empty list means "some
+	// incidents are missing from this answer", which must never be silently
+	// rendered as a clean result.
+	CollectionWarnings []string `json:"collection_warnings,omitempty" jsonschema:"Ways this view is partial; non-empty means some incidents are missing from the answer"`
 }
 
 type incidentView struct {
@@ -182,11 +188,12 @@ func makeGetIncidentsHandler(dt *DaemonTools) func(context.Context, *mcp.CallToo
 				Dropped:  stats.Dropped,
 				New:      stats.New,
 			},
-			Cursor:          result.Cursor,
-			NextTools:       nextTools,
-			NextSkills:      nextSkills,
-			Truncated:       truncated,
-			PipelineEnabled: result.PipelineEnabled,
+			Cursor:             result.Cursor,
+			NextTools:          nextTools,
+			NextSkills:         nextSkills,
+			Truncated:          truncated,
+			PipelineEnabled:    result.PipelineEnabled,
+			CollectionWarnings: result.CollectionWarnings,
 		}
 
 		if input.Raw {
@@ -329,6 +336,17 @@ func formatIncidentsCompact(out GetIncidentsOutput) string {
 	sb.WriteString(fmt.Sprintf("=== Incidents (%d) === [inbox: crit=%d err=%d warn=%d info=%d new=%d]\n",
 		len(out.Incidents), s.Critical, s.Error, s.Warning, s.Info, s.New))
 
+	// Partial-collection warnings render immediately under the header, BEFORE
+	// the incident list and before the "(no incidents)" line. A degraded view
+	// that reads as a clean all-clear is the failure mode this exists to
+	// prevent, so it must not be findable only at the bottom of a long page.
+	if len(out.CollectionWarnings) > 0 {
+		sb.WriteString("\n!! PARTIAL VIEW — incidents are missing from this answer:\n")
+		for _, w := range out.CollectionWarnings {
+			sb.WriteString("  - " + w + "\n")
+		}
+	}
+
 	if len(out.Incidents) == 0 {
 		if !out.PipelineEnabled {
 			sb.WriteString("\n(incident session inbox unavailable — no inbox to report)\n")
@@ -365,8 +383,17 @@ func formatIncidentsCompact(out GetIncidentsOutput) string {
 				oneLine := strings.ReplaceAll(strings.TrimSpace(*iv.Payload), "\n", " ")
 				sb.WriteString("  payload: " + truncate(oneLine, 500) + "\n")
 			}
+			if iv.Ctx.Location != "" {
+				sb.WriteString("  at: " + iv.Ctx.Location + "\n")
+			}
 			if iv.Ctx.URL != "" {
-				sb.WriteString("  → " + iv.Ctx.URL + "\n")
+				page := iv.Ctx.URL
+				// The frame is what makes two same-message incidents distinct
+				// entries, so it renders next to the page it qualifies.
+				if iv.Ctx.FrameID != "" {
+					page += " [frame " + iv.Ctx.FrameID + "]"
+				}
+				sb.WriteString("  → " + page + "\n")
 			}
 			if iv.Remediation.PrimaryTool != "" {
 				args := formatArgs(iv.Remediation.PrimaryArgs)
