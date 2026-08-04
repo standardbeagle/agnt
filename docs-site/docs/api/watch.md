@@ -59,6 +59,6 @@ Flags: `--types`, `--proxy`, `--process`, `--severity`, `--format` (compact/json
 
 ## See Also
 
-- [get_errors](/api/get_errors) — pull-based error snapshot (vs this push stream)
+- [get_incidents](/api/get_incidents) — pull-based error snapshot (vs this push stream)
 - [proxylog](/api/proxylog) — query the historical traffic log
 - [proc](/api/proc) — process management

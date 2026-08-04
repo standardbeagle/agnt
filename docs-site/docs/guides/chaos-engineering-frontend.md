@@ -7,7 +7,7 @@ sidebar_label: "Chaos Engineering"
 
 # Chaos Engineering for Frontend Applications
 
-Frontend chaos engineering finds the bugs that only appear in production: the spinner that never stops, the form that submits twice, the dashboard that shows stale data after a network blip. agnt lets your AI coding agent inject these failures systematically through the proxy, then observe exactly what breaks using `get_errors` and the `window.__devtool` diagnostics API.
+Frontend chaos engineering finds the bugs that only appear in production: the spinner that never stops, the form that submits twice, the dashboard that shows stale data after a network blip. agnt lets your AI coding agent inject these failures systematically through the proxy, then observe exactly what breaks using `get_incidents` and the `window.__devtool` diagnostics API.
 
 ## The Problem
 
@@ -30,7 +30,7 @@ None of these let an AI agent systematically inject failures and observe the res
 
 ## The agnt Approach
 
-agnt's `proxy exec` feature executes arbitrary JavaScript in the browser through the reverse proxy. This means the AI can intercept `fetch` and `XMLHttpRequest` at the browser level, injecting failures directly into the network layer your application uses. Combined with `get_errors` to observe the impact, the AI can run structured chaos experiments: inject a failure, check what broke, fix it, verify the fix, move to the next scenario.
+agnt's `proxy exec` feature executes arbitrary JavaScript in the browser through the reverse proxy. This means the AI can intercept `fetch` and `XMLHttpRequest` at the browser level, injecting failures directly into the network layer your application uses. Combined with `get_incidents` to observe the impact, the AI can run structured chaos experiments: inject a failure, check what broke, fix it, verify the fix, move to the next scenario.
 
 The workflow is straightforward:
 
@@ -44,7 +44,7 @@ proxy {action: "exec", id: "app", code: "<chaos script>"}
 // 3. Interact with the app (or let the AI trigger actions)
 
 // 4. Check what broke
-get_errors {}
+get_incidents {}
 ```
 
 Because the chaos is injected client-side via `fetch` interception, it affects exactly what real network failures affect -- your application's actual HTTP calls. No mock servers, no backend changes.
@@ -137,7 +137,7 @@ A structured chaos test follows five steps. Here is the full sequence an AI agen
 proxy {action: "start", id: "app", target_url: "http://localhost:3000"}
 
 // Step 2: Confirm the app works before injecting chaos
-get_errors {}
+get_incidents {}
 // Expected: no errors
 
 // Step 3: Inject the chaos scenario
@@ -156,7 +156,7 @@ proxy {action: "exec", id: "app", code: "
 "}
 
 // Step 4: Trigger user actions and check for errors
-get_errors {}
+get_incidents {}
 
 // Step 5: Inspect the page state
 proxy {action: "exec", id: "app", code: "window.__devtool.screenshot('chaos-test')"}
@@ -173,7 +173,7 @@ When chaos is active, the AI should check for these specific behaviors:
 
 **Loading states appear.** Under high latency, spinners or skeleton screens should be visible. If the UI freezes with no feedback, users will assume the app is broken. The AI can take a screenshot during the delay to verify.
 
-**Retry logic works.** After a transient 500, does the UI offer a retry button? Does automatic retry actually re-fetch? The AI can inject a temporary failure, wait for the retry, then check `get_errors` to see if the error count stabilized.
+**Retry logic works.** After a transient 500, does the UI offer a retry button? Does automatic retry actually re-fetch? The AI can inject a temporary failure, wait for the retry, then check `get_incidents` to see if the error count stabilized.
 
 **No data corruption.** After race conditions or partial failures, the data on screen should be consistent. A product list should not show items from two different queries. The AI can use `proxy exec` to read DOM state and compare it against what the API would have returned.
 
@@ -221,10 +221,10 @@ proxylog {proxy_id: "app", types: ["http"], url_pattern: "/api/payment"}
 
 If there are three POST entries, the submit button is not being disabled during the request.
 
-**Does timeout handling work?** If the payment API takes longer than the client-side timeout, does the UI show "Something went wrong, please try again" or does it hang indefinitely? The AI injects a longer delay and checks `get_errors` for timeout-related errors:
+**Does timeout handling work?** If the payment API takes longer than the client-side timeout, does the UI show "Something went wrong, please try again" or does it hang indefinitely? The AI injects a longer delay and checks `get_incidents` for timeout-related errors:
 
 ```json
-get_errors {since: "30s"}
+get_incidents {since: "30s"}
 ```
 
 Each of these checks takes the AI about 10 seconds. In under a minute, it has tested three critical checkout failure modes that would take a human tester significant effort to reproduce manually.
@@ -260,6 +260,6 @@ proxy {action: "exec", id: "app", code: "
 
 - [Chaos Engineering Feature](/features/chaos-engineering) -- built-in proxy-level chaos presets for network simulation without JavaScript injection
 - [proxy API Reference](/api/proxy) -- full `proxy exec` documentation and parameter reference
-- [get_errors API Reference](/api/get_errors) -- error querying with filters, severity mapping, and output formats
+- [get_incidents API Reference](/api/get_incidents) -- error querying with filters, severity mapping, and output formats
 - [Debug Browser Errors with AI](/guides/debug-browser-errors-ai) -- the error debugging workflow that pairs with chaos testing
 - [Frontend Error Tracking](/use-cases/frontend-error-tracking) -- broader patterns for monitoring and responding to frontend errors

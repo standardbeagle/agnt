@@ -27,7 +27,7 @@ There are a few ways teams deal with this:
 
 agnt solves this by routing your phone's traffic through an instrumented reverse proxy. Start a proxy in front of your dev server, expose it via a Cloudflare or ngrok tunnel, and open the tunnel URL on your phone. The proxy injects the same JavaScript instrumentation into every HTML page -- error capture, the `window.__devtool` diagnostic API, and the floating indicator -- regardless of whether the request comes from your desktop or a phone on the other side of the world.
 
-Your AI coding agent queries the captured errors and traffic with `get_errors` and `proxylog`, just like it would for desktop debugging. The phone is a first-class debugging target.
+Your AI coding agent queries the captured errors and traffic with `get_incidents` and `proxylog`, just like it would for desktop debugging. The phone is a first-class debugging target.
 
 Here is the setup:
 
@@ -107,7 +107,7 @@ Find your machine's IP (`ifconfig` or `ip addr`) and open `http://192.168.1.xxx:
 
 The proxy injects its JavaScript into every HTML response, so all instrumentation works identically on mobile:
 
-- **Error capture** -- JavaScript runtime errors, unhandled promise rejections, and HTTP failures are logged automatically. Query them with `get_errors {}` or `proxylog {proxy_id: "dev", types: ["error"]}`.
+- **Error capture** -- JavaScript runtime errors, unhandled promise rejections, and HTTP failures are logged automatically. Query them with `get_incidents {}` or `proxylog {proxy_id: "dev", types: ["error"]}`.
 - **Floating indicator** -- The draggable indicator appears on the phone screen. It is touch-friendly. You can tap it to send a message directly to your AI coding agent describing what you see, without switching to your laptop.
 - **Screenshots** -- `proxy {action: "exec", id: "dev", code: "window.__devtool.screenshot('mobile-checkout')"}` captures the page as rendered on the phone.
 - **Diagnostics** -- The full `window.__devtool` API is available: element inspection, layout diagnostics, accessibility auditing, DOM complexity analysis. Your AI agent runs these remotely via `proxy exec`.
@@ -128,14 +128,15 @@ Certain categories of bugs only surface on real devices. Here is what to watch f
 
 You are building a checkout page. It looks perfect on desktop and in Chrome DevTools mobile emulation. You start a tunnel, open it on your iPhone, and the "Place Order" button is invisible -- pushed below the viewport by the iOS Safari address bar.
 
-Your AI agent runs `get_errors {}` and sees:
+Your AI agent runs `get_incidents {}` and sees:
 
 ```
-=== Warnings (1) ===
+=== Incidents (1) === [inbox: crit=0 err=0 warn=1 info=0 new=1]
 
-[browser:js] ResizeObserver loop completed with undelivered notifications (12x, latest 1s ago)
-  → src/components/CheckoutLayout.tsx:89:12
-  page: https://random-words.trycloudflare.com/checkout
+[warning:browser_js] ResizeObserver loop completed with undelivered notifications (12x, 1s ago)
+  id: b6c2a41f7d90e835
+  at: src/components/CheckoutLayout.tsx:89:12
+  → https://random-words.trycloudflare.com/checkout
 ```
 
 Twelve ResizeObserver warnings in one second. The layout is thrashing -- iOS Safari's dynamic viewport is continuously resizing the page, and the checkout container's `height: 100vh` is fighting with the browser chrome. The AI sees the exact component and line number, diagnoses the `100vh` problem, and suggests replacing it with `height: 100dvh` (dynamic viewport height) or a JavaScript-based calculation using `window.visualViewport.height`.
@@ -155,4 +156,4 @@ proxy {action: "exec", id: "dev", code: "window.__devtool.captureState()"}
 
 - [tunnel API Reference](/api/tunnel) -- full parameter docs, provider comparison, and installation instructions
 - [Mobile Testing Use Case](/use-cases/mobile-testing) -- complete workflow including BrowserStack integration and device-specific diagnostics
-- [Debug Browser Errors with AI](/guides/debug-browser-errors-ai) -- the `get_errors` workflow in depth, including deduplication and severity filtering
+- [Debug Browser Errors with AI](/guides/debug-browser-errors-ai) -- the `get_incidents` workflow in depth, including deduplication and severity filtering

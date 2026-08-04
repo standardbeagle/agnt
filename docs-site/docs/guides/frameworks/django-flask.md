@@ -94,21 +94,21 @@ Django template errors appear exclusively in process output. The browser receive
 When `user.profile` raises `RelatedObjectDoesNotExist`, the traceback appears in `manage.py runserver` output. agnt captures it:
 
 ```json
-get_errors {process_id: "dev"}
-// → [process:dev] RelatedObjectDoesNotExist (1x, 3s ago)
+get_incidents {process_id: "dev"}
+// → [error:process_alert] RelatedObjectDoesNotExist (1x, 3s ago)
 //   User has no profile.
 //   → myapp/views.py:42
 ```
 
-`get_errors` reduces the full Python stack trace to the first frame inside your application code, filtering out Django internals. The AI sees `myapp/views.py:42` instead of 20 lines of middleware frames.
+`get_incidents` reduces the full Python stack trace to the first frame inside your application code, filtering out Django internals. The AI sees `myapp/views.py:42` instead of 20 lines of middleware frames.
 
 ### Django REST Framework API Errors
 
 DRF returns structured JSON error responses. agnt extracts error messages from the response body:
 
 ```json
-get_errors {proxy_id: "app"}
-// → [proxy:http] 400 Bad Request (1x, 2s ago)
+get_incidents {proxy_id: "app"}
+// → [warning:http_4xx] 400 Bad Request (1x, 2s ago)
 //   POST /api/users/ → {"email": ["Enter a valid email address."], "password": ["This field may not be blank."]}
 ```
 
@@ -122,11 +122,11 @@ class UserViewSet(viewsets.ModelViewSet):
         serializer.save(created_by=self.request.user.profile)  # crashes if no profile
 ```
 
-This produces both a process output traceback and a 500 HTTP response. `get_errors {}` returns both, correlated by time.
+This produces both a process output traceback and a 500 HTTP response. `get_incidents {}` returns both, correlated by time.
 
 ### Middleware Issues
 
-Middleware errors silently break requests without any browser-visible error. Authentication, CORS, or custom middleware that raises an exception produces a traceback only in process output — always check `get_errors {process_id: "dev"}` when requests fail without a clear HTTP error.
+Middleware errors silently break requests without any browser-visible error. Authentication, CORS, or custom middleware that raises an exception produces a traceback only in process output — always check `get_incidents {process_id: "dev"}` when requests fail without a clear HTTP error.
 
 ## Debugging Flask
 
@@ -144,8 +144,8 @@ Flask uses Jinja2 for templates. Like Django, template errors appear only in the
 Jinja2 raises `UndefinedError` for the missing attribute. The browser shows the Werkzeug debugger, but the actual traceback is in the terminal:
 
 ```json
-get_errors {process_id: "dev"}
-// → [process:dev] UndefinedError (1x, 4s ago)
+get_incidents {process_id: "dev"}
+// → [error:process_alert] UndefinedError (1x, 4s ago)
 //   'dict object' has no attribute 'prce'
 //   → app/routes.py:28
 ```
@@ -155,10 +155,10 @@ get_errors {process_id: "dev"}
 Blueprint route errors surface the same way. Flask's Werkzeug server also captures WSGI-level exceptions — connection errors, request parsing failures, and `RequestEntityTooLarge` from malformed uploads all appear in process output.
 
 ```json
-get_errors {since: "30s"}
-// → [proxy:http] 404 Not Found (2x, 10s ago)
+get_incidents {since: "30s"}
+// → [warning:http_4xx] 404 Not Found (2x, 10s ago)
 //   GET /admin/users/999
-// → [process:dev] TemplateSyntaxError (1x, 5s ago)
+// → [error:process_alert] TemplateSyntaxError (1x, 5s ago)
 //   Unexpected end of template. — admin/user.html line 47
 ```
 
@@ -168,10 +168,10 @@ get_errors {since: "30s"}
 
 **Python tracebacks are multi-line.** A Python traceback spans 10-30 lines. agnt's AlertScanner accumulates continuation lines (`File "/path", line N` format) and reports the complete traceback as a single error entry.
 
-**Use `get_errors` after saving a file:**
+**Use `get_incidents` after saving a file:**
 
 ```json
-get_errors {since: "30s"}
+get_incidents {since: "30s"}
 ```
 
 Both frameworks auto-reload on file changes. This shows whether the reload introduced new errors — import failures, syntax errors, or runtime exceptions.
@@ -185,16 +185,20 @@ Both frameworks auto-reload on file changes. This shows whether the reload intro
 A realistic debugging session for a Django application with a broken API endpoint:
 
 ```
-You: "The user registration endpoint returns a 500 error"
+AI: [get_incidents {}]
 
-AI: [get_errors {}]
-=== Errors (2) ===
-[process:dev] IntegrityError (1x, 8s ago)
+=== Incidents (2) === [inbox: crit=0 err=2 warn=0 info=0 new=2]
+
+[error:process_alert] IntegrityError (1x, 8s ago)
+  id: d30cc990d0380fec
   UNIQUE constraint failed: auth_user.email
-  → accounts/views.py:35
-[proxy:http] 500 Internal Server Error (1x, 8s ago)
+  at: accounts/views.py:35
+
+[error:http_5xx] 500 Internal Server Error (1x, 8s ago)
+  id: df9611784a94b258
   POST /api/register/ → "IntegrityError at /api/register/"
 
+You: "The user registration endpoint returns a 500 error"
 AI: The registration endpoint crashes when a user tries to register
     with an email that already exists. The view at accounts/views.py
     line 35 calls User.objects.create_user() without first checking
@@ -209,5 +213,5 @@ Two errors, two sources, one root cause. The process output shows the Python tra
 
 - [Getting Started](/getting-started) — Installation and project configuration
 - [Debug Browser Errors with AI](/guides/debug-browser-errors-ai) — General error debugging workflow
-- [get_errors API Reference](/api/get_errors) — Full parameter and output documentation
+- [get_incidents API Reference](/api/get_incidents) — Full parameter and output documentation
 - [Frontend Error Tracking](/use-cases/frontend-error-tracking) — Error monitoring patterns

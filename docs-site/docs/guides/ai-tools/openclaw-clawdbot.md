@@ -108,9 +108,9 @@ Agent: I'll set up browser debugging and investigate.
 Agent: Open http://localhost:38421/login in your browser
        and submit the form with empty fields.
 
-[get_errors {}]
+[get_incidents {}]
 --> 1 error found:
-    [browser:js] TypeError (2x) -- Cannot read property 'message' of null
+    [error:browser_js] TypeError (2x) -- Cannot read property 'message' of null
       --> src/components/LoginForm.tsx:28:12
 
 [proxy {action: "exec", id: "app",
@@ -132,7 +132,7 @@ The agent identified both the JavaScript error and the hidden element without yo
 ## Tips for Best Results
 
 - **Always use `agnt run`** with OpenClaw and ClawdBot. The system prompt injection and browser-to-terminal event flow are what make the integration powerful. Running through MCP alone misses the feedback loop.
-- **Start with `get_errors {}`** after the proxy is running. This gives the agent a unified view of JavaScript errors, network failures, and proxy-level issues in one call, with deduplication and noise filtering built in.
+- **Start with `get_incidents {}`** after the proxy is running. This gives the agent a unified view of JavaScript errors, network failures, and proxy-level issues in one call, with deduplication and noise filtering built in.
 - **Use the floating indicator** in the browser to send messages to the agent. Click it, type what you see, and the agent receives your message as stdin. No window switching needed.
 - **Configure `.agnt.kdl`** so every session starts with the dev server and proxy already running. This eliminates repeated setup commands and lets the agent focus on the problem immediately.
 - **Let the agent run `window.__devtool` diagnostics** through `proxy exec`. There are 50+ primitives covering element inspection, layout analysis, accessibility auditing, and DOM complexity checks.
@@ -143,4 +143,4 @@ The agent identified both the JavaScript error and the hidden element without yo
 - [Getting Started](/getting-started) -- Full installation and configuration guide
 - [agnt with Claude Code](/guides/ai-tools/claude-code) -- Integration guide for Claude Code
 - [Debug Browser Errors with AI](/guides/debug-browser-errors-ai) -- Workflow guide for error triage
-- [get_errors API Reference](/api/get_errors) -- Unified error tool documentation
+- [get_incidents API Reference](/api/get_incidents) -- Unified error tool documentation

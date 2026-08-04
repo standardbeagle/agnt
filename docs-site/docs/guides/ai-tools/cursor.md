@@ -62,7 +62,7 @@ Once connected, Composer gains access to these MCP tools:
 | `proc` | Monitor process output, status, and manage lifecycle |
 | `proxy` | Start a reverse proxy with automatic browser instrumentation |
 | `proxylog` | Query captured traffic logs, errors, and screenshots |
-| `get_errors` | Unified error view across all processes and proxies |
+| `get_incidents` | Unified error view across all processes and proxies |
 | `currentpage` | Track active browser sessions and page state |
 | `snapshot` | Capture visual snapshots for regression testing |
 
@@ -86,7 +86,7 @@ proxies {
 }
 ```
 
-With this config, agnt auto-starts the dev server and proxy when the MCP server initializes. Composer can immediately call `get_errors` or `proxy exec` without any setup commands.
+With this config, agnt auto-starts the dev server and proxy when the MCP server initializes. Composer can immediately call `get_incidents` or `proxy exec` without any setup commands.
 
 ## Your First Debugging Session
 
@@ -109,9 +109,9 @@ Cursor: I'll set up browser debugging and investigate.
 Cursor: Open http://localhost:38412/signup in your browser and submit the form.
         The proxy captures all errors and network traffic automatically.
 
-[get_errors {}]
+[get_incidents {}]
 → 1 error found:
-  [proxy:http] 422 Unprocessable Entity
+  [warning:http_4xx] 422 Unprocessable Entity
     → POST /api/auth/signup — {"error": "email field required"}
 
 [proxy {action: "exec", id: "app",
@@ -135,7 +135,7 @@ Cursor identified the field name mismatch and the missing error handler without 
 
 ### Composer Workflow
 
-Composer is where agnt tools appear. When you ask Cursor to debug a browser issue, Composer calls agnt tools in sequence — detect the project, start the server, open the proxy, then query errors. You can also call tools explicitly by referencing them in your prompt: "use `get_errors` to check for JavaScript exceptions."
+Composer is where agnt tools appear. When you ask Cursor to debug a browser issue, Composer calls agnt tools in sequence — detect the project, start the server, open the proxy, then query errors. You can also call tools explicitly by referencing them in your prompt: "use `get_incidents` to check for JavaScript exceptions."
 
 ### Tool Approval
 
@@ -149,7 +149,7 @@ Once approved, subsequent calls to the same tool run without prompts.
 
 ### Multi-File Context
 
-Cursor excels at multi-file edits. After agnt identifies an error with stack traces pointing to specific files, Cursor can open those files, apply fixes across components, and verify the fix with another `get_errors` call — all in a single Composer conversation.
+Cursor excels at multi-file edits. After agnt identifies an error with stack traces pointing to specific files, Cursor can open those files, apply fixes across components, and verify the fix with another `get_incidents` call — all in a single Composer conversation.
 
 ### Inline Editing with Browser Context
 
@@ -157,7 +157,7 @@ Use Cursor's inline editing (Cmd+K / Ctrl+K) alongside Composer. Ask Composer to
 
 ## Tips for Best Results
 
-- **Start with `get_errors {}`** to see all current issues across processes and proxies in one call. This gives Cursor the full picture before diving into specifics.
+- **Start with `get_incidents {}`** to see all current issues across processes and proxies in one call. This gives Cursor the full picture before diving into specifics.
 - **Configure `.agnt.kdl`** for auto-start so the proxy is ready the moment you open Composer. No repeated setup commands each session.
 - **Use `proxy exec`** to run `window.__devtool` diagnostics from Composer. There are 50+ primitives for layout analysis, accessibility auditing, and DOM inspection.
 - **Use the floating indicator** in your browser to send messages directly to agnt. Click a broken element, describe what is wrong, and the context flows through the proxy logs.
@@ -169,4 +169,4 @@ Use Cursor's inline editing (Cmd+K / Ctrl+K) alongside Composer. Ask Composer to
 - [Getting Started](/getting-started) -- Full installation and configuration guide
 - [agnt with Claude Code](/guides/ai-tools/claude-code) -- Integration guide for Claude Code
 - [Debug Browser Errors with AI](/guides/debug-browser-errors-ai) -- Workflow guide for error triage
-- [get_errors API Reference](/api/get_errors) -- Unified error tool documentation
+- [get_incidents API Reference](/api/get_incidents) -- Unified error tool documentation

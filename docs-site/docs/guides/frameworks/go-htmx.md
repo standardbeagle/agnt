@@ -87,10 +87,10 @@ Go compile errors are multi-line. A type error produces output like:
 ./handlers/user.go:58:9: cannot use resp (variable of type map[string]any) as UserResponse value
 ```
 
-agnt's AlertScanner detects the `build failed` line that air outputs after compilation. The full error context is available through `get_errors`:
+agnt's AlertScanner detects the `build failed` line that air outputs after compilation. The full error context is available through `get_incidents`:
 
 ```json
-get_errors {process_id: "dev"}
+get_incidents {process_id: "dev"}
 ```
 
 Since Go has no source maps, file:line references point directly to your source code — the AI can open the exact location immediately. When air rebuilds successfully, old errors age out of the deduplication window (60 seconds) and stop appearing.
@@ -102,8 +102,8 @@ HTMX is designed to degrade gracefully — a swap targeting a missing element lo
 **Missing swap targets.** The HTMX response targets `#user-list` but the element does not exist:
 
 ```json
-get_errors {}
-// → [browser:js] htmx:targetError - target with id #user-list not found for hx-swap
+get_incidents {}
+// → [error:browser_js] htmx:targetError - target with id #user-list not found for hx-swap
 ```
 
 **Out-of-band swap failures.** HTMX `hx-swap-oob="true"` elements silently disappear if their target ID is missing from the DOM. agnt captures the browser error.
@@ -111,8 +111,8 @@ get_errors {}
 **422 validation responses.** Go handlers commonly return `422 Unprocessable Entity` for validation failures:
 
 ```json
-get_errors {proxy_id: "app"}
-// → [proxy:http] 422 Unprocessable Entity
+get_incidents {proxy_id: "app"}
+// → [warning:http_4xx] 422 Unprocessable Entity
 //   POST /contacts → "email: invalid format"
 ```
 
@@ -153,12 +153,12 @@ Use the two-script `.agnt.kdl` from Quick Setup. The 500ms delay gives templ tim
 
 ## Go + HTMX-Specific Tips
 
-**Panics produce goroutine stack traces.** `get_errors` reduces panic traces to the first application frame, skipping `runtime/`, `net/http`, and standard library frames. The AI sees the line in your code that panicked, not 20 lines of runtime internals.
+**Panics produce goroutine stack traces.** `get_incidents` reduces panic traces to the first application frame, skipping `runtime/`, `net/http`, and standard library frames. The AI sees the line in your code that panicked, not 20 lines of runtime internals.
 
-**Use `get_errors` after saving a file:**
+**Use `get_incidents` after saving a file:**
 
 ```json
-get_errors {since: "30s"}
+get_incidents {since: "30s"}
 ```
 
 This shows whether the rebuild introduced compile errors, panics, or HTMX swap failures in the last 30 seconds.
@@ -174,32 +174,35 @@ This shows whether the rebuild introduced compile errors, panics, or HTMX swap f
 A debugging session with a Go + Templ + HTMX application:
 
 ```
-You: "The contacts page is broken — clicking delete does nothing"
+AI: [get_incidents {}]
 
-AI: [get_errors {}]
-=== Errors (2) ===
-[process:dev] GO PANIC (1x, 3s ago)
+=== Incidents (2) === [inbox: crit=1 err=1 warn=0 info=0 new=2]
+
+[critical:process_crash] GO PANIC (1x, 3s ago)
+  id: 964646764621c78d
   runtime error: invalid memory address or nil pointer dereference
-  → handlers/contacts.go:67
-[browser:js] htmx:targetError (1x, 3s ago)
+  at: handlers/contacts.go:67
+
+[error:browser_js] htmx:targetError (1x, 3s ago)
+  id: b716e311ca3c8063
   target with id #contact-row-42 not found for hx-swap
 
+You: "The contacts page is broken — clicking delete does nothing"
 AI: Two related errors. The DELETE handler at handlers/contacts.go:67
     panics because the contact lookup returns nil — the handler doesn't
     check for a missing record before accessing fields. The panic causes
     a 500 response, and the HTMX hx-swap-oob that was supposed to remove
     #contact-row-42 never arrives, so HTMX logs a target error.
-
     The fix: add a nil check after the database lookup in the delete
     handler and return 404 if the contact is not found. Let me update
     handlers/contacts.go...
 ```
 
-Two errors, two sources, one root cause. The AI sees the full picture in a single `get_errors` call and traces the causal chain from panic to swap failure.
+Two errors, two sources, one root cause. The AI sees the full picture in a single `get_incidents` call and traces the causal chain from panic to swap failure.
 
 ## See Also
 
 - [Getting Started](/getting-started) — Installation and project configuration
 - [Debug Browser Errors with AI](/guides/debug-browser-errors-ai) — General error debugging workflow
-- [get_errors API Reference](/api/get_errors) — Full parameter and output documentation
+- [get_incidents API Reference](/api/get_incidents) — Full parameter and output documentation
 - [Frontend Error Tracking](/use-cases/frontend-error-tracking) — Error monitoring patterns

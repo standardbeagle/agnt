@@ -71,10 +71,10 @@ The error appears in Next.js process output but never reaches the browser. agnt 
 
 ```json
 // Check process output for server-side errors
-get_errors {process_id: "dev"}
+get_incidents {process_id: "dev"}
 
 // Or check HTTP responses for 500s
-get_errors {proxy_id: "app", include_warnings: false}
+get_incidents {proxy_id: "app", severity: ["critical", "error"]}
 ```
 
 Both approaches surface the same root cause. The process output shows the stack trace from the SSR crash, while the proxy logs show the 500 response the client received.
@@ -84,8 +84,8 @@ Both approaches surface the same root cause. The process output shows the stack 
 Hydration mismatches occur when the server-rendered HTML does not match what React produces on the client. They appear as browser warnings:
 
 ```json
-get_errors {}
-// → [browser:js] Warning: Text content did not match.
+get_incidents {}
+// → [warning:browser_js] Warning: Text content did not match.
 //   Server: "January 15, 2026" Client: "January 15, 2026" (different locale)
 ```
 
@@ -107,10 +107,10 @@ API route failures show up in both the process output (server-side exception) an
 proxylog {proxy_id: "app", types: ["http"], url_pattern: "/api", status_codes: [400, 401, 403, 500]}
 
 // Full error context from all sources
-get_errors {since: "2m"}
+get_incidents {since: "2m"}
 ```
 
-The `get_errors` output correlates the server-side stack trace with the HTTP response, giving the AI agent the complete picture: what the API route threw, what status code the client received, and what the client-side error handler did with the failure.
+The `get_incidents` output correlates the server-side stack trace with the HTTP response, giving the AI agent the complete picture: what the API route threw, what status code the client received, and what the client-side error handler did with the failure.
 
 ## App Router vs Pages Router
 
@@ -133,37 +133,43 @@ The error capture strategy depends on which Next.js router you use.
 
 ## Next.js-Specific Tips
 
-**Compilation errors are captured automatically.** Next.js outputs "compiled successfully" and "compiled with errors" to stdout. agnt's AlertScanner detects compilation failures and surfaces them through `get_errors`.
+**Compilation errors are captured automatically.** Next.js outputs "compiled successfully" and "compiled with errors" to stdout. agnt's AlertScanner detects compilation failures and surfaces them through `get_incidents`.
 
 **Fast Refresh errors show up as browser JS errors.** When a hot reload fails, React logs the error in the browser console. agnt captures it.
 
 **Check for errors after saving a file:**
 
 ```json
-get_errors {since: "30s"}
+get_incidents {since: "30s"}
 ```
 
 This shows whether the hot reload introduced new errors — compile failures, runtime exceptions, or hydration mismatches — within the last 30 seconds.
 
-**Middleware errors are invisible in the browser.** They only appear in process output because middleware runs on the edge runtime before the response reaches the client. Always check `get_errors {process_id: "dev"}` when debugging request-level issues like authentication failures or redirect loops.
+**Middleware errors are invisible in the browser.** They only appear in process output because middleware runs on the edge runtime before the response reaches the client. Always check `get_incidents {process_id: "dev"}` when debugging request-level issues like authentication failures or redirect loops.
 
 ## Full Workflow Example
 
 Here is what a real debugging session looks like when a Next.js page is broken:
 
 ```
-You: "The user profile page is broken"
+AI: [get_incidents {}]
 
-AI: [get_errors {}]
-=== Errors (3) ===
-[process:dev] COMPILE ERROR (1x, 2s ago)
+=== Incidents (3) === [inbox: crit=0 err=3 warn=0 info=0 new=3]
+
+[error:build_fail] COMPILE ERROR (1x, 2s ago)
+  id: 2bd4e282f596903d
   Type error: Property 'email' does not exist on type 'User'
-[proxy:http] 500 Internal Server Error (1x, 5s ago)
-  GET /api/users/123 → "TypeError: Cannot read property 'email' of undefined"
-[browser:js] TypeError (1x, 5s ago)
-  Cannot read properties of null (reading 'email')
-  → src/app/profile/page.tsx:28:15
 
+[error:http_5xx] 500 Internal Server Error (1x, 5s ago)
+  id: 224bd54a26c4d678
+  GET /api/users/123 → "TypeError: Cannot read property 'email' of undefined"
+
+[error:browser_js] TypeError (1x, 5s ago)
+  id: 253d2c412d9419d4
+  Cannot read properties of null (reading 'email')
+  at: src/app/profile/page.tsx:28:15
+
+You: "The user profile page is broken"
 AI: There's a cascade of three related errors. The root cause is the
     User type definition — it's missing the 'email' field. This causes
     the TypeScript compile error, which means the API route at
@@ -172,11 +178,11 @@ AI: There's a cascade of three related errors. The root cause is the
     data. Let me fix the type definition first...
 ```
 
-Three errors, three different sources, one root cause. The AI sees the full picture in a single `get_errors` call and traces the cascade from type definition to API failure to client crash.
+Three errors, three different sources, one root cause. The AI sees the full picture in a single `get_incidents` call and traces the cascade from type definition to API failure to client crash.
 
 ## See Also
 
 - [Getting Started](/getting-started) — Installation and project configuration
 - [Debug Browser Errors with AI](/guides/debug-browser-errors-ai) — General error debugging workflow
-- [get_errors API Reference](/api/get_errors) — Full parameter and output documentation
+- [get_incidents API Reference](/api/get_incidents) — Full parameter and output documentation
 - [Frontend Error Tracking](/use-cases/frontend-error-tracking) — Error monitoring patterns

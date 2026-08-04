@@ -46,16 +46,18 @@ Also there might be a network error but I'm not sure if it's related."
 
 **After** (with agnt):
 ```
-AI: get_errors {}
+AI: get_incidents {}
 
-=== Errors (2) ===
+=== Incidents (2) === [inbox: crit=0 err=2 warn=0 info=0 new=2]
 
-[browser:js] TypeError (3x, latest 5s ago)
+[error:browser_js] TypeError (3x, 5s ago)
+  id: 4254c1319b8b161d
   Cannot read property 'map' of undefined
-  → src/components/ProductList.tsx:42:15
-  page: http://localhost:3000/dashboard
+  at: src/components/ProductList.tsx:42:15
+  → http://localhost:3000/dashboard
 
-[proxy:http] 500 Internal Server Error (1x, 12s ago)
+[error:http_5xx] 500 Internal Server Error (1x, 12s ago)
+  id: 6e5af4c4a577c21a
   GET /api/products → "database connection refused"
 ```
 
@@ -84,7 +86,7 @@ The proxy response includes a `listen_addr` field with the proxy URL (something 
 
 ```json
 // 4. Check for errors at any time
-get_errors {}
+get_incidents {}
 ```
 
 That is it. Your AI can now see everything that goes wrong in the browser.
@@ -97,29 +99,29 @@ agnt collects errors from four distinct sources, giving your AI a complete pictu
 
 **HTTP failures** -- Every 4xx and 5xx response flowing through the proxy. The tool captures the HTTP method, URL, status code, and extracts a meaningful error message from the response body. JSON responses are parsed to pull out `message`, `error`, or `detail` fields. HTML error pages are stripped to their text content.
 
-**Process output errors** -- When running in daemon mode, agnt scans your dev server's stdout and stderr for compile errors, panics, unhandled promise rejections, and framework-specific error patterns. A webpack compilation failure or a Go panic shows up in the same `get_errors` output as browser-side problems.
+**Process output errors** -- When running in daemon mode, agnt scans your dev server's stdout and stderr for compile errors, panics, unhandled promise rejections, and framework-specific error patterns. A webpack compilation failure or a Go panic shows up in the same `get_incidents` output as browser-side problems.
 
 **Custom application errors** -- Your application code can log errors directly via `window.__devtool.log("Payment processing failed", "error", {orderId: "abc123"})`. These appear alongside automatic captures, giving your AI context that only your application logic knows about.
 
 ## Querying Errors
 
-The `get_errors` tool accepts filters so your AI can focus on what matters.
+The `get_incidents` tool accepts filters so your AI can focus on what matters.
 
 ```json
 // Everything -- errors and warnings from all sources
-get_errors {}
+get_incidents {}
 
 // Errors only, skip 404 warnings and other noise
-get_errors {include_warnings: false}
+get_incidents {severity: ["critical", "error"]}
 
 // Only errors from the last 5 minutes (useful during active debugging)
-get_errors {since: "5m"}
+get_incidents {since: "5m"}
 
 // Errors from a specific proxy (when running multiple services)
-get_errors {proxy_id: "app"}
+get_incidents {proxy_id: "app"}
 
 // Full JSON output for complex debugging scenarios
-get_errors {raw: true, limit: 50}
+get_incidents {raw: true, limit: 50}
 ```
 
 The default compact format is designed for AI consumption -- grouped by severity, deduplicated, with just enough context to identify each problem. The `raw: true` flag returns full JSON when your AI needs to do deeper analysis.
@@ -128,7 +130,7 @@ The default compact format is designed for AI consumption -- grouped by severity
 
 agnt does not just forward raw errors. It processes them to make AI frontend debugging more effective.
 
-**Deduplication** -- A `useEffect` that throws on every render can produce hundreds of identical errors in seconds. agnt merges them into a single entry with a count. Your AI sees `TypeError (47x, latest 2s ago)` instead of 47 separate stack traces.
+**Deduplication** -- A `useEffect` that throws on every render can produce hundreds of identical errors in seconds. agnt merges them into a single entry with a count. Your AI sees `TypeError (47x, 2s ago)` instead of 47 separate stack traces.
 
 **Noise filtering** -- Favicon 404s, source map request failures, HMR WebSocket disconnects, and other development noise are automatically stripped. Your AI only sees errors that matter.
 
@@ -142,22 +144,23 @@ agnt does not just forward raw errors. It processes them to make AI frontend deb
 
 Consider a search input that fires API calls on every keystroke. The user types "react hooks" quickly, and the results page shows stale data from the "rea" query instead of the full "react hooks" query.
 
-Without agnt, this bug is painful to describe to an AI. "Sometimes the search results are wrong but only when I type fast." With agnt, the AI runs `get_errors {}` and sees:
+Without agnt, this bug is painful to describe to an AI. "Sometimes the search results are wrong but only when I type fast." With agnt, the AI runs `get_incidents {}` and sees:
 
 ```
-=== Errors (1) ===
+=== Incidents (3) === [inbox: crit=0 err=1 warn=2 info=0 new=3]
 
-[browser:js] TypeError (2x, latest 1s ago)
+[error:browser_js] TypeError (2x, 1s ago)
+  id: 696982a46680422f
   Cannot read property 'title' of undefined
-  → src/components/SearchResults.tsx:28:34
-  page: http://localhost:3000/search?q=react+hooks
+  at: src/components/SearchResults.tsx:28:34
+  → http://localhost:3000/search?q=react+hooks
 
-=== Warnings (3) ===
-
-[proxy:http] 409 Conflict (2x, latest 1s ago)
+[warning:http_4xx] 409 Conflict (2x, 1s ago)
+  id: c2655f47b9ac8cee
   GET /api/search?q=rea → "stale request superseded"
 
-[proxy:http] 409 Conflict (1x, latest 2s ago)
+[warning:http_4xx] 409 Conflict (1x, 2s ago)
+  id: f34374960518fce4
   GET /api/search?q=reac → "stale request superseded"
 ```
 
@@ -167,6 +170,6 @@ No copy-pasting. No "can you show me the network tab." No guessing. The error co
 
 ## See Also
 
-- [get_errors API Reference](/api/get_errors) -- full parameter docs, severity mapping, and output format details
+- [get_incidents API Reference](/api/get_incidents) -- full parameter docs, severity mapping, and output format details
 - [Frontend Error Tracking Use Case](/use-cases/frontend-error-tracking) -- broader patterns for error monitoring workflows
 - [proxylog API Reference](/api/proxylog) -- detailed per-request traffic logs when you need to go deeper than aggregated errors

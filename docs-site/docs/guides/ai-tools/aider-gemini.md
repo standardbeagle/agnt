@@ -147,4 +147,4 @@ If your project has both a frontend and API server, configure multiple scripts a
 - [Getting Started](/getting-started) -- Installation and configuration guide
 - [agnt with Claude Code](/guides/ai-tools/claude-code) -- Integration for Claude Code (uses native MCP instead of PTY wrapping)
 - [Debug Browser Errors with AI](/guides/debug-browser-errors-ai) -- Workflow guide for error triage
-- [get_errors API Reference](/api/get_errors) -- Unified error tool documentation
+- [get_incidents API Reference](/api/get_incidents) -- Unified error tool documentation

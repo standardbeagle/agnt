@@ -75,8 +75,8 @@ function UserProfile({ userId }: { userId: string }) {
 The error boundary renders its fallback, and the user sees "Something went wrong." The original `TypeError: Cannot read properties of undefined (reading 'theme')` is captured by agnt:
 
 ```json
-get_errors {}
-// → [browser:js] TypeError (1x, 3s ago)
+get_incidents {}
+// → [error:browser_js] TypeError (1x, 3s ago)
 //   Cannot read properties of undefined (reading 'theme')
 //   → src/components/UserProfile.tsx:9:34
 ```
@@ -90,16 +90,16 @@ When Vite's HMR fails, the error appears in two places: the process output shows
 A typical scenario: you edit a component and introduce a syntax error.
 
 ```json
-get_errors {since: "10s"}
-// → [process:dev] TRANSFORM ERROR (1x, 2s ago)
+get_incidents {since: "10s"}
+// → [error:build_fail] TRANSFORM ERROR (1x, 2s ago)
 //   /src/components/Dashboard.tsx:15:8
 //   Unexpected token (Note that you need plugins to import files
 //   that are not JavaScript)
-// → [browser:js] SyntaxError (1x, 2s ago)
+// → [error:browser_js] SyntaxError (1x, 2s ago)
 //   [hmr] Failed to reload /src/components/Dashboard.tsx
 ```
 
-When HMR fails entirely and Vite performs a full page reload, the browser-side HMR error clears but the process output error persists. Check both sources with `get_errors {process_id: "dev"}` and `get_errors {proxy_id: "app"}`.
+When HMR fails entirely and Vite performs a full page reload, the browser-side HMR error clears but the process output error persists. Check both sources with `get_incidents {process_id: "dev"}` and `get_incidents {proxy_id: "app"}`.
 
 ## Vite Proxy Configuration
 
@@ -154,10 +154,10 @@ proxy {action: "exec", id: "app", code: "window.__devtool.findOffscreen()"}
 **Check for errors after every file save.** Vite's fast rebuild means errors surface within milliseconds. A quick check after saving catches compile errors, HMR failures, and runtime exceptions:
 
 ```json
-get_errors {since: "10s"}
+get_incidents {since: "10s"}
 ```
 
-**Vite pre-bundling errors appear in process output only.** When Vite fails to pre-bundle a dependency (common with CJS-only packages), the error shows in the terminal but not the browser. Always check `get_errors {process_id: "dev"}`.
+**Vite pre-bundling errors appear in process output only.** When Vite fails to pre-bundle a dependency (common with CJS-only packages), the error shows in the terminal but not the browser. Always check `get_incidents {process_id: "dev"}`.
 
 **React Fast Refresh failures become browser JS errors.** When a component cannot be hot-reloaded (e.g., it exports non-component values alongside components), React Fast Refresh falls back to a full reload. The failure reason appears as a browser JS error that agnt captures.
 
@@ -166,7 +166,7 @@ get_errors {since: "10s"}
 **Use `since` to scope to your current edit cycle.** Vite apps accumulate errors quickly during active development. Narrow the window to avoid noise from earlier edits:
 
 ```json
-get_errors {since: "30s", include_warnings: false}
+get_incidents {since: "30s", severity: ["critical", "error"]}
 ```
 
 ## Full Workflow Example
@@ -174,19 +174,25 @@ get_errors {since: "30s", include_warnings: false}
 A real debugging session when a Vite + React dashboard page is broken:
 
 ```
-You: "The dashboard page shows a blank white screen"
+AI: [get_incidents {}]
 
-AI: [get_errors {}]
-=== Errors (3) ===
-[process:dev] TRANSFORM ERROR (1x, 8s ago)
+=== Incidents (3) === [inbox: crit=0 err=3 warn=0 info=0 new=3]
+
+[error:build_fail] TRANSFORM ERROR (1x, 8s ago)
+  id: 93707e62451962d0
   Could not resolve "./DashboardChart" from "src/pages/Dashboard.tsx"
-[browser:js] TypeError (1x, 6s ago)
+
+[error:browser_js] TypeError (1x, 6s ago)
+  id: c32ba962aedc9ca1
   Cannot read properties of undefined (reading 'map')
-  → src/pages/Dashboard.tsx:22:18
-[browser:js] Error (1x, 6s ago)
+  at: src/pages/Dashboard.tsx:22:18
+
+[error:browser_js] Error (1x, 6s ago)
+  id: 1c9e825987520295
   React will try to recreate this component tree from scratch
   using the error boundary
 
+You: "The dashboard page shows a blank white screen"
 AI: There are three related errors. The root cause is a missing
     import — DashboardChart was likely renamed or moved. Vite
     failed to resolve the import, which means the module loaded
@@ -195,7 +201,6 @@ AI: There are three related errors. The root cause is a missing
     tree partially failed), it threw a TypeError. The error
     boundary caught the render failure and showed a blank
     fallback. Let me check where DashboardChart moved to...
-
 AI: [proxy {action: "exec", id: "app",
      code: "window.__devtool.inspect('.dashboard-container')"}]
   → Element exists but contains only the error boundary fallback div
@@ -204,11 +209,11 @@ AI: Found it — DashboardChart.tsx was renamed to Chart.tsx in the
     last refactor. Updating the import...
 ```
 
-Three errors from two sources, traced to a single moved file. The AI sees the transform failure, the runtime consequence, and the error boundary recovery in one `get_errors` call, then uses component inspection to confirm the page state.
+Three errors from two sources, traced to a single moved file. The AI sees the transform failure, the runtime consequence, and the error boundary recovery in one `get_incidents` call, then uses component inspection to confirm the page state.
 
 ## See Also
 
 - [Getting Started](/getting-started) -- Installation and project configuration
 - [Debug Browser Errors with AI](/guides/debug-browser-errors-ai) -- General error debugging workflow
-- [get_errors API Reference](/api/get_errors) -- Full parameter and output documentation
+- [get_incidents API Reference](/api/get_incidents) -- Full parameter and output documentation
 - [Frontend Error Tracking](/use-cases/frontend-error-tracking) -- Error monitoring patterns

@@ -116,13 +116,13 @@ AI: Let me investigate.
 AI: Open http://localhost:38742/profile in your browser.
     The proxy instruments the page so I can see errors and DOM state.
 
-[get_errors {}]
+[get_incidents {}]
 --> 3 errors found:
-    [browser:js] TypeError (5x) -- Cannot read property 'avatar' of null
+    [error:browser_js] TypeError (5x) -- Cannot read property 'avatar' of null
       --> src/components/UserProfile.tsx:18:22
-    [proxy:http] 401 Unauthorized (1x)
+    [warning:http_4xx] 401 Unauthorized (1x)
       --> GET /api/user/me
-    [browser:js] ReferenceError (1x) -- statsData is not defined
+    [error:browser_js] ReferenceError (1x) -- statsData is not defined
       --> src/components/UserStats.tsx:31:5
 
 [proxy {action: "exec", id: "app",
@@ -158,10 +158,10 @@ Neither tool uses `agnt run` -- that wrapper is specific to terminal-based agent
 
 ## Tips for Best Results
 
-- **Start every debugging session with `get_errors {}`** to give the AI the full error landscape. This surfaces root causes that would otherwise be hidden behind cascading failures.
+- **Start every debugging session with `get_incidents {}`** to give the AI the full error landscape. This surfaces root causes that would otherwise be hidden behind cascading failures.
 - **Use `.agnt.kdl` for auto-start** so the proxy and dev server launch automatically. This eliminates setup friction and ensures errors are captured from the first page load.
 - **Ask the AI to use `proxy exec`** for targeted inspection. The `window.__devtool` API has 50+ diagnostic primitives -- layout analysis, accessibility auditing, computed styles, DOM traversal -- that give the AI precise information about what is happening on screen.
-- **Filter errors by time** with `get_errors {since: "2m"}` when actively debugging. This narrows the view to errors that occurred since your last change.
+- **Filter errors by time** with `get_incidents {since: "2m"}` when actively debugging. This narrows the view to errors that occurred since your last change.
 - **Use the floating indicator** in the proxy page to send messages directly to your AI session. Click it, type what is wrong, and the context flows through to your assistant.
 - **Combine with editor context** -- reference specific files in Copilot (`#file:UserProfile.tsx`) or let Cascade read open tabs alongside agnt error output for maximum context.
 
@@ -170,4 +170,4 @@ Neither tool uses `agnt run` -- that wrapper is specific to terminal-based agent
 - [Getting Started](/getting-started) -- Full installation and configuration guide
 - [agnt with Claude Code](/guides/ai-tools/claude-code) -- Integration guide for Claude Code
 - [Debug Browser Errors with AI](/guides/debug-browser-errors-ai) -- Workflow guide for error triage
-- [get_errors API Reference](/api/get_errors) -- Unified error tool documentation
+- [get_incidents API Reference](/api/get_incidents) -- Unified error tool documentation

@@ -29,6 +29,9 @@ get_incidents {since: "5m", detail: "full"}
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
+| `action` | string | No | `query` | `query`, `pin`, `unpin`, or `clear`. Pins keep an incident alive past band eviction and every retention clear; `clear` retires the session's unpinned incidents |
+| `error_id` | string | No | - | Pin/unpin target: the incident fingerprint (or id) from a prior result |
+| `tag` | string | No | - | Note stored with a pin, returned on the pinned item |
 | `severity` | string[] | No | all | Filter by band: `critical`, `error`, `warning`, `info` |
 | `since` | string | No | beginning | Cursor from a prior pull (RFC3339 timestamp) **or** a duration like `5m` |
 | `sources` | string[] | No | all | Filter by signal source: `browser_js`, `http_5xx`, `http_4xx`, `transport_err`, `proxy_diag`, `process_alert`, `process_crash`, `build_fail`, `port_conflict`, `shutdown`, `hook_stop_failure` |
@@ -47,22 +50,29 @@ Incidents are returned in band order: **critical → error → warning → info*
 ## Compact Output (default)
 
 ```
-=== Incidents (3) ===
+=== Incidents (3) === [inbox: crit=1 err=1 warn=1 info=0 new=3]
 
-[critical] process_crash — agnt-dev (2x, latest 3s ago)
+[critical:process_crash] panic (2x, 3s ago)
+  id: 8b1f42c09ad7e653
   panic: runtime error: index out of range
-  → internal/proxy/server.go:142
-  remediation: proc {action:"output", process_id:"agnt-dev"} → get_incidents
-  next_tools: proc, get_incidents
+  at: internal/proxy/server.go:142
+  next: proc {action:"output", process_id:"agnt-dev"}
 
-[error] browser_js — TypeError (1x, 8s ago)
+[error:browser_js] TypeError (1x, 8s ago)
+  id: 3f9a1c07e2b4d886
   Cannot read property 'map' of undefined
-  → src/components/List.tsx:42:15
+  at: src/components/List.tsx:42:15
+  → http://localhost:3000/dashboard
 
-[warning] http_4xx — GET /api/old-endpoint (1x, 30s ago)
+[warning:http_4xx] 404 (1x, 30s ago)
+  id: 51d0ae87c2f9b344
+  GET /api/old-endpoint
+
+=== Next ===
+tool: proc {action:"output", process_id:"agnt-dev"}
 ```
 
-Each incident carries occurrence count, recency, a first-frame location, and — where the routing table has a match — a **remediation** hint and **next_tools** suggestion.
+Each incident renders its fingerprint (`id:` — the pin/unpin target), occurrence count, recency, a first-frame location (`at:`), the page URL (`→`, with `[frame …]` when frame attribution made two same-message incidents distinct), and — where the routing table has a match — a `next:` tool and `skill:` hint. A closing `=== Next ===` section aggregates the dominant remediation across the returned set, and a `!! PARTIAL VIEW` section appears whenever `collection_warnings` is non-empty — bus-dropped events or unhydratable payloads mean the view is missing incidents, and the tool says so rather than staying silent.
 
 ## Cursor Pull
 
@@ -92,6 +102,5 @@ See [Configuration](/agnt-kdl) for `alerts.push` and preset details.
 
 ## See Also
 
-- [get_errors](/api/get_errors) — the legacy/daemon-less error view this supersedes
 - [proxylog](/api/proxylog) — raw proxy traffic for drill-down
 - [proc](/api/proc) — process output referenced by remediation hints

@@ -168,7 +168,7 @@ Here is a concrete example of what MCP enables. Without MCP, debugging a visual 
 1. Calls `proxy exec` to run `__devtool.screenshot("checkout-page")` and captures a screenshot of the current page state.
 2. Calls `proxy exec` to run `__devtool.getElementInfo("button.checkout")` and gets the button's computed styles, position, and dimensions.
 3. Calls `proxy exec` to run `__devtool.findOverflows()` and discovers the button is positioned outside the viewport on small screens.
-4. Calls `get_errors` to check for any JavaScript errors on the page.
+4. Calls `get_incidents` to check for any JavaScript errors on the page.
 
 **AI responds**: "The checkout button has `position: absolute; right: -20px` which pushes it off-screen on viewports under 768px. Here's the fix..." and provides a CSS correction based on actual computed values it inspected.
 

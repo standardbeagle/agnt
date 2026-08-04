@@ -332,7 +332,7 @@ toast {
 
 ## alerts
 
-Controls process output monitoring. agnt scans process stdout/stderr for error patterns and surfaces them through `get_errors`.
+Controls process output monitoring. agnt scans process stdout/stderr for error patterns and surfaces them through `get_incidents`.
 
 ```kdl
 alerts {

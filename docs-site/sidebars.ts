@@ -42,7 +42,6 @@ const sidebars: SidebarsConfig = {
         'api/proxy',
         'api/proxylog',
         'api/currentpage',
-        'api/get_errors',
         'api/get_incidents',
         'api/responsive_audit',
         'api/api_audit',

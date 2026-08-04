@@ -50,17 +50,19 @@ from the API but I'm not sure which endpoint."
 
 **After** -- automatic capture:
 ```
-AI: get_errors {}
+AI: get_incidents {}
 
-=== Errors (2) ===
+=== Incidents (2) === [inbox: crit=0 err=2 warn=0 info=0 new=2]
 
-[proxy:http] 500 Internal Server Error (1x, 3s ago)
+[error:http_5xx] 500 Internal Server Error (1x, 3s ago)
+  id: 0874475bbf1f6214
   GET /api/user/preferences → "column 'theme_mode' does not exist"
 
-[browser:js] TypeError (4x, latest 1s ago)
+[error:browser_js] TypeError (4x, 1s ago)
+  id: 9bcbf62d52ce066d
   Cannot read properties of undefined (reading 'forEach')
-  → src/components/SettingsForm.tsx:87:22
-  page: http://localhost:3000/settings
+  at: src/components/SettingsForm.tsx:87:22
+  → http://localhost:3000/settings
 ```
 
 The AI sees both errors, their ordering (the 500 happened first), and the causal chain: a missing database column causes the API to fail, the component receives `undefined` instead of a preferences object, and the `forEach` call throws. One tool call, zero copy-pasting, root cause visible.
@@ -104,46 +106,48 @@ These handlers send error data to the proxy via a WebSocket connection to `/__de
 
 HTTP errors are captured separately. Every request flowing through the proxy is logged. Any response with a status code of 400 or higher is stored with the method, URL, status code, and an extracted error message from the response body.
 
-## The get_errors Tool
+## The get_incidents Tool
 
-The `get_errors` tool queries all captured errors across all active proxies and running processes. It returns a deduplicated, sorted, noise-filtered view.
+The `get_incidents` tool queries all captured errors across all active proxies and running processes. It returns a deduplicated, sorted, noise-filtered view.
 
 ```json
 // All errors and warnings
-get_errors {}
+get_incidents {}
 
 // Errors only, no warnings
-get_errors {include_warnings: false}
+get_incidents {severity: ["critical", "error"]}
 
 // Errors from the last 2 minutes
-get_errors {since: "2m"}
+get_incidents {since: "2m"}
 
 // Errors from a specific proxy
-get_errors {proxy_id: "frontend"}
+get_incidents {proxy_id: "frontend"}
 
 // Full JSON output for programmatic analysis
-get_errors {raw: true, limit: 50}
+get_incidents {raw: true, limit: 50}
 ```
 
 The default output format is compact text optimized for AI consumption:
 
 ```
-=== Errors (3) ===
+=== Incidents (4) === [inbox: crit=0 err=3 warn=1 info=0 new=4]
 
-[browser:js] TypeError (12x, latest 2s ago)
+[error:browser_js] TypeError (12x, 2s ago)
+  id: fe92efeed672d386
   Cannot read properties of null (reading 'classList')
-  → src/components/Modal.tsx:34:18
-  page: http://localhost:3000/dashboard
+  at: src/components/Modal.tsx:34:18
+  → http://localhost:3000/dashboard
 
-[proxy:http] 500 Internal Server Error (1x, 8s ago)
+[error:http_5xx] 500 Internal Server Error (1x, 8s ago)
+  id: df9611784a94b258
   POST /api/orders → "constraint violation: orders_customer_fk"
 
-[process:dev] COMPILE ERROR (1x, 15s ago)
+[error:build_fail] COMPILE ERROR (1x, 15s ago)
+  id: 7e6317f61640481b
   src/utils/format.ts(12,5): error TS2322: Type 'string' is not assignable to type 'number'
 
-=== Warnings (1) ===
-
-[proxy:http] 404 Not Found (2x, latest 5s ago)
+[warning:http_4xx] 404 Not Found (2x, 5s ago)
+  id: 11f75a9d652d1265
   GET /api/feature-flags → "endpoint not implemented"
 ```
 
@@ -175,7 +179,7 @@ if (cachedData && Date.now() - cachedData.fetchedAt > 60000) {
 }
 ```
 
-Custom errors appear in `get_errors` output with the source `browser:custom`:
+Custom errors appear in `get_incidents` output with the source `browser:custom`:
 
 ```
 [browser:custom] CUSTOM ERROR (1x, 3s ago)
@@ -183,7 +187,7 @@ Custom errors appear in `get_errors` output with the source `browser:custom`:
   page: http://localhost:3000/checkout
 ```
 
-The `level` parameter accepts `"error"`, `"warn"`, `"info"`, or `"debug"`. Only `"error"` and `"warn"` levels surface in `get_errors` results. The `"info"` and `"debug"` levels are stored in the traffic log and can be queried via `proxylog`.
+The `level` parameter accepts `"error"`, `"warn"`, `"info"`, or `"debug"`. Only `"error"` and `"warn"` levels surface in `get_incidents` results. The `"info"` and `"debug"` levels are stored in the traffic log and can be queried via `proxylog`.
 
 ## Noise Filtering
 
@@ -211,21 +215,22 @@ A user reports that editing a product description sometimes saves the wrong data
 With agnt's proxy running, you trigger the edit flow several times. Then the AI checks:
 
 ```
-AI: get_errors {since: "2m"}
+AI: get_incidents {since: "2m"}
 
-=== Errors (2) ===
+=== Incidents (3) === [inbox: crit=0 err=2 warn=1 info=0 new=3]
 
-[proxy:http] 500 Internal Server Error (2x, latest 8s ago)
+[error:http_5xx] 500 Internal Server Error (2x, 8s ago)
+  id: 542eff39be5499ac
   PUT /api/products/42 → "deadlock detected"
 
-[browser:js] TypeError (2x, latest 7s ago)
+[error:browser_js] TypeError (2x, 7s ago)
+  id: d6e45a38f89fa794
   Cannot read properties of undefined (reading 'updatedAt')
-  → src/hooks/useProductMutation.tsx:56:31
-  page: http://localhost:3000/products/42/edit
+  at: src/hooks/useProductMutation.tsx:56:31
+  → http://localhost:3000/products/42/edit
 
-=== Warnings (3) ===
-
-[proxy:http] 409 Conflict (3x, latest 12s ago)
+[warning:http_4xx] 409 Conflict (3x, 12s ago)
+  id: 6ff2de96a86836dc
   PUT /api/products/42 → "row was modified by another transaction"
 ```
 
@@ -237,7 +242,7 @@ The two-minute window captured five separate events across two error sources. Wi
 
 ## See Also
 
-- [get_errors API Reference](/api/get_errors) -- full parameter documentation, severity mapping, and output format details
+- [get_incidents API Reference](/api/get_incidents) -- full parameter documentation, severity mapping, and output format details
 - [Debug Browser Errors with AI](/guides/debug-browser-errors-ai) -- step-by-step setup and walkthrough of the error capture workflow
 - [proxylog API Reference](/api/proxylog) -- detailed per-request traffic logs when you need to go deeper than aggregated errors
 - [Frontend Error Tracking Use Case](/use-cases/frontend-error-tracking) -- broader patterns for error monitoring workflows

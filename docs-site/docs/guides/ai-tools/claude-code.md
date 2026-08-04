@@ -62,7 +62,7 @@ Once connected, Claude Code gains access to these MCP tools:
 | `proc` | Monitor process output, status, and manage lifecycle |
 | `proxy` | Start a reverse proxy with automatic browser instrumentation |
 | `proxylog` | Query captured traffic logs, errors, and screenshots |
-| `get_errors` | Unified error view across all processes and proxies |
+| `get_incidents` | Unified error view across all processes and proxies |
 | `currentpage` | Track active browser sessions and page state |
 | `snapshot` | Capture visual snapshots for regression testing |
 
@@ -89,11 +89,11 @@ Claude: Let me set up debugging for your project.
 Claude: Open http://localhost:45849/dashboard in your browser.
         The proxy instruments the page so I can see what's happening.
 
-[get_errors {}]
+[get_incidents {}]
 → 2 errors found:
-  [browser:js] TypeError (3x) — Cannot read property 'map' of undefined
+  [error:browser_js] TypeError (3x) — Cannot read property 'map' of undefined
     → src/components/Dashboard.tsx:42:15
-  [proxy:http] 500 Internal Server Error
+  [error:http_5xx] 500 Internal Server Error
     → POST /api/dashboard-data
 
 [proxy {action: "exec", id: "app",
@@ -153,7 +153,7 @@ Open sketch mode from the floating indicator to draw wireframes directly on the 
 
 ## Tips for Best Results
 
-- **Start with `get_errors {}`** to see all current issues across processes and proxies in one call. This gives Claude the full picture before diving into specifics.
+- **Start with `get_incidents {}`** to see all current issues across processes and proxies in one call. This gives Claude the full picture before diving into specifics.
 - **Use the floating indicator** to send browser context to Claude without switching windows. Click a broken element, type what is wrong, and Claude gets the message.
 - **Configure `.agnt.kdl`** for auto-start so every debugging session begins instantly. No repeated setup commands.
 - **Use `snapshot`** before and after fixes for visual regression testing. Claude can compare the snapshots to verify the fix did not break other parts of the page.
@@ -164,4 +164,4 @@ Open sketch mode from the floating indicator to draw wireframes directly on the 
 - [Getting Started](/getting-started) — Full installation and configuration guide
 - [agnt with Cursor](/guides/ai-tools/cursor) — Integration guide for Cursor
 - [Debug Browser Errors with AI](/guides/debug-browser-errors-ai) — Workflow guide for error triage
-- [get_errors API Reference](/api/get_errors) — Unified error tool documentation
+- [get_incidents API Reference](/api/get_incidents) — Unified error tool documentation

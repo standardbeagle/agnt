@@ -83,12 +83,12 @@ end
 The terminal shows the full Ruby stack trace, and the browser gets Rails' detailed error page (in development) or a 500 response. agnt captures both:
 
 ```json
-get_errors {process_id: "server"}
-// → [process:server] ActiveRecord::RecordNotFound (1x, 3s ago)
+get_incidents {process_id: "server"}
+// → [error:process_alert] ActiveRecord::RecordNotFound (1x, 3s ago)
 //   Couldn't find Order with 'id'=999
 
-get_errors {proxy_id: "app", include_warnings: false}
-// → [proxy:http] 500 Internal Server Error (1x, 3s ago)
+get_incidents {proxy_id: "app", severity: ["critical", "error"]}
+// → [error:http_5xx] 500 Internal Server Error (1x, 3s ago)
 //   GET /orders/999
 ```
 
@@ -117,18 +117,18 @@ end
 The browser shows no visible error, but agnt captures the failed request:
 
 ```json
-get_errors {since: "30s"}
-// → [proxy:http] 422 Unprocessable Entity (1x, 5s ago)
+get_incidents {since: "30s"}
+// → [warning:http_4xx] 422 Unprocessable Entity (1x, 5s ago)
 //   POST /posts/7/comments
-// → [browser:js] Turbo error (1x, 5s ago)
+// → [error:browser_js] Turbo error (1x, 5s ago)
 //   Response has no matching <turbo-frame id="new_comment">
 ```
 
 **Stimulus controller errors** also surface as browser JS errors. A typo in a `data-controller` name or a missing action method produces a clear error in agnt's output:
 
 ```json
-get_errors {}
-// → [browser:js] Error (1x, 2s ago)
+get_incidents {}
+// → [error:browser_js] Error (1x, 2s ago)
 //   Error connecting Stimulus controller "commentz" (missing)
 ```
 
@@ -143,7 +143,7 @@ get_errors {}
 **Asset pipeline errors appear in process output only.** Sprockets compilation failures or Propshaft missing asset errors produce terminal output but no browser error (the browser just gets a broken stylesheet link). Check process errors when styles or scripts fail to load:
 
 ```json
-get_errors {process_id: "server"}
+get_incidents {process_id: "server"}
 ```
 
 **Use `bin/dev` for multi-process setups.** If your Rails app uses `Procfile.dev` (with CSS bundling, JS bundling, or Solid Queue), point the script at `bin/dev` instead of `bin/rails server`. All process output from foreman flows through the same script, so agnt captures errors from every process.
@@ -153,16 +153,20 @@ get_errors {process_id: "server"}
 Here is what a real debugging session looks like when a Rails page is broken:
 
 ```
-You: "The order page is showing a blank turbo frame instead of line items"
+AI: [get_incidents {}]
 
-AI: [get_errors {}]
-=== Errors (2) ===
-[process:server] NoMethodError (1x, 4s ago)
+=== Incidents (2) === [inbox: crit=0 err=2 warn=0 info=0 new=2]
+
+[error:process_alert] NoMethodError (1x, 4s ago)
+  id: c74433cddca65363
   undefined method 'quantity' for nil:NilClass
-  → app/views/orders/_line_item.html.erb:8
-[proxy:http] 500 Internal Server Error (1x, 4s ago)
+  at: app/views/orders/_line_item.html.erb:8
+
+[error:http_5xx] 500 Internal Server Error (1x, 4s ago)
+  id: f13ba0a4d81790e0
   GET /orders/42/line_items → "NoMethodError"
 
+You: "The order page is showing a blank turbo frame instead of line items"
 AI: The line_item partial at app/views/orders/_line_item.html.erb:8
     is calling .quantity on a nil object. This means one of the
     line items in the collection has a nil product association.
@@ -178,5 +182,5 @@ Two errors, two sources, one root cause. The AI sees the template error and the 
 
 - [Getting Started](/getting-started) -- Installation and project configuration
 - [Debug Browser Errors with AI](/guides/debug-browser-errors-ai) -- General error debugging workflow
-- [get_errors API Reference](/api/get_errors) -- Full parameter and output documentation
+- [get_incidents API Reference](/api/get_incidents) -- Full parameter and output documentation
 - [Frontend Error Tracking](/use-cases/frontend-error-tracking) -- Error monitoring patterns
