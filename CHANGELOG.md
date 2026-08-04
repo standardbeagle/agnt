@@ -1,6 +1,6 @@
 # Changelog - agnt
 
-## [Unreleased] — next minor release
+## [0.14.0] - 2026-08-04
 
 ### Added
 - **`auditAnimations` — compositor-load audit** (`__devtool.audit.auditAnimations`,
