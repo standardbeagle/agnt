@@ -130,6 +130,7 @@ const sidebars: SidebarsConfig = {
         'guides/responsive-design-testing-ai',
         'guides/mobile-testing-real-devices-ai',
         'guides/frontend-performance-monitoring-ai',
+        'guides/gpu-compositor-debugging-ai',
       ],
     },
     {
