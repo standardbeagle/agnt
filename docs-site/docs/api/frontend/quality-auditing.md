@@ -318,7 +318,7 @@ Data source is `document.getAnimations()` — the declarative registry that repo
 
 Amplifiers escalate to `error` only while a frame pump is live; without one, an overlay costs a single paint and reports as `info`. Small-area filters (a blurred composer bar) are deliberately not flagged.
 
-**Frame sampling:** `{sampleMs: N}` resolves with `frameSample: {frames, sampleMs, effectiveFps}`. `effectiveFps` at the display refresh rate on a visually static page convicts the pump; ≤5 fps means the page idles. The probe is time-bounded: in a backgrounded or occluded tab where the browser throttles rAF, it resolves with `rafStarved: true` and the summary reports the sample inconclusive rather than hanging. Treat the sample as one signal, not an oracle — a purely compositor-driven animation can commit without firing page rAF, and the GPU-process CPU number itself lives outside every page API.
+**Frame sampling:** `{sampleMs: N}` resolves with `frameSample: {frames, sampleMs, effectiveFps}`. `effectiveFps` at the display refresh rate on a visually static page convicts the pump; ≤5 fps means the page idles. The probe is time-bounded: in a backgrounded or occluded tab where the browser throttles rAF, it resolves with `rafStarved: true` and the summary reports the sample inconclusive rather than hanging. Treat the sample as one signal rather than an oracle — a purely compositor-driven animation can commit without firing page rAF, and the GPU-process CPU number itself lives outside every page API.
 
 Without `document.getAnimations()` support the audit returns `notApplicable` rather than an unmeasured passing grade.
 

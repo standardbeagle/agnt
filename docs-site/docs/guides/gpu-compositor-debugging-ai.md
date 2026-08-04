@@ -68,7 +68,7 @@ Drop this into any dev project as `gpu-demo.html` (or fold the classes into a Re
 </html>
 ```
 
-Serve it and open Chrome's own task manager (`Window > Task Manager`, not DevTools -- the task manager observes without perturbing). On a high-refresh HiDPI display, the **GPU Process** row sits at 10-40% CPU for a page that is visually static apart from two pulsing 8-pixel dots.
+Serve it and open Chrome's own task manager (`Window > Task Manager` rather than DevTools -- the task manager observes without perturbing). On a high-refresh HiDPI display, the **GPU Process** row sits at 10-40% CPU for a page that is visually static apart from two pulsing 8-pixel dots.
 
 ## Setup
 
@@ -214,7 +214,7 @@ The structure of the result matters as much as the verdict. The noise overlay an
 
 The kill-switch proved causality on the live page; the fix goes in the codebase. The measured-and-verified changes:
 
-**1. Make the pulse pause when nothing needs attention.** The honest fix for an infinite attention-getter is to scope *when it runs*, not to make it uglier. Gate it on actual state, and respect users who asked for less motion:
+**1. Make the pulse pause when nothing needs attention.** The honest fix for an infinite attention-getter is to scope *when it runs* -- making it uglier is a concession, and scoping is a fix. Gate it on actual state, and respect users who asked for less motion:
 
 ```css
 /* Pulse only while the thread is actively working */
@@ -228,7 +228,7 @@ The kill-switch proved causality on the live page; the fix goes in the codebase.
 
 If a design genuinely wants an always-on pulse, drop the refresh-rate coupling instead: a `steps(2)` blink or a longer period cuts commits proportionally. But "pause when idle" is the fix that lets the page reach zero.
 
-**2. Remove the full-page noise overlay** (or bake the grain into the background asset itself so it costs one paint, not one per commit).
+**2. Remove the full-page noise overlay** (or bake the grain into the background asset itself so it costs a single paint instead of one per commit).
 
 **3. Keep `backdrop-filter` only where content actually scrolls behind it.** A blur over a static background is a per-commit cost purchasing nothing.
 
@@ -289,7 +289,7 @@ proxy {action: "exec", id: "app", code: "__devtool.audit.auditAnimations({sample
 }
 ```
 
-The audit reads `document.getAnimations()` -- the declarative animation registry, the one signal that reports an animation *exists and is running* regardless of whether anything observable changes -- and cross-references it against an amplifier sweep. It encodes the trigger/amplifier distinction from Step 3 directly: amplifier findings escalate from `info` to `error` only when a frame pump is actually live, because a noise overlay above a genuinely idle page costs one paint, not one per commit.
+The audit reads `document.getAnimations()` -- the declarative animation registry, the one signal that reports an animation *exists and is running* regardless of whether anything observable changes -- and cross-references it against an amplifier sweep. It encodes the trigger/amplifier distinction from Step 3 directly: amplifier findings escalate from `info` to `error` only when a frame pump is actually live, because a noise overlay above a genuinely idle page costs a single paint.
 
 Note what it does *not* flag on this page: the composer's `backdrop-filter`. That bar covers a sliver of the viewport, and the audit only reports **large-area** filters (≥25% of the viewport) because a small blur behind a text box is a legitimate design choice with proportionally small cost. Precision matters here -- the fastest way to teach a developer to ignore an audit is to flag their perfectly fine composer bar.
 
@@ -297,7 +297,7 @@ Beyond the exact bug from the video, it catches the neighboring defects in the s
 
 - **`layout-property-animation`** (error) -- an animation or transition touching `width`, `top`, `margin`, or any layout-inducing property. Strictly worse than a compositor pump: it forces main-thread style + layout every frame. The fix is always the same -- animate `transform`/`opacity` instead.
 - **`will-change-overuse`** (warning) -- `will-change` scattered across many elements as a cargo-cult "performance" hint. Each one is a standing layer promotion costing compositing memory on every commit; apply it just-in-time and remove it when the interaction ends.
-- **Honest non-answers** -- on a browser without `document.getAnimations()`, the audit returns `notApplicable` rather than a passing grade it could not have measured. The frame sample is time-bounded and self-reporting: in a backgrounded or occluded tab where the browser throttles rAF, it resolves with `rafStarved: true` and the summary says "inconclusive" instead of a fake near-zero fps reading as "page idles." And the rAF sample is documented as one signal, not an oracle -- a purely compositor-driven animation can commit without firing page rAF, and the GPU-process CPU number itself lives outside every page API.
+- **Honest non-answers** -- on a browser without `document.getAnimations()`, the audit returns `notApplicable` rather than a passing grade it could not have measured. The frame sample is time-bounded and self-reporting: in a backgrounded or occluded tab where the browser throttles rAF, it resolves with `rafStarved: true` and the summary says "inconclusive" instead of a fake near-zero fps reading as "page idles." And the rAF sample is documented as one signal rather than an oracle -- a purely compositor-driven animation can commit without firing page rAF, and the GPU-process CPU number itself lives outside every page API.
 
 Passing `sampleMs` adds the Step 2 idle-frame measurement to the same report: `effectiveFps` at the display refresh rate on a visually static page is the frame-pump conviction; ≤5 fps means the page idles and any remaining heat is coming from somewhere else -- like a forgotten claude.ai tab.
 

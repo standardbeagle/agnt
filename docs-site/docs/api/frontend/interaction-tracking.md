@@ -71,7 +71,7 @@ Record shape (addition; removals carry `removed`, attribute changes carry `attri
 }
 ```
 
-`triggered_by` is the built-in correlation: each mutation names the most recent user interaction within a 500ms window that plausibly provoked it (`null` when the page mutated on its own), so "the subtree re-mounted *because of the blur*" is a field read, not an inference.
+`triggered_by` is the built-in correlation: each mutation names the most recent user interaction within a 500ms window that plausibly provoked it (`null` when the page mutated on its own), so "the subtree re-mounted *because of the blur*" is a field read instead of an inference.
 
 Example — is anything churning on an idle page?
 

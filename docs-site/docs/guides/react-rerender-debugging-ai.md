@@ -102,9 +102,9 @@ api_audit {proxy_id: "app"}
 
 **3. Pull the diagnostics** with `currentpage`. If the loop is fast enough to trip React's guard you get the `infinite-render-loop` entry with its `fix`/`avoid` pair; if not, the mutation and API evidence has already localized it to the search subtree, and the agent reads *that* component instead of the whole tree.
 
-**4. Fix the cause, not the symptom.** The dependency is unstable, so stabilize it — `useMemo` the options object, or depend on `query` directly. The `avoid` guidance matters here: moving `options` into the dependency array differently, or debouncing the fetch, changes the loop's speed rather than removing it.
+**4. Fix the cause.** The dependency is unstable, so stabilize it — `useMemo` the options object, or depend on `query` directly. The `avoid` guidance matters here: moving `options` into the dependency array differently, or debouncing the fetch, changes the loop's speed rather than removing it.
 
-**5. Verify with the same instruments.** Re-run the two-second mutation sample (idle page → near-zero), re-run `api_audit` (one request per keystroke burst, not thirty-one). The fix is proven by the measurement that convicted the bug.
+**5. Verify with the same instruments.** Re-run the two-second mutation sample (idle page → near-zero), re-run `api_audit` (one request per keystroke burst instead of thirty-one). The fix is proven by the measurement that convicted the bug.
 
 The companion bug classes surface the same way: `missing-key` diagnostics catch the list that re-mounts every item on reorder (state bleeding between rows is the visible symptom), and `hydration-mismatch` catches SSR/client divergence before anyone suppresses the warning — see the [Next.js guide](/guides/frameworks/next-js) for the server-rendering side of that story.
 
