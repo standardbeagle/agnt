@@ -6,7 +6,7 @@ Claude Code 治此 repo 之綱：唯導向與不變式；詳見 `docs/`、`.clau
 
 **agnt**：賦 AI coding agents 以 browser superpowers；通 AI agent 與 browser，作 real-time debug、UI wireframe、visual feedback。
 
-- **Version**: 0.13.35
+- **Version**: 0.14.0
 - **Repository**: https://github.com/standardbeagle/agnt
 
 **Binaries**:
