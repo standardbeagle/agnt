@@ -282,6 +282,42 @@ currentpage {proxy_id: "app", action: "get", session_id: "page-b"}
 // - Different resources loaded?
 ```
 
+## Framework Diagnostics
+
+Page triage classifies recognized framework runtime warnings out of the raw error stream. When a captured console message carries a known signature, the output's `framework_diagnostics` array names the bug class, the correct remediation direction (`fix`), and — because these bugs attract confidently wrong fixes — the common wrong fix to steer away from (`avoid`):
+
+```json
+{
+  "framework_diagnostics": [
+    {
+      "category": "infinite-render-loop",
+      "framework": "react",
+      "count": 47,
+      "sample": "Maximum update depth exceeded...",
+      "fix": "A state update is firing on every render. Find the setState called unconditionally...",
+      "avoid": "Do not silence it by adding the value to the dependency array or wrapping the update in setTimeout..."
+    }
+  ],
+  "hint": "Recognized framework runtime diagnostics — see framework_diagnostics for the bug class, the correct fix, and the common wrong fix to avoid before editing source."
+}
+```
+
+Recognized categories:
+
+| Category | Framework | Signature class |
+|----------|-----------|-----------------|
+| `infinite-render-loop` | react | Maximum update depth exceeded |
+| `hooks-order` | react | Conditional hooks / early return before hooks |
+| `controlled-uncontrolled` | react | Input value flips between undefined and defined |
+| `missing-key` | react | List children without stable keys |
+| `cross-render-update` | react | Setting another component's state during render |
+| `hydration-mismatch` | react / next / generic | SSR/client divergence |
+| `vue-reactivity` / `vue-prop-mutation` | vue | Reactivity loss, direct prop mutation |
+| `svelte-unknown-prop` | svelte | Unknown prop warnings |
+| `solid-root-scope` | solid | Computations outside createRoot |
+
+Framework warnings normally arrive via `console.warn`, which is not error-level output — the instrumentation forwards signature-matched warnings specifically so Vue and Svelte diagnostics are not invisible. Workflow examples: [Debugging React Re-renders](/guides/react-rerender-debugging-ai) and [Form & Input Binding](/guides/form-input-binding-debugging-ai).
+
 ## Integration with Other Tools
 
 ### With proxylog

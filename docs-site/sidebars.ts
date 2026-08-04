@@ -71,6 +71,7 @@ const sidebars: SidebarsConfig = {
             'api/frontend/visual-overlays',
             'api/frontend/interactive',
             'api/frontend/state-capture',
+            'api/frontend/interaction-tracking',
             'api/frontend/accessibility',
             'api/frontend/composite',
           ],
@@ -130,6 +131,9 @@ const sidebars: SidebarsConfig = {
         'guides/mobile-testing-real-devices-ai',
         'guides/frontend-performance-monitoring-ai',
         'guides/gpu-compositor-debugging-ai',
+        'guides/react-rerender-debugging-ai',
+        'guides/form-input-binding-debugging-ai',
+        'guides/motion-theme-preferences-ai',
       ],
     },
     {

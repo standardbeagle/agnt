@@ -294,6 +294,36 @@ async function fullGrade() {
 
 ---
 
+## auditAnimations
+
+Compositor-load audit: the performance class JS profilers cannot see. An infinite CSS animation never touches the DOM and never runs script, yet it forces the compositor to commit a frame at the display refresh rate forever — pegging the browser's GPU process from a visually static page, and draining batteries on mobile.
+
+```javascript
+window.__devtool.audit.auditAnimations()
+window.__devtool.audit.auditAnimations({sampleMs: 2000})   // adds a bounded rAF idle sample (async)
+window.__devtool.audit.auditAnimations({raw: true})        // full findings instead of grouped
+```
+
+Data source is `document.getAnimations()` — the declarative registry that reports an animation exists and is running regardless of whether anything observable changes, which is why this works where MutationObserver and point-in-time visual checks are blind.
+
+**Finding types:**
+
+| Type | Severity | Meaning |
+|------|----------|---------|
+| `infinite-animation` | warning | Infinite-iteration animation on a visible element — the frame pump; the page can never go idle |
+| `layout-property-animation` | error | Animation touches a layout property (`width`, `top`, `margin`, ...) — main-thread style + layout every frame |
+| `viewport-overlay-amplifier` | info → error | Full-viewport fixed textured overlay (noise/grain layer) repainted on every commit |
+| `backdrop-filter-amplifier` | info → error | Large-area (≥25% of viewport) `backdrop-filter`/`filter` — a per-commit blur pass |
+| `will-change-overuse` | warning | Layer-promotion hints scattered across many elements |
+
+Amplifiers escalate to `error` only while a frame pump is live; without one, an overlay costs a single paint and reports as `info`. Small-area filters (a blurred composer bar) are deliberately not flagged.
+
+**Frame sampling:** `{sampleMs: N}` resolves with `frameSample: {frames, sampleMs, effectiveFps}`. `effectiveFps` at the display refresh rate on a visually static page convicts the pump; ≤5 fps means the page idles. The probe is time-bounded: in a backgrounded or occluded tab where the browser throttles rAF, it resolves with `rafStarved: true` and the summary reports the sample inconclusive rather than hanging. Treat the sample as one signal, not an oracle — a purely compositor-driven animation can commit without firing page rAF, and the GPU-process CPU number itself lives outside every page API.
+
+Without `document.getAnimations()` support the audit returns `notApplicable` rather than an unmeasured passing grade.
+
+`auditAnimations` is **not** folded into `auditAll` / `auditPageQuality`: its headline signal depends on the display it runs on (refresh rate, DPI), so averaging it into a portable page grade would make that grade machine-dependent. Run it directly — the full investigation workflow is in the [GPU & Compositor Debugging guide](/guides/gpu-compositor-debugging-ai).
+
 ## Browser Compatibility
 
 | Function | Chrome | Firefox | Safari | Edge |
@@ -302,6 +332,7 @@ async function fullGrade() {
 | `auditDOMComplexity` | Yes | Yes | Yes | Yes |
 | `auditPageQuality` | Yes | Partial | Partial | Yes |
 | `auditAll` | Yes | Partial | Partial | Yes |
+| `auditAnimations` | Yes | Yes | Yes | Yes |
 
 Memory and INP/LoAF signals within `auditPerformance` are Chromium-only and degrade cleanly on other browsers.
 
