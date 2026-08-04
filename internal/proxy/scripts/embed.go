@@ -78,6 +78,9 @@ var (
 	//go:embed audit-loading.js
 	auditLoadingJS string
 
+	//go:embed audit-animations.js
+	auditAnimationsJS string
+
 	//go:embed interaction.js
 	interactionJS string
 
@@ -301,6 +304,10 @@ var moduleOrder = []moduleEntry{
 	// dependency on mutation — utils is required only for the shared
 	// finding-id / grade conventions.
 	{"audit-loading", []string{"utils"}},
+	// audit-animations reads document.getAnimations() (the browser's own
+	// registry) at call time — no observer module dependency; audit-utils is
+	// required for the shared finding-id / grade / selector conventions.
+	{"audit-animations", []string{"utils", "audit-utils"}},
 	{"audit-quality", []string{"utils", "audit-dom", "audit-css", "audit-security", "audit-performance"}},
 	{"interaction", []string{"utils", "core"}},
 	{"mutation", []string{"utils", "core"}},
@@ -394,7 +401,7 @@ var moduleOrder = []moduleEntry{
 	{"api", []string{
 		"core", "frames", "utils", "overlay", "inspection", "tree", "visual",
 		"layout", "interactive", "capture", "accessibility",
-		"audit-quality", "audit-api", "audit-loading", "audit-report", "interaction", "mutation",
+		"audit-quality", "audit-api", "audit-loading", "audit-animations", "audit-report", "interaction", "mutation",
 		"voice", "indicator", "sketch", "design", "walkthrough", "palette",
 		"diagnostics", "session", "store", "content",
 		"wireframe", "responsive", "responsive-mode", "style-editor",
@@ -437,19 +444,20 @@ var moduleRole = map[string]Role{
 
 	// Content-only: page-operating/telemetry modules the shell never
 	// eval-requires.
-	"audit-api":       RoleContent,
-	"audit-loading":   RoleContent,
-	"interaction":     RoleContent,
-	"mutation":        RoleContent,
-	"override-store":  RoleContent,
-	"transform":       RoleContent,
-	"snapshot-helper": RoleContent,
-	"diagnostics":     RoleContent,
-	"store":           RoleContent,
-	"content":         RoleContent,
-	"text-fragility":  RoleContent,
-	"responsive-risk": RoleContent,
-	"wireframe":       RoleContent,
+	"audit-api":        RoleContent,
+	"audit-loading":    RoleContent,
+	"audit-animations": RoleContent,
+	"interaction":      RoleContent,
+	"mutation":         RoleContent,
+	"override-store":   RoleContent,
+	"transform":        RoleContent,
+	"snapshot-helper":  RoleContent,
+	"diagnostics":      RoleContent,
+	"store":            RoleContent,
+	"content":          RoleContent,
+	"text-fragility":   RoleContent,
+	"responsive-risk":  RoleContent,
+	"wireframe":        RoleContent,
 }
 
 // rolePublicModules is the EXPLICIT ALLOWLIST for the public bundle (P4). Unlike
@@ -518,6 +526,7 @@ var moduleScript = map[string]string{
 	"audit-quality":      auditQualityJS,
 	"audit-api":          auditApiJS,
 	"audit-loading":      auditLoadingJS,
+	"audit-animations":   auditAnimationsJS,
 	"interaction":        interactionJS,
 	"mutation":           mutationJS,
 	"toast":              toastJS,

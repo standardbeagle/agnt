@@ -101,7 +101,8 @@ var softDeps = map[string]map[string]bool{
 	// __devtool_diagnostics fallback.
 	"api": {
 		"interaction": true, "mutation": true, "audit-api": true,
-		"audit-loading": true, "diagnostics": true, "store": true,
+		"audit-loading": true, "audit-animations": true,
+		"diagnostics": true, "store": true,
 		"content": true, "wireframe": true, "text-fragility": true,
 		"responsive-risk": true, "snapshot-helper": true,
 		"indicator": true, "walkthrough": true,
