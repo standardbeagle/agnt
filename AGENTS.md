@@ -254,6 +254,7 @@ Widening a posture is a user decision, never an agent's.
 | Proxy events | `.claude/rules/proxy-events.md` |
 | WSL awareness audit | `.claude/rules/wsl-audit.md` |
 | Doc index | `docs/README.md` |
+| Docs-site article writing | `standardbeagle-marketing:dev-article` skill (voice + grounding + anti-AI-tells); structure/SEO template in `docs/plans/2026-02-18-seo-content-strategy-design.md` |
 
 ## Dev Notes
 
