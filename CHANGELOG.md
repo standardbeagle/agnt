@@ -1,6 +1,54 @@
 # Changelog - agnt
 
-## [Unreleased]
+## [Unreleased] — next minor release
+
+### Added
+- **`auditAnimations` — compositor-load audit** (`__devtool.audit.auditAnimations`,
+  new `audit-animations` module in the injected bundle). Finds the performance
+  class every JS profiler is blind to: work that runs entirely on the
+  compositor thread. An infinite CSS animation (Tailwind `animate-pulse` on a
+  status dot is the canonical case) never touches the DOM, never runs script,
+  and reads as an ordinary visible element — yet it forces a compositor commit
+  at display refresh rate forever, pegging the browser's GPU process from a
+  visually static page on high-refresh HiDPI displays and draining batteries
+  on mobile.
+
+  Detectors: `infinite-animation` (the frame pump, from
+  `document.getAnimations()` — the one registry MutationObserver and
+  visual-state snapshots cannot see), `layout-property-animation`
+  (width/top/margin animations forcing main-thread layout per frame),
+  `viewport-overlay-amplifier` (full-viewport noise/grain layers),
+  `backdrop-filter-amplifier` (large-area filters only — a small composer-bar
+  blur is not flagged), and `will-change-overuse`. Amplifiers escalate to
+  `error` only while a frame pump is live; without one they cost a single
+  paint and report as `info`.
+
+  `{sampleMs: N}` adds a bounded requestAnimationFrame idle sample
+  (`frameSample.effectiveFps` at refresh rate on a static page = conviction;
+  ≤5 fps = the page idles). The probe is time-bounded and honest: a
+  backgrounded/occluded tab resolves `rafStarved: true` and reports the sample
+  inconclusive instead of hanging or faking an idle reading; a browser without
+  `document.getAnimations()` returns `notApplicable`, never an unmeasured
+  passing grade.
+
+  Because the audit ships inside the proxy-injected instrumentation, it runs
+  on-device — point a phone at the proxy URL (or a tunnel) and the same call
+  answers for that device's own refresh rate, animation registry, and GPU. No
+  USB debugging, no desktop inspector attach. Guide with a full reproduction
+  of the T3 Code / "Fable Broke My App" incident:
+  `docs-site/docs/guides/gpu-compositor-debugging-ai.md`.
+
+### Fixed
+- **`automation {action:"evaluate"}` no longer silently runs content-scoped
+  scripts in the proxy shell.** The content-frame wrapper used to fall back to
+  `window` when the app iframe was not yet available, so an evaluate racing a
+  navigation executed in the SHELL realm — the exact wrong-frame failure the
+  content default exists to remove. A wrapped shell now waits (bounded, 5s)
+  for the app frame to become ready — its realm carries the injected content
+  role, or a non-instrumented document has fully loaded off `about:blank` —
+  and on timeout fails loud, naming the real states and the `frame:"top"`
+  escape hatch. Only a genuinely unwrapped page still evaluates in `window`
+  directly.
 
 ### Removed
 - **`get_errors` is gone. `get_incidents` is the only error surface.** The
