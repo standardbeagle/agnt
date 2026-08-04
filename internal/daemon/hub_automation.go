@@ -367,6 +367,20 @@ func (d *Daemon) hubHandleAutomationNavigate(ctx context.Context, conn *hubpkg.C
 // An unwrapped page (no shell, e.g. a direct non-proxied URL) has no content
 // iframe; there "content" and "top" are the same document, which is exactly what
 // walkthrough.js's own contentWin() concludes for the same case.
+//
+// The wrapper distinguishes those two cases by the shell's own role marker
+// (window.__devtool_role === "chrome", stamped by the injector) instead of by
+// whether the iframe lookup happened to hit. That distinction is load-bearing:
+// an evaluate racing a navigation sees the shell before the app frame is ready,
+// and the old `|| window` fallback silently ran the script in the SHELL — the
+// exact wrong-frame failure the content default exists to remove. Now a wrapped
+// shell WAITS for the app frame (bounded), and fails loud naming frame:"top" as
+// the escape hatch; only a genuinely unwrapped page runs in window directly.
+//
+// The app frame counts as ready when its realm carries the injected content
+// role, or — for non-instrumented documents the proxy did not inject — when it
+// has fully loaded off about:blank. Evaluating in the transient about:blank
+// realm would be lost the moment the real document lands.
 func automationEvalScript(script, frame string) (string, error) {
 	switch frame {
 	case "", "content":
@@ -374,14 +388,54 @@ func automationEvalScript(script, frame string) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("invalid script: %w", err)
 		}
-		return "(function(){var f=document.getElementById('__devtool_content_frame');" +
-			"var w=(f&&f.contentWindow)?f.contentWindow:window;" +
-			"return w.eval(" + string(lit) + ");})()", nil
+		return "(async function(){" +
+			"function target(){" +
+			"var f=document.getElementById('" + contentFrameElementID + "');" +
+			"if(!f){return window.__devtool_role==='chrome'?null:window;}" +
+			"var w=f.contentWindow;if(!w){return null;}" +
+			"try{" +
+			"if(w.__devtool_role==='content'){return w;}" +
+			"if(w.document&&w.document.readyState==='complete'&&w.location.href!=='about:blank'){return w;}" +
+			"}catch(e){return null;}" +
+			"return null;}" +
+			"var deadline=Date.now()+" + fmt.Sprintf("%d", contentFrameWaitMs) + ";" +
+			"for(;;){" +
+			"var w=target();" +
+			"if(w){return w.eval(" + string(lit) + ");}" +
+			"if(Date.now()>deadline){throw new Error(" + contentFrameTimeoutMsg() + ");}" +
+			"await new Promise(function(r){setTimeout(r," + fmt.Sprintf("%d", contentFramePollMs) + ");});" +
+			"}})()", nil
 	case "top":
 		return script, nil
 	default:
 		return "", fmt.Errorf("unknown frame %q: use content (the app, default) or top (the proxy chrome shell)", frame)
 	}
+}
+
+// contentFrameElementID is the shell's content iframe id — must match
+// proxy/injector.go's contentFrameID.
+const contentFrameElementID = "__devtool_content_frame"
+
+// contentFrameWaitMs bounds how long a content-frame evaluate waits for the app
+// frame to become ready inside a wrapped shell before failing loud; sized to
+// cover an evaluate issued immediately after navigate on a slow app load.
+// contentFramePollMs is the readiness re-check interval within that window.
+const (
+	contentFrameWaitMs = 5000
+	contentFramePollMs = 50
+)
+
+// contentFrameTimeoutMsg is the JS string literal thrown when the app frame
+// never becomes ready: the caller asked for the app, so running in the shell
+// instead is never an acceptable substitute — the error names the real states
+// (still loading vs. shell-only page) and the frame:"top" escape hatch.
+func contentFrameTimeoutMsg() string {
+	msg := fmt.Sprintf("content frame not ready after %ds: the proxy shell has no "+
+		"loaded app frame (app still loading, or the page has no content). Retry "+
+		`once the app is up, or pass frame:"top" to inspect the proxy shell itself.`,
+		contentFrameWaitMs/1000)
+	lit, _ := json.Marshal(msg)
+	return string(lit)
 }
 
 // hubHandleAutomationEvaluate handles AUTOMATION EVALUATE command.

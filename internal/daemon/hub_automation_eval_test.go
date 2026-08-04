@@ -28,6 +28,44 @@ func TestAutomationEvalScriptDefaultsToContentFrame(t *testing.T) {
 	}
 }
 
+// TestAutomationEvalScriptContentNeverSilentlyRunsInShell pins the repair of
+// the wrong-frame default: inside a wrapped shell (window.__devtool_role ===
+// "chrome") a missing or not-yet-loaded app frame must WAIT and then fail loud
+// — never fall back to evaluating in the shell, which is the silent failure
+// that read as "my evaluate ran in the outer frame, not the page". The bare
+// window fallback is reserved for a genuinely unwrapped page.
+func TestAutomationEvalScriptContentNeverSilentlyRunsInShell(t *testing.T) {
+	got, err := automationEvalScript("document.title", "content")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// The unwrapped-page fallback must be gated on the shell role marker, not
+	// on whether the iframe lookup happened to hit.
+	if !strings.Contains(got, "window.__devtool_role==='chrome'?null:window") {
+		t.Errorf("window fallback must be gated on the shell role marker, got: %s", got)
+	}
+	// A wrapped shell whose app frame never becomes ready must throw, and the
+	// error must name the escape hatch rather than leave the caller guessing.
+	if !strings.Contains(got, "throw new Error(") ||
+		!strings.Contains(got, "content frame not ready") {
+		t.Errorf("timeout must fail loud, got: %s", got)
+	}
+	if !strings.Contains(got, `frame:\"top\"`) {
+		t.Errorf("timeout error must name the frame:\"top\" escape hatch, got: %s", got)
+	}
+	// Readiness means the app realm, not the transient about:blank one: either
+	// the injected content role, or a fully loaded non-blank document.
+	if !strings.Contains(got, "__devtool_role==='content'") ||
+		!strings.Contains(got, "about:blank") {
+		t.Errorf("readiness gate must accept the app realm only, got: %s", got)
+	}
+	// Bounded wait: the wrapper polls against a deadline instead of failing on
+	// first miss (an evaluate issued right after navigate is a normal call).
+	if !strings.Contains(got, "deadline") || !strings.Contains(got, "setTimeout") {
+		t.Errorf("wrapper must wait for the frame before giving up, got: %s", got)
+	}
+}
+
 // TestAutomationEvalScriptTopIsVerbatim pins the escape hatch: inspecting the
 // proxy chrome shell (overlay, indicator, panels) is a real debugging surface,
 // and it must get the caller's script untouched.
@@ -80,16 +118,17 @@ func TestAutomationEvalScriptQuotesTheScript(t *testing.T) {
 }
 
 // TestAutomationEvalScriptUnwrappedPageStillWorks documents the no-shell case:
-// a direct (non-proxied) page has no content iframe, and the wrapper falls back
-// to the page's own window. That is the same conclusion walkthrough.js's
-// contentWin() reaches for an unwrapped page — not a fallback papering over a
-// missing frame.
+// a direct (non-proxied) page has no content iframe AND no chrome role marker,
+// and the wrapper resolves immediately to the page's own window. That is the
+// same conclusion walkthrough.js's contentWin() reaches for an unwrapped page —
+// and it is only reachable when the page is genuinely unwrapped: inside a shell
+// the role marker routes a missing frame to the wait/fail-loud path instead.
 func TestAutomationEvalScriptUnwrappedPageStillWorks(t *testing.T) {
 	got, err := automationEvalScript("document.title", "content")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(got, "(f&&f.contentWindow)?f.contentWindow:window") {
+	if !strings.Contains(got, "window.__devtool_role==='chrome'?null:window") {
 		t.Errorf("wrapper must resolve to the page window when there is no shell, got: %s", got)
 	}
 }

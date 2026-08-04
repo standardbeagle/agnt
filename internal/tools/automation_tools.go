@@ -83,10 +83,11 @@ Actions:
 
 evaluate runs against THE APP by default, reaching through the proxy's content
 frame for you — no document.getElementById('__devtool_content_frame').contentWindow
-hop to write. Pass frame:"top" to inspect the proxy chrome shell (overlay,
-indicator, panels) instead. Async scripts are awaited, so you get the resolved
-value rather than a pending promise; write one async script instead of chaining
-sequential calls.
+hop to write. If the app frame is still loading it waits (up to 5s) and then
+fails loud rather than ever running your script in the wrong frame. Pass
+frame:"top" to inspect the proxy chrome shell (overlay, indicator, panels)
+instead. Async scripts are awaited, so you get the resolved value rather than a
+pending promise; write one async script instead of chaining sequential calls.
 
 Examples:
   automation {action: "start", url: "http://localhost:3000"}
