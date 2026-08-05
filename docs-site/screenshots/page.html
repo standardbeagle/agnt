@@ -61,6 +61,13 @@
   .filters { z-index:30; display:inline-block; margin-top:10px; color:var(--mut); font-size:13px; }
   .lowc-btn { background:#3a3f4a; color:#565b66; border:0; padding:9px 16px; border-radius:8px; cursor:pointer; }
   .ann-row { display:flex; align-items:center; gap:14px; }
+
+  /* --- dynamic-form demo states (debug-to-e2e scene) --- */
+  input.field-err, select.field-err { border-color:#ef4444; box-shadow:0 0 0 1px rgba(239,68,68,.4); }
+  .field-msg { color:#ef4444; font-size:12px; margin-top:4px; min-height:15px; }
+  #form-banner { grid-column:1/3; border-radius:8px; padding:9px 12px; font-size:13px; display:none; }
+  #form-banner.err { display:block; background:rgba(239,68,68,.12); color:#f87171; border:1px solid rgba(239,68,68,.4); }
+  #form-banner.ok { display:block; background:rgba(34,197,94,.12); color:var(--acc2); border:1px solid rgba(34,197,94,.4); }
 </style>
 </head>
 <body>
@@ -105,13 +112,14 @@
 
     <div class="panel">
       <h2>Add customer</h2>
-      <form>
-        <div><label>Company name</label><input placeholder="Acme Inc."></div>
-        <div><label>Plan</label><select><option>Starter</option><option>Pro</option><option>Enterprise</option></select></div>
-        <div><label>Contact email</label><input placeholder="ops@acme.com"></div>
-        <div><label>Seats</label><input placeholder="25"></div>
+      <form id="customer-form">
+        <div><label>Company name</label><input id="f-company" placeholder="Acme Inc."><div class="field-msg" id="m-company"></div></div>
+        <div><label>Plan</label><select id="f-plan"><option>Starter</option><option>Pro</option><option>Enterprise</option></select><div class="field-msg" id="m-plan"></div></div>
+        <div><label>Contact email</label><input id="f-email" placeholder="ops@acme.com"><div class="field-msg" id="m-email"></div></div>
+        <div><label>Seats</label><input id="f-seats" placeholder="25"><div class="field-msg" id="m-seats"></div></div>
+        <div id="form-banner"></div>
         <div class="actions">
-          <button class="primary" type="button">Create customer</button>
+          <button class="primary" type="button" id="f-submit">Create customer</button>
           <button class="ghost" type="button">Cancel</button>
         </div>
       </form>
@@ -192,6 +200,100 @@
         frag.forEach(function(el) { el.remove(); });
         return 'done';
       };
+    })();
+
+    // Dynamic-form driver for the debug-to-e2e scene: client-side validation
+    // marks fields, a passing form POSTs to the mock /api/customer endpoint,
+    // and non-2xx responses land in the banner — giving the e2e generator a
+    // distinct observable failure state per case.
+    (function() {
+      var $ = function(id) { return document.getElementById(id); };
+      function setErr(field, msg) {
+        $('f-' + field).classList.toggle('field-err', !!msg);
+        $('m-' + field).textContent = msg || '';
+      }
+      function banner(cls, msg) {
+        var b = $('form-banner');
+        b.className = cls || '';
+        b.textContent = msg || '';
+      }
+      function validate() {
+        var errs = {};
+        var company = $('f-company').value.trim();
+        var email = $('f-email').value.trim();
+        var seats = $('f-seats').value.trim();
+        if (!company) errs.company = 'Company name is required';
+        if (!email) errs.email = 'Contact email is required';
+        else if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) errs.email = 'Enter a valid email address';
+        if (!seats) errs.seats = 'Seat count is required';
+        else if (!/^\d+$/.test(seats)) errs.seats = 'Seats must be a number';
+        else if (+seats < 1 || +seats > 500) errs.seats = 'Seats must be between 1 and 500';
+        ['company', 'email', 'seats'].forEach(function(f) { setErr(f, errs[f]); });
+        return errs;
+      }
+      $('f-submit').addEventListener('click', async function() {
+        banner('', '');
+        var errs = validate();
+        if (Object.keys(errs).length) {
+          banner('err', 'Fix ' + Object.keys(errs).length + ' field error' + (Object.keys(errs).length > 1 ? 's' : '') + ' to continue');
+          window.__formLast = {stage: 'client-validation', errors: errs};
+          return;
+        }
+        var body = {
+          company: $('f-company').value.trim(), plan: $('f-plan').value,
+          email: $('f-email').value.trim(), seats: +$('f-seats').value.trim(),
+        };
+        try {
+          var res = await fetch('/api/customer', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(body),
+          });
+          var data = await res.json().catch(function() { return {}; });
+          if (res.ok) {
+            banner('ok', 'Customer "' + body.company + '" created (#' + data.id + ')');
+          } else {
+            banner('err', 'Server rejected (' + res.status + '): ' + (data.error || 'unknown error'));
+            if (data.field) setErr(data.field, data.error);
+          }
+          window.__formLast = {stage: 'server', status: res.status, body: data};
+        } catch (e) {
+          banner('err', 'Network error: ' + e.message);
+          window.__formLast = {stage: 'network', error: String(e)};
+        }
+      });
+      window.__demoFormReset = function() {
+        ['company', 'email', 'seats'].forEach(function(f) { setErr(f, ''); });
+        $('f-company').value = ''; $('f-email').value = ''; $('f-seats').value = '';
+        $('f-plan').selectedIndex = 0;
+        banner('', '');
+      };
+    })();
+
+    // Post-fix verification targets for the debug-to-e2e scene: the pinned
+    // note and export menu react visibly to clicks, so the video can prove
+    // the containing-block/clipping fix actually restored interactivity.
+    (function() {
+      var note = document.getElementById('pinned-note');
+      note.style.cursor = 'pointer';
+      note.addEventListener('click', function() {
+        note.textContent = '📌 Standup at 9:30 — noted ✓';
+        note.style.borderColor = '#22c55e';
+        note.style.color = '#22c55e';
+      });
+      var menu = document.getElementById('export-menu');
+      menu.addEventListener('click', function(e) {
+        if (e.target.tagName !== 'A') return;
+        e.preventDefault();
+        var card = document.getElementById('activity-card');
+        var status = card.querySelector('.export-status');
+        if (!status) {
+          status = document.createElement('div');
+          status.className = 'export-status';
+          status.style.cssText = 'position:absolute; top:14px; right:14px; color:#22c55e; font-size:13px;';
+          card.appendChild(status);
+        }
+        status.textContent = e.target.textContent.replace('Export as ', '') + ' export started ✓';
+      });
     })();
     </script>
   </main>

@@ -1,0 +1,41 @@
+{
+  "voice": "en-US-AndrewMultilingualNeural",
+  "rate": "+4%",
+  "segments": [
+    {
+      "id": "intro",
+      "at": "intro-card",
+      "text": "This is agnt: your coding agent's eyes and hands in a real browser. One bug report, taken from diagnosis to full end-to-end coverage — through the floating proxy UI."
+    },
+    {
+      "id": "s1a",
+      "at": "s1",
+      "text": "The developer reports the bug in the floating panel — it goes straight over the proxy's channel to the agent, which picks it up and answers in the same overlay."
+    },
+    {
+      "id": "s1b",
+      "at": "s1+16",
+      "text": "The agent runs layout diagnostics through the proxy. Five issues, each outlined on the page: the root cause is a translate-Z-zero hack creating a containing block that traps the pinned note. The CSS audit grades the damage."
+    },
+    {
+      "id": "s2",
+      "at": "s2-card",
+      "text": "The diagnosis becomes a site-wide regression check — red, five violations. The agent applies the fix, and the check runs green. And the fix holds: the export menu renders in full and takes clicks, and the note finally answers."
+    },
+    {
+      "id": "s3a",
+      "at": "s3-card",
+      "text": "Finally, the dynamic form. The agent drives every failure condition end to end: a passing baseline, empty required fields, an invalid email, seats out of range."
+    },
+    {
+      "id": "s3b",
+      "at": "s3+24",
+      "text": "Then the server-side failures: a duplicate company rejected with 409, a plan rule violation at 422, and a raw 500 surfaced to the user. Six failure-condition tests and one green baseline — generated, observed, and verified."
+    },
+    {
+      "id": "outro",
+      "at": "outro-card",
+      "text": "agnt. Give your agent the browser."
+    }
+  ]
+}

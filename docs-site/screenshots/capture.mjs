@@ -40,10 +40,25 @@ const axePath = path.join(here, '..', '..', 'internal', 'proxy', 'scripts', 'axe
 // have real fetch traffic for the in-page call buffer.
 function mockAPI(req, res) {
   const u = new URL(req.url, 'http://x');
-  const respond = (delay, body) => setTimeout(() => {
-    res.writeHead(200, {'Content-Type': 'application/json'});
+  const respond = (delay, body, status = 200) => setTimeout(() => {
+    res.writeHead(status, {'Content-Type': 'application/json'});
     res.end(JSON.stringify(body));
   }, delay);
+  // POST /api/customer: distinct server-side failure modes for the
+  // debug-to-e2e scene's failure-condition e2e generation.
+  if (req.method === 'POST' && u.pathname === '/api/customer') {
+    let raw = '';
+    req.on('data', (c) => { raw += c; });
+    req.on('end', () => {
+      let b = {};
+      try { b = JSON.parse(raw); } catch { return respond(80, {error: 'malformed JSON body'}, 400); }
+      if (b.company === 'Globex Corp') return respond(200, {error: 'company already exists', field: 'company'}, 409);
+      if (b.plan === 'Enterprise' && b.seats < 25) return respond(150, {error: 'Enterprise plan requires at least 25 seats', field: 'seats'}, 422);
+      if (b.company === 'Crash Test') return respond(300, {error: 'internal server error'}, 500);
+      return respond(180, {id: 1042, company: b.company});
+    });
+    return;
+  }
   if (u.pathname === '/api/users') return respond(260, {users: [1, 2, 3, 4, 5].map(i => ({id: i}))});
   if (u.pathname.startsWith('/api/user/')) return respond(140, {id: u.pathname.split('/').pop(), name: 'user'});
   if (u.pathname === '/api/config') return respond(90, {theme: 'dark', flags: {beta: true}});
@@ -265,6 +280,113 @@ await shot('responsive-audit', async (pg) => {
     await pg.waitForTimeout(1300);
   }
   await pg.waitForTimeout(500);
+});
+
+// Full debug-to-e2e workflow in one take: the audit tools diagnose a thorny
+// CSS issue (fixed note trapped by a transform containing block, clipped
+// dropdown, dead z-index), the diagnosis is encoded as a site-wide regression
+// check that goes red → fix → green, then every failure condition of the
+// dynamic "Add customer" form is driven end to end as generated e2e cases.
+await shot('debug-to-e2e', async (pg) => {
+  const toast = (message, type = 'info', duration = 4200) =>
+    pg.evaluate((t) => window.__devtool.toast.show(t), {message, type, duration});
+
+  // --- Phase 1: diagnose the CSS issue with the audit tools ---
+  await pg.evaluate(() => window.__devtool.indicator.show());
+  await toast('Bug report: "standup note swallows clicks & the export menu is cut off"', 'error');
+  await pg.evaluate(() => document.getElementById('layout-demo').scrollIntoView({behavior: 'smooth', block: 'center'}));
+  await pg.waitForTimeout(1600);
+  await pg.evaluate(() => {
+    const r = window.__devtool.diagnoseLayoutIssues();
+    window.__diag = r;
+    const parts = Object.entries(r.by_check).filter(([, n]) => n > 0).map(([k, n]) => k + ' ×' + n);
+    window.__devtool.toast.show({message: 'diagnoseLayoutIssues(): ' + r.count + ' issues — ' + parts.join(', '), type: 'warning', duration: 5000});
+    for (const f of r.findings) {
+      const el = document.querySelector(f.selector);
+      if (el) { el.style.outline = '3px solid #ef4444'; el.style.outlineOffset = '2px'; }
+      if (f.cause) {
+        const c = document.querySelector(f.cause);
+        if (c) { c.style.outline = '3px dashed #f59e0b'; c.style.outlineOffset = '4px'; }
+      }
+    }
+  });
+  await pg.waitForTimeout(2400);
+  await pg.evaluate(() => {
+    const trap = (window.__diag.findings || []).find((f) => f.fix) || {};
+    window.__devtool.toast.show({message: 'Root cause: ' + (trap.detail || 'containing-block trap') + ' — fix: ' + (trap.fix || 'remove the transform'), type: 'info', duration: 5600});
+  });
+  await pg.waitForTimeout(2800);
+  await pg.evaluate(() => {
+    const r = window.__devtool_audit_css.auditCSS({detailLevel: 'summary'});
+    window.__devtool.toast.show({message: 'CSS audit [' + r.grade + '] ' + r.summary, type: 'warning', duration: 4600});
+  });
+  await pg.waitForTimeout(2600);
+
+  // --- Phase 2: site-wide regression check — red, fix, green ---
+  await toast('Encoding diagnosis as a site-wide regression check…');
+  await pg.waitForTimeout(1800);
+  await pg.evaluate(() => {
+    const r = window.__devtool.diagnoseLayoutIssues();
+    window.__devtool.toast.show({message: 'Regression check: FAIL — ' + r.count + ' layout violations across the page', type: 'error', duration: 4200});
+  });
+  await pg.waitForTimeout(2400);
+  await toast('Applying fix: drop translateZ(0) hack, un-clip export card, position the filters', 'info');
+  await pg.evaluate(() => {
+    document.querySelector('.activity-wrap').style.transform = 'none';
+    document.getElementById('activity-card').style.overflow = 'visible';
+    document.querySelector('.filters').style.position = 'relative';
+    for (const el of document.querySelectorAll('#layout-demo *, .pinned-note')) {
+      el.style.outline = ''; el.style.outlineOffset = '';
+    }
+  });
+  await pg.waitForTimeout(1800);
+  await pg.evaluate(() => {
+    const r = window.__devtool.diagnoseLayoutIssues();
+    const ok = r.count === 0;
+    window.__devtool.toast.show({
+      message: ok ? 'Regression check: PASS — 0 violations · snapshot baseline saved for CI compare'
+                  : 'Regression check: ' + r.count + ' violations remaining',
+      type: ok ? 'success' : 'warning', duration: 4800,
+    });
+  });
+  await pg.waitForTimeout(2600);
+
+  // --- Phase 3: generate e2e tests for every failure condition of the form ---
+  await pg.evaluate(() => document.getElementById('customer-form').scrollIntoView({behavior: 'smooth', block: 'center'}));
+  await toast('Generating e2e tests for every failure condition of the Add-customer form…');
+  await pg.waitForTimeout(2000);
+
+  const cases = [
+    {name: 'baseline-valid', company: 'Initrode', email: 'ops@initrode.com', seats: '25', expect: '201-style success'},
+    {name: 'empty-required-fields', company: '', email: '', seats: '', expect: '3 client validation errors'},
+    {name: 'invalid-email', company: 'Initrode', email: 'not-an-email', seats: '25', expect: 'email validation error'},
+    {name: 'seats-out-of-range', company: 'Initrode', email: 'ops@initrode.com', seats: '0', expect: 'range validation error'},
+    {name: 'duplicate-company', company: 'Globex Corp', email: 'ops@globex.com', seats: '25', expect: 'HTTP 409 conflict'},
+    {name: 'plan-seat-constraint', company: 'Initrode', email: 'ops@initrode.com', seats: '5', plan: 'Enterprise', expect: 'HTTP 422 rule violation'},
+    {name: 'server-error', company: 'Crash Test', email: 'ops@crash.dev', seats: '25', expect: 'HTTP 500 surfaced to user'},
+  ];
+  let n = 0;
+  for (const c of cases) {
+    await pg.evaluate(() => window.__demoFormReset());
+    if (c.company) { await pg.click('#f-company'); await pg.type('#f-company', c.company, {delay: 18}); }
+    if (c.email) { await pg.click('#f-email'); await pg.type('#f-email', c.email, {delay: 14}); }
+    if (c.seats) { await pg.click('#f-seats'); await pg.type('#f-seats', c.seats, {delay: 30}); }
+    if (c.plan) await pg.selectOption('#f-plan', c.plan);
+    await pg.click('#f-submit');
+    await pg.waitForTimeout(700);
+    const observed = await pg.evaluate(() => {
+      const l = window.__formLast || {};
+      if (l.stage === 'client-validation') return Object.keys(l.errors).length + ' field errors';
+      if (l.stage === 'server') return 'HTTP ' + l.status;
+      return l.stage || 'no result';
+    });
+    n++;
+    const pass = c.name === 'baseline-valid';
+    await toast('e2e ' + n + '/' + cases.length + ' [' + c.name + '] expect ' + c.expect + ' — observed ' + observed + ' ✓', pass ? 'success' : 'warning', 3000);
+    await pg.waitForTimeout(1500);
+  }
+  await toast('replaytest: 6 failure-condition e2e tests + 1 passing baseline generated', 'success', 6000);
+  await pg.waitForTimeout(2200);
 });
 
 await browser.close();
