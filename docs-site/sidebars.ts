@@ -28,6 +28,14 @@ const sidebars: SidebarsConfig = {
         'concepts/graceful-shutdown',
       ],
     },
+    {
+      type: 'category',
+      label: 'Demos',
+      items: [
+        'demos/index',
+        'demos/debug-to-e2e',
+      ],
+    },
     'roadmap',
   ],
   apiSidebar: [
