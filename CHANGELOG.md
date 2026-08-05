@@ -1,6 +1,6 @@
 # Changelog - agnt
 
-## [Unreleased]
+## [0.15.0] - 2026-08-05
 
 ### Added
 - **`auditDesign` — delay-loaded design anti-pattern audit**
@@ -282,7 +282,7 @@
 - **MCP client CWD resolution**: `detect` and `run` tools now resolve relative paths (like `.`) to absolute paths before sending to daemon, ensuring the daemon uses the MCP client's working directory instead of its own
 - **Sketch overlay visibility**: Reduced background opacity and improved grid dot visibility
 
-## [Unreleased]
+## [0.15.0] - 2026-08-05
 
 ## [0.9.0] - 2025-01-23
 
@@ -450,7 +450,7 @@ make install-local
 
 ---
 
-## [Unreleased] - 2025-12-05
+## [0.15.0] - 2026-08-05 - 2025-12-05
 
 ### Added - Async JavaScript Execution & Response Logging
 
@@ -547,7 +547,7 @@ proxylog {proxy_id: "dev", types: ["response"], limit: 50}
 
 ---
 
-## [Unreleased] - 2025-12-05
+## [0.15.0] - 2026-08-05 - 2025-12-05
 
 ### Added - Comprehensive Diagnostic Primitives (~50 Functions)
 
