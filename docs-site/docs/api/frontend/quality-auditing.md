@@ -324,6 +324,36 @@ Without `document.getAnimations()` support the audit returns `notApplicable` rat
 
 `auditAnimations` is **not** folded into `auditAll` / `auditPageQuality`: its headline signal depends on the display it runs on (refresh rate, DPI), so averaging it into a portable page grade would make that grade machine-dependent. Run it directly — the full investigation workflow is in the [GPU & Compositor Debugging guide](/guides/gpu-compositor-debugging-ai).
 
+## auditDesign
+
+Design anti-pattern audit backed by the vendored [Impeccable](https://impeccable.style) browser detector (Apache-2.0): 59 deterministic rules for the design tells AI-generated frontends share — overused fonts, purple-to-blue gradients, gradient text, cards nested in cards, gray text on colored backgrounds, side-tab borders, low contrast.
+
+```javascript
+window.__devtool.audit.auditDesign()              // Promise — resolves with the report
+window.__devtool.audit.auditDesign({raw: true})   // full findings instead of grouped
+```
+
+**Delay-loaded.** The detector bundle is ~366KB and is never part of the injected instrumentation; the first `auditDesign()` call injects it from `/__devtool_impeccable` with auto-scan disabled, so loading it runs no work the caller didn't ask for. Subsequent calls reuse the loaded detector. This audit binds only Impeccable's live-DOM browser engine — the package's static-HTML and source-tree engines are out of scope, because an audit answers for the rendered page.
+
+Result shape matches the audit family (`score`/`grade`/`summary`/`findingsByType`), with two Impeccable-specific rules: findings on hidden elements are skipped, and the detector's *advisory* findings surface as `info` and never affect the score — the detector's own contract is that advisories are not failures.
+
+```json
+{
+  "audit": "design",
+  "score": 64,
+  "grade": "D",
+  "summary": "6 design anti-patterns (0 error, 6 warning). Impeccable browser engine, live DOM",
+  "stats": {"elementsFlagged": 3, "errors": 0, "warnings": 6, "info": 0, "totalIssues": 6},
+  "findingsByType": {
+    "gradient-text": [{"severity": "warning", "selector": "h1", "message": "Gradient text — background-clip: text + gradient"}],
+    "gray-on-color": [{"severity": "warning", "selector": "div.banner", "message": "Gray text on colored background — text #9ca3af on bg #7c3aed"}],
+    "low-contrast": [{"severity": "warning", "selector": "div.banner", "message": "Low contrast text — 2.2:1 (need 4.5:1) — text #9ca3af on #7c3aed"}]
+  }
+}
+```
+
+Like `auditAnimations`, this audit is not folded into `auditAll` — it depends on a 366KB delayed load, and pulling it in would make the aggregate's first run silently heavyweight.
+
 ## Browser Compatibility
 
 | Function | Chrome | Firefox | Safari | Edge |
