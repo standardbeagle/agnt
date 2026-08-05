@@ -1,5 +1,23 @@
 # Changelog - agnt
 
+## [Unreleased]
+
+### Added
+- **`auditDesign` — delay-loaded design anti-pattern audit**
+  (`__devtool.audit.auditDesign`). Backed by the vendored
+  [Impeccable](https://impeccable.style) browser detector (Apache-2.0): 59
+  deterministic rules for the design tells AI-generated frontends share —
+  overused fonts, purple-to-blue gradients, gradient text, cards nested in
+  cards, gray text on colored backgrounds, side-tab borders, low contrast.
+  Only Impeccable's live-DOM engine is bound; the package's static-HTML and
+  source-tree engines are deliberately out of scope, because an audit answers
+  for the rendered page. The ~366KB detector never enters the injected
+  instrumentation: the first call injects it from `/__devtool_impeccable`
+  (served `charset=utf-8` — the bundle carries UTF-8 regex character classes)
+  with auto-scan disabled. Advisory findings surface as `info` and never
+  score. Not folded into `auditAll`, which would make the aggregate's first
+  run silently heavyweight.
+
 ## [0.14.0] - 2026-08-04
 
 ### Added
