@@ -159,6 +159,20 @@ func handleAxeCore(w http.ResponseWriter, r *http.Request) {
 	w.Write([]byte(scripts.GetAxeCore()))
 }
 
+// handleImpeccableDetect serves the vendored Impeccable design anti-pattern
+// detector (Apache-2.0) on demand. Like html2canvas it is deliberately NOT in
+// the always-injected bundle (~366KB); audit-design.js injects it on the
+// first auditDesign() call with auto-scan disabled. Mirrors handleAxeCore.
+func handleImpeccableDetect(w http.ResponseWriter, r *http.Request) {
+	// charset is load-bearing: the bundle carries UTF-8 regex character
+	// classes (box-drawing ranges); a page without its own charset would
+	// otherwise parse the external script as Latin-1 and die on
+	// "Range out of order in character class".
+	w.Header().Set("Content-Type", "application/javascript; charset=utf-8")
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.Write([]byte(scripts.GetImpeccableDetect()))
+}
+
 // handleHtml2Canvas serves the html2canvas-pro capture library on demand. It is
 // deliberately NOT inlined into the always-injected instrumentation bundle
 // (that ~211KB blocked first paint of every proxied page); the in-page loader

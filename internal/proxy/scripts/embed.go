@@ -81,6 +81,9 @@ var (
 	//go:embed audit-animations.js
 	auditAnimationsJS string
 
+	//go:embed audit-design.js
+	auditDesignJS string
+
 	//go:embed interaction.js
 	interactionJS string
 
@@ -194,6 +197,9 @@ var (
 
 	//go:embed axe-core.min.js
 	axeCoreJS string
+
+	//go:embed impeccable-detect.js
+	impeccableDetectJS string
 )
 
 // Role identifies which per-frame bundle flavour to build. The proxy knows
@@ -308,6 +314,10 @@ var moduleOrder = []moduleEntry{
 	// registry) at call time — no observer module dependency; audit-utils is
 	// required for the shared finding-id / grade / selector conventions.
 	{"audit-animations", []string{"utils", "audit-utils"}},
+	// audit-design lazy-loads the vendored Impeccable browser detector from
+	// /__devtool_impeccable on first call (html2canvas-loader pattern), then
+	// adapts window.impeccableDetect() findings to the shared audit shape.
+	{"audit-design", []string{"utils", "audit-utils"}},
 	{"audit-quality", []string{"utils", "audit-dom", "audit-css", "audit-security", "audit-performance"}},
 	{"interaction", []string{"utils", "core"}},
 	{"mutation", []string{"utils", "core"}},
@@ -401,7 +411,7 @@ var moduleOrder = []moduleEntry{
 	{"api", []string{
 		"core", "frames", "utils", "overlay", "inspection", "tree", "visual",
 		"layout", "interactive", "capture", "accessibility",
-		"audit-quality", "audit-api", "audit-loading", "audit-animations", "audit-report", "interaction", "mutation",
+		"audit-quality", "audit-api", "audit-loading", "audit-animations", "audit-design", "audit-report", "interaction", "mutation",
 		"voice", "indicator", "sketch", "design", "walkthrough", "palette",
 		"diagnostics", "session", "store", "content",
 		"wireframe", "responsive", "responsive-mode", "style-editor",
@@ -447,6 +457,7 @@ var moduleRole = map[string]Role{
 	"audit-api":        RoleContent,
 	"audit-loading":    RoleContent,
 	"audit-animations": RoleContent,
+	"audit-design":     RoleContent,
 	"interaction":      RoleContent,
 	"mutation":         RoleContent,
 	"override-store":   RoleContent,
@@ -527,6 +538,7 @@ var moduleScript = map[string]string{
 	"audit-api":          auditApiJS,
 	"audit-loading":      auditLoadingJS,
 	"audit-animations":   auditAnimationsJS,
+	"audit-design":       auditDesignJS,
 	"interaction":        interactionJS,
 	"mutation":           mutationJS,
 	"toast":              toastJS,
@@ -682,6 +694,14 @@ func wrapModule(js string) string {
 // GetAxeCore returns the bundled axe-core JavaScript library.
 func GetAxeCore() string {
 	return axeCoreJS
+}
+
+// GetImpeccableDetect returns the bundled Impeccable design anti-pattern
+// detector (Apache-2.0, https://impeccable.style), served on demand from
+// /__devtool_impeccable. Deliberately NOT in the always-injected bundle
+// (~366KB); audit-design.js lazy-loads it on the first auditDesign() call.
+func GetImpeccableDetect() string {
+	return impeccableDetectJS
 }
 
 // GetHtml2Canvas returns the bundled html2canvas-pro library, served on demand
