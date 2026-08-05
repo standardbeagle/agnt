@@ -111,7 +111,7 @@ grep '^version = ' python/pyproject.toml
 # Commit and tag
 echo ""
 echo "Creating commit and tag..."
-git add cmd/agnt/main.go internal/daemon/daemon.go npm/agnt/package.json python/agnt/pyproject.toml python/agnt/src/agnt/__init__.py AGENTS.md package.json npm/devtool-mcp/package.json python/pyproject.toml
+git add cmd/agnt/main.go internal/daemon/daemon.go internal/daemonclient/upgrade.go npm/agnt/package.json python/agnt/pyproject.toml python/agnt/src/agnt/__init__.py AGENTS.md package.json npm/devtool-mcp/package.json python/pyproject.toml
 git commit -m "chore: bump version to $NEW_VERSION
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)
