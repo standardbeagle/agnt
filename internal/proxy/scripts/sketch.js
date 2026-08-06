@@ -6,6 +6,36 @@
 
   var core = window.__devtool_core;
 
+  // Default ink follows the page theme: Excalidraw's #1e1e1e is invisible on
+  // dark UIs, which are most of what this tool gets opened on.
+  var STROKE_ON_LIGHT_BG = '#1e1e1e';
+  var STROKE_ON_DARK_BG = '#e8e9ee';
+
+  function defaultStrokeForPage() {
+    // sketch.js runs in the chrome frame; the page's background lives in the
+    // content document (same-origin through the proxy). Use the frame-context
+    // adapter — direct frame-topology references are forbidden by contract.
+    var doc = document;
+    try {
+      var ctx = window.__devtool_context;
+      var f = ctx && ctx.contentFrame && ctx.contentFrame();
+      if (f && f.contentDocument && f.contentDocument.body) doc = f.contentDocument;
+    } catch (e) { /* fall back to the shell document */ }
+    var el = doc.body;
+    while (el) {
+      var bg = '';
+      try { bg = doc.defaultView.getComputedStyle(el).backgroundColor; } catch (e) { break; }
+      var m = bg && bg.match(/[\d.]+/g);
+      // rgb() carries 3 components (opaque), rgba() 4; transparent is rgba(0,0,0,0)
+      if (m && m.length >= 3 && (m.length === 3 || parseFloat(m[3]) > 0.05)) {
+        var lum = (0.2126 * (+m[0]) + 0.7152 * (+m[1]) + 0.0722 * (+m[2])) / 255;
+        return lum < 0.5 ? STROKE_ON_DARK_BG : STROKE_ON_LIGHT_BG;
+      }
+      el = el.parentElement;
+    }
+    return STROKE_ON_LIGHT_BG;
+  }
+
   // Sketch state
   var sketchState = {
     isActive: false,
@@ -343,6 +373,11 @@
   // Initialize sketch mode
   function init() {
     if (sketchState.container) return;
+    // Theme-aware default ink — only while the factory default is untouched,
+    // so a user's saved/chosen color is never overridden.
+    if (sketchState.strokeColor === STROKE_ON_LIGHT_BG) {
+      sketchState.strokeColor = defaultStrokeForPage();
+    }
     // Default mode is 'none' — canvas stays transparent so the live page shows
     // through. User can opt into capture/solid via the Background sidebar.
     initSketchUI();

@@ -1,5 +1,16 @@
 # Changelog - agnt
 
+## [0.15.1] - 2026-08-06
+
+### Fixed
+- **Sketch mode default ink is now theme-aware.** The Excalidraw-style
+  default stroke `#1e1e1e` is invisible on dark UIs — most of what sketch
+  mode gets opened on. `sketch.init()` now measures the page's effective
+  background through the frame-context adapter (`__devtool_context.contentFrame()`)
+  and opens with light ink (`#e8e9ee`) when the page is dark. The override
+  only applies while the factory default is untouched, so a saved or chosen
+  stroke color is never overridden.
+
 ## [0.15.0] - 2026-08-05
 
 ### Added
