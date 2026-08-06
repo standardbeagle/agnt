@@ -1,0 +1,59 @@
+{
+  "name": "design-audit",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "fps": 25,
+  "env": {
+    "PROXY_ID": "demo-design",
+    "PROXY_PORT": 18197,
+    "UPSTREAM_PORT": 8022
+  },
+  "setup": {
+    "upstream": "./upstream.mjs",
+    "waitFor": "http://127.0.0.1:8022/",
+    "proxy": {
+      "id": "demo-design",
+      "target": "http://127.0.0.1:8022",
+      "port": 18197
+    }
+  },
+  "segments": [
+    {
+      "id": "card-intro",
+      "type": "card",
+      "dur": 4.2,
+      "kicker": "agnt demo \u00b7 auditDesign",
+      "title": "This page looks great. The audit disagrees.",
+      "sub": "59 deterministic rules for the design tells AI frontends share \u2014 run against the live DOM."
+    },
+    {
+      "id": "audit",
+      "type": "browser",
+      "script": "./segments/audit.mjs",
+      "keep": [
+        [
+          "start",
+          "mark:shown+1.2"
+        ],
+        [
+          "mark:first-audit-0.6",
+          "mark:verdict-shown+0.2"
+        ],
+        [
+          "mark:fixed-0.2",
+          "end"
+        ]
+      ]
+    },
+    {
+      "id": "card-outro",
+      "type": "card",
+      "dur": 4.2,
+      "kicker": "",
+      "title": "The agent can see the slop now",
+      "sub": "github.com/standardbeagle/agnt"
+    }
+  ]
+}

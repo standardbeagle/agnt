@@ -83,13 +83,22 @@ export const recordBrowser = async (seg, {demoDir, workDir, viewport, env}) => {
     if (!f) throw new Error('content frame not found');
     return f;
   };
+  const waitForFrame = async (timeoutMs = 15000) => {
+    const start = Date.now();
+    for (;;) {
+      try { return cf(); } catch {
+        if (Date.now() - start > timeoutMs) throw new Error('content frame never attached');
+        await pg.waitForTimeout(200);
+      }
+    }
+  };
   if (seg.raw) {
     // Raw page (no proxy chrome / injected bundle) — for plain-page beats.
     await pg.goto(seg.url || env.UPSTREAM_URL || env.PROXY_URL, {waitUntil: 'load'});
   } else {
     await pg.goto(seg.url || env.PROXY_URL, {waitUntil: 'load'});
     await pg.waitForFunction(() => window.__devtool && window.__devtool.indicator, {timeout: 15000});
-    await cf().waitForFunction(() => window.__devtool && window.__devtool.toast, {timeout: 15000});
+    await (await waitForFrame()).waitForFunction(() => window.__devtool && window.__devtool.toast, {timeout: 15000});
     await pg.waitForTimeout(1200); // injection settle, matches record-live
   }
 

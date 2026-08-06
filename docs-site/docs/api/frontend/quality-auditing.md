@@ -3,6 +3,7 @@ sidebar_position: 12
 ---
 
 import ModeVideo from '@site/src/components/ModeVideo';
+import DemoVideo from '@site/src/components/DemoVideo';
 
 # Quality & Performance Auditing
 
@@ -325,6 +326,10 @@ Without `document.getAnimations()` support the audit returns `notApplicable` rat
 `auditAnimations` is **not** folded into `auditAll` / `auditPageQuality`: its headline signal depends on the display it runs on (refresh rate, DPI), so averaging it into a portable page grade would make that grade machine-dependent. Run it directly — the full investigation workflow is in the [GPU & Compositor Debugging guide](/guides/gpu-compositor-debugging-ai).
 
 ## auditDesign
+
+<DemoVideo src="/video/design-audit.webm" poster="/img/design-audit-poster.webp" label="auditDesign grades an AI-slop landing page F (10/100); the agent removes the tells live and the re-audit returns A (100/100)." />
+
+*Full story: [The AI-slop detector](/demos/design-audit).*
 
 Design anti-pattern audit backed by the vendored [Impeccable](https://impeccable.style) browser detector (Apache-2.0): 59 deterministic rules for the design tells AI-generated frontends share — overused fonts, purple-to-blue gradients, gradient text, cards nested in cards, gray text on colored backgrounds, side-tab borders, low contrast.
 
