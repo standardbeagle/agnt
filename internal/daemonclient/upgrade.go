@@ -19,7 +19,7 @@ import (
 // Version is the agnt version this binary was built from. Bump alongside
 // internal/daemon/daemon.go's Version in scripts/release.sh (the two are
 // separate vars so the upgrader does not depend on the daemon package).
-var Version = "0.15.1"
+var Version = "0.15.2"
 
 // UpgradeConfig holds configuration for daemon upgrades.
 type UpgradeConfig struct {
