@@ -1,0 +1,31 @@
+{
+  "name": "sketch-build",
+  "viewport": {"width": 1440, "height": 900},
+  "fps": 25,
+  "env": {"PROXY_ID": "demo-sketchbuild", "PROXY_PORT": 18200, "UPSTREAM_PORT": 8021},
+  "setup": {
+    "upstream": "../../serve-live.mjs",
+    "waitFor": "http://127.0.0.1:8021/",
+    "proxy": {"id": "demo-sketchbuild", "target": "http://127.0.0.1:8021", "port": 18200}
+  },
+  "segments": [
+    {
+      "id": "card-intro", "type": "card", "dur": 4.0,
+      "kicker": "agnt demo · sketch mode",
+      "title": "Sketch the layout. The agent builds it.",
+      "sub": "Wireframe a new card row on the live app, annotate it, send it — watch it become real DOM."
+    },
+    {
+      "id": "build", "type": "browser", "script": "./segments/build.mjs",
+      "keep": [
+        ["start", "mark:drawn+1.0"],
+        ["mark:sent-0.5", "end"]
+      ]
+    },
+    {
+      "id": "card-outro", "type": "card", "dur": 4.0,
+      "kicker": "", "title": "From wireframe to working UI",
+      "sub": "github.com/standardbeagle/agnt"
+    }
+  ]
+}

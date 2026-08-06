@@ -18,6 +18,7 @@ and agent replies you see travelled the same transport your own sessions use.
 | [The bug that reports itself](./incident-inbox.md) | Two failing API calls caught by `agnt monitor` live, then triaged from the incident inbox with remediation hints | 1:11 |
 | [The AI-slop detector](./design-audit.md) | `auditDesign` grades a gorgeous AI-generated landing page F (10/100), the agent removes the tells live, re-audit returns A (100/100) | 0:33 |
 | [Draw it, don't describe it](./live-sketch.md) | Sketch mode: draw on the live app, the agent gets the drawing plus the elements under it | 0:32 |
+| [Sketch the layout. The agent builds it.](./sketch-build.md) | A stat-card row wireframed and annotated on the live app, then built as real DOM in the app's own style | 0:39 |
 | [Shrink the page. Watch it break.](./resize-components.md) | Responsive mode sweep exposes 544px of sideways scroll at 414px; the agent's media query fixes it, verified at 320px | 0:36 |
 | [Drag until it breaks](./drag-resize.md) | The workbench's edge drag handle in one continuous pull — findings bloom live, then Send-to-agent hands off the measured break | 0:29 |
 | [Break your API on purpose](./chaos-testing.md) | Chaos latency + 500 rules at the proxy; the page swallows the failures, the incident inbox doesn't | 0:48 |

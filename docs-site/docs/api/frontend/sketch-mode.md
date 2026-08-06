@@ -15,6 +15,10 @@ An Excalidraw-like wireframing overlay injected into the page. The developer dra
 
 *Full story: [Draw it, don't describe it](/demos/live-sketch).*
 
+<DemoVideo src="/video/sketch-build.webm" poster="/img/sketch-build-poster.webp" label="A stat-card row wireframed and annotated on the live dashboard, then built by the agent as real DOM cards in the app's own style." />
+
+*Sketch as a construction tool: [Sketch the layout. The agent builds it.](/demos/sketch-build).*
+
 ## API
 
 ```javascript
