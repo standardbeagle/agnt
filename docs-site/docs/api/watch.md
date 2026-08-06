@@ -2,9 +2,15 @@
 sidebar_position: 14
 ---
 
+import DemoVideo from '@site/src/components/DemoVideo';
+
 # watch
 
 Returns a ready-to-run `agnt monitor` command string for streaming daemon events to your terminal in real time. MCP clients know the daemon socket path; this tool bridges them to the [`agnt monitor`](#the-agnt-monitor-cli) CLI so you can tail errors, interactions, or process output live.
+
+<DemoVideo src="/video/incident-inbox.webm" poster="/img/incident-inbox-poster.webp" label="agnt monitor streams two real HTTP failures (500 and 409) into the terminal as they happen through the proxy." />
+
+*Full story: [The bug that reports itself](/demos/incident-inbox).*
 
 `watch` does not stream events itself — it hands you the exact command to run.
 

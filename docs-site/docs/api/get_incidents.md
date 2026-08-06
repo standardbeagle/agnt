@@ -2,9 +2,15 @@
 sidebar_position: 7
 ---
 
+import DemoVideo from '@site/src/components/DemoVideo';
+
 # get_incidents
 
 Cursor-based pull from the always-active incident inbox. This is the authoritative tool for fetching errors and warnings from every signal source — browser JS, HTTP 4xx/5xx, process crashes, proxy diagnostics — normalized, deduplicated, and returned in priority order with remediation hints and suggested next tools.
+
+<DemoVideo src="/video/incident-inbox.webm" poster="/img/incident-inbox-poster.webp" label="Two failing API calls stream into the incident inbox live via agnt monitor, then the agent triages both with remediation hints — no log-pasting." />
+
+*Full story: [The bug that reports itself](/demos/incident-inbox).*
 
 `alerts.push` selects live, project-isolated interrupt channels; it does not gate inbox recording. The legacy `alerts.incident-pipeline` key is accepted but ignored.
 
