@@ -26,9 +26,9 @@ the drawing *plus* the element context underneath it.
 style panel, dot grid. The app keeps running underneath.
 
 **Draw (0:10).** A rectangle around the Revenue card; an arrow from Recent
-invoices up to it. (Recording note: the default ink is `#1e1e1e` — invisible
-on a dark UI. The stroke color is set through the panel's own picker, which
-listens on `change`, not `input`.)
+invoices up to it. Since 0.15.1 the default ink is theme-aware — on this dark
+dashboard sketch mode opens with light ink, no picker detour. (Before the
+fix, the first thing anyone drew on a dark app was invisible.)
 
 **Send (0:17).** `sketch.save()` pushes the drawing over the real proxy
 channel. The agent's reply names what was drawn and where — no screenshot to

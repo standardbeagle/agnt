@@ -17,6 +17,10 @@ Where [`responsive_audit`](/api/responsive_audit) is a headless one-shot across 
 
 *Full story: [Shrink the page. Watch it break.](/demos/resize-components)*
 
+<DemoVideo src="/video/drag-resize.webm" poster="/img/drag-resize-poster.webp" label="The edge drag handle pulled from full width to 320px in one motion, overflow findings blooming live, then Send to agent handing off the measured break." />
+
+*The drag handle in action: [Drag until it breaks](/demos/drag-resize).*
+
 ## Opening It
 
 - **In the browser**: click the responsive button in the floating indicator toolbar.

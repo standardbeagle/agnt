@@ -1,0 +1,31 @@
+{
+  "name": "drag-resize",
+  "viewport": {"width": 1440, "height": 900},
+  "fps": 25,
+  "env": {"PROXY_ID": "demo-drag", "PROXY_PORT": 18190, "UPSTREAM_PORT": 8021},
+  "setup": {
+    "upstream": "../../serve-live.mjs",
+    "waitFor": "http://127.0.0.1:8021/",
+    "proxy": {"id": "demo-drag", "target": "http://127.0.0.1:8021", "port": 18190}
+  },
+  "segments": [
+    {
+      "id": "card-intro", "type": "card", "dur": 4.0,
+      "kicker": "agnt demo · responsive mode",
+      "title": "Drag until it breaks",
+      "sub": "The workbench's edge handle, one continuous pull — findings light up as the layout crosses its breakpoints."
+    },
+    {
+      "id": "drag", "type": "browser", "script": "./segments/drag.mjs",
+      "keep": [
+        ["start", "mark:dragged+1.6"],
+        ["mark:sent-1.6", "end"]
+      ]
+    },
+    {
+      "id": "card-outro", "type": "card", "dur": 4.0,
+      "kicker": "", "title": "Find the exact width it breaks",
+      "sub": "github.com/standardbeagle/agnt"
+    }
+  ]
+}

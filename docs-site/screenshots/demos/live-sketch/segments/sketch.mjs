@@ -6,21 +6,11 @@ export default async function run(d) {
   const pg = d.page;
 
   // Let the dashboard settle, then open sketch mode on the live page.
+  // Default ink is theme-aware since 0.15.1 — on this dark dashboard it opens
+  // light, no picker fiddling needed.
   await d.sleep(1500);
   await pg.evaluate(() => window.__devtool.sketch.open());
   await d.sleep(900);
-
-  // Default ink is #1e1e1e — invisible on a dark dashboard. Set the stroke
-  // color through the panel's own picker (its handler is onchange).
-  await pg.evaluate(() => {
-    const root = window.__devtoolGetMountRoot();
-    const picker = root.querySelector('input[type="color"]');
-    if (picker) {
-      picker.value = '#ef4444';
-      picker.dispatchEvent(new Event('change', {bubbles: true}));
-    }
-  });
-  await d.sleep(300);
   d.mark('sketch-open');
 
   // Rectangle around the Revenue card.
