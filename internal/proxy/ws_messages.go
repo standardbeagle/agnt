@@ -500,6 +500,13 @@ func (c *wsConnState) handleSketchCapture(msg *wsMessage) {
 // iteration.
 func (c *wsConnState) handleDesignState(msg *wsMessage) {
 	designState := parseDesignState(msg.Data, c.id, c.timestamp, msg.URL)
+	// Persist the whole-page thumbnail (if any) as an on-disk JPEG, same
+	// treatment as the segment screenshot.
+	if thumb := getStringField(msg.Data, "pageThumb"); strings.HasPrefix(thumb, "data:") {
+		if p, err := c.ps.saveScreenshot("design-page-"+designState.Selector, thumb); err == nil {
+			designState.PageThumbPath = p
+		}
+	}
 	c.ps.logger.LogDesignState(designState)
 
 	// Forward to overlay if configured

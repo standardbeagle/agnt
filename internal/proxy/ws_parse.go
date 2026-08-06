@@ -405,6 +405,8 @@ func parseDesignState(data map[string]interface{}, id string, timestamp time.Tim
 	}
 
 	state.Scheme = parseDesignScheme(data)
+	state.Slot = parseDesignSlot(data)
+	state.Exemplars = getStringSliceField(data, "exemplars")
 
 	return state
 }
@@ -434,6 +436,43 @@ func parseDesignScheme(data map[string]interface{}) *DesignScheme {
 		return nil
 	}
 	return scheme
+}
+
+// parseDesignSlot extracts the optional parent-container geometry. Returns nil
+// when the "slot" key is absent so legacy clients round-trip unchanged.
+func parseDesignSlot(data map[string]interface{}) *DesignSlot {
+	raw, ok := data["slot"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	var w, h int
+	if rect, ok := raw["parentRect"].(map[string]interface{}); ok {
+		w = getIntField(rect, "width")
+		h = getIntField(rect, "height")
+	}
+	return &DesignSlot{
+		ParentWidth:   w,
+		ParentHeight:  h,
+		Display:       getStringField(raw, "display"),
+		GridColumns:   getStringField(raw, "gridColumns"),
+		FlexDirection: getStringField(raw, "flexDirection"),
+		FlexWrap:      getStringField(raw, "flexWrap"),
+		Gap:           getStringField(raw, "gap"),
+	}
+}
+
+// parseDesignConstraints extracts the optional generation contract. Returns nil
+// when the "constraints" key is absent.
+func parseDesignConstraints(data map[string]interface{}) *DesignConstraints {
+	raw, ok := data["constraints"].(map[string]interface{})
+	if !ok {
+		return nil
+	}
+	return &DesignConstraints{
+		Preserve: getStringSliceField(raw, "preserve"),
+		Vary:     getStringSliceField(raw, "vary"),
+		Steer:    getStringField(raw, "steer"),
+	}
 }
 
 func parseDesignRequest(data map[string]interface{}, id string, timestamp time.Time, url string) DesignRequest {
@@ -468,6 +507,9 @@ func parseDesignRequest(data map[string]interface{}, id string, timestamp time.T
 	}
 
 	request.Scheme = parseDesignScheme(data)
+	request.Slot = parseDesignSlot(data)
+	request.Exemplars = getStringSliceField(data, "exemplars")
+	request.Constraints = parseDesignConstraints(data)
 
 	return request
 }
@@ -557,6 +599,9 @@ func parseDesignChat(data map[string]interface{}, id string, timestamp time.Time
 			}
 		}
 	}
+
+	chat.Slot = parseDesignSlot(data)
+	chat.Constraints = parseDesignConstraints(data)
 
 	return chat
 }

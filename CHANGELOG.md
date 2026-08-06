@@ -1,5 +1,23 @@
 # Changelog - agnt
 
+## [0.15.2] - 2026-08-06
+
+### Added
+- **Design mode payloads now carry page-level and neighborhood context.**
+  `design_state` gains a whole-page thumbnail (saved as a JPEG,
+  `page_thumb_path`), the parent container's slot geometry (box + grid
+  tracks / flex mode), and up to two same-signature exemplar components from
+  elsewhere on the page. `design_request` and `design_chat` gain an explicit
+  `constraints` block: `preserve` (scheme axes that stay fixed), `vary`
+  (`layout`, `hierarchy`, `density`, `affordance` — UX variation over core-UI
+  variation), and `steer` (the user's latest message, highest precedence).
+  Alternatives now default to staying on-scheme and on-slot while remaining
+  steerable by the prompt.
+
+### Fixed
+- `saveScreenshot` picks the file extension from the data-URL MIME instead of
+  hardcoding `.png` (design page thumbnails are JPEG).
+
 ## [0.15.1] - 2026-08-06
 
 ### Fixed

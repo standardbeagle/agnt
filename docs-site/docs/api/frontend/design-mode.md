@@ -36,9 +36,20 @@ window.__devtool.design.getState()          // read current element + alternativ
 
 | Event | Emitted when | Payload |
 |-------|--------------|---------|
-| `design_state` | An element is selected for iteration | element markup, computed styles, context |
-| `design_request` | A request for new alternatives | current element + constraints |
-| `design_chat` | A chat refinement message | message + current element |
+| `design_state` | An element is selected for iteration | element markup, computed styles, context, **slot geometry, same-signature exemplars, whole-page thumbnail** |
+| `design_request` | A request for new alternatives | current element + constraints (`preserve` / `vary` / `steer`), slot, exemplars |
+| `design_chat` | A chat refinement message | message + current element + slot + constraints |
+
+The generation contract rides in `constraints`: `preserve` lists the scheme
+axes that stay fixed (palette, typography, spacing, radius), `vary` lists the
+axes alternatives should explore (`layout`, `hierarchy`, `density`,
+`affordance`), and `steer` is the user's latest message — highest precedence.
+`slot` is the parent container's box and layout mode, so alternatives fit the
+space they must render into. `exemplars` are truncated `outerHTML` snippets
+of same-signature components elsewhere on the page, anchoring variation in
+the site's own component grammar. The whole-page thumbnail
+(`page_thumb_path`, a saved JPEG) gives page-level continuity context beyond
+the element-region screenshot.
 
 Read them from the proxy log:
 

@@ -58,7 +58,11 @@ func (ps *ProxyServer) saveScreenshot(name string, dataURL string) (string, erro
 
 	// Sanitize filename (both ID and name — colons are invalid on Windows)
 	safeName := sanitizeFilename(name)
-	filename := fmt.Sprintf("screenshot-%s-%s.png", sanitizeFilename(ps.ID), safeName)
+	ext := ".png"
+	if strings.HasPrefix(dataURL, "data:image/jpeg") {
+		ext = ".jpg"
+	}
+	filename := fmt.Sprintf("screenshot-%s-%s%s", sanitizeFilename(ps.ID), safeName, ext)
 	filePath := filepath.Join(screenshotDir, filename)
 
 	// Write to file

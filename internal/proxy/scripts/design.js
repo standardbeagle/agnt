@@ -32,6 +32,9 @@
     contextHTML: '',       // Parent context for LLM
     metadata: null,        // Element metadata
     chatHistory: [],       // Chat messages about this element
+    slot: null,            // Parent container geometry the alternative must fit
+    exemplars: null,       // Same-signature components elsewhere on the page
+    pageThumb: null,       // Whole-page thumbnail for global context
     overlay: null,         // Selection overlay
     controls: null         // Navigation controls UI
   };
@@ -316,6 +319,11 @@
     // on-scheme. Best-effort: never throws, returns null when nothing usable.
     state.scheme = extractScheme(element);
 
+    // Slot geometry + same-signature exemplars elsewhere on the page: what the
+    // alternative must fit, and the house grammar it should vary within.
+    state.slot = captureSlot(element);
+    state.exemplars = captureExemplars(element);
+
     // OID-primary locator: stamp a stable data-devtool-oid so preview/apply
     // resolve the target by oid, not a brittle nth-of-type selector that React
     // re-renders invalidate.
@@ -332,8 +340,12 @@
     renderPreview();
     notify('Scheme captured — preparing DESIGN.md & on-scheme alternatives…');
 
-    // Send initial state to agent
-    sendDesignState();
+    // Send initial state to agent — after the whole-page thumbnail lands, so
+    // the state event carries page-level context too.
+    capturePageThumb(function (thumb) {
+      state.pageThumb = thumb;
+      sendDesignState();
+    });
 
     // Design mode is chat-only iteration: the AI preview panel drives the
     // redesign. The inline quick-style palette (p/bg/op/disp bar) belongs to
@@ -518,6 +530,102 @@
         try { cb(canvas.toDataURL('image/png')); } catch (e) { cb(null); }
       }).catch(function () { cb(null); });
     } catch (e) { cb(null); }
+  }
+
+  // capturePageThumb rasterises the whole page at thumbnail scale so the
+  // agent sees the global layout the redesigned element must live in — the
+  // segment shot alone gives no page-level continuity context. JPEG at low
+  // scale keeps it to a few KB. Fully guarded; yields null on failure.
+  function capturePageThumb(cb) {
+    var finish = function () {
+      try {
+        window.html2canvas(document.body, {
+          allowTaint: true, useCORS: true, logging: false,
+          backgroundColor: null,
+          scale: 0.25
+        }).then(function (canvas) {
+          try { cb(canvas.toDataURL('image/jpeg', 0.6)); } catch (e) { cb(null); }
+        }).catch(function () { cb(null); });
+      } catch (e) { cb(null); }
+    };
+    if (typeof window.html2canvas !== 'function') {
+      if (typeof window.__devtool_ensureHtml2canvas === 'function') {
+        window.__devtool_ensureHtml2canvas().then(finish, function () { cb(null); });
+      } else {
+        cb(null);
+      }
+      return;
+    }
+    finish();
+  }
+
+  // captureSlot records the geometry the alternative must fit: the parent
+  // container's box and its layout mode (grid tracks / flex direction / gap).
+  // Without it, alternatives are generated for a vacuum.
+  function captureSlot(element) {
+    try {
+      var parent = element && element.parentElement;
+      if (!parent) return null;
+      var cs = window.getComputedStyle(parent);
+      var slot = {
+        parentRect: { width: parent.offsetWidth, height: parent.offsetHeight },
+        display: cs.display,
+        gap: cs.gap !== 'normal' ? cs.gap : undefined
+      };
+      if (cs.display.indexOf('grid') !== -1) {
+        slot.gridColumns = cs.gridTemplateColumns;
+      } else if (cs.display.indexOf('flex') !== -1) {
+        slot.flexDirection = cs.flexDirection;
+        slot.flexWrap = cs.flexWrap;
+      }
+      return slot;
+    } catch (e) { return null; }
+  }
+
+  // captureExemplars finds same-signature components elsewhere on the page —
+  // same tag, at least one shared class — and returns up to two truncated
+  // outerHTML snippets. Real sibling components anchor variation in the
+  // site's own grammar better than tokens alone.
+  function captureExemplars(element) {
+    try {
+      if (!element || !element.tagName) return null;
+      var tag = element.tagName.toLowerCase();
+      var classes = Array.from(element.classList || []);
+      var out = [];
+      var all = document.querySelectorAll(tag);
+      for (var i = 0; i < all.length && out.length < 2; i++) {
+        var el = all[i];
+        if (el === element || element.contains(el) || el.contains(element)) continue;
+        var shared = classes.some(function (c) { return el.classList.contains(c); });
+        if (!shared) continue;
+        var html = el.outerHTML;
+        if (html && html.length > 20) out.push(html.slice(0, 800));
+      }
+      return out.length ? out : null;
+    } catch (e) { return null; }
+  }
+
+  // buildConstraints makes the generation contract explicit: which axes are
+  // preserved from the site's scheme, which axes the alternatives should vary
+  // on (UX over core UI), and the user's own words as the highest-precedence
+  // steer. null when nothing is selected.
+  function buildConstraints() {
+    if (!state.selectedElement) return null;
+    var preserve = [];
+    if (state.scheme) {
+      ['palette', 'fontFamilies', 'fontSizes', 'spacing', 'radius', 'shadows'].forEach(function (k) {
+        if (state.scheme[k]) preserve.push(k);
+      });
+    }
+    var steer = null;
+    for (var i = state.chatHistory.length - 1; i >= 0; i--) {
+      if (state.chatHistory[i].role === 'user') { steer = state.chatHistory[i].message; break; }
+    }
+    return {
+      preserve: preserve,
+      vary: ['layout', 'hierarchy', 'density', 'affordance'],
+      steer: steer
+    };
   }
 
   function ensurePanel() {
@@ -844,6 +952,9 @@
         alternativesCount: state.alternatives.length,
         chatHistory: state.chatHistory,
         scheme: state.scheme || undefined,
+        slot: state.slot || undefined,
+        exemplars: state.exemplars || undefined,
+        constraints: buildConstraints() || undefined,
         screenshot: screenshot || undefined
       });
     };
@@ -968,6 +1079,9 @@
       contextHTML: state.contextHTML,
       metadata: state.metadata,
       scheme: state.scheme || undefined,
+      slot: state.slot || undefined,
+      exemplars: state.exemplars || undefined,
+      pageThumb: state.pageThumb || undefined,
       url: window.location.href
     });
   }
@@ -1003,6 +1117,8 @@
         contextHTML: state.contextHTML,
         metadata: state.metadata,
         chatHistory: state.chatHistory,
+        slot: state.slot || undefined,
+        constraints: buildConstraints() || undefined,
         url: window.location.href,
         screenshot: shot || undefined
       });
@@ -1039,6 +1155,9 @@
     state.altMeta = [];
     state.scheme = null;
     state.oid = null;
+    state.slot = null;
+    state.exemplars = null;
+    state.pageThumb = null;
   }
 
   // Export public API

@@ -436,6 +436,27 @@ type DesignScheme struct {
 	CSSVars      map[string]string `json:"css_vars,omitempty"`      // declared --* custom properties
 }
 
+// DesignSlot describes the parent container geometry a design alternative
+// must fit: box size plus layout mode (grid tracks or flex direction).
+type DesignSlot struct {
+	ParentWidth   int    `json:"parent_width"`
+	ParentHeight  int    `json:"parent_height"`
+	Display       string `json:"display,omitempty"`
+	GridColumns   string `json:"grid_columns,omitempty"`
+	FlexDirection string `json:"flex_direction,omitempty"`
+	FlexWrap      string `json:"flex_wrap,omitempty"`
+	Gap           string `json:"gap,omitempty"`
+}
+
+// DesignConstraints is the explicit generation contract for alternatives:
+// which axes are preserved from the site's scheme, which axes vary (UX over
+// core UI), and the user's latest message as the highest-precedence steer.
+type DesignConstraints struct {
+	Preserve []string `json:"preserve,omitempty"`
+	Vary     []string `json:"vary,omitempty"`
+	Steer    string   `json:"steer,omitempty"`
+}
+
 // DesignChatMessage represents a chat message in the design iteration history.
 type DesignChatMessage struct {
 	Timestamp int64  `json:"timestamp"`
@@ -445,15 +466,18 @@ type DesignChatMessage struct {
 
 // DesignState represents the initial state when an element is selected for design iteration.
 type DesignState struct {
-	ID           string                `json:"id"`
-	Timestamp    time.Time             `json:"timestamp"`
-	Selector     string                `json:"selector"` // CSS selector
-	XPath        string                `json:"xpath"`    // XPath for robustness
-	OriginalHTML string                `json:"original_html"`
-	ContextHTML  string                `json:"context_html"` // Parent element with siblings for context
-	Metadata     DesignElementMetadata `json:"metadata"`
-	Scheme       *DesignScheme         `json:"scheme,omitempty"` // live-extracted design tokens of the proxied app
-	URL          string                `json:"url"`
+	ID            string                `json:"id"`
+	Timestamp     time.Time             `json:"timestamp"`
+	Selector      string                `json:"selector"` // CSS selector
+	XPath         string                `json:"xpath"`    // XPath for robustness
+	OriginalHTML  string                `json:"original_html"`
+	ContextHTML   string                `json:"context_html"` // Parent element with siblings for context
+	Metadata      DesignElementMetadata `json:"metadata"`
+	Scheme        *DesignScheme         `json:"scheme,omitempty"`          // live-extracted design tokens of the proxied app
+	Slot          *DesignSlot           `json:"slot,omitempty"`            // parent container geometry the alternative must fit
+	Exemplars     []string              `json:"exemplars,omitempty"`       // same-signature components elsewhere on the page
+	PageThumbPath string                `json:"page_thumb_path,omitempty"` // saved JPEG of the whole page (dataURL stripped after save)
+	URL           string                `json:"url"`
 }
 
 // DesignRequest represents a request for new design alternatives.
@@ -469,6 +493,9 @@ type DesignRequest struct {
 	AlternativesCount int                   `json:"alternatives_count"` // How many alternatives already exist
 	ChatHistory       []DesignChatMessage   `json:"chat_history,omitempty"`
 	Scheme            *DesignScheme         `json:"scheme,omitempty"` // live-extracted design tokens of the proxied app
+	Slot              *DesignSlot           `json:"slot,omitempty"`
+	Exemplars         []string              `json:"exemplars,omitempty"`
+	Constraints       *DesignConstraints    `json:"constraints,omitempty"`
 	URL               string                `json:"url"`
 	ScreenshotPath    string                `json:"screenshot_path,omitempty"` // saved PNG of the live segment (dataURL stripped after save)
 }
@@ -502,6 +529,8 @@ type DesignChat struct {
 	ContextHTML    string                `json:"context_html"`
 	Metadata       DesignElementMetadata `json:"metadata"`
 	ChatHistory    []DesignChatMessage   `json:"chat_history,omitempty"`
+	Slot           *DesignSlot           `json:"slot,omitempty"`
+	Constraints    *DesignConstraints    `json:"constraints,omitempty"`
 	URL            string                `json:"url"`
 	ScreenshotPath string                `json:"screenshot_path,omitempty"` // saved PNG of the live segment
 }
