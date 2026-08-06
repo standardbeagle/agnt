@@ -302,6 +302,11 @@ deps:
 	go mod tidy
 	go mod verify
 
+# Regenerate a docs demo video (scripted engine: VHS for CLI + Playwright for browser)
+# Usage: make demo NAME=vhs-spiral [DEMOFLAGS=--only=attempt-1]
+demo:
+	cd docs-site/screenshots && node engine/demo.mjs demos/$(NAME) $(DEMOFLAGS)
+
 # Show help
 help:
 	@echo "Available targets:"

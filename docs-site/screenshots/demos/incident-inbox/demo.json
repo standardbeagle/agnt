@@ -1,0 +1,80 @@
+{
+  "name": "incident-inbox",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "fps": 25,
+  "env": {
+    "PROXY_ID": "demo-inc",
+    "PROXY_PORT": 18195,
+    "UPSTREAM_PORT": 8021
+  },
+  "setup": {
+    "upstream": "../../serve-live.mjs",
+    "waitFor": "http://127.0.0.1:8021/",
+    "proxy": {
+      "id": "demo-inc",
+      "target": "http://127.0.0.1:8021",
+      "port": 18195
+    }
+  },
+  "segments": [
+    {
+      "id": "card-intro",
+      "type": "card",
+      "dur": 4.2,
+      "kicker": "agnt demo",
+      "title": "The bug that reports itself",
+      "sub": "Real failures through the proxy, streamed to your terminal, triaged by the agent \u2014 no log-pasting."
+    },
+    {
+      "id": "monitor-live",
+      "type": "cli",
+      "trimSeconds": 40,
+      "tape": [
+        "Type \"agnt monitor --proxy demo-inc > /tmp/inc-demo.log 2>&1 &\"",
+        "Sleep 500ms",
+        "Enter",
+        "Sleep 2.5s",
+        "Type `curl -s -X POST localhost:18195/api/customer -d '{\"company\":\"Crash Test\",\"email\":\"ops@crash.dev\",\"seats\":25}'; echo`",
+        "Sleep 400ms",
+        "Enter",
+        "Sleep 3s",
+        "Type `curl -s -X POST localhost:18195/api/customer -d '{\"company\":\"Globex Corp\",\"email\":\"ops@globex.com\",\"seats\":25}'; echo`",
+        "Sleep 400ms",
+        "Enter",
+        "Sleep 3s",
+        "Type \"kill %1\"",
+        "Sleep 300ms",
+        "Enter",
+        "Sleep 1s",
+        "Type \"cat /tmp/inc-demo.log\"",
+        "Sleep 400ms",
+        "Enter",
+        "Sleep 5s"
+      ]
+    },
+    {
+      "id": "card-triage",
+      "type": "card",
+      "dur": 2.8,
+      "kicker": "meanwhile, in the browser",
+      "title": "The agent already knows",
+      "sub": "Same incidents, same context \u2014 pulled from the inbox, not pasted by you."
+    },
+    {
+      "id": "triage",
+      "type": "browser",
+      "script": "./segments/triage.mjs"
+    },
+    {
+      "id": "card-outro",
+      "type": "card",
+      "dur": 4.2,
+      "kicker": "",
+      "title": "Errors find the agent now",
+      "sub": "github.com/standardbeagle/agnt"
+    }
+  ]
+}

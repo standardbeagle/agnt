@@ -1,0 +1,174 @@
+{
+  "name": "vhs-spiral",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "fps": 25,
+  "env": {
+    "PROXY_ID": "demo-spiral",
+    "PROXY_PORT": 18193,
+    "UPSTREAM_PORT": 8021
+  },
+  "setup": {
+    "upstream": "../../serve-live.mjs",
+    "waitFor": "http://127.0.0.1:8021/",
+    "proxy": {
+      "id": "demo-spiral",
+      "target": "http://127.0.0.1:8021",
+      "port": 18193
+    }
+  },
+  "segments": [
+    {
+      "id": "card-intro",
+      "type": "card",
+      "dur": 4.5,
+      "kicker": "agnt demo",
+      "title": "Your agent can't see your app",
+      "sub": "A submit button, half off the screen. Three rounds of terminal automation \u2014 then one pass with eyes."
+    },
+    {
+      "id": "show-bug",
+      "type": "browser",
+      "raw": true,
+      "script": "./segments/show-bug.mjs"
+    },
+    {
+      "id": "card-a1",
+      "type": "card",
+      "dur": 2.6,
+      "kicker": "attempt 1",
+      "title": "Automate the agent with a tape",
+      "sub": "Blind prompt, blind edit."
+    },
+    {
+      "id": "attempt-1",
+      "type": "cli",
+      "trimSeconds": 12.0,
+      "tape": [
+        "Hide",
+        "Type \"alias claude='node agent-stub.mjs attempts/1.json'\"",
+        "Enter",
+        "Type \"clear\"",
+        "Enter",
+        "Show",
+        "Type \"claude\"",
+        "Sleep 600ms",
+        "Enter",
+        "Sleep 12.5s"
+      ]
+    },
+    {
+      "id": "check-1",
+      "type": "browser",
+      "raw": true,
+      "script": "./segments/check.mjs",
+      "args": {
+        "state": "half",
+        "holdMs": 3000
+      }
+    },
+    {
+      "id": "card-a2",
+      "type": "card",
+      "dur": 2.6,
+      "kicker": "attempt 2",
+      "title": "Paste in a screenshot description",
+      "sub": "The agent guesses harder."
+    },
+    {
+      "id": "attempt-2",
+      "type": "cli",
+      "trimSeconds": 18.0,
+      "tape": [
+        "Hide",
+        "Type \"alias claude='node agent-stub.mjs attempts/2.json'\"",
+        "Enter",
+        "Type \"clear\"",
+        "Enter",
+        "Show",
+        "Type \"claude\"",
+        "Sleep 600ms",
+        "Enter",
+        "Sleep 17.5s"
+      ]
+    },
+    {
+      "id": "check-2",
+      "type": "browser",
+      "raw": true,
+      "script": "./segments/check.mjs",
+      "args": {
+        "state": "gone",
+        "holdMs": 3000
+      }
+    },
+    {
+      "id": "card-a3",
+      "type": "card",
+      "dur": 2.6,
+      "kicker": "attempt 3",
+      "title": "Paste the DOM and computed styles",
+      "sub": "Maximum duct tape."
+    },
+    {
+      "id": "attempt-3",
+      "type": "cli",
+      "trimSeconds": 21.6,
+      "tape": [
+        "Hide",
+        "Type \"alias claude='node agent-stub.mjs attempts/3.json'\"",
+        "Enter",
+        "Type \"clear\"",
+        "Enter",
+        "Show",
+        "Type \"claude\"",
+        "Sleep 600ms",
+        "Enter",
+        "Sleep 21s"
+      ]
+    },
+    {
+      "id": "check-3",
+      "type": "browser",
+      "raw": true,
+      "script": "./segments/check.mjs",
+      "args": {
+        "state": "half",
+        "holdMs": 3200
+      }
+    },
+    {
+      "id": "card-turn",
+      "type": "card",
+      "dur": 3.4,
+      "kicker": "three rounds \u00b7 zero fixes",
+      "title": "The terminal was blind the whole time",
+      "sub": "Now give the agent the browser."
+    },
+    {
+      "id": "agnt-fix",
+      "type": "browser",
+      "script": "./segments/agnt-fix.mjs",
+      "keep": [
+        [
+          "start",
+          "mark:measured+3.2"
+        ],
+        [
+          "mark:fix-applied-0.8",
+          "end"
+        ]
+      ]
+    },
+    {
+      "id": "card-outro",
+      "type": "card",
+      "dur": 4.5,
+      "kicker": "",
+      "title": "Give your agent the browser",
+      "sub": "github.com/standardbeagle/agnt"
+    }
+  ]
+}

@@ -2,3 +2,6 @@
 bundle.html
 .serve/
 videos/
+
+# Demo engine output — regenerate with `make demo NAME=<demo>`
+demos/*/out/

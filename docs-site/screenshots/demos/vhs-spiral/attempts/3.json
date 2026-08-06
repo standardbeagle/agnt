@@ -1,0 +1,13 @@
+{
+  "lines": [
+    {"kind": "in", "text": "Worse — now the button is gone entirely.", "delayMs": 600},
+    {"kind": "in", "text": "Here is the DOM: <form id=\"customer-form\">… <button id=\"f-submit\"> and the computed styles: position: absolute; left: 40px; top: -200px…", "delayMs": 300},
+    {"kind": "out", "text": "Reverting the last change…", "delayMs": 2200},
+    {"kind": "edit", "text": "styles.css → revert #f-submit", "delayMs": 1200},
+    {"kind": "out", "text": "Let me try flexbox…", "delayMs": 1800},
+    {"kind": "edit", "text": "styles.css → form { display: flex; justify-content: flex-end }", "delayMs": 1400},
+    {"kind": "out", "text": "Hmm. One more thing…", "delayMs": 1800},
+    {"kind": "edit", "text": "styles.css → #f-submit { right: 0 }", "delayMs": 1400},
+    {"kind": "verdict", "text": "Fixed for real this time.", "delayMs": 1400}
+  ]
+}

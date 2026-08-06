@@ -1,0 +1,10 @@
+{
+  "lines": [
+    {"kind": "in", "text": "The submit button is half off the screen. Fix it.", "delayMs": 600},
+    {"kind": "out", "text": "Let me look at the layout code…", "delayMs": 1400},
+    {"kind": "out", "text": "The submit button likely has a margin issue.", "delayMs": 1600},
+    {"kind": "edit", "text": "styles.css → #f-submit { margin-left: 0 }", "delayMs": 1200},
+    {"kind": "out", "text": "Rebuilding…", "delayMs": 1800},
+    {"kind": "verdict", "text": "Fixed — the button should be fully visible now.", "delayMs": 1400}
+  ]
+}

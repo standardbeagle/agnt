@@ -61,6 +61,45 @@ The waits on the live agent are spliced out at assembly using the marks in
 `videos/debug-to-e2e-live.json`; narration text/voice lives in
 `narration.json`. Output: `videos/debug-to-e2e-narrated.webm` + `.vtt`.
 
+## Scripted demo engine (`engine/` + `demos/`)
+
+The engine turns a demo into a declarative, regenerable artifact: one
+`demo.json` composes **cli** segments (VHS tapes), **browser** segments
+(Playwright against the real agnt stack), and **card** segments (title cards)
+into a single assembled webm — demos-as-code, re-runnable on every release.
+
+```bash
+make demo NAME=vhs-spiral                          # record + assemble
+make demo NAME=vhs-spiral DEMOFLAGS=--only=fix     # re-record one segment
+make demo NAME=vhs-spiral DEMOFLAGS=--assemble-only # re-cut from existing takes
+```
+
+- **cli segment**: `tape` lines are raw VHS commands; the engine adds
+  Output/Set lines and runs `vhs`. `Set Framerate 10` is the default because
+  VHS synthesizes frame timestamps at the nominal framerate — under load the
+  capture loop drops frames and wall-clock time compresses (~3.5x speedup
+  observed at 25fps on a loaded 6-core box). `trimSeconds` cuts idle tail.
+- **browser segment**: an `.mjs` module exporting `run(driver, args)`. The
+  driver wraps Playwright plus a **scripted agent**: `d.agentToast(...)` fires
+  a real `PROXY TOAST` over the daemon socket, replacing record-live's live
+  agent + SYNC_DIR marker dance with deterministic playback. Marks
+  (`d.mark(name)`) + per-segment `keep` ranges splice out waits at assembly
+  (endpoints: `"start"`, `"end"`, `"mark:<name>±<sec>"`).
+- **setup**: `demo.json` can spawn the upstream (`serve-live.mjs`) and
+  start/stop the demo proxy over the daemon socket automatically — the daemon
+  must already be running.
+- **narration** (optional): edge-tts VO + burned/WebVTT captions, anchors
+  `"<seg-id>"`, `"<seg-id>+<sec>"`, `"<seg-id>+end"`. If edge-tts is not on
+  PATH the engine assembles silent instead of failing.
+
+Output lands in `demos/<name>/out/<name>.webm` (gitignored).
+
+`demos/vhs-spiral/` is the reference demo: a submit button rendered half
+off-screen, three rounds of blind terminal automation (`agent-stub.mjs`
+plays canned sessions so the failing attempts stay deterministic — point the
+tape at the real `claude` for a live take), then agnt fixes it in one pass
+through the real proxy.
+
 ## Files
 
 | File | Role | Committed |
