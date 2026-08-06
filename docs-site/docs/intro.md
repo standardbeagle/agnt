@@ -6,9 +6,13 @@ sidebar_label: Introduction
 description: An MCP server that gives your AI coding agent eyes into the browser — screenshots, DOM and layout inspection, live error capture, quality audits, sketch and design mode, and guided walkthroughs.
 ---
 
+import ModeVideo from '@site/src/components/ModeVideo';
+
 # agnt
 
 **Browser superpowers for AI coding agents.**
+
+<ModeVideo src="/img/vhs-spiral-hero.webm" poster="/img/vhs-spiral-hero-poster.webp" label="A submit button half off-screen: three rounds of blind terminal automation fail, then agnt fixes it in one pass" />
 
 ## Stop Describing Bugs. Let Your AI See Them.
 

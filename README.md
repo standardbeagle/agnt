@@ -23,6 +23,10 @@ When you're in the flow with Claude Code, Cursor, or other AI coding tools, agnt
 
 ## Demo
 
+![A submit button half off-screen: three rounds of blind terminal automation fail, then agnt fixes it in one pass](assets/vhs-spiral-demo.webp)
+
+*Three rounds of blind terminal automation can't fix a button that's half off-screen. One pass with eyes on the live page can — [full demo](https://dev.standardbeagle.com/agnt/demos/vhs-spiral) (1:40).*
+
 ![Sketch Demo](assets/sketch-demo.webp)
 
 *Draw wireframes directly on your running app, then send them to your AI agent*

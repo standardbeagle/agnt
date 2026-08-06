@@ -14,6 +14,8 @@ and agent replies you see travelled the same transport your own sessions use.
 
 | Demo | What it covers | Length |
 |------|----------------|--------|
+| [The VHS spiral](./vhs-spiral.md) | A button half off-screen: three rounds of blind terminal automation fail, then one measured pass through the proxy fixes it | 1:40 |
+| [The bug that reports itself](./incident-inbox.md) | Two failing API calls caught by `agnt monitor` live, then triaged from the incident inbox with remediation hints | 1:11 |
 | [From bug report to e2e coverage](./debug-to-e2e.md) | Floating-panel bug report → layout diagnostics + CSS audit → site-wide regression check (red → fix → green) → e2e tests for every failure path of a dynamic form | 1:37 |
 
 Shorter, silent feature clips live inline throughout the docs — see the
@@ -21,9 +23,11 @@ Shorter, silent feature clips live inline throughout the docs — see the
 
 ## How these are made
 
-The demo harness lives in the repo at `docs-site/screenshots/`: a static demo
-app served behind a real proxy, driven by Playwright while a live agent
-answers panel messages, then assembled with section title cards, neural TTS
-narration, and captions. The pipeline is documented in
-[`docs-site/screenshots/README.md`](https://github.com/standardbeagle/agnt/blob/main/docs-site/screenshots/README.md),
-so demos are re-recordable when the UI changes.
+The demo engine lives in the repo at `docs-site/screenshots/engine/`: each
+demo is a `demo.json` composing VHS-recorded CLI segments with Playwright
+browser segments running against the real stack — a live daemon, the proxy
+injecting the bundle, and agent replies travelling the real daemon transport —
+then assembled with title cards, optional neural TTS narration, and captions.
+`make demo NAME=<demo>` regenerates a demo when the UI changes. The pipeline is
+documented in
+[`docs-site/screenshots/README.md`](https://github.com/standardbeagle/agnt/blob/main/docs-site/screenshots/README.md).
