@@ -5,6 +5,8 @@ keywords: [frontend performance monitoring, Core Web Vitals, page speed, AI codi
 sidebar_label: "Performance Monitoring"
 ---
 
+import ModeVideo from '@site/src/components/ModeVideo';
+
 # Frontend Performance Monitoring with AI Coding Agents
 
 **Frontend performance monitoring** is one of those tasks that developers know matters but rarely do well during active development. An **AI coding agent** with access to real performance data can change that -- catching regressions as they happen, identifying bottlenecks from timing data, and suggesting targeted fixes based on actual measurements rather than guesswork.
@@ -12,6 +14,8 @@ sidebar_label: "Performance Monitoring"
 The gap between "this page feels slow" and "this specific API call takes 2.8 seconds and this image is 480KB uncompressed" is where most performance work stalls. A component re-renders 50 times per keystroke, but on a fast development machine with hot caches, the developer never notices. An API call takes 3 seconds, but the loading spinner masks the wait. A 600KB JavaScript bundle ships because nobody checked the bundle size after adding that one dependency. These problems compound silently until a Lighthouse audit returns a score of 38 and nobody knows where to start.
 
 The deeper issue is that performance data is scattered. Paint timings live in the Performance API. Network waterfalls live in the Network tab. Server response times live in the proxy logs. Pulling these together into a coherent picture requires switching between tools, copying timestamps, and mentally correlating events that happened milliseconds apart.
+
+<ModeVideo src="/img/quality-audit.webm" poster="/img/quality-audit-poster.webp" label="Running a Full Page Audit from the floating indicator — the Audit menu opens over the panel, the audit runs, and the graded result attaches to the message composer ready to send to the agent." />
 
 ## The Traditional Approach
 

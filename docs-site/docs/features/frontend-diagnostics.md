@@ -2,9 +2,13 @@
 sidebar_position: 4
 ---
 
+import ModeVideo from '@site/src/components/ModeVideo';
+
 # Frontend Diagnostics API
 
 The proxy injects `window.__devtool` into all HTML pages, providing 50+ primitives for comprehensive DOM inspection, layout debugging, and accessibility auditing.
+
+<ModeVideo src="/img/element-inspection.webm" poster="/img/element-inspection-poster.webp" label="Element inspection on a live dashboard — getElementInfo and highlight walk the header nav, a stat card, the invoices table, and the primary button in turn; each element gets a blue highlight overlay and a toast naming its tag and classes." />
 
 ## Overview
 

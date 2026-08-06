@@ -5,6 +5,8 @@ keywords: [CSS layout debugging, z-index debugging, overflow detection, stacking
 sidebar_label: "CSS Layout Debugging"
 ---
 
+import ModeVideo from '@site/src/components/ModeVideo';
+
 # Debugging CSS Layout Issues with AI Coding Agents
 
 **CSS layout debugging** is one of the most frustrating tasks in frontend development, and one of the hardest to hand off to an **AI coding agent**. A modal disappears behind a sidebar. A page develops a mysterious horizontal scrollbar. A flex item refuses to shrink below its content width. These bugs are inherently visual -- they manifest as "this element is in the wrong place" or "this thing is invisible but I know it is there." Describing that to an AI in words is like describing a painting over the phone.
@@ -12,6 +14,8 @@ sidebar_label: "CSS Layout Debugging"
 The difficulty compounds because CSS layout bugs are rarely caused by the element you are looking at. A z-index problem on a modal is caused by a stacking context created three levels up in the DOM tree -- often by an unrelated `transform` or `opacity` rule that has nothing to do with z-index. An overflow issue on the page body is caused by a single element nested five layers deep that is 20 pixels wider than its container. The symptom and the cause live in different parts of the page, and finding the connection requires systematic inspection that is tedious to do by hand and nearly impossible to communicate to an AI through chat.
 
 Traditional CSS debugging means toggling properties in DevTools, scrolling through computed styles, and mentally reconstructing the stacking context tree from memory. When you involve an AI assistant, the workflow breaks down further: you describe the symptom, the AI guesses at causes, you check each guess manually, report back, and iterate. A five-minute fix becomes a thirty-minute conversation.
+
+<ModeVideo src="/img/layout-diagnostics.webm" poster="/img/layout-diagnostics-poster.webp" label="diagnoseLayoutIssues running on a live page — a toast reports a containing-block trap, an ineffective z-index, and a clipped dropdown, then each symptom element is outlined in red with its offending ancestor outlined in dashed amber." />
 
 ## The Traditional Approach
 

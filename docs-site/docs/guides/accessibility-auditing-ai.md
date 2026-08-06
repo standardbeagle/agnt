@@ -5,9 +5,13 @@ keywords: [accessibility audit, WCAG testing, a11y automation, AI coding agent, 
 sidebar_label: "Accessibility Auditing"
 ---
 
+import ModeVideo from '@site/src/components/ModeVideo';
+
 # AI-Powered Accessibility Auditing for Web Applications
 
 Running an **accessibility audit** on a web application is one of those tasks everyone agrees is important and almost nobody does thoroughly. An **AI coding agent** with agnt can run WCAG compliance checks directly against a rendered page, interpret the results, and generate code fixes -- all without you opening a browser tab.
+
+<ModeVideo src="/img/accessibility-audit.webm" poster="/img/accessibility-audit-poster.webp" label="auditAccessibility running axe-core over a live page — a toast reports the WCAG AA grade with critical and serious issue counts, and every flagged element (image without alt text, low-contrast buttons, unlabeled input) is outlined in red." />
 
 ## The Problem
 
