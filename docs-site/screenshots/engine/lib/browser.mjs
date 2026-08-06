@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {chromium} from 'playwright';
-import {toast as daemonToast, proxyStart, proxyStop, ping} from './daemon.mjs';
+import {toast as daemonToast, proxyStart, proxyStop, ping, chaosAddRule, chaosClear} from './daemon.mjs';
 import {spawnLogged, waitForURL, writeJSON} from './util.mjs';
 
 export class BrowserDriver {
@@ -34,6 +34,10 @@ export class BrowserDriver {
   agentToast(message, type = 'info', duration = 4200, title = 'agent') {
     return daemonToast(this.env.PROXY_ID, {message, type, title, duration}, this.env.AGNT_SOCKET);
   }
+
+  // Chaos engineering on this demo's proxy (real CHAOS daemon commands).
+  chaosAddRule(rule) { return chaosAddRule(this.env.PROXY_ID, rule, this.env.AGNT_SOCKET); }
+  chaosClear() { return chaosClear(this.env.PROXY_ID, this.env.AGNT_SOCKET); }
 
   sleep(ms) { return this.page.waitForTimeout(ms); }
 }

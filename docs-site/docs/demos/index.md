@@ -17,6 +17,9 @@ and agent replies you see travelled the same transport your own sessions use.
 | [The VHS spiral](./vhs-spiral.md) | A button half off-screen: three rounds of blind terminal automation fail, then one measured pass through the proxy fixes it | 1:40 |
 | [The bug that reports itself](./incident-inbox.md) | Two failing API calls caught by `agnt monitor` live, then triaged from the incident inbox with remediation hints | 1:11 |
 | [The AI-slop detector](./design-audit.md) | `auditDesign` grades a gorgeous AI-generated landing page F (10/100), the agent removes the tells live, re-audit returns A (100/100) | 0:33 |
+| [Draw it, don't describe it](./live-sketch.md) | Sketch mode: draw on the live app, the agent gets the drawing plus the elements under it | 0:32 |
+| [Shrink the page. Watch it break.](./resize-components.md) | Responsive mode sweep exposes 544px of sideways scroll at 414px; the agent's media query fixes it, verified at 320px | 0:36 |
+| [Break your API on purpose](./chaos-testing.md) | Chaos latency + 500 rules at the proxy; the page swallows the failures, the incident inbox doesn't | 0:48 |
 | [From bug report to e2e coverage](./debug-to-e2e.md) | Floating-panel bug report → layout diagnostics + CSS audit → site-wide regression check (red → fix → green) → e2e tests for every failure path of a dynamic form | 1:37 |
 
 Shorter, silent feature clips live inline throughout the docs — see the

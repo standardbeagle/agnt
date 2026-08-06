@@ -1,0 +1,31 @@
+{
+  "name": "resize-components",
+  "viewport": {"width": 1440, "height": 900},
+  "fps": 25,
+  "env": {"PROXY_ID": "demo-resize", "PROXY_PORT": 18192, "UPSTREAM_PORT": 8021},
+  "setup": {
+    "upstream": "../../serve-live.mjs",
+    "waitFor": "http://127.0.0.1:8021/",
+    "proxy": {"id": "demo-resize", "target": "http://127.0.0.1:8021", "port": 18192}
+  },
+  "segments": [
+    {
+      "id": "card-intro", "type": "card", "dur": 4.0,
+      "kicker": "agnt demo · responsive mode",
+      "title": "Shrink the page. Watch it break.",
+      "sub": "A live width sweep finds the overflow; the agent names the rule that caused it."
+    },
+    {
+      "id": "resize", "type": "browser", "script": "./segments/resize.mjs",
+      "keep": [
+        ["start", "mark:broken+3.4"],
+        ["mark:fixed-1.2", "end"]
+      ]
+    },
+    {
+      "id": "card-outro", "type": "card", "dur": 4.0,
+      "kicker": "", "title": "Every width, checked live",
+      "sub": "github.com/standardbeagle/agnt"
+    }
+  ]
+}

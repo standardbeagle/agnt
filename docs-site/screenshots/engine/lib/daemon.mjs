@@ -39,6 +39,21 @@ export const proxyStart = ({id, target, port}, socketPath) =>
 
 export const proxyStop = (id, socketPath) => request(`PROXY STOP ${id};;`, socketPath);
 
+// CHAOS ADD-RULE <proxy-id> with JSON ChaosRuleConfig as data payload.
+// Rule shape: {id, type: "latency"|"http_error"|..., enabled, url_pattern,
+// methods, probability, min_latency_ms, max_latency_ms, error_codes, ...}
+export const chaosAddRule = async (proxyId, rule, socketPath) => {
+  const res = await request(`CHAOS ADD-RULE ${proxyId}`, socketPath, 10000, {chaos_rule: {enabled: true, ...rule}});
+  if (res.startsWith('ERR')) throw new Error(`CHAOS ADD-RULE ${proxyId}: ${res}`);
+  return res;
+};
+
+export const chaosClear = async (proxyId, socketPath) => {
+  const res = await request(`CHAOS CLEAR ${proxyId};;`, socketPath);
+  if (res.startsWith('ERR')) throw new Error(`CHAOS CLEAR ${proxyId}: ${res}`);
+  return res;
+};
+
 // PROXY TOAST <proxy-id> with JSON ToastConfig as data payload.
 // Throws on daemon ERR so a failed toast can't silently vanish from a take.
 export const toast = async (proxyId, {message, type = 'info', title = '', duration = 4200}, socketPath) => {

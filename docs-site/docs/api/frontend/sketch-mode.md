@@ -3,12 +3,17 @@ sidebar_position: 15
 ---
 
 import ModeVideo from '@site/src/components/ModeVideo';
+import DemoVideo from '@site/src/components/DemoVideo';
 
 # Sketch Mode
 
 An Excalidraw-like wireframing overlay injected into the page. The developer draws shapes and UI primitives directly on top of the live page, then sends the sketch to the AI agent as a build instruction — "make it look like this."
 
 <ModeVideo src="/img/sketch-mode.webm" poster="/img/sketch-mode-poster.webp" label="Sketch mode active over a dashboard — top toolbar with shape tools, a left properties panel for stroke/fill/opacity, an Undo/Redo/Clear/Done bar, and shapes being drawn onto the live page." />
+
+<DemoVideo src="/video/live-sketch.webm" poster="/img/live-sketch-poster.webp" label="A rectangle drawn around the Revenue card and an arrow from the invoices table travel to the agent with the elements under them." />
+
+*Full story: [Draw it, don't describe it](/demos/live-sketch).*
 
 ## API
 

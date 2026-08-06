@@ -1,0 +1,32 @@
+{
+  "name": "chaos-testing",
+  "viewport": {"width": 1440, "height": 900},
+  "fps": 25,
+  "env": {"PROXY_ID": "demo-chaos", "PROXY_PORT": 18196, "UPSTREAM_PORT": 8021},
+  "setup": {
+    "upstream": "../../serve-live.mjs",
+    "waitFor": "http://127.0.0.1:8021/",
+    "proxy": {"id": "demo-chaos", "target": "http://127.0.0.1:8021", "port": 18196}
+  },
+  "segments": [
+    {
+      "id": "card-intro", "type": "card", "dur": 4.2,
+      "kicker": "agnt demo · chaos engineering",
+      "title": "Break your API on purpose",
+      "sub": "Latency and 500s injected at the proxy — no code changes, no mocks to rewrite."
+    },
+    {
+      "id": "chaos", "type": "browser", "script": "./segments/chaos.mjs",
+      "keep": [
+        ["start", "mark:baseline+2.6"],
+        ["mark:latency-rule-0.8", "mark:error-rule+7.8"],
+        ["mark:cleared-0.5", "end"]
+      ]
+    },
+    {
+      "id": "card-outro", "type": "card", "dur": 4.2,
+      "kicker": "", "title": "Test the unhappy paths",
+      "sub": "github.com/standardbeagle/agnt"
+    }
+  ]
+}

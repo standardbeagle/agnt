@@ -2,9 +2,15 @@
 sidebar_position: 6
 ---
 
+import DemoVideo from '@site/src/components/DemoVideo';
+
 # Chaos Engineering
 
 agnt includes a built-in chaos engineering system for testing how your frontend handles network failures, slow connections, and unreliable APIs. Test the unhappy paths without changing your code.
+
+<DemoVideo src="/video/chaos-testing.webm" poster="/img/chaos-testing-poster.webp" label="A latency rule makes the report cascade's spinners crawl, then an http_error rule turns every call into a 500 the page swallows but the incident inbox catches; rules cleared, the cascade is fast again." />
+
+*Full story: [Break your API on purpose](/demos/chaos-testing).*
 
 ## Why Chaos Testing for Frontend?
 
