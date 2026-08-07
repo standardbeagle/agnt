@@ -1,5 +1,18 @@
 # Changelog - agnt
 
+## [0.15.4] - 2026-08-07
+
+### Fixed
+- **`PROXY EXEC` / agent navigation works after page navigation.** The frame
+  identity lived only in the `?__devtool_frame=` URL marker and the
+  injector's first-load inline script, so a `location.assign`/`reload` left
+  the re-injected page with no frame id — every exec from then on targeted a
+  ghost frame and hung (interim `state:"running"` status, never delivered).
+  `frames.js` now persists the frame id to sessionStorage on the first
+  wrapped load and recovers it on later documents in the same frame
+  (content-role only — same-origin frames share the tab's sessionStorage, so
+  the shell must never read it). Multi-hop agent navigation works.
+
 ## [0.15.3] - 2026-08-06
 
 ### Fixed

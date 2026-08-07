@@ -18,6 +18,10 @@
   // content-frame requests; this side detects it. Change both together.
   var FRAME_PARAM = '__devtool_frame';
 
+  // sessionStorage key carrying the content frame's id across in-frame
+  // navigations (which drop the URL marker). Content frames only.
+  var FRAME_ID_STORAGE = '__devtool_frame_id';
+
   // resolveRole returns 'chrome' | 'content' | 'passive' for this frame.
   //  - chrome  : the always-wrap outer shell (declares window.__devtool_role).
   //  - content : a wrapped content frame (URL carries the marker) OR an
@@ -60,12 +64,46 @@
     if (window.__devtool_frame_id) { return window.__devtool_frame_id; }
     try {
       var v = new URLSearchParams(window.location.search).get(FRAME_PARAM);
-      if (v) { window.__devtool_frame_id = v; return v; }
+      if (v) {
+        window.__devtool_frame_id = v;
+        // Persist so an in-frame navigation (which drops the URL marker) keeps
+        // the same frame identity — exec/audit routing depends on it.
+        try { window.sessionStorage.setItem(FRAME_ID_STORAGE, v); } catch (e) { /* storage unavailable */ }
+        return v;
+      }
     } catch (e) { /* unparsable search — fall through */ }
+    // Marker lost on in-frame navigation: content frames recover the identity
+    // they persisted at first load. Chrome-shell and foreign frames must NOT
+    // read this key — sessionStorage is shared across same-origin frames in
+    // the tab, so the shell would otherwise adopt the content frame's id.
+    if (resolveRole() === 'content') {
+      try {
+        var s = window.sessionStorage.getItem(FRAME_ID_STORAGE);
+        if (s) { window.__devtool_frame_id = s; return s; }
+      } catch (e) { /* storage unavailable */ }
+    }
     return '';
   }
 
   var role = resolveRole();
+
+  // Frame identity across in-frame navigations. The URL marker and the
+  // injector's inline window.__devtool_frame_id exist only on the first
+  // wrapped load; a location.assign/reload drops both, and the daemon's
+  // exec/audit routing keys on the active frame id. Persist it on first load
+  // and recover it on later documents in the same frame. Content frames only
+  // — same-origin frames share the tab's sessionStorage, so the shell must
+  // never read this key (it would adopt the content frame's id).
+  if (role === 'content') {
+    try {
+      if (window.__devtool_frame_id) {
+        window.sessionStorage.setItem(FRAME_ID_STORAGE, window.__devtool_frame_id);
+      } else {
+        var persistedId = window.sessionStorage.getItem(FRAME_ID_STORAGE);
+        if (persistedId) { window.__devtool_frame_id = persistedId; }
+      }
+    } catch (e) { /* storage unavailable */ }
+  }
 
   // Canonical adapter for the always-wrap execution model. Other modules must
   // ask this object about frame identity, navigation, and cross-frame hosts
