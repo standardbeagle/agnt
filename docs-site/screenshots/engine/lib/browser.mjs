@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {chromium} from 'playwright';
-import {toast as daemonToast, proxyStart, proxyStop, ping, chaosAddRule, chaosClear} from './daemon.mjs';
+import {toast as daemonToast, proxyStart, proxyStop, ping, chaosAddRule, chaosClear, exec as daemonExec} from './daemon.mjs';
 import {spawnLogged, waitForURL, writeJSON} from './util.mjs';
 
 export class BrowserDriver {
@@ -38,6 +38,10 @@ export class BrowserDriver {
   // Chaos engineering on this demo's proxy (real CHAOS daemon commands).
   chaosAddRule(rule) { return chaosAddRule(this.env.PROXY_ID, rule, this.env.AGNT_SOCKET); }
   chaosClear() { return chaosClear(this.env.PROXY_ID, this.env.AGNT_SOCKET); }
+
+  // The scripted agent acts: real PROXY EXEC in the content frame — the same
+  // path MCP proxy exec/navigate take.
+  agentExec(code) { return daemonExec(this.env.PROXY_ID, code, this.env.AGNT_SOCKET); }
 
   sleep(ms) { return this.page.waitForTimeout(ms); }
 }

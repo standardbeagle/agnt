@@ -2,9 +2,15 @@
 sidebar_position: 4
 ---
 
+import DemoVideo from '@site/src/components/DemoVideo';
+
 # proxy
 
 Manage reverse proxies with traffic logging and frontend instrumentation. The proxy sits between the browser and your dev server so the agent can capture frontend errors, inspect the live DOM, run JavaScript in the page, and inject chaos — without touching application code.
+
+<DemoVideo src="/video/navigate-defect.webm" poster="/img/navigate-defect-poster.webp" label="The agent navigates the browser two levels deep through the proxy and confirms an invoice total defect by measuring the line items." />
+
+*Navigation in action: [The defect is three pages in](/demos/navigate-defect).*
 
 ## Synopsis
 

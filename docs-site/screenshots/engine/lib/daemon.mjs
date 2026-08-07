@@ -39,6 +39,14 @@ export const proxyStart = ({id, target, port}, socketPath) =>
 
 export const proxyStop = (id, socketPath) => request(`PROXY STOP ${id};;`, socketPath);
 
+// PROXY EXEC <id> with raw JS as data payload — runs in the content frame by
+// default, same path as MCP proxy {action:"exec"/"navigate"}.
+export const exec = async (proxyId, code, socketPath) => {
+  const res = await request(`PROXY EXEC ${proxyId}`, socketPath, 15000, code);
+  if (res.startsWith('ERR')) throw new Error(`PROXY EXEC ${proxyId}: ${res}`);
+  return res;
+};
+
 // CHAOS ADD-RULE <proxy-id> with JSON ChaosRuleConfig as data payload.
 // Rule shape: {id, type: "latency"|"http_error"|..., enabled, url_pattern,
 // methods, probability, min_latency_ms, max_latency_ms, error_codes, ...}

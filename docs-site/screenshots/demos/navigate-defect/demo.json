@@ -1,0 +1,31 @@
+{
+  "name": "navigate-defect",
+  "viewport": {"width": 1440, "height": 900},
+  "fps": 25,
+  "env": {"PROXY_ID": "demo-nav", "PROXY_PORT": 18203, "UPSTREAM_PORT": 8023},
+  "setup": {
+    "upstream": "./upstream.mjs",
+    "waitFor": "http://127.0.0.1:8023/",
+    "proxy": {"id": "demo-nav", "target": "http://127.0.0.1:8023", "port": 18203}
+  },
+  "segments": [
+    {
+      "id": "card-intro", "type": "card", "dur": 4.2,
+      "kicker": "agnt demo · proxy navigate",
+      "title": "The defect is three pages in",
+      "sub": "Tell the agent where it hurts — it drives the browser there and starts measuring."
+    },
+    {
+      "id": "navigate", "type": "browser", "script": "./segments/navigate.mjs",
+      "keep": [
+        ["start", "mark:typed+1.0"],
+        ["mark:list-1.8", "end"]
+      ]
+    },
+    {
+      "id": "card-outro", "type": "card", "dur": 4.2,
+      "kicker": "", "title": "Just say where it hurts",
+      "sub": "github.com/standardbeagle/agnt"
+    }
+  ]
+}
