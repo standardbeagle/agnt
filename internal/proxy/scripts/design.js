@@ -491,15 +491,25 @@
 
   // renderInFrame renders alternative HTML inside an <iframe srcdoc> that carries
   // the page's stylesheets — true isolation from React/HMR AND the site's look.
+  // The frame background/color follow the page body, so dark-themed apps don't
+  // render their previews as dark text on a forced white sheet.
   function renderInFrame(html, heightPx) {
+    var bg = '#fff', fg = '';
+    try {
+      var bodyCS = window.getComputedStyle(document.body);
+      if (bodyCS.backgroundColor && bodyCS.backgroundColor !== 'rgba(0, 0, 0, 0)' && bodyCS.backgroundColor !== 'transparent') {
+        bg = bodyCS.backgroundColor;
+      }
+      fg = bodyCS.color || '';
+    } catch (e) { /* defaults */ }
     var f = document.createElement('iframe');
     f.className = 'frender';
     f.setAttribute('sandbox', 'allow-same-origin');
-    f.style.cssText = 'width:100%;border:0;display:block;background:#fff;' +
+    f.style.cssText = 'width:100%;border:0;display:block;background:' + bg + ';' +
       (heightPx ? 'height:' + heightPx + 'px;' : 'height:100%;');
     f.srcdoc = '<!doctype html><html><head><meta charset="utf-8">' +
       collectPageCSS() +
-      '<style>html,body{margin:0;padding:0;background:#fff}</style>' +
+      '<style>html,body{margin:0;padding:0;background:' + bg + (fg ? ';color:' + fg : '') + '}</style>' +
       '</head><body>' + (html || '') + '</body></html>';
     return f;
   }
@@ -885,7 +895,7 @@
   // the stored selector would go stale, throwing "innerHTML … not an object").
   // The preview renders in the isolated shadow-root panel instead.
   function applyAlternative(index) {
-    if (index < 0 || index >= state.alternatives.length) return;
+    if (typeof index !== 'number' || isNaN(index) || index < 0 || index >= state.alternatives.length) return;
     state.currentIndex = index;
     persistAlternatives();
     renderPreview();

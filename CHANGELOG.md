@@ -1,5 +1,18 @@
 # Changelog - agnt
 
+## [0.15.3] - 2026-08-06
+
+### Fixed
+- **Design-mode preview iframe follows the page theme.** `renderInFrame`
+  hardcoded `background:#fff`, so alternatives for dark-themed apps previewed
+  as dark text on a forced white sheet. The frame and srcdoc now inherit the
+  page body's computed background and color.
+- **`design.applyAlternative()` no longer corrupts state when called with no
+  argument.** The index was unguarded, so a bare call set `currentIndex` to
+  `undefined` and the panel badge rendered `NaN / N`. Non-numeric or
+  out-of-range indexes are now a no-op; the docs note the function is
+  preview navigation only (shipping an alternative is a source edit + HMR).
+
 ## [0.15.2] - 2026-08-06
 
 ### Added
