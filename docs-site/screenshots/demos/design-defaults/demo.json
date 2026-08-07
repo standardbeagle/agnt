@@ -1,0 +1,45 @@
+{
+  "name": "design-defaults",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "fps": 25,
+  "env": {
+    "PROXY_ID": "demo-defaults",
+    "PROXY_PORT": 18201,
+    "UPSTREAM_PORT": 8021
+  },
+  "setup": {
+    "upstream": "../../serve-live.mjs",
+    "waitFor": "http://127.0.0.1:8021/",
+    "proxy": {
+      "id": "demo-defaults",
+      "target": "http://127.0.0.1:8021",
+      "port": 18201
+    }
+  },
+  "segments": [
+    {
+      "id": "card-intro",
+      "type": "card",
+      "dur": 4.2,
+      "kicker": "agnt demo \u00b7 design mode",
+      "title": "On-scheme by default",
+      "sub": "Alternatives arrive inside the site's design system \u2014 because the request carries the scheme, the slot, the siblings, and the page."
+    },
+    {
+      "id": "defaults",
+      "type": "browser",
+      "script": "./segments/defaults.mjs"
+    },
+    {
+      "id": "card-outro",
+      "type": "card",
+      "dur": 4.2,
+      "kicker": "",
+      "title": "Variation within the system",
+      "sub": "github.com/standardbeagle/agnt"
+    }
+  ]
+}

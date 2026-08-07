@@ -17,6 +17,8 @@ and agent replies you see travelled the same transport your own sessions use.
 | [The VHS spiral](./vhs-spiral.md) | A button half off-screen: three rounds of blind terminal automation fail, then one measured pass through the proxy fixes it | 1:40 |
 | [The bug that reports itself](./incident-inbox.md) | Two failing API calls caught by `agnt monitor` live, then triaged from the incident inbox with remediation hints | 1:11 |
 | [The AI-slop detector](./design-audit.md) | `auditDesign` grades a gorgeous AI-generated landing page F (10/100), the agent removes the tells live, re-audit returns A (100/100) | 0:33 |
+| [On-scheme by default](./design-defaults.md) | Design-mode alternatives stay in the site's design system unasked — scheme, slot, exemplars, and a page thumbnail ride the request | 0:31 |
+| [Steer it. Iterate. Then build.](./design-steer.md) | Chat prompts steer alternatives via the preserve/vary/steer contract; the winner ships to the live page | 0:34 |
 | [Draw it, don't describe it](./live-sketch.md) | Sketch mode: draw on the live app, the agent gets the drawing plus the elements under it | 0:32 |
 | [Sketch the layout. The agent builds it.](./sketch-build.md) | A stat-card row wireframed and annotated on the live app, then built as real DOM in the app's own style | 0:39 |
 | [Shrink the page. Watch it break.](./resize-components.md) | Responsive mode sweep exposes 544px of sideways scroll at 414px; the agent's media query fixes it, verified at 320px | 0:36 |

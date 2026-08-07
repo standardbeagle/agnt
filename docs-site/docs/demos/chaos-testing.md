@@ -26,15 +26,19 @@ page *swallows* still land in the incident inbox.
 sequence) completes in about two seconds at mock latency.
 
 **Latency rule (0:12).** `CHAOS ADD-RULE`: `/api/report` now answers in
-2.5–3.5s. Same page, same code — the spinners crawl.
+2.5–3.5s. A labeled spinner — *"Loading revenue report… (waiting on
+/api/report)"* — tracks a real awaited fetch, and when it outstays the 0.4s
+baseline the page puts up a **"Things are taking longer than usual"** banner.
+The wait on screen is the actual response time.
 
 **Error rule (0:22).** Rules swapped: every `/api/report` call now fails with
-a 500. The page tells you *nothing* — the demo code ignores failed fetches.
-The incident inbox tells you everything: each 500 landed with the request
-attached.
+a 500. The cards that never got data are labeled in place — **"HTTP 500 — no
+data"** — and each swallowed failure surfaces as a toast *with its fix*:
+"the report handler is throwing; payload valid, handler not."
 
-**Clear (0:34).** `CHAOS CLEAR` and the cascade is back to mock latency. The
-unhappy path is a switch you can flip, not a deployment you have to wait for.
+**Clear (0:38).** `CHAOS CLEAR` and the cascade is back to mock latency, real
+values replacing the labels. The unhappy path is a switch you can flip, not a
+deployment you have to wait for.
 
 ## How it's made
 

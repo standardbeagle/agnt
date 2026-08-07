@@ -1,22 +1,22 @@
 {
-  "name": "chaos-testing",
+  "name": "design-steer",
   "viewport": {
     "width": 1440,
     "height": 900
   },
   "fps": 25,
   "env": {
-    "PROXY_ID": "demo-chaos",
-    "PROXY_PORT": 18196,
+    "PROXY_ID": "demo-steer",
+    "PROXY_PORT": 18202,
     "UPSTREAM_PORT": 8021
   },
   "setup": {
     "upstream": "../../serve-live.mjs",
     "waitFor": "http://127.0.0.1:8021/",
     "proxy": {
-      "id": "demo-chaos",
+      "id": "demo-steer",
       "target": "http://127.0.0.1:8021",
-      "port": 18196
+      "port": 18202
     }
   },
   "segments": [
@@ -24,25 +24,25 @@
       "id": "card-intro",
       "type": "card",
       "dur": 4.2,
-      "kicker": "agnt demo \u00b7 chaos engineering",
-      "title": "Break your API on purpose",
-      "sub": "Latency and 500s injected at the proxy \u2014 no code changes, no mocks to rewrite."
+      "kicker": "agnt demo \u00b7 design mode",
+      "title": "Steer it. Iterate. Then build.",
+      "sub": "Chat prompts steer the alternatives, a second round tightens them, and the winner lands in the live DOM."
     },
     {
-      "id": "chaos",
+      "id": "steer",
       "type": "browser",
-      "script": "./segments/chaos.mjs",
+      "script": "./segments/steer.mjs",
       "keep": [
         [
           "start",
-          "mark:baseline+2.6"
+          "mark:chat-1+1.2"
         ],
         [
-          "mark:latency-rule-0.8",
-          "mark:labeled+13.0"
+          "mark:round-1-1.2",
+          "mark:round-1+3.4"
         ],
         [
-          "mark:cleared-0.5",
+          "mark:chat-2+0.5",
           "end"
         ]
       ]
@@ -52,7 +52,7 @@
       "type": "card",
       "dur": 4.2,
       "kicker": "",
-      "title": "Test the unhappy paths",
+      "title": "Prompt-steerable, scheme-safe",
       "sub": "github.com/standardbeagle/agnt"
     }
   ]
