@@ -12,7 +12,11 @@ package proxy
 //
 // Tier A (this file) is pure-Go and always runs, including under -race (the
 // concurrency gate). Tier B (publish_browser_e2e_test.go, build-tagged
-// `publishbrowser`) drives the same served artifact in real Chrome.
+// `chromee2e`, run via `make test-chrome-e2e` / `make e2e-publish-browser`)
+// drives the same served artifact in real Chrome. The split is load-bearing for
+// this file's scope: Tier A can only prove the bytes and header STRINGS on the
+// wire, so any claim about what a browser actually does with them — notably
+// whether a script runs — belongs to Tier B, not here.
 //
 // The suite is deliberately adversarial: most of it asserts NEGATIVES — the dev
 // control surface is unreachable, injection payloads are rejected or stored
@@ -21,6 +25,15 @@ package proxy
 // wholesale-replaced CSP), traversal serves no file, an unknown/revoked/rotated
 // token is an indistinguishable 404, and a crash mid-write makes the store reload
 // FAIL LOUD rather than silently serve an empty store.
+//
+// One deliberate exception to "inert" post-S3/S4: a publisher-authored
+// addScript{code} body DOES run, because serving pins its exact sha256 into
+// script-src (authoredScriptCSPHashes). That widening is hash-only — never
+// 'unsafe-inline', never 'self' — so publisher script executes while upstream
+// and viewer script still cannot. The revisions exercised in this file carry no
+// addScript op, so the CSPs asserted below are the un-widened shape (bundle hash
+// alone); the widened shape and its EXECUTION consequences are Tier B's
+// TestE2E_PublicPlane_RealBrowser_AuthoredScriptExecutionCSP.
 
 import (
 	"fmt"
@@ -198,7 +211,9 @@ func TestE2EPublishGate(t *testing.T) {
 		assert.Contains(t, body, "E2E Walkthrough")
 		// INV-12: the served CSP pins the exact bundle hash and NEVER carries
 		// 'unsafe-inline' — the public plane sets its CSP wholesale, so no hostile
-		// upstream script-src can survive even in principle.
+		// upstream script-src can survive even in principle. This revision has no
+		// addScript op, so the bundle hash is the WHOLE of script-src; a revision
+		// that does carry one adds a sha256 per authored body and nothing else.
 		csp := hdr.Get("Content-Security-Policy")
 		require.NotEmpty(t, csp)
 		assert.Contains(t, csp, assetHash, "CSP must pin the RolePublic bundle hash")
@@ -346,7 +361,11 @@ func TestE2EPublishGate(t *testing.T) {
 		rawCSP := rawHdr.Get("Content-Security-Policy")
 		require.NotEmpty(t, rawCSP)
 		// INV-12: the inline on* handler and the javascript: href in the raw
-		// fragment are INERT because script-src is the bundle hash alone.
+		// fragment are INERT because script-src carries HASH SOURCES ONLY (here,
+		// with no addScript op in the revision, the bundle hash alone). Event-
+		// handler attributes and javascript: URLs need 'unsafe-inline', which no
+		// composition of writeHeaders can emit — so they stay inert even for a
+		// revision whose script-src IS widened by an authored-body hash.
 		assert.NotContains(t, rawCSP, "unsafe-inline", "raw-content share must still forbid unsafe-inline")
 		assert.NotContains(t, rawCSP, "unsafe-eval")
 		assert.NotContains(t, rawCSP, "script-src 'self'", "hash pin must not be diluted by 'self'")
@@ -395,7 +414,11 @@ func TestE2EPublishGate(t *testing.T) {
 				{Op: publish.OpSetImageSrc, Selector: ".x", URL: "javascript:evil()"}}},
 			{"plaintext http image url", []publish.Op{
 				{Op: publish.OpSetImageSrc, Selector: ".x", URL: "http://evil/x.png"}}},
-			{"non-https addScript src", []publish.Op{
+			// addScript src is refused outright — not for its scheme, but because
+			// publish-time fetch-and-inline does not exist, so a src body would
+			// never be hashed into script-src and could never run. Only an inline
+			// `code` body reaches the pinned-hash execution path.
+			{"addScript src (unsupported at any scheme)", []publish.Op{
 				{Op: publish.OpAddScript, Src: "http://evil/x.js"}}},
 			{"oversize raw CSS", []publish.Op{
 				{Op: publish.OpAddStyle, CSS: strings.Repeat("a", 4097)}}},
