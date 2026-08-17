@@ -3,6 +3,7 @@
 package platform
 
 import (
+	"errors"
 	"os/exec"
 	"syscall"
 	"testing"
@@ -192,5 +193,60 @@ func TestReadPGID(t *testing.T) {
 	}
 	if got != want {
 		t.Errorf("readPGID(%d) = %d, want %d", self, got, want)
+	}
+}
+
+// TestMembersOfPGID_FailureIsNilEmptyGroupIsNot pins the return-value contract
+// the daemon's session-reap guard rests on.
+//
+// The guard decides whether it may signal a process group by looking for a
+// process that cannot belong to it. If a failed process-table read were spelled
+// the same way as a genuinely empty group, that search would iterate an empty
+// list, find nothing, and report exclusivity it never established — an
+// enumeration outage would silently authorise the kill it exists to prevent.
+// Making failure representable in the return value is what keeps that from
+// being a rule every caller has to remember.
+func TestMembersOfPGID_FailureIsNilEmptyGroupIsNot(t *testing.T) {
+	noMatches := func() ([]ProcInfo, error) { return []ProcInfo{{PID: 99}}, nil }
+
+	members, err := membersOfPGIDWith(42, noMatches,
+		func(int) int { return 7 }, // every pid is in some other group
+		func(int) (int, error) { return 7, nil })
+	if err != nil {
+		t.Fatalf("err=%v, want nil for a successful scan with no matches", err)
+	}
+	if len(members) != 0 {
+		t.Fatalf("members=%v, want none", members)
+	}
+	if members == nil {
+		t.Fatal("a successfully enumerated empty group must be non-nil — nil is reserved " +
+			"for enumeration failure, and collapsing the two lets a failed read pass an " +
+			"ownership check vacuously")
+	}
+
+	failed, err := membersOfPGIDWith(42,
+		func() ([]ProcInfo, error) { return nil, errors.New("process table unavailable") },
+		func(int) int { return 42 },
+		func(int) (int, error) { return 42, nil })
+	if err == nil {
+		t.Fatal("a failed scan must report an error")
+	}
+	if failed != nil {
+		t.Fatalf("members=%v, want nil on failure", failed)
+	}
+}
+
+// TestMembersOfPGIDExported_EmptyGroupIsNonNil is the same contract through the
+// exported surface the daemon actually calls, which drops the error and leaves
+// nil as the sole failure signal. A pgid above pid_max cannot exist, so the
+// process table reads cleanly and matches nothing.
+func TestMembersOfPGIDExported_EmptyGroupIsNonNil(t *testing.T) {
+	members := MembersOfPGID(1 << 30)
+	if members == nil {
+		t.Fatal("MembersOfPGID returned nil for a readable, empty group — callers cannot " +
+			"then distinguish it from a failed enumeration")
+	}
+	if len(members) != 0 {
+		t.Fatalf("members=%v, want none for a pgid that cannot exist", members)
 	}
 }

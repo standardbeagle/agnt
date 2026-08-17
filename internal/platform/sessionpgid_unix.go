@@ -171,7 +171,21 @@ func waitForPGIDDrain(pgid, killSelfPID int, budget time.Duration) error {
 //
 // On WSL2 the same /proc layout applies, so no special-casing is needed.
 // On platforms without /proc this falls back to best-effort:
-// Getpgid(pid) on every pid in Scan() output. Returns nil on error.
+// Getpgid(pid) on every pid in Scan() output.
+//
+// Nil means the enumeration FAILED. A live group with no members returns a
+// non-nil, zero-length slice. That distinction is load-bearing and tested
+// (TestMembersOfPGID_FailureIsNilEmptyGroupIsNot): a caller
+// deciding whether it may signal a process group must be able to tell "the
+// group is empty, signalling it is a no-op" from "the process table could not
+// be read, so I know nothing about this group". Collapsing the two lets an
+// enumeration outage pass an ownership check vacuously — the daemon's session
+// reap guard depends on it (internal/daemon.checkedMembers).
+//
+// The Windows stub returns nil unconditionally, which lands on the safe side
+// of that contract: a caller that must fail closed refuses, and the only
+// consumer that does (the session pgid reap) is unreachable on Windows anyway
+// because SessionPGID is always 0 there.
 func MembersOfPGID(pgid int) []int {
 	return membersOfPGID(pgid)
 }
@@ -194,7 +208,10 @@ func membersOfPGIDWith(pgid int, scanFn func() ([]ProcInfo, error), readFn func(
 	if err != nil {
 		return nil, err
 	}
-	var out []int
+	// Non-nil even when nothing matches: see MembersOfPGID — a successfully
+	// enumerated empty group must not be spelled the same way as a failed
+	// enumeration.
+	out := []int{}
 	for _, p := range procs {
 		got := readFn(p.PID)
 		if got == 0 {

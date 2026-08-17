@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"sync"
@@ -223,7 +224,13 @@ func pgidExclusivelyOwned(pgid int, foreignPIDs []int, membersFn func(int) ([]in
 	if membersFn == nil {
 		return nil, false
 	}
-	members, _ := membersFn(pgid)
+	members, err := membersFn(pgid)
+	if err != nil {
+		// Unreadable membership is not an empty group. Without the member list
+		// there is no evidence of ownership at all, and the loop below would
+		// "prove" exclusivity by iterating nothing.
+		return nil, false
+	}
 	for _, member := range members {
 		for _, foreign := range foreignPIDs {
 			if foreign > 1 && member == foreign {
@@ -234,16 +241,29 @@ func pgidExclusivelyOwned(pgid int, foreignPIDs []int, membersFn func(int) ([]in
 	return members, true
 }
 
+// errPGIDMembershipUnreadable says the process table could not be enumerated,
+// so nothing is known about the group — which is categorically different from
+// knowing the group is empty.
+var errPGIDMembershipUnreadable = errors.New("process-group membership could not be enumerated")
+
 // checkedPGIDMembers is the production membersFn for the reap seam.
 func checkedPGIDMembers(pgid int) ([]int, error) {
 	return checkedMembers(platform.MembersOfPGID(pgid))
 }
 
-// checkedMembers translates a platform membership read into the seam's
-// contract.
+// checkedMembers is the single translation point from a platform membership
+// read to the reap seam's contract, and it exists so that a failed enumeration
+// is unrepresentable as an empty group rather than merely discouraged.
 //
-// TODO(RED): still spells a failed enumeration as an empty group.
+// platform.MembersOfPGID reports failure as nil and a live-but-empty group as
+// a non-nil zero-length slice. Every reap decision flows through here, so no
+// future caller has to remember the distinction — the alternative (a "check
+// the read succeeded first" rule at each call site) is exactly the shape
+// .claude/rules/publish-security-review-lessons.md §12 says to avoid.
 func checkedMembers(members []int) ([]int, error) {
+	if members == nil {
+		return nil, errPGIDMembershipUnreadable
+	}
 	return members, nil
 }
 
