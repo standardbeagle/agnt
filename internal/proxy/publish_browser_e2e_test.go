@@ -15,18 +15,28 @@ package proxy
 // target runs exactly this test with the browser present.
 //
 // Unlike the engine/player e2e fixtures (which serve the bundle from a bespoke
-// httptest page), this test navigates to the REAL /s/{token} artifact the public
-// plane emits, so the bundle loads under the REAL wholesale CSP (script-src
-// 'self' + bundle hash, connect-src 'self'), and the page fetches its OWN
-// artifact JSON same-origin the way a deployed viewer would.
+// httptest page), these tests navigate to the REAL /s/{token} artifact the public
+// plane emits, so the bundle loads under the REAL wholesale CSP (script-src is
+// HASH-ONLY — the bundle hash plus one sha256 per authored script body in the
+// served revision, deliberately no 'self'; connect-src 'self'), and the page
+// fetches its OWN artifact JSON same-origin the way a deployed viewer would.
+//
+// Two tests live here:
+//
+//	TestE2E_PublicPlane_RealBrowser — the bundle loads, the dev surface is absent,
+//	  variant/player/feedback all work on the real page.
+//	TestE2E_PublicPlane_RealBrowser_AuthoredScriptExecutionCSP — the authored-hash
+//	  EXECUTION path: a pinned publisher script runs, an unpinned one does not.
 
 import (
 	"context"
+	"net/http"
 	"testing"
 	"time"
 
 	"github.com/chromedp/cdproto/runtime"
 	cdp "github.com/chromedp/chromedp"
+	"github.com/standardbeagle/agnt/internal/publish"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -180,5 +190,127 @@ func TestE2E_PublicPlane_RealBrowser(t *testing.T) {
 		require.True(t, ok)
 		require.Len(t, rows, 1)
 		assert.Contains(t, rows[0].Body, "from real chrome")
+	})
+}
+
+// authoredScriptE2ECode is the publisher-authored script body carried by the
+// revision under test. It is deliberately NON-ASCII: the CSP hash is computed in
+// Go over []byte(op.Code) while the browser hashes the UTF-8 encoding of the
+// script element's textContent (variant-engine.js assigns op.code to
+// textContent). Any byte/encoding divergence between those two paths — the exact
+// risk a header-string test cannot see — makes the browser refuse this script and
+// fails the positive assertion below.
+const authoredScriptE2ECode = "window.__authoredRan = 'ran ✓';\n" +
+	"document.getElementById('app').setAttribute('data-authored', 'ran ✓');\n"
+
+// authoredScriptE2ENearMiss differs from the authored body by ONE character
+// (✗ instead of ✓). It proves the pin is a byte-exact hash rather than
+// any prefix/shape match.
+const authoredScriptE2ENearMiss = "window.__authoredRan = 'ran ✗';\n" +
+	"document.getElementById('app').setAttribute('data-authored', 'ran ✗');\n"
+
+// TestE2E_PublicPlane_RealBrowser_AuthoredScriptExecutionCSP is the EXECUTION
+// half of the authored-script story that S3 (inline <script> emission) and S4
+// (per-revision sha256 widening of script-src) only proved at the header-string
+// level. A green header assertion is compatible with a policy that blocks
+// everything, so this drives a real Chrome against the real listener and asserts
+// the two halves that actually matter:
+//
+//	POSITIVE — the publisher-authored body pinned by this revision RUNS (observable
+//	           side effects: a global and a DOM attribute).
+//	NEGATIVE — a byte-different foreign inline script (arbitrary, and a one-character
+//	           near-miss of the authored body) is REFUSED by CSP and never runs.
+//
+// The name embeds TestE2E_PublicPlane_RealBrowser on purpose so `make
+// e2e-publish-browser` (-run 'TestE2E_PublicPlane_RealBrowser') covers it too.
+func TestE2E_PublicPlane_RealBrowser_AuthoredScriptExecutionCSP(t *testing.T) {
+	skipIfNoBrowser(t)
+
+	p := newE2EPlane(t)
+	wt := e2eWalkthrough()
+	wt.ID = "wt-authored-script"
+	wt.VariantSet.ID = "set-authored-script"
+	wt.VariantSet.Variants[0].Ops = []publish.Op{
+		{Op: publish.OpSetText, Selector: "#title", Value: "Changed"},
+		{Op: publish.OpAddScript, Code: authoredScriptE2ECode},
+	}
+	_, token, err := p.store.Create(wt, e2eProjectA)
+	require.NoError(t, err, "a revision carrying an authored addScript{code} op must publish")
+
+	// Test premise (named, per the mutation-verify discipline): the served CSP
+	// must actually carry an authored hash source DISTINCT from the bundle hash.
+	// Without it the execution assertion below would be testing nothing.
+	authoredHash := cspSHA256([]byte(authoredScriptE2ECode))
+	bundleHash := PublicInstrumentationAssetCSPHash()
+	require.NotEqual(t, bundleHash, authoredHash, "premise broken: authored and bundle hashes collide")
+	code, _, hdr := p.get(t, "/s/"+token)
+	require.Equal(t, http.StatusOK, code)
+	csp := hdr.Get("Content-Security-Policy")
+	require.Contains(t, csp, authoredHash, "premise broken: served CSP does not pin the authored script hash")
+	require.NotContains(t, csp, "unsafe-inline", "authored-script widening must stay hash-only")
+	require.NotContains(t, csp, "script-src 'self'", "authored-script widening must not dilute the pin with 'self'")
+	nearMissHash := cspSHA256([]byte(authoredScriptE2ENearMiss))
+	require.NotContains(t, csp, nearMissHash, "premise broken: the near-miss body must NOT be pinned")
+
+	ctx := newPublicBrowser(t)
+	var ready bool
+	require.NoError(t, cdp.Run(ctx,
+		cdp.Navigate(p.srv.URL+"/s/"+token),
+		cdp.Poll(`!!(window.__variantEngine && window.__walkthroughViewer)`, &ready,
+			cdp.WithPollingTimeout(10*time.Second)),
+	))
+	require.True(t, ready, "the served RolePublic bundle must load")
+
+	awaitPromise := func(pp *runtime.EvaluateParams) *runtime.EvaluateParams { return pp.WithAwaitPromise(true) }
+
+	t.Run("authored_script_executes_under_pinned_hash", func(t *testing.T) {
+		// Build the app subtree, fetch the OWN variant set same-origin, and apply
+		// the variant. The engine emits the authored body as an inline <script>;
+		// whether it runs is decided ENTIRELY by the served CSP.
+		var applied string
+		require.NoError(t, cdp.Run(ctx, cdp.Evaluate(`(async () => {
+			document.body.innerHTML = '<div id="app"><h1 id="title">Original</h1><p class="msg">hi</p></div>';
+			const vs = await (await fetch('/s/`+token+`/variants.json')).json();
+			window.__eng = window.__variantEngine.create(vs, { when: 'any' });
+			window.__eng.apply('a');
+			return document.getElementById('title').textContent;
+		})()`, &applied, awaitPromise)))
+		require.Equal(t, "Changed", applied, "the non-script ops must apply (the variant really ran)")
+
+		var ranFlag, ranAttr string
+		require.NoError(t, cdp.Run(ctx,
+			cdp.Sleep(200*time.Millisecond),
+			cdp.Evaluate(`String(window.__authoredRan)`, &ranFlag),
+			cdp.Evaluate(`String(document.getElementById('app').getAttribute('data-authored'))`, &ranAttr),
+		))
+		assert.Equal(t, "ran ✓", ranFlag,
+			"the pinned authored script must EXECUTE in the real browser (global side effect)")
+		assert.Equal(t, "ran ✓", ranAttr,
+			"the pinned authored script must EXECUTE in the real browser (DOM side effect)")
+	})
+
+	t.Run("foreign_and_near_miss_inline_scripts_refused_by_csp", func(t *testing.T) {
+		// Inline scripts inserted into the DOM are subject to script-src; only a
+		// body whose sha256 is pinned may run. Neither of these is pinned.
+		require.NoError(t, cdp.Run(ctx, cdp.Evaluate(`(function(){
+			function inject(code){ var s=document.createElement('script'); s.textContent=code; document.body.appendChild(s); }
+			inject("window.__foreignRan = true; document.getElementById('app').setAttribute('data-foreign','yes');");
+			inject(`+jsonString(authoredScriptE2ENearMiss)+`);
+			return true;
+		})()`, nil)))
+
+		var foreign, nearMiss, attr string
+		require.NoError(t, cdp.Run(ctx,
+			cdp.Sleep(200*time.Millisecond),
+			cdp.Evaluate(`String(typeof window.__foreignRan)`, &foreign),
+			// The near-miss body would OVERWRITE __authoredRan with the ✗ marker
+			// if it ran, so the authored value surviving is the refusal evidence.
+			cdp.Evaluate(`String(window.__authoredRan)`, &nearMiss),
+			cdp.Evaluate(`String(document.getElementById('app').getAttribute('data-foreign'))`, &attr),
+		))
+		assert.Equal(t, "undefined", foreign, "an unpinned foreign inline script must be REFUSED by CSP")
+		assert.Equal(t, "null", attr, "a refused script must leave no DOM side effect")
+		assert.NotEqual(t, "ran ✗", nearMiss,
+			"a ONE-CHARACTER-different near-miss of the authored body must be refused (the pin is byte-exact)")
 	})
 }
