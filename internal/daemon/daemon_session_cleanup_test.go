@@ -4,12 +4,15 @@ package daemon
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
+	"github.com/standardbeagle/agnt/internal/selflog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -405,4 +408,142 @@ func TestRestoreProxies_RegistersAdminEntry(t *testing.T) {
 	require.Len(t, entries, 1, "restoreProxies must register a proxy-kind admin entry")
 	assert.Equal(t, proxyID, entries[0].ProxyID(),
 		"admin entry must map back to the restored proxy ID")
+}
+
+// --- session pgid reap diagnostics -----------------------------------------
+//
+// The reap kills the session's whole process group, which on an `agnt run`
+// session includes the coding agent itself. From the user's seat that is an
+// unexplained SIGKILL, so every reap that actually signals must leave a
+// user-readable record in selflog (`agnt hook log`). These tests pin that the
+// record rides the path that kills, and that the two skip reasons are told
+// apart.
+
+// selflogSink redirects selflog.Record for one test and returns a reader for
+// whatever was written.
+func selflogSink(t *testing.T) func() []selflog.Entry {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "errors.log")
+	t.Setenv("AGNT_ERROR_LOG", path)
+	return func() []selflog.Entry {
+		entries, err := selflog.Read(path, 0)
+		require.NoError(t, err)
+		return entries
+	}
+}
+
+// matchingIdentity builds an expected identity plus the members/birth probes
+// that agree with it, so the guarded path reaches its kill.
+func matchingIdentity(pgid int, pids ...int) (sessionPGIDIdentity, func(int) []int, func(int) (string, bool)) {
+	identity := sessionPGIDIdentity{pgid: pgid, members: make(map[int]string, len(pids))}
+	for _, pid := range pids {
+		identity.members[pid] = fmt.Sprintf("birth-%d", pid)
+	}
+	members := func(int) []int { return pids }
+	birth := func(pid int) (string, bool) {
+		b, ok := identity.members[pid]
+		return b, ok
+	}
+	return identity, members, birth
+}
+
+// TestReapSessionPGID_GuardedSuccessRecordsSelflog is the regression this task
+// exists for: the identity-guarded branch is the branch that reaps live
+// sessions, and it used to kill without recording anything.
+func TestReapSessionPGID_GuardedSuccessRecordsSelflog(t *testing.T) {
+	read := selflogSink(t)
+	expected, members, birth := matchingIdentity(4242, 4242, 4243)
+
+	var killed []int
+	outcome, err := reapSessionPGID("cdsp-7654", "/home/dev/proj", 4242, &expected,
+		members, birth, func(pgid int) error { killed = append(killed, pgid); return nil })
+
+	require.NoError(t, err)
+	assert.Equal(t, sessionPGIDReapKilled, outcome)
+	assert.Equal(t, []int{4242}, killed, "guarded success must still deliver the signal")
+
+	entries := read()
+	require.Len(t, entries, 1, "a successful guarded reap must leave a selflog record")
+	msg := entries[0].Message
+	assert.Equal(t, "daemon", entries[0].Component)
+	assert.Contains(t, msg, "cdsp-7654", "record must name the session that reaped")
+	assert.Contains(t, msg, "4242", "record must name the pgid")
+	assert.Contains(t, msg, "/home/dev/proj", "record must name the project path")
+}
+
+// TestReapSessionPGID_NilExpectedRecordsSelflog covers the unguarded caller
+// contract (CleanupSessionResources -> doCleanupExact(..., nil)): an immediate
+// cleanup captured no identity, kills unconditionally, and must say so.
+func TestReapSessionPGID_NilExpectedRecordsSelflog(t *testing.T) {
+	read := selflogSink(t)
+
+	var killed []int
+	outcome, err := reapSessionPGID("cdsp-1", "/home/dev/proj", 99,
+		nil, nil, nil, func(pgid int) error { killed = append(killed, pgid); return nil })
+
+	require.NoError(t, err)
+	assert.Equal(t, sessionPGIDReapKilled, outcome)
+	assert.Equal(t, []int{99}, killed)
+	entries := read()
+	require.Len(t, entries, 1, "the unguarded immediate-cleanup kill must also be recorded")
+	assert.Contains(t, entries[0].Message, "cdsp-1")
+}
+
+// TestReapSessionPGID_SkipsAreDistinctAndSilent asserts the fail-safe halves:
+// neither skip signals anything, neither writes a "we killed you" record, and
+// a capture failure is not reported as an identity change.
+func TestReapSessionPGID_SkipsAreDistinctAndSilent(t *testing.T) {
+	read := selflogSink(t)
+	kill := func(int) error { t.Fatalf("skip path must never signal"); return nil }
+
+	// Capture failure: inspectSessionPGIDIdentity returned false, so the
+	// scheduler stored a zero-value identity — we never had ownership evidence.
+	zero := sessionPGIDIdentity{}
+	outcome, err := reapSessionPGID("s1", "/p", 4242, &zero,
+		func(int) []int { return []int{4242} },
+		func(int) (string, bool) { return "birth-4242", true }, kill)
+	require.NoError(t, err)
+	assert.Equal(t, sessionPGIDReapIdentityUnavailable, outcome)
+
+	// Identity change: we had evidence, the live group no longer matches it.
+	expected, members, _ := matchingIdentity(4242, 4242)
+	outcome, err = reapSessionPGID("s2", "/p", 4242, &expected, members,
+		func(int) (string, bool) { return "birth-of-someone-else", true }, kill)
+	require.NoError(t, err)
+	assert.Equal(t, sessionPGIDReapIdentityChanged, outcome)
+
+	assert.NotEqual(t, sessionPGIDReapIdentityUnavailable, sessionPGIDReapIdentityChanged,
+		"the two skip reasons must be distinguishable outcomes")
+	assert.Empty(t, read(), "a skipped reap must not claim it terminated anything")
+}
+
+// TestKillSessionPGID_SkipReasonsAreDistinctInStartupLog drives the daemon
+// method itself and asserts the operator-visible startup-log entries differ.
+// Both cases are kill-free by construction, so no real process is signalled.
+func TestKillSessionPGID_SkipReasonsAreDistinctInStartupLog(t *testing.T) {
+	pgid := os.Getpid() // read-only: every case below skips before any kill
+
+	newSession := func(code string) *Session {
+		return &Session{Code: code, ProjectPath: "/p", SessionPGID: pgid}
+	}
+	entryFor := func(expected *sessionPGIDIdentity, code string) StartupLogEntry {
+		d := &Daemon{startupErrorStore: NewStartupLogStore(50)}
+		d.killSessionPGID(newSession(code), expected)
+		entries := d.startupErrorStore.Query(StartupLogFilter{})
+		require.Len(t, entries, 1, "a skipped reap must be visible to the operator")
+		return *entries[0]
+	}
+
+	unavailable := entryFor(&sessionPGIDIdentity{}, "s-unavailable")
+	changed := entryFor(&sessionPGIDIdentity{
+		pgid:    pgid,
+		members: map[int]string{pgid: "birth-of-someone-else"},
+	}, "s-changed")
+
+	assert.NotEqual(t, unavailable.EventType, changed.EventType,
+		"capture failure and identity change must be different event types")
+	assert.NotEqual(t, unavailable.Message, changed.Message,
+		"capture failure must not be reported as an identity change")
+	assert.Contains(t, changed.Message, "s-changed")
+	assert.Contains(t, unavailable.Message, "s-unavailable")
 }
