@@ -139,6 +139,11 @@ const (
 	sessionPGIDReapIdentityChanged
 	// sessionPGIDReapKilled: the signal was delivered to the group.
 	sessionPGIDReapKilled
+	// sessionPGIDReapNotExclusive: the live group contains a process this
+	// session cannot own (the daemon, or the `agnt run` wrapper that owns the
+	// session), so the reported pgid is an ancestor group — the user's
+	// terminal — not the PTY child's.
+	sessionPGIDReapNotExclusive
 )
 
 // skipReason maps a non-killing outcome to its startup-log event type and a
@@ -152,6 +157,9 @@ func (o sessionPGIDReapOutcome) skipReason() (eventType, reason string) {
 	case sessionPGIDReapIdentityChanged:
 		return "session_pgid_kill_skipped_stale",
 			"its leader identity changed before cleanup ran, so the pgid now belongs to unrelated processes"
+	case sessionPGIDReapNotExclusive:
+		return "session_pgid_kill_skipped_not_exclusive",
+			"the live process group contains a process this session cannot own, so the reported pgid is a shared/ancestor group rather than the PTY child's"
 	default:
 		return "session_pgid_kill_skipped", "nothing to reap"
 	}
@@ -165,7 +173,7 @@ func (o sessionPGIDReapOutcome) skipReason() (eventType, reason string) {
 // does not surface it (debug file, off by default), which made agnt's own kill
 // the one cause a user could never diagnose. It must therefore ride EVERY
 // branch that signals, not just one of them.
-func recordSessionPGIDReap(code, projectPath string, pgid int) {
+func recordSessionPGIDReap(code, projectPath string, pgid, memberCount int, deferredTrigger bool) {
 	if projectPath == "" {
 		projectPath = "(no project)"
 	}
@@ -185,6 +193,7 @@ func recordSessionPGIDReap(code, projectPath string, pgid int) {
 func reapSessionPGID(
 	code, projectPath string,
 	pgid int,
+	foreignPIDs []int,
 	expected *sessionPGIDIdentity,
 	membersFn func(int) []int,
 	birthFn func(int) (string, bool),
@@ -196,7 +205,7 @@ func reapSessionPGID(
 
 	if expected == nil {
 		err := killFn(pgid)
-		recordSessionPGIDReap(code, projectPath, pgid)
+		recordSessionPGIDReap(code, projectPath, pgid, 0, expected != nil)
 		return sessionPGIDReapKilled, err
 	}
 
@@ -210,7 +219,7 @@ func reapSessionPGID(
 	}
 	// Recorded after delivery, never between the identity check and the signal:
 	// killSessionPGIDIfIdentityMatches keeps those two adjacent on purpose.
-	recordSessionPGIDReap(code, projectPath, pgid)
+	recordSessionPGIDReap(code, projectPath, pgid, 0, expected != nil)
 	return sessionPGIDReapKilled, err
 }
 
@@ -219,6 +228,7 @@ func (d *Daemon) killSessionPGID(session *Session, expected *sessionPGIDIdentity
 	pgid := session.SessionPGID
 	code := session.Code
 	projectPath := session.ProjectPath
+	ownerPID := session.OwnerPID
 	session.mu.RUnlock()
 
 	if pgid <= 1 {
@@ -227,7 +237,7 @@ func (d *Daemon) killSessionPGID(session *Session, expected *sessionPGIDIdentity
 
 	debug.Log("daemon", "session %s: killing pgid %d (grace=%s)", code, pgid, sessionPGIDGracePeriod)
 
-	outcome, err := reapSessionPGID(code, projectPath, pgid, expected,
+	outcome, err := reapSessionPGID(code, projectPath, pgid, []int{os.Getpid(), ownerPID}, expected,
 		platform.MembersOfPGID, platform.ProcessBirthID,
 		func(pgid int) error {
 			return platform.KillSessionPGID(pgid, os.Getpid(), sessionPGIDGracePeriod, false)

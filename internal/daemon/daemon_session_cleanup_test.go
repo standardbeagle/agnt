@@ -455,7 +455,7 @@ func TestReapSessionPGID_GuardedSuccessRecordsSelflog(t *testing.T) {
 	expected, members, birth := matchingIdentity(4242, 4242, 4243)
 
 	var killed []int
-	outcome, err := reapSessionPGID("cdsp-7654", "/home/dev/proj", 4242, &expected,
+	outcome, err := reapSessionPGID("cdsp-7654", "/home/dev/proj", 4242, nil, &expected,
 		members, birth, func(pgid int) error { killed = append(killed, pgid); return nil })
 
 	require.NoError(t, err)
@@ -478,8 +478,9 @@ func TestReapSessionPGID_NilExpectedRecordsSelflog(t *testing.T) {
 	read := selflogSink(t)
 
 	var killed []int
-	outcome, err := reapSessionPGID("cdsp-1", "/home/dev/proj", 99,
-		nil, nil, nil, func(pgid int) error { killed = append(killed, pgid); return nil })
+	outcome, err := reapSessionPGID("cdsp-1", "/home/dev/proj", 99, nil,
+		nil, func(int) []int { return []int{99} },
+		nil, func(pgid int) error { killed = append(killed, pgid); return nil })
 
 	require.NoError(t, err)
 	assert.Equal(t, sessionPGIDReapKilled, outcome)
@@ -499,7 +500,7 @@ func TestReapSessionPGID_SkipsAreDistinctAndSilent(t *testing.T) {
 	// Capture failure: inspectSessionPGIDIdentity returned false, so the
 	// scheduler stored a zero-value identity — we never had ownership evidence.
 	zero := sessionPGIDIdentity{}
-	outcome, err := reapSessionPGID("s1", "/p", 4242, &zero,
+	outcome, err := reapSessionPGID("s1", "/p", 4242, nil, &zero,
 		func(int) []int { return []int{4242} },
 		func(int) (string, bool) { return "birth-4242", true }, kill)
 	require.NoError(t, err)
@@ -507,7 +508,7 @@ func TestReapSessionPGID_SkipsAreDistinctAndSilent(t *testing.T) {
 
 	// Identity change: we had evidence, the live group no longer matches it.
 	expected, members, _ := matchingIdentity(4242, 4242)
-	outcome, err = reapSessionPGID("s2", "/p", 4242, &expected, members,
+	outcome, err = reapSessionPGID("s2", "/p", 4242, nil, &expected, members,
 		func(int) (string, bool) { return "birth-of-someone-else", true }, kill)
 	require.NoError(t, err)
 	assert.Equal(t, sessionPGIDReapIdentityChanged, outcome)
@@ -515,6 +516,126 @@ func TestReapSessionPGID_SkipsAreDistinctAndSilent(t *testing.T) {
 	assert.NotEqual(t, sessionPGIDReapIdentityUnavailable, sessionPGIDReapIdentityChanged,
 		"the two skip reasons must be distinguishable outcomes")
 	assert.Empty(t, read(), "a skipped reap must not claim it terminated anything")
+}
+
+// TestReapSessionPGID_RefusesGroupItDoesNotExclusivelyOwn is the guard that
+// makes reaping the user's terminal structurally impossible.
+//
+// creack/pty puts the PTY child in a fresh POSIX session (measured on this
+// project's Linux/WSL2 target: child pgid == pid == sid), so neither the daemon
+// nor the `agnt run` wrapper that owns the session can legitimately be a member
+// of the session's own process group. If either one IS a member, the reported
+// SessionPGID is an ancestor group — the terminal — and signalling it kills
+// processes that never belonged to this session.
+//
+// Both cleanup triggers are covered: the identity-guarded deferred path AND the
+// unguarded explicit-UNREGISTER path (expected == nil), which has no recycle
+// guard at all and would otherwise signal an ancestor group unconditionally.
+func TestReapSessionPGID_RefusesGroupItDoesNotExclusivelyOwn(t *testing.T) {
+	const (
+		terminalPGID = 4242
+		daemonPID    = 777
+		ownerPID     = 888
+	)
+	// Errorf, not Fatalf: this closure runs inside subtests, and FailNow from a
+	// parent's *testing.T there aborts the wrong goroutine.
+	kill := func(int) error {
+		t.Errorf("a group containing the daemon or the session owner must never be signalled")
+		return nil
+	}
+
+	cases := []struct {
+		name    string
+		members []int
+	}{
+		{"daemon is a member", []int{terminalPGID, daemonPID}},
+		{"owning agnt wrapper is a member", []int{terminalPGID, ownerPID}},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name+"/deferred", func(t *testing.T) {
+			read := selflogSink(t)
+			expected, _, birth := matchingIdentity(terminalPGID, tc.members...)
+			outcome, err := reapSessionPGID("cdsp-7654", "/p", terminalPGID,
+				[]int{daemonPID, ownerPID}, &expected,
+				func(int) []int { return tc.members }, birth, kill)
+			require.NoError(t, err)
+			assert.Equal(t, sessionPGIDReapNotExclusive, outcome)
+			assert.Empty(t, read(), "a refused reap must not claim it terminated anything")
+		})
+		t.Run(tc.name+"/unregister", func(t *testing.T) {
+			read := selflogSink(t)
+			outcome, err := reapSessionPGID("cdsp-7654", "/p", terminalPGID,
+				[]int{daemonPID, ownerPID}, nil,
+				func(int) []int { return tc.members }, nil, kill)
+			require.NoError(t, err)
+			assert.Equal(t, sessionPGIDReapNotExclusive, outcome)
+			assert.Empty(t, read())
+		})
+	}
+
+	// An unset OwnerPID (0) must not be matched against anything: pid 0 is
+	// never a real group member, and treating "unknown owner" as a violation
+	// would disable every legitimate reap.
+	t.Run("unset owner pid does not match", func(t *testing.T) {
+		var killed []int
+		outcome, err := reapSessionPGID("cdsp-7654", "/p", terminalPGID,
+			[]int{daemonPID, 0}, nil,
+			func(int) []int { return []int{terminalPGID} }, nil,
+			func(pgid int) error { killed = append(killed, pgid); return nil })
+		require.NoError(t, err)
+		assert.Equal(t, sessionPGIDReapKilled, outcome)
+		assert.Equal(t, []int{terminalPGID}, killed)
+	})
+
+	// Membership is the evidence the guard rests on. Without it exclusivity is
+	// unprovable, and unprovable must fail safe rather than fall through.
+	t.Run("unreadable membership fails safe", func(t *testing.T) {
+		outcome, err := reapSessionPGID("cdsp-7654", "/p", terminalPGID,
+			[]int{daemonPID, ownerPID}, nil, nil, nil, kill)
+		require.NoError(t, err)
+		assert.Equal(t, sessionPGIDReapNotExclusive, outcome)
+	})
+}
+
+// TestReapSessionPGID_EmptyGroupIsNotReportedAsATermination closes the false
+// alarm this investigation traced. Every clean `agnt run` exit ends with an
+// explicit UNREGISTER, by which time the PTY child is already gone and its
+// group is empty — yet the reap was recorded as "any agent running in it was
+// terminated". That line is what made ten benign session ends read as
+// unexplained kills in `agnt hook log`.
+func TestReapSessionPGID_EmptyGroupIsNotReportedAsATermination(t *testing.T) {
+	read := selflogSink(t)
+
+	var killed []int
+	outcome, err := reapSessionPGID("cdsp-7654", "/p", 4242, []int{777, 888}, nil,
+		func(int) []int { return nil }, nil,
+		func(pgid int) error { killed = append(killed, pgid); return nil })
+
+	require.NoError(t, err)
+	assert.Equal(t, sessionPGIDReapKilled, outcome)
+	assert.Equal(t, []int{4242}, killed, "an empty group is still signalled — it is simply a no-op")
+	assert.Empty(t, read(), "signalling an empty group terminated nothing and must not say it did")
+}
+
+// TestRecordSessionPGIDReap_NamesTheTrigger keeps the two cleanup triggers
+// distinguishable in the user-visible log. Without it, an explicit unregister
+// (the agent already exited — benign) and a deferred disconnect cleanup (the
+// agent may have been live — the dangerous case) produce byte-identical
+// records, which is why the six reported incidents could not be adjudicated
+// from the log at all.
+func TestRecordSessionPGIDReap_NamesTheTrigger(t *testing.T) {
+	read := selflogSink(t)
+
+	recordSessionPGIDReap("s-unreg", "/p", 4242, 2, false)
+	recordSessionPGIDReap("s-deferred", "/p", 4243, 3, true)
+
+	entries := read()
+	require.Len(t, entries, 2)
+	assert.NotEqual(t, entries[0].Message, entries[1].Message,
+		"the two cleanup triggers must be distinguishable in the record")
+	assert.Contains(t, entries[0].Message, "2 process")
+	assert.Contains(t, entries[1].Message, "3 process")
 }
 
 // TestKillSessionPGID_SkipReasonsAreDistinctInStartupLog drives the daemon
