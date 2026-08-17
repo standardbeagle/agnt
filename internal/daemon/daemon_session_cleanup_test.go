@@ -577,6 +577,14 @@ func TestReapSessionPGID_RefusesGroupItDoesNotExclusivelyOwn(t *testing.T) {
 	// never a real group member, and treating "unknown owner" as a violation
 	// would disable every legitimate reap.
 	t.Run("unset owner pid does not match", func(t *testing.T) {
+		// This is the only subtest here that reaches a RECORDING reap, so it is
+		// the only one that can write into ~/.cache/agnt/errors.log. Redirect it:
+		// a suite run must never append a fabricated cdsp reap record to the
+		// user's real selflog — that is the exact record class this task exists
+		// to stop generating, and this file's own investigation adjudicated from
+		// that log.
+		read := selflogSink(t)
+
 		var killed []int
 		outcome, err := reapSessionPGID("cdsp-7654", "/p", terminalPGID,
 			[]int{daemonPID, 0}, nil,
@@ -585,6 +593,13 @@ func TestReapSessionPGID_RefusesGroupItDoesNotExclusivelyOwn(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, sessionPGIDReapKilled, outcome)
 		assert.Equal(t, []int{terminalPGID}, killed)
+
+		entries := read()
+		require.Len(t, entries, 1, "a legitimate reap must still be recorded")
+		assert.Contains(t, entries[0].Message, "cdsp-7654")
+		assert.Contains(t, entries[0].Message, "1 process")
+		assert.Contains(t, entries[0].Message, "explicit session unregister",
+			"an expected==nil reap is the immediate-unregister trigger")
 	})
 
 	// Membership is the evidence the guard rests on. Without it exclusivity is
