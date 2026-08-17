@@ -219,11 +219,11 @@ func recordSessionPGIDReap(code, projectPath string, pgid, memberCount int, defe
 // fail safe, exactly as unknown wrapper ownership does in ownerConfirmedGone.
 // A zero/absent foreign pid is ignored — pid 0 is never a real group member,
 // and matching it would disable every legitimate reap.
-func pgidExclusivelyOwned(pgid int, foreignPIDs []int, membersFn func(int) []int) ([]int, bool) {
+func pgidExclusivelyOwned(pgid int, foreignPIDs []int, membersFn func(int) ([]int, error)) ([]int, bool) {
 	if membersFn == nil {
 		return nil, false
 	}
-	members := membersFn(pgid)
+	members, _ := membersFn(pgid)
 	for _, member := range members {
 		for _, foreign := range foreignPIDs {
 			if foreign > 1 && member == foreign {
@@ -232,6 +232,19 @@ func pgidExclusivelyOwned(pgid int, foreignPIDs []int, membersFn func(int) []int
 		}
 	}
 	return members, true
+}
+
+// checkedPGIDMembers is the production membersFn for the reap seam.
+func checkedPGIDMembers(pgid int) ([]int, error) {
+	return checkedMembers(platform.MembersOfPGID(pgid))
+}
+
+// checkedMembers translates a platform membership read into the seam's
+// contract.
+//
+// TODO(RED): still spells a failed enumeration as an empty group.
+func checkedMembers(members []int) ([]int, error) {
+	return members, nil
 }
 
 // reapSessionPGID applies the identity guard and, when it holds, reaps the
@@ -254,7 +267,7 @@ func reapSessionPGID(
 	pgid int,
 	foreignPIDs []int,
 	expected *sessionPGIDIdentity,
-	membersFn func(int) []int,
+	membersFn func(int) ([]int, error),
 	birthFn func(int) (string, bool),
 	killFn func(int) error,
 ) (sessionPGIDReapOutcome, error) {
@@ -277,8 +290,26 @@ func reapSessionPGID(
 		return sessionPGIDReapIdentityUnavailable, nil
 	}
 
-	killed, err := killSessionPGIDIfIdentityMatches(pgid, *expected, membersFn, birthFn, killFn)
+	// The identity check re-reads the group immediately before signalling it, so
+	// that read gets the same treatment as the guard's: a failure means "we
+	// could not tell", which is unprovable ownership, NOT "the identity
+	// changed". Reporting it as a change would file an enumeration outage under
+	// a pgid-recycle heading and hide that the check ran blind.
+	var readErr error
+	adapted := func(p int) []int {
+		members, err := membersFn(p)
+		if err != nil {
+			readErr = err
+			return nil
+		}
+		return members
+	}
+
+	killed, err := killSessionPGIDIfIdentityMatches(pgid, *expected, adapted, birthFn, killFn)
 	if !killed {
+		if readErr != nil {
+			return sessionPGIDReapNotExclusive, nil
+		}
 		return sessionPGIDReapIdentityChanged, nil
 	}
 	// Recorded after delivery, never between the identity check and the signal:
@@ -302,7 +333,7 @@ func (d *Daemon) killSessionPGID(session *Session, expected *sessionPGIDIdentity
 	debug.Log("daemon", "session %s: killing pgid %d (grace=%s)", code, pgid, sessionPGIDGracePeriod)
 
 	outcome, err := reapSessionPGID(code, projectPath, pgid, []int{os.Getpid(), ownerPID}, expected,
-		platform.MembersOfPGID, platform.ProcessBirthID,
+		checkedPGIDMembers, platform.ProcessBirthID,
 		func(pgid int) error {
 			return platform.KillSessionPGID(pgid, os.Getpid(), sessionPGIDGracePeriod, false)
 		})

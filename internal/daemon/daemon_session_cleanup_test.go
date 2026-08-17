@@ -4,6 +4,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"sync/atomic"
@@ -433,12 +434,12 @@ func selflogSink(t *testing.T) func() []selflog.Entry {
 
 // matchingIdentity builds an expected identity plus the members/birth probes
 // that agree with it, so the guarded path reaches its kill.
-func matchingIdentity(pgid int, pids ...int) (sessionPGIDIdentity, func(int) []int, func(int) (string, bool)) {
+func matchingIdentity(pgid int, pids ...int) (sessionPGIDIdentity, func(int) ([]int, error), func(int) (string, bool)) {
 	identity := sessionPGIDIdentity{pgid: pgid, members: make(map[int]string, len(pids))}
 	for _, pid := range pids {
 		identity.members[pid] = fmt.Sprintf("birth-%d", pid)
 	}
-	members := func(int) []int { return pids }
+	members := func(int) ([]int, error) { return pids, nil }
 	birth := func(pid int) (string, bool) {
 		b, ok := identity.members[pid]
 		return b, ok
@@ -478,7 +479,7 @@ func TestReapSessionPGID_NilExpectedRecordsSelflog(t *testing.T) {
 
 	var killed []int
 	outcome, err := reapSessionPGID("cdsp-1", "/home/dev/proj", 99, nil,
-		nil, func(int) []int { return []int{99} },
+		nil, func(int) ([]int, error) { return []int{99}, nil },
 		nil, func(pgid int) error { killed = append(killed, pgid); return nil })
 
 	require.NoError(t, err)
@@ -500,7 +501,7 @@ func TestReapSessionPGID_SkipsAreDistinctAndSilent(t *testing.T) {
 	// scheduler stored a zero-value identity — we never had ownership evidence.
 	zero := sessionPGIDIdentity{}
 	outcome, err := reapSessionPGID("s1", "/p", 4242, nil, &zero,
-		func(int) []int { return []int{4242} },
+		func(int) ([]int, error) { return []int{4242}, nil },
 		func(int) (string, bool) { return "birth-4242", true }, kill)
 	require.NoError(t, err)
 	assert.Equal(t, sessionPGIDReapIdentityUnavailable, outcome)
@@ -557,7 +558,7 @@ func TestReapSessionPGID_RefusesGroupItDoesNotExclusivelyOwn(t *testing.T) {
 			expected, _, birth := matchingIdentity(terminalPGID, tc.members...)
 			outcome, err := reapSessionPGID("cdsp-7654", "/p", terminalPGID,
 				[]int{daemonPID, ownerPID}, &expected,
-				func(int) []int { return tc.members }, birth, kill)
+				func(int) ([]int, error) { return tc.members, nil }, birth, kill)
 			require.NoError(t, err)
 			assert.Equal(t, sessionPGIDReapNotExclusive, outcome)
 			assert.Empty(t, read(), "a refused reap must not claim it terminated anything")
@@ -566,7 +567,7 @@ func TestReapSessionPGID_RefusesGroupItDoesNotExclusivelyOwn(t *testing.T) {
 			read := selflogSink(t)
 			outcome, err := reapSessionPGID("cdsp-7654", "/p", terminalPGID,
 				[]int{daemonPID, ownerPID}, nil,
-				func(int) []int { return tc.members }, nil, kill)
+				func(int) ([]int, error) { return tc.members, nil }, nil, kill)
 			require.NoError(t, err)
 			assert.Equal(t, sessionPGIDReapNotExclusive, outcome)
 			assert.Empty(t, read())
@@ -588,7 +589,7 @@ func TestReapSessionPGID_RefusesGroupItDoesNotExclusivelyOwn(t *testing.T) {
 		var killed []int
 		outcome, err := reapSessionPGID("cdsp-7654", "/p", terminalPGID,
 			[]int{daemonPID, 0}, nil,
-			func(int) []int { return []int{terminalPGID} }, nil,
+			func(int) ([]int, error) { return []int{terminalPGID}, nil }, nil,
 			func(pgid int) error { killed = append(killed, pgid); return nil })
 		require.NoError(t, err)
 		assert.Equal(t, sessionPGIDReapKilled, outcome)
@@ -612,6 +613,75 @@ func TestReapSessionPGID_RefusesGroupItDoesNotExclusivelyOwn(t *testing.T) {
 	})
 }
 
+// TestReapSessionPGID_FailedEnumerationIsNotAnEmptyGroup is the teeth behind
+// the "unprovable ownership fails safe" claim.
+//
+// A missing membersFn (the subtest above) is a programming error the guard
+// catches trivially. The real hazard is a members lookup that RUNS and FAILS:
+// if the failure is spelled the same way as "the group is empty", the
+// exclusivity check iterates an empty list, finds no foreign pid, and passes
+// vacuously — so the UNREGISTER path (expected == nil) kills unconditionally
+// AND the zero member count suppresses the record, producing an unguarded,
+// unrecorded kill of a group whose contents were never established. That is
+// the "failed enumeration spelled as an empty enumeration" shape from
+// .claude/rules/publish-security-review-lessons.md §12.
+//
+// Both triggers are covered, because both consume a membership read: the
+// UNREGISTER path reads once for the guard, and the deferred path reads again
+// immediately before signalling.
+func TestReapSessionPGID_FailedEnumerationIsNotAnEmptyGroup(t *testing.T) {
+	const pgid = 4242
+	kill := func(int) error {
+		t.Errorf("a group whose membership could not be read must never be signalled")
+		return nil
+	}
+	boom := func(int) ([]int, error) { return nil, errors.New("process table unavailable") }
+
+	t.Run("unregister", func(t *testing.T) {
+		read := selflogSink(t)
+		outcome, err := reapSessionPGID("cdsp-7654", "/p", pgid, []int{777, 888}, nil,
+			boom, nil, kill)
+		require.NoError(t, err)
+		assert.Equal(t, sessionPGIDReapNotExclusive, outcome,
+			"a failed enumeration must refuse, not pass the guard vacuously")
+		assert.Empty(t, read(), "a refused reap must not claim it terminated anything")
+	})
+
+	t.Run("deferred", func(t *testing.T) {
+		read := selflogSink(t)
+		expected, _, birth := matchingIdentity(pgid, pgid)
+		outcome, err := reapSessionPGID("cdsp-7654", "/p", pgid, []int{777, 888}, &expected,
+			boom, birth, kill)
+		require.NoError(t, err)
+		assert.Equal(t, sessionPGIDReapNotExclusive, outcome,
+			"an unreadable group is 'we could not tell', not 'the identity changed'")
+		assert.Empty(t, read())
+	})
+
+	// The production lookup must be the one that surfaces the failure. A
+	// wrapper that swallows it re-opens the hole above without changing a
+	// single line of the guard.
+	t.Run("production lookup refuses an unreadable group", func(t *testing.T) {
+		// platform.MembersOfPGID reports enumeration failure as a nil slice and
+		// a live-but-empty group as a non-nil empty one. checkedMembers is the
+		// translation that keeps those two apart; a wrapper that collapsed them
+		// would re-open the hole above without touching the guard.
+		_, err := checkedMembers(nil)
+		require.Error(t, err, "a nil membership means the enumeration failed, not that the group is empty")
+
+		members, err := checkedMembers([]int{})
+		require.NoError(t, err, "an empty-but-readable group is a legitimate, non-refusing result")
+		assert.Empty(t, members)
+
+		// End to end against the real platform lookup: a pgid above pid_max
+		// cannot exist, so the process table reads cleanly and reports no
+		// members — this must be the empty case, never the failure case.
+		members, err = checkedPGIDMembers(1 << 30)
+		require.NoError(t, err)
+		assert.Empty(t, members)
+	})
+}
+
 // TestReapSessionPGID_EmptyGroupIsNotReportedAsATermination closes the false
 // alarm this investigation traced. Every clean `agnt run` exit ends with an
 // explicit UNREGISTER, by which time the PTY child is already gone and its
@@ -623,7 +693,7 @@ func TestReapSessionPGID_EmptyGroupIsNotReportedAsATermination(t *testing.T) {
 
 	var killed []int
 	outcome, err := reapSessionPGID("cdsp-7654", "/p", 4242, []int{777, 888}, nil,
-		func(int) []int { return nil }, nil,
+		func(int) ([]int, error) { return nil, nil }, nil,
 		func(pgid int) error { killed = append(killed, pgid); return nil })
 
 	require.NoError(t, err)
