@@ -172,12 +172,66 @@ func (o sessionPGIDReapOutcome) skipReason() (eventType, reason string) {
 // report "terminated by a signal" without naming the sender. debug.Log alone
 // does not surface it (debug file, off by default), which made agnt's own kill
 // the one cause a user could never diagnose. It must therefore ride EVERY
-// branch that signals, not just one of them.
+// branch that actually terminates something, not just one of them.
+//
+// It reports the two facts that decide whether a reap deserves alarm, neither
+// of which the original wording carried:
+//
+//   - How many processes were actually in the group. Every clean `agnt run`
+//     exit ends in an explicit UNREGISTER after the PTY child is already gone,
+//     so the group is empty and the signal terminates nothing. Announcing that
+//     as "any agent running in it was terminated" turned every normal session
+//     end into an unexplained kill in `agnt hook log`.
+//   - Which trigger fired. An explicit unregister means the wrapper asked for
+//     this; a deferred cleanup means the control connection dropped and the
+//     agent may have been alive. Byte-identical records for the two is why the
+//     reported incidents could not be adjudicated from the log at all.
 func recordSessionPGIDReap(code, projectPath string, pgid, memberCount int, deferredTrigger bool) {
+	if memberCount == 0 {
+		// The group was already empty: the signal was a no-op and there is no
+		// termination to report. Saying otherwise is the false alarm.
+		return
+	}
 	if projectPath == "" {
 		projectPath = "(no project)"
 	}
-	selflog.Record("daemon", "reaped session %s (project %s) process group (pgid %d) on session cleanup — any agent running in it was terminated", code, projectPath, pgid)
+	trigger := "explicit session unregister"
+	if deferredTrigger {
+		trigger = "deferred cleanup after the control connection dropped"
+	}
+	selflog.Record("daemon", "reaped session %s (project %s) process group (pgid %d, %d process(es)) on %s — any agent running in it was terminated",
+		code, projectPath, pgid, memberCount, trigger)
+}
+
+// pgidExclusivelyOwned reports the live membership of pgid and whether the
+// session may signal it.
+//
+// creack/pty starts the PTY child with Setsid, so the child is the leader of a
+// fresh POSIX session and its pgid equals its pid (measured on this project's
+// Linux/WSL2 target: pgid == pid == sid, with the wrapper's group disjoint).
+// Neither the daemon nor the `agnt run` wrapper that owns the session can
+// therefore be a member of the session's own group. If one of them IS a
+// member, the reported SessionPGID is an ancestor group — the user's terminal
+// — and signalling it kills processes that never belonged to this session.
+//
+// Membership is the evidence the whole judgement rests on, so an unreadable
+// membership is refused rather than waved through: unprovable ownership must
+// fail safe, exactly as unknown wrapper ownership does in ownerConfirmedGone.
+// A zero/absent foreign pid is ignored — pid 0 is never a real group member,
+// and matching it would disable every legitimate reap.
+func pgidExclusivelyOwned(pgid int, foreignPIDs []int, membersFn func(int) []int) ([]int, bool) {
+	if membersFn == nil {
+		return nil, false
+	}
+	members := membersFn(pgid)
+	for _, member := range members {
+		for _, foreign := range foreignPIDs {
+			if foreign > 1 && member == foreign {
+				return members, false
+			}
+		}
+	}
+	return members, true
 }
 
 // reapSessionPGID applies the identity guard and, when it holds, reaps the
@@ -188,8 +242,13 @@ func recordSessionPGIDReap(code, projectPath string, pgid, memberCount int, defe
 // A nil expected identity is the immediate-cleanup contract: explicit
 // UNREGISTER and daemon shutdown route through CleanupSessionResources, which
 // runs with no grace window and therefore captures no identity beforehand.
-// There is no recycle window to guard against, so the kill is unconditional —
-// but it is recorded exactly like the guarded one.
+// There is no recycle window to guard against, so that kill skips the identity
+// check — but never the exclusivity check below, which is the one guard that
+// must hold on every path.
+//
+// foreignPIDs are processes that cannot possibly belong to this session's own
+// process group: the daemon, and the `agnt run` wrapper that owns the session.
+// See pgidExclusivelyOwned.
 func reapSessionPGID(
 	code, projectPath string,
 	pgid int,
@@ -203,9 +262,14 @@ func reapSessionPGID(
 		return sessionPGIDReapNoPGID, nil
 	}
 
+	liveMembers, exclusive := pgidExclusivelyOwned(pgid, foreignPIDs, membersFn)
+	if !exclusive {
+		return sessionPGIDReapNotExclusive, nil
+	}
+
 	if expected == nil {
 		err := killFn(pgid)
-		recordSessionPGIDReap(code, projectPath, pgid, 0, expected != nil)
+		recordSessionPGIDReap(code, projectPath, pgid, len(liveMembers), false)
 		return sessionPGIDReapKilled, err
 	}
 
@@ -219,7 +283,7 @@ func reapSessionPGID(
 	}
 	// Recorded after delivery, never between the identity check and the signal:
 	// killSessionPGIDIfIdentityMatches keeps those two adjacent on purpose.
-	recordSessionPGIDReap(code, projectPath, pgid, 0, expected != nil)
+	recordSessionPGIDReap(code, projectPath, pgid, len(liveMembers), true)
 	return sessionPGIDReapKilled, err
 }
 

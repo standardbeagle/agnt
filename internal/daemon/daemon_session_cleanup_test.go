@@ -5,7 +5,6 @@ package daemon
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
@@ -642,7 +641,11 @@ func TestRecordSessionPGIDReap_NamesTheTrigger(t *testing.T) {
 // method itself and asserts the operator-visible startup-log entries differ.
 // Both cases are kill-free by construction, so no real process is signalled.
 func TestKillSessionPGID_SkipReasonsAreDistinctInStartupLog(t *testing.T) {
-	pgid := os.Getpid() // read-only: every case below skips before any kill
+	// A pgid above pid_max cannot exist, so MembersOfPGID reads empty: the
+	// exclusivity guard passes vacuously and each case reaches the identity
+	// branch it is testing. Using os.Getpid() here would make the outcome depend
+	// on whether the test binary happens to lead its own process group.
+	const pgid = 1 << 30 // read-only: every case below skips before any kill
 
 	newSession := func(code string) *Session {
 		return &Session{Code: code, ProjectPath: "/p", SessionPGID: pgid}
