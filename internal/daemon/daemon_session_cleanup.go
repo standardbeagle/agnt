@@ -121,46 +121,127 @@ func killSessionPGIDIfIdentityMatches(
 	return true, killFn(pgid)
 }
 
+// sessionPGIDReapOutcome says what a reap attempt actually did. The two skip
+// reasons are deliberately distinct values: "we never captured ownership
+// evidence" and "the evidence we captured no longer matches" are different
+// events, and reporting the first as the second hides that a cleanup ran
+// blind.
+type sessionPGIDReapOutcome int
+
+const (
+	// sessionPGIDReapNoPGID: nothing to reap (Windows, or no pgid reported).
+	sessionPGIDReapNoPGID sessionPGIDReapOutcome = iota
+	// sessionPGIDReapIdentityUnavailable: inspectSessionPGIDIdentity failed when
+	// the cleanup was scheduled, so the stored identity is the zero value.
+	sessionPGIDReapIdentityUnavailable
+	// sessionPGIDReapIdentityChanged: the live group no longer matches the
+	// captured identity — pgid recycled, or members replaced.
+	sessionPGIDReapIdentityChanged
+	// sessionPGIDReapKilled: the signal was delivered to the group.
+	sessionPGIDReapKilled
+)
+
+// skipReason maps a non-killing outcome to its startup-log event type and a
+// human explanation. Kept beside the outcome constants so a new outcome cannot
+// silently inherit another's wording.
+func (o sessionPGIDReapOutcome) skipReason() (eventType, reason string) {
+	switch o {
+	case sessionPGIDReapIdentityUnavailable:
+		return "session_pgid_kill_skipped_no_identity",
+			"no leader identity could be captured when cleanup was scheduled, so there was never any evidence this daemon owned that process group"
+	case sessionPGIDReapIdentityChanged:
+		return "session_pgid_kill_skipped_stale",
+			"its leader identity changed before cleanup ran, so the pgid now belongs to unrelated processes"
+	default:
+		return "session_pgid_kill_skipped", "nothing to reap"
+	}
+}
+
+// recordSessionPGIDReap writes the kill where the user can find it
+// (`agnt hook log`). The reap takes the session's whole process group —
+// including the coding agent itself — so from the user's seat the agent dies
+// to a signal with no explanation, and `agnt run`'s shutdown banner can only
+// report "terminated by a signal" without naming the sender. debug.Log alone
+// does not surface it (debug file, off by default), which made agnt's own kill
+// the one cause a user could never diagnose. It must therefore ride EVERY
+// branch that signals, not just one of them.
+func recordSessionPGIDReap(code, projectPath string, pgid int) {
+	if projectPath == "" {
+		projectPath = "(no project)"
+	}
+	selflog.Record("daemon", "reaped session %s (project %s) process group (pgid %d) on session cleanup — any agent running in it was terminated", code, projectPath, pgid)
+}
+
+// reapSessionPGID applies the identity guard and, when it holds, reaps the
+// group and records it. Dependencies are injected so tests can exercise the
+// killing path without signalling a real process group; d.killSessionPGID
+// supplies the platform implementations.
+//
+// A nil expected identity is the immediate-cleanup contract: explicit
+// UNREGISTER and daemon shutdown route through CleanupSessionResources, which
+// runs with no grace window and therefore captures no identity beforehand.
+// There is no recycle window to guard against, so the kill is unconditional —
+// but it is recorded exactly like the guarded one.
+func reapSessionPGID(
+	code, projectPath string,
+	pgid int,
+	expected *sessionPGIDIdentity,
+	membersFn func(int) []int,
+	birthFn func(int) (string, bool),
+	killFn func(int) error,
+) (sessionPGIDReapOutcome, error) {
+	if pgid <= 1 || killFn == nil {
+		return sessionPGIDReapNoPGID, nil
+	}
+
+	if expected == nil {
+		err := killFn(pgid)
+		recordSessionPGIDReap(code, projectPath, pgid)
+		return sessionPGIDReapKilled, err
+	}
+
+	if expected.pgid <= 1 || len(expected.members) == 0 {
+		return sessionPGIDReapIdentityUnavailable, nil
+	}
+
+	killed, err := killSessionPGIDIfIdentityMatches(pgid, *expected, membersFn, birthFn, killFn)
+	if !killed {
+		return sessionPGIDReapIdentityChanged, nil
+	}
+	// Recorded after delivery, never between the identity check and the signal:
+	// killSessionPGIDIfIdentityMatches keeps those two adjacent on purpose.
+	recordSessionPGIDReap(code, projectPath, pgid)
+	return sessionPGIDReapKilled, err
+}
+
 func (d *Daemon) killSessionPGID(session *Session, expected *sessionPGIDIdentity) {
 	session.mu.RLock()
 	pgid := session.SessionPGID
 	code := session.Code
+	projectPath := session.ProjectPath
 	session.mu.RUnlock()
 
 	if pgid <= 1 {
 		return
 	}
-	if expected != nil {
-		killed, err := killSessionPGIDIfIdentityMatches(pgid, *expected, platform.MembersOfPGID, platform.ProcessBirthID,
-			func(pgid int) error {
-				return platform.KillSessionPGID(pgid, os.Getpid(), sessionPGIDGracePeriod, false)
-			})
-		if !killed {
-			debug.Warn("daemon", "session %s: skipping stale pgid %d (leader identity changed or unavailable)", code, pgid)
-			d.daemonStartupLog("warning", "session_pgid_kill_skipped_stale",
-				fmt.Sprintf("session %s: skipped stale pgid %d because its leader identity changed or was unavailable", code, pgid))
-			return
-		}
-		if err != nil {
-			debug.Warn("daemon", "session %s: killpg(%d) failed: %v", code, pgid, err)
-			d.daemonStartupLog("warning", "session_pgid_kill_failed",
-				fmt.Sprintf("session %s: failed to reap pgid %d: %v", code, pgid, err))
-		}
-		return
-	}
 
 	debug.Log("daemon", "session %s: killing pgid %d (grace=%s)", code, pgid, sessionPGIDGracePeriod)
 
-	// Record the kill where the user can find it. This reaps the session's
-	// whole process group — including the coding agent itself — so from the
-	// user's seat the agent is killed by a signal with no explanation, and
-	// `agnt run`'s shutdown banner can only report "terminated by a signal"
-	// without being able to name the sender. debug.Log alone does not surface
-	// it (debug file, off by default), which made agnt's own kill the one
-	// cause a user could never diagnose.
-	selflog.Record("daemon", "reaped session %s process group (pgid %d) on session cleanup — any agent running in it was terminated", code, pgid)
+	outcome, err := reapSessionPGID(code, projectPath, pgid, expected,
+		platform.MembersOfPGID, platform.ProcessBirthID,
+		func(pgid int) error {
+			return platform.KillSessionPGID(pgid, os.Getpid(), sessionPGIDGracePeriod, false)
+		})
 
-	if err := platform.KillSessionPGID(pgid, os.Getpid(), sessionPGIDGracePeriod, false); err != nil {
+	if outcome != sessionPGIDReapKilled {
+		eventType, reason := outcome.skipReason()
+		debug.Warn("daemon", "session %s: skipping pgid %d — %s", code, pgid, reason)
+		d.daemonStartupLog("warning", eventType,
+			fmt.Sprintf("session %s: skipped reaping pgid %d because %s", code, pgid, reason))
+		return
+	}
+
+	if err != nil {
 		debug.Warn("daemon", "session %s: killpg(%d) failed: %v", code, pgid, err)
 		d.daemonStartupLog("warning", "session_pgid_kill_failed",
 			fmt.Sprintf("session %s: failed to reap pgid %d: %v", code, pgid, err))
