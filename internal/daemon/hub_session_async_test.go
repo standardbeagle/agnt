@@ -3,7 +3,6 @@
 package daemon
 
 import (
-	"context"
 	"os"
 	"path/filepath"
 	"testing"
@@ -43,17 +42,16 @@ scripts {
 `
 	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".agnt.kdl"), []byte(configContent), 0o644))
 
-	d := New(DaemonConfig{
+	// NewForTest skips the host-global startup ops (cleanupOrphans,
+	// startupPortCleanup, restoreProxies, orphan scan) and shortens the
+	// crash-watch window from 3s to 200ms — this test asserts session/autostart
+	// behaviour directly, not any of those startup tasks. It also registers the
+	// Stop cleanup itself.
+	_ = NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-	require.NoError(t, d.Start())
-	defer func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		d.Stop(stopCtx)
-	}()
 
 	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, client.Connect())
@@ -86,13 +84,10 @@ scripts {
 }
 `), 0o644))
 
-	d := New(DaemonConfig{SocketPath: sockPath, MaxClients: 10, WriteTimeout: 5 * time.Second})
-	require.NoError(t, d.Start())
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = d.Stop(ctx)
-	})
+	// NewForTest skips host-global startup ops and shortens the crash-watch to
+	// 200ms; this test asserts the autostart console error reaches the owning
+	// agent, not any startup task. It registers the Stop cleanup itself.
+	d := NewForTest(t, DaemonConfig{SocketPath: sockPath, MaxClients: 10, WriteTimeout: 5 * time.Second})
 
 	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, client.Connect())
@@ -129,17 +124,16 @@ scripts {
 `
 	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".agnt.kdl"), []byte(configContent), 0o644))
 
-	d := New(DaemonConfig{
+	// NewForTest skips the host-global startup ops (cleanupOrphans,
+	// startupPortCleanup, restoreProxies, orphan scan) and shortens the
+	// crash-watch window from 3s to 200ms — this test asserts session/autostart
+	// behaviour directly, not any of those startup tasks. It also registers the
+	// Stop cleanup itself.
+	_ = NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-	require.NoError(t, d.Start())
-	defer func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		d.Stop(stopCtx)
-	}()
 
 	c1 := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, c1.Connect())
@@ -180,17 +174,16 @@ func TestSessionRegister_EmptyConfigReturnsDone(t *testing.T) {
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	// No .agnt.kdl — autostart is a no-op and completes immediately.
-	d := New(DaemonConfig{
+	// NewForTest skips the host-global startup ops (cleanupOrphans,
+	// startupPortCleanup, restoreProxies, orphan scan) and shortens the
+	// crash-watch window from 3s to 200ms — this test asserts session/autostart
+	// behaviour directly, not any of those startup tasks. It also registers the
+	// Stop cleanup itself.
+	_ = NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-	require.NoError(t, d.Start())
-	defer func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		d.Stop(stopCtx)
-	}()
 
 	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, client.Connect())
@@ -224,17 +217,16 @@ func TestSessionRegister_ReconnectPreservesStartedAt(t *testing.T) {
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	// No .agnt.kdl — autostart is a no-op so both registrations complete fast.
-	d := New(DaemonConfig{
+	// NewForTest skips the host-global startup ops (cleanupOrphans,
+	// startupPortCleanup, restoreProxies, orphan scan) and shortens the
+	// crash-watch window from 3s to 200ms — this test asserts session/autostart
+	// behaviour directly, not any of those startup tasks. It also registers the
+	// Stop cleanup itself.
+	d := NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-	require.NoError(t, d.Start())
-	defer func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		d.Stop(stopCtx)
-	}()
 
 	client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, client.Connect())
@@ -290,17 +282,16 @@ scripts {
 `
 	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".agnt.kdl"), []byte(configContent), 0o644))
 
-	d := New(DaemonConfig{
+	// NewForTest skips the host-global startup ops (cleanupOrphans,
+	// startupPortCleanup, restoreProxies, orphan scan) and shortens the
+	// crash-watch window from 3s to 200ms — this test asserts session/autostart
+	// behaviour directly, not any of those startup tasks. It also registers the
+	// Stop cleanup itself.
+	d := NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-	require.NoError(t, d.Start())
-	defer func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		d.Stop(stopCtx)
-	}()
 
 	c1 := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, c1.Connect())
@@ -366,17 +357,16 @@ scripts {
 	require.NoError(t, os.WriteFile(filepath.Join(projectA, ".agnt.kdl"), []byte(slowConfig), 0o644))
 	require.NoError(t, os.WriteFile(filepath.Join(projectB, ".agnt.kdl"), []byte(slowConfig), 0o644))
 
-	d := New(DaemonConfig{
+	// NewForTest skips the host-global startup ops (cleanupOrphans,
+	// startupPortCleanup, restoreProxies, orphan scan) and shortens the
+	// crash-watch window from 3s to 200ms — this test asserts session/autostart
+	// behaviour directly, not any of those startup tasks. It also registers the
+	// Stop cleanup itself.
+	_ = NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-	require.NoError(t, d.Start())
-	defer func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		d.Stop(stopCtx)
-	}()
 
 	c1 := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 	require.NoError(t, c1.Connect())
@@ -495,17 +485,14 @@ func TestSessionRegister_ReconnectInheritsUnsuppliedFields(t *testing.T) {
 			sockPath := filepath.Join(tmpDir, "test.sock")
 
 			// No .agnt.kdl — autostart is a no-op so registration completes fast.
-			d := New(DaemonConfig{
+			// NewForTest skips host-global startup ops and shortens the
+			// crash-watch to 200ms; the reconnect-merge assertions below need
+			// none of those startup tasks. It registers Stop cleanup itself.
+			d := NewForTest(t, DaemonConfig{
 				SocketPath:   sockPath,
 				MaxClients:   10,
 				WriteTimeout: 5 * time.Second,
 			})
-			require.NoError(t, d.Start())
-			defer func() {
-				stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-				defer cancel()
-				d.Stop(stopCtx)
-			}()
 
 			const code = "reconnect-inherit"
 
@@ -575,17 +562,16 @@ func TestSessionRegister_RejectsSessionHostOwnedCode(t *testing.T) {
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	// No .agnt.kdl — the register is rejected before autostart runs anyway.
-	d := New(DaemonConfig{
+	// NewForTest skips the host-global startup ops (cleanupOrphans,
+	// startupPortCleanup, restoreProxies, orphan scan) and shortens the
+	// crash-watch window from 3s to 200ms — this test asserts session/autostart
+	// behaviour directly, not any of those startup tasks. It also registers the
+	// Stop cleanup itself.
+	d := NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})
-	require.NoError(t, d.Start())
-	defer func() {
-		stopCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		d.Stop(stopCtx)
-	}()
 
 	const code = "claude-9"
 
