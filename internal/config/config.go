@@ -27,6 +27,10 @@ type Config struct {
 
 	// Feedback holds the public-plane anonymous feedback ingestion limits (P8).
 	Feedback FeedbackConfig `json:"feedback"`
+
+	// PublicPlane holds the public-plane request-rate limits (artifact GET +
+	// per-origin outbound fetch).
+	PublicPlane PublicPlaneConfig `json:"public_plane"`
 }
 
 // DefaultGracefulTimeout is the canonical graceful-shutdown budget: SIGTERM,
@@ -82,7 +86,8 @@ func DefaultConfig() *Config {
 			MaxOutputBuffer: 256 * 1024,
 			GracefulTimeout: DefaultGracefulTimeout,
 		},
-		Feedback: DefaultFeedbackConfig(),
+		Feedback:    DefaultFeedbackConfig(),
+		PublicPlane: DefaultPublicPlaneConfig(),
 		Languages: map[string]LanguageConfig{
 			"go": {
 				Markers:  []string{"go.mod"},

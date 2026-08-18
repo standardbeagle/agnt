@@ -18,11 +18,12 @@ const (
 // KDLConfig represents the KDL configuration structure.
 // Uses kdl struct tags for unmarshaling.
 type KDLConfig struct {
-	Version   string       `kdl:"version"`
-	Settings  KDLSettings  `kdl:"settings"`
-	Languages KDLLanguages `kdl:"languages"`
-	AI        *AIConfig    `kdl:"ai"`
-	Feedback  *KDLFeedback `kdl:"feedback"`
+	Version     string          `kdl:"version"`
+	Settings    KDLSettings     `kdl:"settings"`
+	Languages   KDLLanguages    `kdl:"languages"`
+	AI          *AIConfig       `kdl:"ai"`
+	Feedback    *KDLFeedback    `kdl:"feedback"`
+	PublicPlane *KDLPublicPlane `kdl:"public-plane"`
 }
 
 // KDLSettings holds global settings from KDL.
@@ -120,6 +121,11 @@ func kdlConfigToConfig(kdlCfg *KDLConfig) *Config {
 	// block keeps the spec §5 defaults. toFeedbackConfig normalizes so an omitted
 	// or non-positive key never disables a guard.
 	cfg.Feedback = kdlCfg.Feedback.toFeedbackConfig()
+
+	// Public-plane request-rate limits: same override-key-by-key / normalize
+	// semantics as the feedback block, so an absent block keeps the house
+	// defaults and a partial block never disables a guard.
+	cfg.PublicPlane = kdlCfg.PublicPlane.toPublicPlaneConfig()
 
 	// Settings
 	if kdlCfg.Settings.DefaultTimeout > 0 {
