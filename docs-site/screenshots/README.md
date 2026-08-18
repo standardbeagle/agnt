@@ -90,9 +90,36 @@ make demo NAME=vhs-spiral DEMOFLAGS=--assemble-only # re-cut from existing takes
   must already be running.
 - **narration** (optional): edge-tts VO + burned/WebVTT captions, anchors
   `"<seg-id>"`, `"<seg-id>+<sec>"`, `"<seg-id>+end"`. If edge-tts is not on
-  PATH the engine assembles silent instead of failing.
+  PATH the engine assembles silent instead of failing. VO is loudness-normalized
+  to the EBU R128 web target (`I=-16 LUFS, TP=-1.5 dBTP, LRA=11`) in the final
+  mux — a single `loudnorm` pass on the mixed narration, so volume is even across
+  lines and demos with no per-clip tuning.
+- **brand** (optional): `"brand": {"image": "...", "position": "...", "opacity":
+  0.85, "width": 220}` overlays a logo natively in the **single** final mux — no
+  second encode. `image` resolves relative to the demo dir and must exist (a
+  missing file is a hard error, never a silent unbranded output). `position` is
+  one of `top-right` (default — bottom is captions + the card brand), `top-left`,
+  `bottom-right`, `bottom-left`. The narrated path already re-encodes to burn
+  subtitles, so the overlay is free there; the silent path (normally a
+  stream-copy) takes its one necessary encode only when a brand is present.
+
+  This retires step 4 of the `create-demo-video` skill (a second full vp9 encode
+  applied after assembly to stamp the logo — slower and a generation loss). Once
+  a demo declares `brand`, drop that post-encode from the skill recipe; the skill
+  edit itself lives in the skill repo, not here.
 
 Output lands in `demos/<name>/out/<name>.webm` (gitignored).
+
+Verify the final-mux graph construction and the real ffmpeg output:
+
+```bash
+make demo-engine-test   # unit: constructed ffmpeg argv (overlay, loudnorm, one-encode)
+make demo-mux-check     # integration: brand pixels + EBU R128 loudness on a fixture
+```
+
+`demo-mux-check` runs real ffmpeg on a synthetic fixture and loud-skips when
+ffmpeg is absent; its loudness leg uses real edge-tts VO when available (the
+-16 LUFS target is calibrated for speech).
 
 `demos/vhs-spiral/` is the reference demo: a submit button rendered half
 off-screen, three rounds of blind terminal automation (`agent-stub.mjs`
