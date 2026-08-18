@@ -14,6 +14,7 @@ import (
 // broadcastIncidentDigest must fan a synthetic incident_digest LogEntry out to
 // STREAM-EVENTS subscribers (the cross-process transport for the unified inbox).
 func TestBroadcastIncidentDigest_ReachesStreamSink(t *testing.T) {
+	t.Parallel()
 	d := NewForTest(t, DaemonConfig{})
 	sink := d.eventHub.AddStreamSink(streamFilter{})
 	defer d.eventHub.RemoveStreamSink(sink)
@@ -45,6 +46,7 @@ func TestBroadcastIncidentDigest_ReachesStreamSink(t *testing.T) {
 // (empty proxyPath disables the project filter), so session A's pings reached
 // every project's `agnt monitor`. BroadcastLogEntryForProject stamps the path.
 func TestBroadcastIncidentDigest_ProjectScopedIsolation(t *testing.T) {
+	t.Parallel()
 	d := NewForTest(t, DaemonConfig{})
 
 	own := d.eventHub.AddStreamSink(streamFilter{projectPath: "/proj/a"})
@@ -75,6 +77,7 @@ func TestBroadcastIncidentDigest_ProjectScopedIsolation(t *testing.T) {
 // incident bus into a digest LogEntry delivered over the stream — exercising the
 // real production goroutines (bus dispatch, inbox, pinger coalescer, broadcast).
 func TestIncidentDigest_EndToEnd_StormToStream(t *testing.T) {
+	t.Parallel()
 	d := NewForTest(t, DaemonConfig{})
 	require.NotNil(t, d.incidentBus, "incident bus must exist")
 

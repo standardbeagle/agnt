@@ -29,6 +29,7 @@ func chaosHTTPEntry(status int, chaos, watch bool) proxy.LogEntry {
 // real backend 500 reaches the incident inbox, but a chaos-injected 500 (same
 // status) is kept out — it is synthetic, not a bug to chase.
 func TestChaosInjectedFault_SuppressedFromIncidentInbox(t *testing.T) {
+	t.Parallel()
 	d := NewForTest(t, DaemonConfig{})
 	require.NotNil(t, d.incidentBus)
 	d.addIncidentSession("sess-chaos")
@@ -62,6 +63,7 @@ func TestChaosInjectedFault_SuppressedFromIncidentInbox(t *testing.T) {
 // path: ApplyChaosConfig turns the detector on, an injected fault with no
 // following app error is swept into a swallowed-error incident on the bus.
 func TestSwallowHeuristic_RaisesIncidentWhenAppEatsFault(t *testing.T) {
+	t.Parallel()
 	d := NewForTest(t, DaemonConfig{})
 	d.addIncidentSession("sess-swallow")
 	d.registerIncidentProxyOwner("px1", "sess-swallow")
@@ -85,6 +87,7 @@ func TestSwallowHeuristic_RaisesIncidentWhenAppEatsFault(t *testing.T) {
 // TestSwallowHeuristic_AppErrorSuppressesIncident confirms the inverse: when an
 // app-side error follows the injected fault, no swallowed-error incident fires.
 func TestSwallowHeuristic_AppErrorSuppressesIncident(t *testing.T) {
+	t.Parallel()
 	d := NewForTest(t, DaemonConfig{})
 	d.addIncidentSession("sess-handled")
 	d.registerIncidentProxyOwner("px1", "sess-handled")

@@ -62,6 +62,7 @@ func bootPublicPlaneSession(t *testing.T, projectPath string) (*Daemon, *daemonc
 // feedback POST is persisted, that feedback is readable via the owner-scoped MCP
 // surface — and a dev-control path stays unreachable on the public plane.
 func TestPublicPlaneServesArtifactAndFeedbackReadable(t *testing.T) {
+	t.Parallel()
 	d, c := bootPublicPlaneSession(t, "/proj-a")
 	addr := d.PublicPlaneAddr()
 
@@ -97,6 +98,7 @@ func TestPublicPlaneServesArtifactAndFeedbackReadable(t *testing.T) {
 // feedback — the SAME ownership gate as status/revoke/rotate (a foreign share is
 // not-found, no cross-project leak).
 func TestFeedbackReadOwnerScoped(t *testing.T) {
+	t.Parallel()
 	sockPath := shortSockPath(t)
 	d := newBootedDaemonWithConfig(t, DaemonConfig{SocketPath: sockPath, PublicListenAddr: "127.0.0.1:0"})
 	addr := d.PublicPlaneAddr()
@@ -134,6 +136,7 @@ func TestFeedbackReadOwnerScoped(t *testing.T) {
 // feedback to project B's owner. The read must be share-scoped, so B — reading its
 // OWN share — sees ZERO rows even though the digests collide, while A sees its own.
 func TestFeedbackReadCollidingDigestNoCrossProjectLeak(t *testing.T) {
+	t.Parallel()
 	sockPath := shortSockPath(t)
 	d := newBootedDaemonWithConfig(t, DaemonConfig{SocketPath: sockPath, PublicListenAddr: "127.0.0.1:0"})
 	addr := d.PublicPlaneAddr()
@@ -187,6 +190,7 @@ func TestFeedbackReadCollidingDigestNoCrossProjectLeak(t *testing.T) {
 // A's share gets feedback, a subscriber on project B does NOT, and the event
 // carries no token/body.
 func TestFeedbackArrivalEventScopedToOwningProject(t *testing.T) {
+	t.Parallel()
 	d, c := bootPublicPlaneSession(t, "/proj-a")
 	addr := d.PublicPlaneAddr()
 
@@ -229,6 +233,7 @@ func TestFeedbackArrivalEventScopedToOwningProject(t *testing.T) {
 // transport consumed by agent/developer processes, not stop at the private
 // in-memory hub. The explicit project stamp must also exclude other projects.
 func TestFeedbackArrivalReachesProjectScopedEventStream(t *testing.T) {
+	t.Parallel()
 	eventHub := NewEventHub()
 	feedbackHub := NewFeedbackHub(eventHub)
 
@@ -273,6 +278,7 @@ func TestFeedbackArrivalReachesProjectScopedEventStream(t *testing.T) {
 // observable via the control read's Dropped count and surface on the arrival
 // event, without crashing the public plane (429, not a crash).
 func TestFeedbackDroppedCountObservable(t *testing.T) {
+	t.Parallel()
 	sockPath := shortSockPath(t)
 	// Rate 1/min, burst 1: the 2nd+ POST in the window is dropped (429).
 	d := newBootedDaemonWithConfig(t, DaemonConfig{
@@ -307,6 +313,7 @@ func TestFeedbackDroppedCountObservable(t *testing.T) {
 // to the addressed share, both on owner reads and on the next arrival event.
 // A drop against project A's share must never inflate project B's observability.
 func TestFeedbackDroppedCountShareScoped(t *testing.T) {
+	t.Parallel()
 	sockPath := shortSockPath(t)
 	d := newBootedDaemonWithConfig(t, DaemonConfig{
 		SocketPath:       sockPath,
@@ -360,6 +367,7 @@ func TestFeedbackDroppedCountShareScoped(t *testing.T) {
 // TestFeedbackReadRedactionNoToken pins that create returns the token once and
 // the feedback read never contains it, even as a substring in a row body.
 func TestFeedbackReadRedactionNoToken(t *testing.T) {
+	t.Parallel()
 	d, c := bootPublicPlaneSession(t, "/proj-a")
 	addr := d.PublicPlaneAddr()
 
