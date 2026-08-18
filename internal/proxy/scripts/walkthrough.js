@@ -78,8 +78,25 @@
     };
     // Cap on an author-supplied gesture_label. The label pill is a single
     // white-space:nowrap line; longer text runs off the viewport instead of
-    // reading as an instruction. Mirrors publish.MaxGestureLabelLength.
+    // reading as an instruction. Mirrors publish.MaxGestureLabelLength
+    // (internal/publish/validate.go:205, limits.go:44) — a Go len() over the
+    // string, i.e. UTF-8 BYTES. So the cap below is compared in UTF-8 BYTES via utf8Len(),
+    // matching Go's len(): a code-unit `.length` cap is looser than the byte
+    // limit (byte length >= code-unit count for every character), so it would
+    // admit CJK/emoji labels the Go validator rejects.
     var MAX_GESTURE_LABEL = 64;
+
+    // utf8Len returns the UTF-8 byte length of a JS string (mirrors Go len()).
+    // Same spelling as variant-engine.js / walkthrough-viewer.js so the mirrors
+    // cannot drift into two different notions of "length".
+    function utf8Len(s) {
+      // TextEncoder is available in every target browser; count code units as a
+      // safe fallback if it is somehow absent.
+      if (typeof TextEncoder !== 'undefined') {
+        try { return new TextEncoder().encode(s).length; } catch (e) { /* fall through */ }
+      }
+      return unescape(encodeURIComponent(s)).length;
+    }
 
     function prefersReducedMotion() {
       try {
@@ -416,8 +433,8 @@
           if (!s.gesture) {
             throw new Error('step ' + i + ': gesture_label requires a gesture');
           }
-          if (s.gesture_label.length > MAX_GESTURE_LABEL) {
-            throw new Error('step ' + i + ': gesture_label exceeds ' + MAX_GESTURE_LABEL + ' chars');
+          if (utf8Len(s.gesture_label) > MAX_GESTURE_LABEL) {
+            throw new Error('step ' + i + ': gesture_label exceeds ' + MAX_GESTURE_LABEL + ' bytes');
           }
           if (/[\x00-\x1f\x7f]/.test(s.gesture_label)) {
             throw new Error('step ' + i + ': gesture_label has a control character');
