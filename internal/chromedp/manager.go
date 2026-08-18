@@ -17,7 +17,27 @@ var (
 	ErrSessionNotFound = errors.New("session not found")
 	// ErrSessionAmbiguous is returned when a fuzzy lookup matches multiple sessions.
 	ErrSessionAmbiguous = errors.New("session ID is ambiguous - multiple matches")
+	// ErrSessionCapReached is returned by Start when the concurrent-session
+	// ceiling is reached. Wrapped with an actionable message naming the limit
+	// and how to free a slot (Silent Failure Prohibition,
+	// .claude/rules/daemon-architecture.md).
+	ErrSessionCapReached = errors.New("concurrent browser automation session cap reached")
 )
+
+// DefaultMaxSessions is the default ceiling on concurrent chromedp automation
+// sessions. It is deliberately single-digit, not 100 like PageTracker/daemon
+// client caps: every session is a full headless Chrome process (hundreds of MB
+// RSS plus its own renderer subprocesses), so four concurrent sessions already
+// costs on the order of a gigabyte. The failure mode of an uncapped manager is
+// an agent looping the automation/browser tools until the host swaps and OOMs —
+// far more expensive than a leaked lightweight process. Four leaves room for
+// modest parallel automation (e.g. a handful of concurrent audits) while
+// keeping the worst case well below a developer machine's memory budget.
+// Raise it deliberately via automation.max-sessions in .agnt.kdl.
+//
+// Kept in sync with config.DefaultAutomationMaxSessions (config must not import
+// chromedp; both are 4).
+const DefaultMaxSessions = 4
 
 // SessionManager manages chromedp automation sessions.
 // It uses lock-free sync.Map for the session registry and atomic counters
@@ -25,14 +45,51 @@ var (
 type SessionManager struct {
 	sessions     sync.Map // map[string]*AutomationSession
 	active       atomic.Int32
+	maxSessions  atomic.Int32 // concurrency ceiling; <=0 means DefaultMaxSessions
 	totalStarted atomic.Int64
 	totalFailed  atomic.Int64
 	shuttingDown atomic.Bool
+
+	// startSession launches the browser for an already-reserved session.
+	// Overridable in tests so the concurrency cap can be exercised without
+	// spawning real Chrome processes. Defaults to (*AutomationSession).Start.
+	startSession func(ctx context.Context, s *AutomationSession) error
 }
 
-// NewSessionManager creates a new session manager.
+// NewSessionManager creates a new session manager with the default ceiling
+// (DefaultMaxSessions) on concurrent sessions.
 func NewSessionManager() *SessionManager {
-	return &SessionManager{}
+	return NewSessionManagerWithMax(DefaultMaxSessions)
+}
+
+// NewSessionManagerWithMax creates a session manager with an explicit
+// concurrent-session ceiling. A max <= 0 falls back to DefaultMaxSessions.
+func NewSessionManagerWithMax(max int) *SessionManager {
+	m := &SessionManager{
+		startSession: func(ctx context.Context, s *AutomationSession) error {
+			return s.Start(ctx)
+		},
+	}
+	m.SetMaxSessions(max)
+	return m
+}
+
+// SetMaxSessions updates the ceiling on concurrent sessions. A max <= 0 restores
+// DefaultMaxSessions. Safe to call concurrently with Start — it is the same
+// last-writer-wins, daemon-wide reconfigure shape as Daemon.ApplyAlertsConfig,
+// applied on session connect from the project's automation.max-sessions. Lowering
+// the ceiling below the current active count never evicts a session an agent is
+// mid-way through using; it only refuses new Start calls until the count drops.
+func (m *SessionManager) SetMaxSessions(max int) {
+	if max <= 0 {
+		max = DefaultMaxSessions
+	}
+	m.maxSessions.Store(int32(max))
+}
+
+// MaxSessions returns the current concurrent-session ceiling.
+func (m *SessionManager) MaxSessions() int {
+	return int(m.maxSessions.Load())
 }
 
 // Start starts an automation session with the given configuration.
@@ -56,13 +113,40 @@ func (m *SessionManager) Start(ctx context.Context, id string, config SessionCon
 		return nil, ErrSessionExists
 	}
 
-	if err := session.Start(ctx); err != nil {
+	// Reserve a concurrency slot BEFORE the expensive Chrome launch. The CAS
+	// loop is the single atomic admission point: the check and the increment
+	// are one indivisible step, so no number of racing Start calls can drive
+	// active past the ceiling (the load-then-add TOCTOU window of the
+	// ProcessManager Start/Shutdown bug — publish-security-review-lessons.md
+	// §4 — is structurally avoided). A CompareAndSwap that only commits when
+	// cur < max also means ActiveCount() never even momentarily exceeds the
+	// cap, unlike an add-then-rollback. Refuse LOUDLY at the cap rather than
+	// silently queueing or evicting a session an agent is mid-way through
+	// using (Silent Failure Prohibition).
+	max := m.maxSessions.Load()
+	for {
+		cur := m.active.Load()
+		if cur >= max {
+			m.sessions.Delete(id)
+			return nil, fmt.Errorf(
+				"cannot start browser automation session %q: %w of %d "+
+					"(each session is a full Chrome process using hundreds of MB). "+
+					"Stop an existing session (browser/automation stop) or raise "+
+					"automation.max-sessions in .agnt.kdl",
+				id, ErrSessionCapReached, max)
+		}
+		if m.active.CompareAndSwap(cur, cur+1) {
+			break
+		}
+	}
+
+	if err := m.startSession(ctx, session); err != nil {
 		m.sessions.Delete(id)
+		m.active.Add(-1) // release the reserved slot
 		m.totalFailed.Add(1)
 		return nil, err
 	}
 
-	m.active.Add(1)
 	m.totalStarted.Add(1)
 
 	// Clean up when session exits
