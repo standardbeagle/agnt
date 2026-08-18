@@ -40,7 +40,17 @@ import (
 
 const (
 	// defaultPublishServeAddr is the local listen address for the public plane.
-	defaultPublishServeAddr = ":8899"
+	// It binds LOOPBACK by default, matching the shipped-default exposure posture
+	// AGENTS.md § Exposure Posture declares for `agnt publish serve` (loopback,
+	// widened only by explicit operator action — an explicit wider --addr or
+	// --tunnel). A bare ":8899" would bind every interface (LAN-reachable) with no
+	// operator opt-in, which the posture rules forbid as "exposure by install
+	// default". The sibling AGNT_PUBLIC_ADDR default was settled the same way
+	// (127.0.0.1:8899, task 01KYT4EHBZQ2Z4JF86THHV7WAB), so the two publish-facing
+	// address defaults agree. Deliberate exposure stays available by passing an
+	// explicit wide --addr (0.0.0.0:port), which still triggers the loud
+	// non-loopback WARNING below.
+	defaultPublishServeAddr = "127.0.0.1:8899"
 
 	// publishServePollDrvFS / publishServePollLocal are the metadata poll
 	// periods for the watched directory. Polling runs ALONGSIDE fsnotify, never
