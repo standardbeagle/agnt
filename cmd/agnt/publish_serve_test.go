@@ -352,7 +352,7 @@ func TestPublishPassFailedScanLeavesSharesIntact(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	srv := &publishServer{dir: dir, store: store, out: io.Discard, tokens: map[string]string{}}
-	if err := srv.publishPass(); err != nil {
+	if _, err := srv.publishPass(); err != nil {
 		t.Fatalf("first pass: %v", err)
 	}
 	live := liveShareIDs(store, dir)
@@ -363,7 +363,7 @@ func TestPublishPassFailedScanLeavesSharesIntact(t *testing.T) {
 	// (1) One file goes invalid mid-session — a partial scan. The pass must fail
 	// and revoke nothing, including the sibling that is still fine.
 	writeFile(t, dir, "b.json", []byte(`{"version":"v1","id":"b","title":"B","steps":[]}`))
-	if err := srv.publishPass(); err == nil {
+	if _, err := srv.publishPass(); err == nil {
 		t.Fatalf("an invalid file must abort the pass")
 	}
 	if got := liveShareIDs(store, dir); len(got) != 2 {
@@ -374,7 +374,7 @@ func TestPublishPassFailedScanLeavesSharesIntact(t *testing.T) {
 	// requirement: no revocation.
 	gone := filepath.Join(t.TempDir(), "vanished")
 	srv.dir = gone
-	if err := srv.publishPass(); err == nil {
+	if _, err := srv.publishPass(); err == nil {
 		t.Fatalf("an unreadable directory must abort the pass")
 	}
 	if got := liveShareIDs(store, dir); len(got) != 2 {
@@ -423,7 +423,7 @@ func TestPublishServeTunnelOriginFoldsIntoURLs(t *testing.T) {
 	}
 	out := &syncBuffer{}
 	srv := &publishServer{dir: dir, store: store, out: out, tokens: map[string]string{}, origin: "http://127.0.0.1:8899"}
-	if err := srv.publishPass(); err != nil {
+	if _, err := srv.publishPass(); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	token := srv.shares[0].Token
@@ -576,7 +576,7 @@ func TestPublishServeResumeMintsFreshTokenLoudly(t *testing.T) {
 		t.Fatalf("open store: %v", err)
 	}
 	first := &publishServer{dir: dir, store: store, out: io.Discard, tokens: map[string]string{}}
-	if err := first.publishPass(); err != nil {
+	if _, err := first.publishPass(); err != nil {
 		t.Fatalf("first run: %v", err)
 	}
 	firstToken := first.shares[0].Token
@@ -588,7 +588,7 @@ func TestPublishServeResumeMintsFreshTokenLoudly(t *testing.T) {
 	}
 	out := &syncBuffer{}
 	second := &publishServer{dir: dir, store: reopened, out: out, tokens: map[string]string{}}
-	if err := second.publishPass(); err != nil {
+	if _, err := second.publishPass(); err != nil {
 		t.Fatalf("second run: %v", err)
 	}
 	newToken := second.shares[0].Token
@@ -614,5 +614,145 @@ func TestPublishServeResumeMintsFreshTokenLoudly(t *testing.T) {
 	// Sanity: the printed URL uses the fresh token.
 	if !strings.Contains(out.String(), "/s/"+newToken) {
 		t.Fatalf("printed URL does not carry the fresh token:\n%s", out.String())
+	}
+}
+
+// tokenSnapshot maps file -> plaintext token for the shares a pass produced.
+func tokenSnapshot(srv *publishServer) map[string]string {
+	srv.mu.Lock()
+	defer srv.mu.Unlock()
+	out := map[string]string{}
+	for _, sh := range srv.shares {
+		out[sh.File] = sh.Token
+	}
+	return out
+}
+
+// TestPublishPassTwoPollGuardAgainstEmptyRead is the highest-severity guard: an
+// N>0 -> 0 transition (the shape a transiently-unmounted /mnt directory produces,
+// os.ReadDir succeeding with zero entries) must NOT mass-revoke on a single empty
+// read. The first empty read is HELD; only a second consecutive empty read is
+// trusted to revoke. A transient empty (files reappear before the confirming
+// poll) costs nothing. Provenance-per-§8: assert the tokens still VERIFY, not
+// merely that records exist.
+func TestPublishPassTwoPollGuardAgainstEmptyRead(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "a.json", walkthroughJSON(t, "a", "A", ""))
+	writeFile(t, dir, "b.json", walkthroughJSON(t, "b", "B", ""))
+	store, err := publish.New(filepath.Join(t.TempDir(), "shares"), nil)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	srv := &publishServer{dir: dir, store: store, out: io.Discard, tokens: map[string]string{}}
+	if _, err := srv.publishPass(); err != nil {
+		t.Fatalf("first pass: %v", err)
+	}
+	if got := liveShareIDs(store, dir); len(got) != 2 {
+		t.Fatalf("expected 2 live shares, got %+v", got)
+	}
+	tokens := tokenSnapshot(srv)
+	verifyAll := func(when string) {
+		for f, tok := range tokens {
+			if _, _, ok := store.VerifyToken(tok); !ok {
+				t.Fatalf("token for %s stopped verifying %s", f, when)
+			}
+		}
+	}
+
+	remove := func() {
+		if err := os.Remove(filepath.Join(dir, "a.json")); err != nil {
+			t.Fatalf("remove a: %v", err)
+		}
+		if err := os.Remove(filepath.Join(dir, "b.json")); err != nil {
+			t.Fatalf("remove b: %v", err)
+		}
+	}
+
+	// (1) First all-gone read is HELD, revokes nothing, keeps tokens verifying.
+	remove()
+	held, err := srv.publishPass()
+	if err != nil {
+		t.Fatalf("held pass errored: %v", err)
+	}
+	if !held {
+		t.Fatalf("the first zero-walkthrough read must be HELD, not acted on")
+	}
+	if got := liveShareIDs(store, dir); len(got) != 2 {
+		t.Fatalf("a single empty read revoked shares: %+v", got)
+	}
+	verifyAll("during the first-empty hold")
+
+	// (2) TRANSIENT: files reappear before the confirming poll. No revoke happened;
+	// the same tokens still verify.
+	writeFile(t, dir, "a.json", walkthroughJSON(t, "a", "A", ""))
+	writeFile(t, dir, "b.json", walkthroughJSON(t, "b", "B", ""))
+	held, err = srv.publishPass()
+	if err != nil {
+		t.Fatalf("repopulate pass errored: %v", err)
+	}
+	if held {
+		t.Fatalf("a repopulated read must not hold")
+	}
+	if got := liveShareIDs(store, dir); len(got) != 2 {
+		t.Fatalf("a transient empty read cost a share: %+v", got)
+	}
+	verifyAll("after a transient empty read")
+
+	// (3) SUSTAINED: empty, held once, then a second consecutive empty read DOES
+	// revoke — a genuine delete-everything still converges, one poll later.
+	remove()
+	held, err = srv.publishPass()
+	if err != nil || !held {
+		t.Fatalf("re-emptied dir should hold once more: held=%v err=%v", held, err)
+	}
+	if got := liveShareIDs(store, dir); len(got) != 2 {
+		t.Fatalf("the held re-empty revoked early: %+v", got)
+	}
+	held, err = srv.publishPass()
+	if err != nil {
+		t.Fatalf("confirming pass errored: %v", err)
+	}
+	if held {
+		t.Fatalf("the second consecutive empty read must act, not hold")
+	}
+	if got := liveShareIDs(store, dir); len(got) != 0 {
+		t.Fatalf("a sustained empty directory did not converge to revoked: %+v", got)
+	}
+}
+
+// TestPublishServeEmptyDirAtStartupRefuses pins the startup decision: a directory
+// that reads as empty at boot refuses to serve rather than publishing nothing —
+// AND, critically, does not mass-revoke a pre-existing store's shares on the way
+// out (the boot form of the unmounted-directory trap).
+func TestPublishServeEmptyDirAtStartupRefuses(t *testing.T) {
+	dir := t.TempDir()
+	storeDir := filepath.Join(t.TempDir(), "store")
+
+	// Seed the store as if an earlier run had published old.json in this folder.
+	seed, err := publish.New(filepath.Join(storeDir, "shares"), nil)
+	if err != nil {
+		t.Fatalf("seed store: %v", err)
+	}
+	pw, err := publish.DecodePublishedWalkthrough(walkthroughJSON(t, "old", "Old", ""))
+	if err != nil {
+		t.Fatalf("decode seed walkthrough: %v", err)
+	}
+	if _, _, _, err := seed.PublishFile(pw, dir, "old.json"); err != nil {
+		t.Fatalf("seed publish: %v", err)
+	}
+
+	err = runPublishServe(context.Background(), publishServeOptions{
+		Dir: dir, Addr: "127.0.0.1:0", StoreDir: storeDir, Out: io.Discard,
+	})
+	if err == nil || !strings.Contains(err.Error(), "no *.json") {
+		t.Fatalf("an empty --dir at startup should refuse to serve, got %v", err)
+	}
+
+	reopened, err := publish.New(filepath.Join(storeDir, "shares"), nil)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	if got := liveShareIDs(reopened, dir); len(got) != 1 {
+		t.Fatalf("startup on an empty dir revoked the pre-existing share: %+v", got)
 	}
 }

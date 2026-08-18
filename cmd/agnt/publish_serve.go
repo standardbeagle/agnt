@@ -208,6 +208,10 @@ type publishServer struct {
 	tokens map[string]string // file -> plaintext token, this run only
 	shares []publishedShare
 	origin string
+	// emptyHeld is the two-poll guard state: true once a zero-walkthrough read
+	// has been observed and held once, pending a confirming second read before a
+	// mass revoke is allowed. Cleared by any non-empty read.
+	emptyHeld bool
 
 	onPublish func(origin string, shares []publishedShare)
 }
@@ -215,20 +219,48 @@ type publishServer struct {
 // publishPass loads the directory and publishes every walkthrough, then — and
 // only then — reconciles deletions. Any failure returns before the reconcile,
 // so a failed or partial pass can never be read as "the files are gone".
-func (s *publishServer) publishPass() error {
+//
+// held reports that this pass observed a zero-walkthrough directory for the
+// FIRST time and deliberately did nothing (no publish, no reconcile) rather than
+// mass-revoke on a single empty read — see the two-poll guard below. A held pass
+// leaves every share serving and asks the caller not to advance its change
+// fingerprint, so the next poll re-reads and either confirms or clears the empty.
+func (s *publishServer) publishPass() (held bool, err error) {
 	loaded, err := loadWalkthroughDir(s.dir)
 	if err != nil {
-		return err
+		return false, err
 	}
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Two-poll guard against an unmounted-yet-present directory. os.ReadDir on a
+	// dropped /mnt mount succeeds with ZERO entries, indistinguishable from "the
+	// operator deleted every file" — and ReconcileFiles below revokes irreversibly.
+	// So a zero-walkthrough read never revokes on its own: the first one is HELD
+	// (shares keep serving, the caller does not advance its change fingerprint) and
+	// only a second consecutive empty read is trusted enough to mass-revoke. A
+	// genuine delete-everything still converges — one poll later.
+	// (.claude/rules/publish-security-review-lessons.md §12)
+	if len(loaded) == 0 {
+		if !s.emptyHeld {
+			s.emptyHeld = true
+			if len(s.shares) > 0 {
+				fmt.Fprintf(s.out, "publish serve: %s read as empty; holding %d live share(s) for a confirming second read before revoking (a transiently-unmounted directory also reads as empty)\n", s.dir, len(s.shares))
+			}
+			return true, nil
+		}
+		// Second consecutive empty read: trusted. Fall through to publish nothing
+		// and let ReconcileFiles revoke the now-genuinely-absent files.
+	} else {
+		s.emptyHeld = false
+	}
+
 	shares := make([]publishedShare, 0, len(loaded))
 	for _, lw := range loaded {
 		id, token, revID, err := s.store.PublishFile(lw.PW, s.dir, lw.File)
 		if err != nil {
-			return fmt.Errorf("publish %s: %w", lw.File, err)
+			return false, fmt.Errorf("publish %s: %w", lw.File, err)
 		}
 		if token == "" {
 			// An unchanged file or an in-run edit: no new secret was minted, so
@@ -242,7 +274,7 @@ func (s *publishServer) publishPass() error {
 			// because it kills any URL handed out by that earlier run.
 			token, err = s.store.Rotate(id)
 			if err != nil {
-				return fmt.Errorf("publish %s: rotate token: %w", lw.File, err)
+				return false, fmt.Errorf("publish %s: rotate token: %w", lw.File, err)
 			}
 			fmt.Fprintf(s.out, "publish serve: %s: minted a new token — the token from an earlier run is not recoverable, so links from that run are now dead\n", lw.File)
 		}
@@ -261,7 +293,7 @@ func (s *publishServer) publishPass() error {
 	}
 	revoked, err := s.store.ReconcileFiles(s.dir, present)
 	if err != nil {
-		return fmt.Errorf("reconcile deleted files: %w", err)
+		return false, fmt.Errorf("reconcile deleted files: %w", err)
 	}
 	for _, id := range revoked {
 		fmt.Fprintf(s.out, "publish serve: revoked share %s — its file is gone\n", id)
@@ -280,7 +312,7 @@ func (s *publishServer) publishPass() error {
 		s.onPublish(origin, shares)
 	}
 	s.printSharesLocked(origin)
-	return nil
+	return false, nil
 }
 
 // setOrigin swaps the public origin (a tunnel coming up) and reprints every
@@ -390,9 +422,22 @@ func runPublishServe(ctx context.Context, opts publishServeOptions) error {
 	}
 
 	fmt.Fprintf(opts.Out, "publish serve: watching %s, listening on %s\n", dir, srv.origin)
-	if err := srv.publishPass(); err != nil {
+	if _, err := srv.publishPass(); err != nil {
 		ln.Close()
 		return fmt.Errorf("publish serve: %w", err)
+	}
+	// Refuse to serve an empty directory rather than publish nothing. Serving
+	// nothing is almost always a mis-pointed --dir; more importantly, a directory
+	// that reads as empty at boot may be a transiently-unmounted mount, and going
+	// further would let a later pass mass-revoke a prior run's shares. The
+	// two-poll guard held the boot pass (no revoke), so refusing here leaves those
+	// shares intact.
+	srv.mu.Lock()
+	published := len(srv.shares)
+	srv.mu.Unlock()
+	if published == 0 {
+		ln.Close()
+		return fmt.Errorf("publish serve: --dir %s contains no *.json walkthroughs to serve", dir)
 	}
 
 	handler := proxy.NewPublicHandler(store, feedback, limits.MaxBodyBytes)
@@ -489,8 +534,16 @@ func (s *publishServer) watch(ctx context.Context, pollInterval time.Duration) e
 		if fp == last {
 			return
 		}
-		if err := s.publishPass(); err != nil {
+		held, err := s.publishPass()
+		if err != nil {
 			fmt.Fprintf(s.out, "publish serve: republish failed, keeping the previous published state: %v\n", err)
+			return
+		}
+		if held {
+			// A first zero-walkthrough read was held pending a confirming poll.
+			// Do NOT advance the fingerprint, so the next tick re-reads: a genuine
+			// delete-everything then converges to revoked, a transient empty read
+			// (unmounted /mnt) is undone the moment files reappear.
 			return
 		}
 		last = fp
