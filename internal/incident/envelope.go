@@ -83,7 +83,9 @@ type BlobRef struct {
 
 // IncidentEvent is the canonical envelope for all 11 signal sources.
 // ID is a time-ordered UUID v7 string — monotonic, sortable, cursor-friendly.
-// Summary is capped at 200 bytes; oversized payloads live in BlobStore via PayloadRef.
+// Summary is capped at maxSummaryBytes; any message longer than that has its
+// full bytes preserved in BlobStore via PayloadRef, so a truncated Summary
+// tail is always retrievable via detail:"full".
 type IncidentEvent struct {
 	ID          string
 	Fingerprint string // sha256(source|category|canonical_msg|location)[:16]
@@ -104,9 +106,12 @@ type IncidentEvent struct {
 const maxSummaryBytes = 200
 
 // NewIncidentEvent builds an IncidentEvent from the raw message and optional
-// full payload. If payload is non-nil and longer than 1KB it is stored in
-// store (if non-nil) and referenced via PayloadRef; otherwise it is
-// truncated into Summary.
+// full payload. Whenever the message is longer than the Summary can hold
+// (maxSummaryBytes) its full bytes are preserved — stored in store (if
+// non-nil) and referenced via PayloadRef, or kept privately for MPSCBus to
+// spill into the destination session's store. This upholds the invariant that
+// truncation never discards bytes that no blob holds: without it, messages in
+// the 200<len<=1024 "dead band" lost their tail with nothing to hydrate from.
 func NewIncidentEvent(src Source, sev Severity, category, msg string, ctx Context, store *BlobStore) IncidentEvent {
 	canonical := Canonicalize(msg)
 	fp := computeFingerprint(string(src), category, canonical, fingerprintLocation(ctx))
@@ -125,7 +130,11 @@ func NewIncidentEvent(src Source, sev Severity, category, msg string, ctx Contex
 		Ctx:         ctx,
 	}
 
-	if store != nil && len(msg) > 1024 {
+	// The blob threshold is the Summary cap, not an arbitrary 1KB: the moment
+	// the message is longer than Summary can hold, the truncated tail must be
+	// recoverable, or bytes are lost with no blob to hydrate from (the dead-band
+	// regression). Messages that fit entirely in Summary need no blob.
+	if store != nil && len(msg) > maxSummaryBytes {
 		ref, err := store.Write([]byte(msg), "text/plain")
 		if err == nil {
 			ev.PayloadRef = &ref
@@ -135,7 +144,7 @@ func NewIncidentEvent(src Source, sev Severity, category, msg string, ctx Contex
 			// log so a failing store is diagnosable.
 			debug.Log("incident-blob", "payload write failed, event carries no blob ref: %v", err)
 		}
-	} else if store == nil && len(msg) > 1024 {
+	} else if store == nil && len(msg) > maxSummaryBytes {
 		// Production adapters do not own session stores. Preserve the full bytes
 		// privately so MPSCBus can spill them into the destination session's store.
 		ev.payload = []byte(msg)
