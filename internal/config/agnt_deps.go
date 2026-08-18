@@ -103,6 +103,17 @@ func (d *DependsOnList) UnmarshalKDL(node *document.Node) error {
 }
 
 // toSeconds converts a numeric value to a time.Duration in seconds.
+//
+// Fractional values are preserved with sub-second granularity: `timeout=0.5`
+// yields 500ms, not 0. Multiplying a float64 by float64(time.Second) before the
+// Duration conversion is what keeps the fraction — the previous
+// `time.Duration(val) * time.Second` truncated the float to a whole second
+// first, so any value in (0,1) collapsed to the 0 == "wait indefinitely"
+// sentinel. That silent truncation turned a bound into its absence, a Silent
+// Failure Prohibition violation (.claude/rules/daemon-architecture.md).
+//
+// The 0 sentinel is deliberately preserved: an explicit `timeout=0` still means
+// "wait indefinitely". Only the fractional-truncation-to-0 case changes.
 func toSeconds(v interface{}) (time.Duration, bool) {
 	switch val := v.(type) {
 	case int:
@@ -110,7 +121,7 @@ func toSeconds(v interface{}) (time.Duration, bool) {
 	case int64:
 		return time.Duration(val) * time.Second, true
 	case float64:
-		return time.Duration(val) * time.Second, true
+		return time.Duration(val * float64(time.Second)), true
 	}
 	return 0, false
 }

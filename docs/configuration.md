@@ -57,6 +57,35 @@ Kill uses `ProcessManager.KillProcessByPort()` with process-group SIGTERM → 3s
 
 **Key files**: `port_preflight.go` (detect + kill), `daemon.go` (RunAutostart integration + pendingAutostarts), `hub_autostart.go` (AUTOSTART verb), `client.go` (AutostartClearPorts/Continue), `pty_common.go` (client prompt)
 
+## Script Dependency Timeouts (`scripts.<name>.depends-on`, `internal/config/agnt_deps.go`)
+
+`depends-on` bounds how long autostart waits for a dependency to signal ready:
+
+```
+scripts {
+    api {
+        depends-on "redis" timeout=30      // node-level: 30s for redis
+    }
+    web {
+        depends-on {
+            api timeout=1.5                 // per-dep: 1.5s (sub-second granularity)
+            cache timeout=0                 // 0 = wait indefinitely (see below)
+        }
+    }
+}
+```
+
+- **Granularity is sub-second.** `timeout` is a number of seconds parsed as a
+  `time.Duration`, so fractional values are honored exactly: `timeout=0.5` waits
+  500ms, `timeout=1.5` waits 1500ms. (Before the fix for this, a fractional
+  value was truncated to a whole second and `timeout=0.5` silently became 0.)
+- **`timeout=0` means wait indefinitely** — until the dependency's ready signal
+  arrives or the autostart context is cancelled. Omitting `timeout` also
+  defaults to 0. This is the one sentinel: a positive value (fractional or
+  whole) enforces a hard upper bound; 0 removes the bound.
+- A non-numeric `timeout` fails the parse loudly rather than falling back to the
+  indefinite-wait default.
+
 ## Autostart Cleanup Ordering (`internal/daemon/daemon_autostart.go`)
 
 1. **Duplicate scan** (sync, before autostart) — kills orphaned dev server processes using `collectManagedPIDs()` PPID chain walking to protect managed children
