@@ -242,6 +242,91 @@ func TestAddScriptSrcRefusedAtPublish(t *testing.T) {
 	}
 }
 
+// publishedWithOps builds the simplest valid published walkthrough that carries
+// one variant with the given ops, so a test can flip only the op under scrutiny.
+func publishedWithOps(ops ...Op) *PublishedWalkthrough {
+	return &PublishedWalkthrough{
+		Version: SchemaV1, ID: "wt", Title: "t",
+		Steps: []Step{{ID: "s1", Title: "One", Advance: Advance{Type: "auto", MS: 1000}}},
+		VariantSet: &VariantSet{
+			Version: SchemaV1, ID: "vs",
+			Variants: []Variant{{ID: "a", Ops: ops}},
+		},
+	}
+}
+
+// TestAddScriptRefusedOnPublishedWalkthrough pins the INV-14 operator decision of
+// 2026-08-18 (task 01M09KYHZ0CFAX2NVGMAQJ1WFW, option (a)): a published
+// walkthrough is served on the public plane AS the artifact document, always
+// carrying the mandatory agnt disclosure indicator (§9b). An authored addScript
+// body runs in the same realm as that indicator and — proven in real Chrome
+// (task 01KYQFAZRH: id-squat, re-assert-budget exhaustion, appendChild
+// monkeypatch) — can defeat the disclosure from first paint. Same-realm script
+// beats same-realm script, so the module cannot be hardened against it; INV-14's
+// "no publisher-reachable input can remove, hide, or blank the indicator" is
+// preserved instead by refusing addScript at publish on exactly the shares that
+// carry the mandatory disclosure — every published walkthrough.
+//
+// The refusal lives at the PublishedWalkthrough boundary, not the op or
+// variant-set validator: a bare variant set is never served on the public plane,
+// so DecodeVariantSet stays permissive (see the bare-set assertion below and
+// TestINV6RetirementAcceptsRawContent). Deleting the guard makes the first
+// assertion fail — addScript{code} publishes again — so this test has teeth.
+func TestAddScriptRefusedOnPublishedWalkthrough(t *testing.T) {
+	// code form: refused, and the error is actionable — it names addScript, the
+	// invariant it protects, and a remedy.
+	err := publishedWithOps(Op{Op: OpAddScript, Code: "document.title='x'"}).Validate()
+	if err == nil {
+		t.Fatal("addScript{code} must be refused on a published walkthrough (INV-14), got nil")
+	}
+	for _, want := range []string{"addScript", "INV-14"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("code refusal must mention %q, got: %s", want, err.Error())
+		}
+	}
+
+	// src form: refused on the same badge-mandatory boundary — BOTH op forms are
+	// refused, not just the inline code.
+	if err := publishedWithOps(Op{Op: OpAddScript, Src: "https://cdn.example.com/a.js"}).Validate(); err == nil {
+		t.Fatal("addScript{src} must be refused on a published walkthrough, got nil")
+	} else if !strings.Contains(err.Error(), "addScript") {
+		t.Fatalf("src refusal must name addScript, got: %s", err.Error())
+	}
+
+	// Do NOT over-reject: the CSS/DOM-removal ops on a badge-mandatory share still
+	// publish. Those classes are contained by the wholesale-replaced CSP and the
+	// closed shadow root (shipped e2e), not by this gate — narrowing them here
+	// would be scope creep that breaks the documented raw-content contract.
+	for _, op := range []Op{
+		{Op: OpAddStyle, CSS: "#agnt-demo-indicator{display:none!important}"},
+		{Op: OpSetText, Selector: ".x", Value: "hi"},
+		{Op: OpAddClass, Selector: ".x", Value: "promo"},
+		{Op: OpSetHTML, Selector: ".x", HTML: "<b>hi</b>"},
+	} {
+		if err := publishedWithOps(op).Validate(); err != nil {
+			t.Fatalf("%s must still publish on a published walkthrough, got: %v", op.Op, err)
+		}
+	}
+
+	// A published walkthrough with no variant set at all is untouched.
+	noVS := &PublishedWalkthrough{
+		Version: SchemaV1, ID: "wt", Title: "t",
+		Steps: []Step{{ID: "s1", Title: "One", Advance: Advance{Type: "auto", MS: 1000}}},
+	}
+	if err := noVS.Validate(); err != nil {
+		t.Fatalf("variant-set-free walkthrough must publish, got: %v", err)
+	}
+
+	// The variant-set validator itself stays permissive — the badge-mandatory
+	// boundary is the PUBLISHED walkthrough, not a bare variant set (a bare set is
+	// never served on the public plane). Over-rejecting here would break the
+	// documented raw-content contract (TestINV6RetirementAcceptsRawContent).
+	bare := `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"addScript","code":"document.title='x'"}]}]}`
+	if _, err := DecodeVariantSet([]byte(bare)); err != nil {
+		t.Fatalf("bare variant-set addScript{code} must stay accepted, got: %v", err)
+	}
+}
+
 // TestUpstreamValidation pins the publisher-named live origin (§4a): optional,
 // nil-safe, and https-only via the one existing ValidateURL. The §4a resolved-
 // address deny-list (INV-13) needs a resolver and is not this slice's job — the
