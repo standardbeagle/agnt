@@ -173,6 +173,8 @@ Port-conflict policy、autostart cleanup ordering、alert push channels、incide
 
 **Pre-commit hook** (tracked at `.githooks/pre-commit`)：install once per clone via `make install-hooks` (or `git config core.hooksPath .githooks`)；同命令 refresh 於 pull hook 改動後。切 `core.hooksPath` 後 `.git/hooks/` 失效——須跑此 config 一次，否則 hook 不執行。行為：`gofmt`, `go vet ./...`, then `go test -count=1 -race -p 1` on staged packages；staged dir 經 `go list` 過濾，跳非 package（如全 `//go:build ignore` 之 `scripts/`，印 `Skipping ...`）。Adaptive flake detection：first race pass <10s → 2 more passes (`-count=2`)；slow packages (`internal/daemon` ~90s) single pass only。Tests starting real OS processes (`sleep`, `echo`, agnt binary) must NOT use `t.Parallel()`；`exec.CommandContext` PID-reuse race under high concurrency kills unrelated processes。
 
+Since the hook is tracked (`core.hooksPath`, commit `2b4223d8`, 2026-08-18) it BLOCKS a commit whose staged packages fail — so a RED-first TDD commit (an intentionally-failing test with no implementation yet) legitimately uses `git commit --no-verify`; the paired GREEN commit runs the full hook. `--no-verify` on a RED commit is the sanctioned TDD path, not gate-evasion; convention formalization tracked in `01KYR0XXXQ`.
+
 Test startup contract (`Start()` vs `NewForTest`)：`.claude/rules/daemon-architecture.md` § Test startup contract。
 
 **Full-suite gate = `go test -p 1 ./...`**（serial packages，非 Go 默認 parallel `./...`）；parallel 版本本身 flaky（cross-package port contention）。Flake registry + non-determinizable tests（real-chrome e2e under CPU oversubscription 等）：`docs/testing-flake-registry.md`；根因細節見 `.claude/rules/testing-parallel-package-flakes.md`、`.claude/rules/testing-timing-assertion-flakes.md`。

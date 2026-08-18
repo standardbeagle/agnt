@@ -29,6 +29,21 @@ package, a direct edit under `vendor/` is clobbered by the next
 `go mod vendor`. Mark such edits with an `UPSTREAM:` comment and track
 upstreaming as a follow-up — don't let the fix silently evaporate.
 
+Continuation (written_at 2026-08-18; source_event task 01KYT4EHBZQ2Z4JF86THHV7WAB,
+listener hardening, commits `814d5d2a`/`07d873b9`): the caveat's failure mode
+actually fired. Vendoring `x/net/netutil` for `LimitListener` ran
+`go mod vendor`, which silently reverted the go-cli-server fork's
+`killProcesses` UPSTREAM patch (no `replace` directive protects it). It was
+caught only because the implementer git-checkout-restored the fork dir and
+the reviewer re-verified the patch survived. This is the **4th** independent
+defect against the go-cli-server fork (cf.
+`publish-security-review-lessons.md` §4). Operational rule: **any task that
+runs `go mod vendor` must, before committing, grep every `UPSTREAM:`-marked
+vendored file and confirm its sentinel survives** — then keep ONLY the new
+package + the `go.mod`/`vendor/modules.txt` lines from the vendor run,
+git-checkout-restoring the rest of `vendor/`. A vendor run is never a
+clean additive operation while the tree carries un-`replace`d fork patches.
+
 ## 2. "Load-sensitive wall-clock flake" is often a mislabeled data-loss race
 
 `TestCreate_SpawnsAndCapturesOutput`'s own code comment blamed CPU/scheduler

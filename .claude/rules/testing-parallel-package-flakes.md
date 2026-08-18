@@ -127,6 +127,38 @@ latter is also satisfied by a child that never ran.
    parameter waiting to be extracted. Extract it the first time a test needs to
    `Chdir` to contain it.
 
+## Sibling class: a test helper's empty resource path falling through to a PRODUCTION default
+
+Same family as the `-p 1` class — a shared-fixed-resource collision that
+*reads* as a timing flake but is a test-isolation bug. Found determinizing task
+`01KYR5BDAS55RXQQEHDF506PBM` (flake #2, commit `bd601fe0`, 2026-08-18).
+
+`NewForTest(t, DaemonConfig{})` left `SocketPath` empty, which fell through to
+the **production** default (`hub.New` → `protocol.DefaultSocketPath()`). All 13
+`DaemonConfig{}` callers therefore shared one control socket, and two concurrent
+test binaries collided instantly with `failed to start hub: daemon already
+running`. `PublishDir`/`FeedbackDir` were already hermetic (`t.TempDir()`);
+`SocketPath` was the one gap. Fix: default empty `SocketPath` to
+`t.TempDir()/d.sock`, mirroring the existing hermetic fields — not a timeout
+widen.
+
+Two generalizations:
+
+1. **Hermetic-default rule.** Any test helper field naming an OS-shared resource
+   (socket path, listen port, pid/lock file, on-disk state dir) whose empty
+   value falls through to a production default is a latent cross-binary
+   collision. Its zero value must resolve to a per-test isolate (`t.TempDir()`),
+   never the production path — which also stops a test fighting a real dev
+   daemon. Sweep the helper's sibling fields: if some are already hermetic and
+   one is not, that one is the bug.
+2. **The signature is the tell.** An *instant* (0.00s) `bootstrap failed` /
+   `already running` failure is a shared-global-state collision, NOT the
+   wall-clock class — a timeout would be a *late* failure, not an immediate one.
+   Reproduce with **two concurrent binaries**, never by isolating the named
+   test: `-p 1` serializes to one process and frees the socket sequentially, so
+   it hides this class exactly as it hides cross-package port contention above.
+   Widening a deadline can never fix a result that fails at 0.00s.
+
 ## See also
 
 - `AGENTS.md` § Testing — pre-commit hook's `-p 1` contract
