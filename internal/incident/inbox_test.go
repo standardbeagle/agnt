@@ -609,3 +609,49 @@ func TestBus_PinIsSessionScoped(t *testing.T) {
 		t.Fatal("PinSession on an unregistered session reported success")
 	}
 }
+
+// TestBus_PinDiesWithSession pins the deliberate lifetime contract: a pin lives
+// in the per-session inbox and does NOT survive the session that made it. This
+// is the documented narrowing from the retired get_errors tool, whose pins lived
+// in a daemon-lifetime store and spanned sessions (task 01KZ030E1T53N5F94K3P5QTX3M,
+// docs/mcp-tools.md "Pin lifetime"). The test exists so a future reader cannot
+// mistake session-scoped pins for a bug and "fix" them into a cross-session store,
+// which would either weaken numbered contract 1 or leak incident content across
+// the tenancy boundary.
+func TestBus_PinDiesWithSession(t *testing.T) {
+	t.Parallel()
+	bus := NewMPSCBus(nil)
+	defer bus.Close()
+
+	bus.AddSession("sess-a", nil, nil, nil)
+	bus.getSessionPipeline("sess-a").inbox.Ingest(makeEntry("fp-keep", SeverityError))
+
+	if _, err := bus.PinSession("sess-a", "fp-keep", "remember-me"); err != nil {
+		t.Fatalf("PinSession: %v", err)
+	}
+	if got := bus.PinnedCountSession("sess-a"); got != 1 {
+		t.Fatalf("before teardown: pinned=%d, want 1", got)
+	}
+
+	// The session ends.
+	bus.RemoveSession("sess-a")
+
+	// While no session holds the code, the pipeline (and its pin) is simply gone.
+	if pl := bus.getSessionPipeline("sess-a"); pl != nil {
+		t.Fatal("pipeline still present after RemoveSession")
+	}
+	if bus.FindFingerprintSession("sess-a", "fp-keep") != nil {
+		t.Fatal("pinned entry readable after its session was torn down")
+	}
+
+	// A NEW session reusing the same code starts from a fresh, empty inbox: the
+	// pin did not carry across. This is the exact scenario the task describes —
+	// pin an error, end the session, start a new one, the pin is lost.
+	bus.AddSession("sess-a", nil, nil, nil)
+	if got := bus.PinnedCountSession("sess-a"); got != 0 {
+		t.Fatalf("new session inherited %d pins, want 0", got)
+	}
+	if bus.FindFingerprintSession("sess-a", "fp-keep") != nil {
+		t.Fatal("new session sees the previous session's pinned entry")
+	}
+}
