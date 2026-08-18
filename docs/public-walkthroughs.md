@@ -19,10 +19,11 @@ response.
    renders **unstyled** (§9).
 2. **One malformed `*.json` aborts the whole `agnt publish serve` run** — valid
    siblings are not published (§2).
-3. **Restarting `serve` rotates every token**, so links from the previous run are
-   dead (§2).
-4. Shares created by `serve` **do not appear in the daemon's `publish list`** —
-   different store (§2).
+3. **Restarting `serve` rotates every token by default**, so links from the
+   previous run go dead. Control this with `--rotate-on-resume=yes|no|fail` (§2).
+4. Shares created by `serve` live in a **separate store from the daemon's**, but
+   they are no longer invisible: `publish list` surfaces the serve store and its
+   location, and `agnt publish feedback` reads its viewer feedback (§2).
 
 ---
 
@@ -74,9 +75,11 @@ agnt publish serve --dir ./walkthroughs --tunnel cloudflare
 | `--addr` | `:8899` | local listen address for the public plane |
 | `--tunnel` | *(none)* | expose it: `cloudflare` \| `ngrok` \| `tailscale` |
 | `--store` | per-folder dir under the user cache | share-store directory |
+| `--rotate-on-resume` | `yes` | on resume, when a prior run's token is unrecoverable: `yes` (rotate + reprint, old links die) \| `no` (keep old links working, don't reprint) \| `fail` (refuse to start) |
 
-A bad `--tunnel` value is rejected **before** anything binds or publishes, so a
-typo fails immediately rather than after the folder is already live.
+A bad `--tunnel` or `--rotate-on-resume` value is rejected **before** anything
+binds or publishes, so a typo fails immediately rather than after the folder is
+already live.
 
 ### What you will see
 
@@ -85,10 +88,16 @@ bare `/s/{token}` path the MCP control plane returns:
 
 ```
 publish serve: watching /home/you/walkthroughs, listening on http://127.0.0.1:8899
+publish serve: share store /home/you/.cache/agnt/publish-serve/<hash>/shares
+publish serve: feedback store /home/you/.cache/agnt/publish-serve/<hash>/feedback (read it with: agnt publish feedback --dir /home/you/walkthroughs)
 publish serve: 2 share(s) at http://127.0.0.1:8899
   cart.json  "Checkout tour"  http://127.0.0.1:8899/s/<token>
   login.json  "Login tour"  http://127.0.0.1:8899/s/<token>
 ```
+
+The store paths are printed on boot so they are discoverable without reading
+source — `serve` keeps its own store, so these lines are the pointer to where
+shares and viewer feedback actually live.
 
 A wildcard bind is reported as `127.0.0.1` — `http://:8899` is not a URL anyone
 can open. With `--tunnel`, the whole list is **reprinted against the tunnel
@@ -109,23 +118,47 @@ like a password.
   live shares. An unreadable directory is likewise an error, never an empty folder.
   While the run is up, a failing re-publish keeps the **previous** published state
   serving and retries on the next change.
-- **Restarting `serve` kills the links from the previous run.** The store keeps
-  only `sha256(token)`, so a resumed run cannot reprint the old URL. It mints a
-  fresh token instead and says so:
+- **A directory that goes empty is confirmed across two polls before anything is
+  revoked.** `os.ReadDir` on a transiently-unmounted `/mnt` mount succeeds with
+  zero entries — indistinguishable from "the operator deleted every file", which
+  would mass-revoke every live share irreversibly. So an `N>0 → 0` transition is
+  **held** for one poll and only revoked if the *second* consecutive read is also
+  empty. A genuine delete-everything still converges one poll later; a transient
+  empty read (a mount blipping) costs nothing. Deleting a single file among others
+  still revokes it promptly — only the transition to *zero* files waits. An empty
+  `--dir` **at startup refuses to serve** rather than publish nothing, so a
+  mis-pointed or transiently-unmounted directory cannot mass-revoke a prior run's
+  shares on the way up.
+- **Restarting `serve` rotates the previous run's tokens by default.** The store
+  keeps only `sha256(token)`, so a resumed run cannot reprint the old URLs.
+  `--rotate-on-resume` controls what happens, and the notice is a loud, distinct
+  block with a count and explicit "viewers now get a 404" wording:
 
   ```
-  publish serve: cart.json: minted a new token — the token from an earlier run is
-  not recoverable, so links from that run are now dead
+  publish serve: RESUME — rotated 2 share(s) recovered from an earlier run.
+    The earlier run's plaintext tokens are unrecoverable (only sha256 is stored),
+    so any URL you shared from that run now returns 404 to its viewers.
+    Fresh URLs for these files are listed below:
+      cart.json
+      login.json
   ```
 
-  Plan around this: if you have already shared a link, do not restart `serve`.
+  - `yes` *(default)* — rotate and reprint fresh URLs; the old links die.
+  - `no` — keep the old tokens. The store still verifies them, so links you
+    already shared **keep working**; this run just cannot reprint them (rotate to
+    mint a fresh printable one). The least-destructive option.
+  - `fail` — refuse to start, so a scripted/CI invocation cannot silently
+    invalidate live links (the consent-flag principle from remote bootstrap).
 - **`serve` uses its own store, not the daemon's.** It lives under
   `<user cache>/agnt/publish-serve/<hash-of-dir>/{shares,feedback}` — deliberately
   outside the served folder, where a record would be picked up as a walkthrough on
   the next pass. Two writers on authoritative on-disk records is the failure this
-  avoids. **Consequence: shares created by `serve` do not show up in the daemon's
-  `publish list`, `status`, or `feedback` reads.** Viewer feedback is still
-  persisted — into that store, honoring your `feedback{}` block (§11).
+  avoids, so the daemon never writes into a serve store. It is **read** from,
+  though: the `publish` MCP tool's `list` action enumerates serve stores under the
+  cache and reports each one's location and served folder, and viewer feedback a
+  serve run captured is readable with `agnt publish feedback --dir <folder>` (or
+  `--store <dir>`). The store paths are also printed on boot. Nothing about a
+  serve store is invisible; it is simply owned by `serve`, not the daemon.
 - **The watcher polls as well as watching.** `fsnotify` is the promptness path; a
   metadata poll (3s locally, 500ms for a `/mnt/<drive>` DrvFS path under WSL) is
   the correctness path, because WSL DrvFS/9P notifications are unreliable.
@@ -178,7 +211,7 @@ the digest owns the version:
 | **Delete** the file | that share is **revoked** immediately and irreversibly. Every other share is untouched |
 | **Rename** the file | delete plus add: the old name is revoked, the new name mints a **fresh** share with a fresh token |
 | **Restore a deleted filename** | a fresh share with a fresh token. A revoked token is never resurrected (INV-4) |
-| **Restart `serve`** | token rotates — see §2 |
+| **Restart `serve`** | tokens rotate by default (`--rotate-on-resume=yes`); `no` keeps the old links working, `fail` refuses to start — see §2 |
 
 A token is never valid for a file it was not minted for, and the store survives
 daemon/`serve` restart (INV-8).
