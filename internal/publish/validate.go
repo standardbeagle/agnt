@@ -246,6 +246,30 @@ func (pw *PublishedWalkthrough) Validate() error {
 		}
 	}
 	if pw.VariantSet != nil {
+		// INV-14 / operator decision 2026-08-18 (task 01M09KYHZ0CFAX2NVGMAQJ1WFW,
+		// option (a)): a published walkthrough is served on the public plane AS the
+		// artifact document, always carrying the mandatory agnt disclosure
+		// indicator (the RolePublic demo-indicator module, §9b). An authored
+		// addScript body runs in the same realm as that indicator and — proven in
+		// real Chrome (task 01KYQFAZRH: id squatting, re-assert-budget exhaustion,
+		// Node.prototype.appendChild monkeypatch) — can defeat the disclosure from
+		// first paint. Same-realm script beats same-realm script; the module cannot
+		// be hardened against it. So INV-14's "no publisher-reachable input can
+		// remove, hide, or blank the indicator" is preserved by refusing addScript
+		// at publish on exactly the shares that carry the mandatory disclosure —
+		// every published walkthrough. BOTH op forms are refused here: the inline
+		// `code` body, and the publish-time-fetched `src` (already refused at the op
+		// level for a different reason, §6a — this boundary refuses it under INV-14
+		// too, so the reason a viewer-facing share rejects it is the disclosure, not
+		// the unimplemented fetch). The bare-variant-set path (DecodeVariantSet)
+		// stays permissive because a bare set is never served on the public plane.
+		for i := range pw.VariantSet.Variants {
+			for j := range pw.VariantSet.Variants[i].Ops {
+				if pw.VariantSet.Variants[i].Ops[j].Op == OpAddScript {
+					return errf("walkthrough %q: addScript is not permitted on a published walkthrough: it is served with the mandatory agnt disclosure indicator, and an authored script can defeat that disclosure (INV-14) — remove the addScript op (both an inline `code` body and a `src` URL are refused)", pw.ID)
+				}
+			}
+		}
 		if err := pw.VariantSet.Validate(); err != nil {
 			return err
 		}

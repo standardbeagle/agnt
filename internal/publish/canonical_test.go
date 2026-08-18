@@ -22,9 +22,14 @@ func sampleWalkthrough() PublishedWalkthrough {
 				{ID: "a", Ops: []Op{
 					{Op: OpSetText, Selector: ".title", Value: "Hi"},
 					// §6a raw-content ops must ride the canonical encoding too.
+					// addScript is deliberately ABSENT: since the INV-14 operator
+					// decision (task 01M09KYHZ0CFAX2NVGMAQJ1WFW) a published
+					// walkthrough is refused if it carries any addScript op, so it can
+					// never appear in a stored/digested revision — a decode-valid
+					// fixture must not include one. The other raw-content ops still
+					// exercise the encoding.
 					{Op: OpSetHTML, Selector: ".body", HTML: "<b>hi</b> & <i>bye</i>"},
 					{Op: OpAddStyle, CSS: ".title{color:red}"},
-					{Op: OpAddScript, Code: "document.title='demo'"},
 					{Op: OpApplyStyle, Selector: "#box", Props: map[string]string{
 						"color": "red", "margin": "8px", "position": "fixed", "z-index": "9",
 					}},
@@ -139,10 +144,10 @@ func TestDigestCoversNewFields(t *testing.T) {
 		"upstream-absent": func(w *PublishedWalkthrough) { w.Upstream = nil },
 		"raw-html":        func(w *PublishedWalkthrough) { w.VariantSet.Variants[0].Ops[1].HTML = "<b>other</b>" },
 		"raw-css":         func(w *PublishedWalkthrough) { w.VariantSet.Variants[0].Ops[2].CSS = ".title{color:blue}" },
-		"raw-code":        func(w *PublishedWalkthrough) { w.VariantSet.Variants[0].Ops[3].Code = "document.title='x'" },
-		"script-src": func(w *PublishedWalkthrough) {
-			w.VariantSet.Variants[0].Ops[3] = Op{Op: OpAddScript, Src: "https://cdn.example.com/a.js"}
-		},
+		"applied-style":   func(w *PublishedWalkthrough) { w.VariantSet.Variants[0].Ops[3].Props["color"] = "blue" },
+		// addScript Code/Src are no longer digest-covered here: a published
+		// walkthrough carrying addScript is refused (INV-14, task
+		// 01M09KYHZ0CFAX2NVGMAQJ1WFW), so no stored/digested revision can hold one.
 	}
 	for name, mutate := range mutations {
 		t.Run(name, func(t *testing.T) {
