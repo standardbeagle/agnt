@@ -23,6 +23,7 @@ only the summary table + handler pattern; this is the detailed reference.
 | `watch` | Get monitor command for streaming events (errors, interactions, process, all) |
 | `channel_reply` | Send messages to developer's browser overlay (channel mode beta) |
 | `publish` | Public walkthrough shares — create/status/list/revoke/rotate + owner-scoped feedback read |
+| `demo` | Narrated demo-video authoring — list/record/assemble via the in-repo engine as a daemon-managed process (repo-checkout capability) |
 
 **Session scoping & `global` flag**: query/list tools use the project's `scope.default-global` setting (default `false`; daemon-side session-scope chokepoint — see `.claude/rules/daemon-architecture.md` § Tool session-scoping). Every gated tool (`proc`, `proxy`, `tunnel`, `session`, `daemon` startup_log) accepts an optional `global`; explicit `true` or `false` overrides project config in either direction, while omission uses config. `get_incidents` (per-session isolated) and `watch` (monitor stream) intentionally omit it.
 
@@ -199,6 +200,49 @@ CSP/SSRF caveats apply. See [public-walkthroughs.md §6](public-walkthroughs.md)
 **Key Files**: `internal/tools/publish_tools.go`, `internal/daemon/hub_publish.go`,
 `internal/daemon/publish_public.go`, `internal/daemon/feedback_events.go`,
 `internal/proxy/public_routes.go`, `internal/publish/feedback_store.go`
+
+## demo Tool
+
+Author narrated demo videos with the in-repo demo engine
+(`docs-site/screenshots/engine/demo.mjs`). This is a **repo-checkout
+capability**, not a feature of the installed `agnt` binary: the engine ships in
+the agnt repository's `docs-site/screenshots` tree. Running `demo` from a
+project that has no engine checkout returns a loud error naming the requirement
+(`IsError`), never a silent no-op.
+
+Actions:
+- `list` — Enumerate demos under `docs-site/screenshots/demos`, each with a
+  segment breakdown (id + type) and a narration summary (voice + segment count).
+  Resolved client-side from the project path; no daemon roundtrip.
+- `record` — Start a recording as a **daemon-managed process** (via `PROC RUN`)
+  and return a `process_id` immediately. The recording survives and reports like
+  any managed script: observe with `proc {action:"output"|"status"}` and stop
+  with `proc {action:"stop"}`. Recordings never auto-restart. Pass
+  `only:"seg1,seg2"` to record specific segments (engine `--only`).
+- `assemble` — Re-mux an already-recorded demo from its segment captures
+  (engine `--assemble-only`), also as a managed process returning a `process_id`.
+- `inspect` / `publish` — Reserved cut-point and demo-publish actions. **Not yet
+  available**: the engine has no such subcommand today, so these return a loud
+  not-yet-available error pending follow-up engine wiring.
+
+The managed process is addressed by a stable id: `demo-<name>` for `record`,
+`demo-assemble-<name>` for `assemble`.
+
+Examples:
+```
+demo {action: "list"}
+demo {action: "record", name: "incident-inbox"}
+demo {action: "record", name: "incident-inbox", only: "card-intro,fix"}
+demo {action: "assemble", name: "incident-inbox"}
+proc {action: "output", process_id: "demo-incident-inbox"}
+proc {action: "stop", process_id: "demo-incident-inbox"}
+```
+
+**Key Files**: `internal/tools/demo.go` (tool + engine resolution + list),
+records/assembles via `internal/daemonclient` `PROC RUN`
+(`internal/daemon/hub_proc.go`). Engine: `docs-site/screenshots/engine/demo.mjs`.
+Session-scoping classified in `.claude/rules/daemon-architecture.md` §
+Tool session-scoping (Client-side project-scoped).
 
 ## responsive_audit Tool
 

@@ -203,6 +203,15 @@ Agent supplies explicit `proxy_id` it already holds; these interactive browser-d
 | sketch / design modes | `PROXY EXEC` / panel |
 | `channel_reply` | `PROXY TOAST` |
 
+### Client-side project-scoped (no new hub verb)
+
+Some MCP tools resolve their project entirely client-side from `getProjectPath()` (or an explicit `path`) and read the project filesystem directly, adding no hub query/list verb — `detect` is the canonical precedent. They still honor project scoping (they never read another project's tree), they just do it without `resolveProjectScope` because there is no daemon roundtrip to gate.
+
+| Tool | Action | Scope mechanism |
+|------|--------|-----------------|
+| `demo` | `list` / `inspect` | client-side project read of `docs-site/screenshots` under the resolved project path; loud error when the engine checkout is absent. No new hub verb. |
+| `demo` | `record` / `assemble` | **gated via `PROC RUN`** — shells `node docs-site/screenshots/engine/demo.mjs …` as a daemon-managed process with an explicit `ProjectPath`, so it rides the same project-scoped, background-process-start path as `proc {action:"run"}` (returns a `process_id` immediately; `AutoRestart:false` — a finished/crashed recording stays down). Observe/stop via the `proc` tool. `inspect`/`publish` are not yet wired (the engine has no such subcommand) and return a loud not-yet-available error. |
+
 ### Why STARTUP-LOG is prefix-matched, not ingest-tagged
 
 `StartupLogEntry` has 59 ingest sites across daemon; stamping project path at each would be invasive and error-prone. Instead entry's `ProcessID` (`makeProcessID(projectPath, name)` → `basename-hash:name`) deterministically encodes project, so scoped query filters by `basename-hash:` prefix (`makeProcessID(projectPath, "")`). Consequence: daemon-wide events with bare (non-project) `ProcessID` — shutdown/scan records — visible only to `global` query, never to scoped one. Intended trade-off.

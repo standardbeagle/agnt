@@ -141,6 +141,7 @@ PTY overlay components：command palette (`:`/`/` filterable, **not** a shell bo
 | `store` | Persistent key-value storage with scoped namespaces |
 | `walkthrough` | Live demo playback in the browser overlay (step list, element highlight) |
 | `publish` | Public walkthrough shares (session-scoped control plane) |
+| `demo` | Narrated demo-video authoring via the in-repo engine (list/record/assemble as daemon-managed process; repo-checkout capability) |
 
 **Handler pattern**：Input/Output structs 帶 JSON schema tags；return `(*mcp.CallToolResult, OutputStruct, error)`；errors 作 `CallToolResult{IsError: true}`（非 Go errors）。
 
