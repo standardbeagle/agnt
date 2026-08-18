@@ -68,6 +68,31 @@ in-flight incident events), explicit `proc stop/restart` starts a fresh slate,
 and a project's last session disconnecting clears its ring. Crash restarts
 never clear.
 
+**Pin lifetime is session-scoped by design.** A pin survives band eviction and
+every retention clear, but not the session that made it: pins live in the
+per-session inbox (`internal/incident/inbox.go`) and are torn down with the
+session pipeline (`MPSCBus.RemoveSession`). An agent that pins an incident, ends
+its session, and starts a new one does **not** see the pin again. This is a
+deliberate narrowing from the retired `get_errors` tool (removed in
+01KYZ0XHQEDR9FS8F4R9VZ1RH4), whose pins lived in a daemon-lifetime store and so
+spanned sessions. The narrowing follows the owner's ruling that `get_errors`'
+cross-session reach was a debugging affordance, not a production contract — the
+same ruling that dropped its cross-project `global` flag. A daemon-lifetime pin
+store would either weaken the inbox's per-session hard-isolation (numbered
+contract 1 in `.claude/rules/daemon-architecture.md`) or need a carefully-scoped
+exception, and neither is warranted for pin metadata. Session-scoped pins are the
+correct behaviour; the contract is pinned by `TestBus_PinDiesWithSession`
+(`internal/incident/inbox_test.go`).
+
+> **Lifetime is out of scope for schema/projection parity.** The
+> `get_errors`→`get_incidents` retirement gate verified that every field projects
+> and every value is reachable (`open == 0`); it did **not** model how long a pin
+> survives, and that harness is now gone with `get_errors`. `open == 0` was
+> necessary, not sufficient — the pin lifetime above is a deliberate, tested
+> contract, not a parity guarantee. A future parity/oracle check that reasons
+> only about schema and reachability must not read `open == 0` as evidence that
+> two surfaces agree on lifetime.
+
 **`collection_warnings`**: names every way the returned view is known to be
 partial — events the bus dropped before reaching any inbox, and `detail:"full"`
 payloads the blob store could not hydrate. Non-empty means incidents are

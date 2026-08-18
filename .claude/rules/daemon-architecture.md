@@ -222,7 +222,7 @@ Incident pipeline (`internal/incident/`) is the always-active agent alert path, 
 
 ### Numbered Contracts
 
-1. **Cross-session isolation.** Each connected session gets its own `sessionPipeline` instance. Events from session A never appear in session B's inbox, even for same project.
+1. **Cross-session isolation.** Each connected session gets its own `sessionPipeline` instance. Events from session A never appear in session B's inbox, even for same project. Pin metadata shares this lifetime: a pin lives in the per-session inbox and dies with the pipeline — a deliberate narrowing from the retired daemon-lifetime `get_errors` pins (`docs/mcp-tools.md`, Pin lifetime; test `TestBus_PinDiesWithSession`).
 
 2. **Drop-newest on bus overflow.** MPSC bus drops incoming event (not oldest) when 4096-slot channel full. Keeps latency bounded at cost of losing most recent event under extreme load. Overflow count surfaced via `bus.OverflowCount()`.
 
