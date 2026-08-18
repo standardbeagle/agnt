@@ -238,14 +238,68 @@ listener is stood up **only** when `AGNT_PUBLIC_ADDR` is set — the daemon neve
 auto-binds a public port.
 
 ```sh
-export AGNT_PUBLIC_ADDR=":8899"   # bind the public plane on :8899; unset = no public port
+export AGNT_PUBLIC_ADDR="127.0.0.1:8899"   # bind the public plane on loopback:8899; unset = no public port
 ```
 
-This is an environment variable, **not** a KDL key (`cmd/agnt/daemon.go:128`). A
+This is an environment variable, **not** a KDL key (`cmd/agnt/daemon.go`). A
 bind failure is surfaced loud but is non-fatal: the control plane and dev proxy
 stay up, only the public plane is unavailable. Unsetting it and restarting the
-daemon removes the public surface entirely. See
-**[public-walkthroughs.md](public-walkthroughs.md)**.
+daemon removes the public surface entirely.
+
+**Interface semantics — the value you choose is the exposure.** Setting
+`AGNT_PUBLIC_ADDR` is the opt-in, but the *address* decides the interface, and a
+bare `:8899` (equivalently `0.0.0.0:8899` / `[::]:8899`) binds **all**
+interfaces — LAN-reachable without a tunnel. Per the operator posture
+([AGNT.md § Exposure Posture](../AGENTS.md)) the shipped default is loopback and
+any widening is a deliberate operator decision. Prefer `127.0.0.1:8899` plus a
+tunnel unless you intend direct LAN/public reach; a non-loopback bind logs a
+loud `public_listener_external` startup advisory (it is surfaced, never
+rejected). The same applies to `agnt publish serve --addr`.
+
+**Bounds an operator sees without reading source.** Whatever interface it binds,
+the public listener is hardened to public standard *unconditionally* (the same
+caps hold whether or not you later point a tunnel at it):
+
+- **Transport caps** (`internal/httpcaps`): `ReadHeaderTimeout 10s`,
+  `ReadTimeout 30s`, `WriteTimeout 60s`, `IdleTimeout 120s`,
+  `MaxHeaderBytes 1 MiB`, and a **max 256 concurrent connections**
+  (`netutil.LimitListener`). These close slowloris, slow-read/write, idle
+  keep-alive hoarding, and aggregate header-memory.
+- **Body cap**: feedback POST bodies over `max-body-bytes` ⇒ `413`.
+- **Request-rate caps** — see the `public-plane` block below.
+
+### `public-plane` block (request-rate limits)
+
+```kdl
+public-plane {
+    artifact-rate-per-minute 120   // sustained artifact GET budget per (share, IP)
+    artifact-burst 30              // token-bucket burst for artifact GETs per (share, IP)
+    outbound-rate-per-minute 60    // sustained guarded upstream-fetch budget per ORIGIN
+    outbound-burst 20              // token-bucket burst per upstream origin
+}
+```
+
+| Key | Type | Default | Description |
+|-----|------|---------|-------------|
+| `artifact-rate-per-minute` | int | `120` | Sustained artifact-`GET` budget per (share, IP). Excess ⇒ `429` (constant body, no share id/token). |
+| `artifact-burst` | int | `30` | Burst allowance per (share, IP). A page load fans out to a few requests, so the burst exceeds one page's fan-out. |
+| `outbound-rate-per-minute` | int | `60` | Guarded upstream-fetch budget **per upstream origin, across all shares**. Over-budget ⇒ `503` before any outbound socket opens. |
+| `outbound-burst` | int | `20` | Burst allowance per upstream origin. |
+
+The **outbound** cap is the amplification bound: with live-upstream publishing,
+each artifact request to an upstream-bearing share triggers one guarded outbound
+fetch to a third-party origin, so an unbounded inbound rate would become
+unbounded outbound traffic at someone else's server. The origin allowlist
+(`INV-13`) bounds *which* origins may be fetched; this cap bounds *how often*.
+Its default is deliberately tighter than the inbound cap because it protects a
+third party, not the daemon. An unset or non-positive key falls back to the
+default (a guard is never disabled by omission).
+
+The **dev proxy is intentionally not rate-capped**: it forwards to your own
+backend, so the third-party amplification argument does not apply; its
+public-entry risk is bounded by the transport + connection caps above.
+
+See **[public-walkthroughs.md](public-walkthroughs.md)**.
 
 ## Shell Shims (`shims` in `.agnt.kdl`; runtime: `internal/shims/`, `internal/daemon/hub_shim.go`)
 

@@ -173,6 +173,19 @@ func (d *Daemon) startPublicListener() {
 	ln = caps.LimitListener(ln)
 	addr := ln.Addr().String()
 	d.publicAddr.Store(&addr)
+	// Loud exposure advisory: setting AGNT_PUBLIC_ADDR is the opt-in, but a bare
+	// ":port" (or 0.0.0.0 / ::) binds ALL interfaces, making the plane
+	// LAN-reachable without a tunnel. Per the operator posture (AGNT.md § Exposure
+	// Posture) the shipped default is loopback and any widening is a deliberate
+	// operator decision — so we surface it rather than reject it. A loopback bind
+	// (127.0.0.1/::1) stays silent.
+	if host, _, splitErr := net.SplitHostPort(addr); splitErr == nil {
+		if ip := net.ParseIP(host); ip != nil && !ip.IsLoopback() {
+			d.daemonStartupLog("warning", "public_listener_external",
+				fmt.Sprintf("public plane bound to %s — reachable beyond loopback (all interfaces). "+
+					"This is a deliberate exposure; prefer 127.0.0.1:<port> plus a tunnel unless you intend direct LAN/public reach.", addr))
+		}
+	}
 	srv := caps.NewServer(d.publicHandler)
 	d.publicServer = srv
 	d.goTracked(func() {

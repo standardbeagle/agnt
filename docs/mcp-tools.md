@@ -499,3 +499,25 @@ proxy {action: "start", bind_address: "0.0.0.0", ...}
 tunnel {action: "start", provider: "cloudflare", local_port: 12345, proxy_id: "dev"}
 tunnel {action: "start", provider: "tailscale",  local_port: 12345, proxy_id: "dev"}
 ```
+
+### Bounds when you tunnel a listener
+
+Tunnelling a listener does not relax its caps — the same bounds hold in every
+posture, so exposing a listener is purely a routing decision and never doubles
+as a hardening decision. Whatever you point `cloudflared`/`ngrok` at is hardened
+to public standard:
+
+- **Dev proxy + public plane + `agnt publish serve`** carry the transport +
+  connection caps (`internal/httpcaps`): `ReadHeaderTimeout 10s`, `IdleTimeout
+  120s`, `MaxHeaderBytes 1 MiB`, and **max 256 concurrent connections**
+  (`netutil.LimitListener`). The public plane and `publish serve` also cap
+  `ReadTimeout 30s` / `WriteTimeout 60s`; the dev proxy deliberately does **not**
+  (it streams proxied bodies and hijacks WebSocket upgrades like Vite HMR, which
+  a whole-request write deadline would sever — slowloris/fd exhaustion stay
+  bounded by the header/idle/connection caps).
+- **Public walkthrough plane** additionally rate-caps: artifact `GET` per
+  `(share, IP)` ⇒ `429`, and guarded upstream fetches **per origin, across all
+  shares** ⇒ `503` (the amplification bound). The **dev proxy is not
+  rate-capped** — it forwards to your own backend, not a third party. Values,
+  the `public-plane` KDL block, and the amplification rationale:
+  [`configuration.md`](configuration.md#public-plane-block-request-rate-limits).

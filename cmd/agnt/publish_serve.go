@@ -525,6 +525,15 @@ func runPublishServe(ctx context.Context, opts publishServeOptions) error {
 	}
 
 	fmt.Fprintf(opts.Out, "publish serve: watching %s, listening on %s\n", dir, srv.origin)
+	// Loud exposure advisory: a bare :port (or 0.0.0.0 / ::) binds ALL interfaces,
+	// LAN-reachable without a tunnel. Per the operator posture (AGNT.md § Exposure
+	// Posture) the intended default is loopback + --tunnel; surface a non-loopback
+	// bind rather than reject it (exposure is the operator's decision).
+	if host, _, splitErr := net.SplitHostPort(boundAddr); splitErr == nil {
+		if ip := net.ParseIP(host); ip != nil && !ip.IsLoopback() {
+			fmt.Fprintf(opts.Out, "publish serve: WARNING — bound to %s (all interfaces); reachable beyond loopback without a tunnel. Prefer --addr 127.0.0.1:<port> plus --tunnel unless you intend direct LAN/public reach.\n", boundAddr)
+		}
+	}
 	// Print the store locations on boot so they are discoverable without reading
 	// source. serve uses its OWN store (not the daemon's), so these paths are the
 	// only pointer to where shares and viewer feedback actually live.

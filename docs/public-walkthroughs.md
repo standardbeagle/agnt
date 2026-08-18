@@ -695,10 +695,25 @@ Opt-in the **daemon's** public listener via the environment (there is no KDL key
 for it):
 
 ```sh
-export AGNT_PUBLIC_ADDR=":8899"   # bind the anonymous public plane; unset = no public port
+export AGNT_PUBLIC_ADDR="127.0.0.1:8899"   # loopback:8899; unset = no public port
 ```
 
-`agnt publish serve` needs none of that: it binds `--addr` itself (§2).
+The *value* is the exposure: a bare `:8899` (or `0.0.0.0:8899` / `[::]:8899`)
+binds **all** interfaces (LAN-reachable without a tunnel) and logs a loud
+`public_listener_external` startup advisory. Prefer `127.0.0.1:8899` plus a
+tunnel unless you intend direct LAN/public reach — the shipped posture is
+loopback, and widening is a deliberate operator decision
+([AGNT.md § Exposure Posture](../AGENTS.md)).
+
+Whatever it binds, the listener is hardened unconditionally: transport +
+connection caps (`ReadHeaderTimeout 10s`, `ReadTimeout 30s`, `WriteTimeout 60s`,
+`IdleTimeout 120s`, `MaxHeaderBytes 1 MiB`, max **256** concurrent connections),
+the feedback body cap, and the `public-plane` request-rate caps (artifact `GET`
+per (share, IP) ⇒ `429`; per-origin outbound fetch ⇒ `503`). Values and the
+amplification rationale: [`configuration.md`](configuration.md#public-plane-block-request-rate-limits).
+
+`agnt publish serve` needs none of the env var: it binds `--addr` itself (§2),
+under the same transport/connection caps.
 
 Full config reference:
 [`configuration.md`](configuration.md#public-walkthrough-feedback-internalconfigfeedbackgo-feedback-in-agntkdl).
