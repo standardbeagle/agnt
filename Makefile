@@ -1,4 +1,4 @@
-.PHONY: build release test test-unit test-integration test-browser test-e2e e2e-publish-browser test-chrome-e2e test-isolated test-ssh test-ssh-coverage test-flake clean clean-zombies install install-local install-windows run lint test-webapp mockagent generate generate-check vendor cross-compile cross-compile-check
+.PHONY: build release test test-unit test-integration test-browser test-e2e e2e-publish-browser test-chrome-e2e test-isolated test-ssh test-ssh-coverage test-flake clean clean-zombies install install-local install-windows install-hooks run lint test-webapp mockagent generate generate-check vendor cross-compile cross-compile-check
 
 # Binary names
 BINARY := devtool-mcp
@@ -203,6 +203,12 @@ clean-zombies:
 		fi; \
 		echo "Done."; \
 	fi
+
+# Point git at the tracked hook directory (.githooks/pre-commit). Idempotent —
+# run once per clone, or again to refresh after pulling a hook change.
+install-hooks:
+	git config core.hooksPath .githooks
+	@echo "core.hooksPath -> .githooks (tracked pre-commit hook is now active)"
 
 # Install to GOPATH/bin (all binaries)
 install: build
