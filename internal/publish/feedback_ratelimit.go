@@ -156,3 +156,36 @@ func (l *tokenBucketLimiter) size() int {
 	defer l.mu.Unlock()
 	return len(l.buckets)
 }
+
+// RateLimiter is the exported form of the same token-bucket limiter the feedback
+// route uses internally. It exists so the public-plane ARTIFACT route (package
+// proxy) and the per-upstream-origin OUTBOUND cap can rate-limit using this one
+// limiter — including its bounded-memory reap — instead of re-deriving a second
+// implementation (publish-security-review-lessons §5: a second, subtly-different
+// limiter is a maintenance and correctness liability). now is injected so callers
+// (and their tests) advance the clock deterministically; nil defaults to
+// time.Now.
+type RateLimiter struct {
+	l *tokenBucketLimiter
+}
+
+// NewRateLimiter builds a per-key token-bucket limiter from a per-minute rate and
+// a burst. A non-positive rate or burst yields a limiter that refuses every
+// request (deny-by-default), so a caller must pass real bounds — normalize before
+// constructing.
+func NewRateLimiter(ratePerMinute, burst int, now func() time.Time) *RateLimiter {
+	return &RateLimiter{l: newTokenBucketLimiter(ratePerMinute, burst, now)}
+}
+
+// Allow reports whether a request keyed by key may proceed, consuming one token
+// if so. A fresh key starts full (burst). Concurrency-safe.
+func (r *RateLimiter) Allow(key string) bool { return r.l.allow(key) }
+
+// Size returns the current bucket count — the memory-bound observability the
+// artifact/outbound rate tests assert on. Concurrency-safe.
+func (r *RateLimiter) Size() int { return r.l.size() }
+
+// ShareIPKey keys a bucket by (share id, real client IP), stripping any port from
+// remoteAddr. It is the exact keying the feedback route uses (rateKey), so the
+// artifact and feedback routes partition their buckets identically.
+func ShareIPKey(shareID, remoteAddr string) string { return rateKey(shareID, remoteAddr) }
