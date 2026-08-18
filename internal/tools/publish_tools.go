@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/standardbeagle/agnt/internal/protocol"
@@ -43,6 +45,20 @@ type PublishOutput struct {
 	NextCursor string                        `json:"next_cursor,omitempty"`
 	Total      int                           `json:"total,omitempty"`
 	Dropped    int64                         `json:"dropped,omitempty"`
+
+	// ServeStores surfaces `agnt publish serve` stores the daemon does NOT manage
+	// (list only). serve keeps its own store, so its shares are otherwise invisible
+	// here; silence about them would violate the Silent Failure Prohibition.
+	ServeStores []ServeStoreInfo `json:"serve_stores,omitempty"`
+}
+
+// ServeStoreInfo points an operator at a `publish serve` store the daemon does
+// not own. It carries no share contents — just where the store is and which
+// folder it serves — so the operator can read it with `agnt publish feedback`.
+type ServeStoreInfo struct {
+	Path string `json:"path"`          // the store directory
+	Dir  string `json:"dir,omitempty"` // the served folder, from the store metadata
+	Addr string `json:"addr,omitempty"`
 }
 
 // RegisterPublishTool registers the publish MCP tool.
@@ -149,7 +165,7 @@ func makePublishHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolRequ
 			if err != nil {
 				return fail[PublishOutput]("publish list failed: " + err.Error())
 			}
-			out := PublishOutput{Action: action, Shares: res.Shares}
+			out := PublishOutput{Action: action, Shares: res.Shares, ServeStores: discoverServeStores()}
 			return renderPublish(out, input.Raw), out, nil
 
 		case "feedback":
@@ -255,6 +271,17 @@ func renderPublish(out PublishOutput, raw bool) *mcp.CallToolResult {
 		for _, s := range out.Shares {
 			sb.WriteString(formatShare(s))
 		}
+		if len(out.ServeStores) > 0 {
+			sb.WriteString(fmt.Sprintf("=== Serve stores (%d) — NOT managed by the daemon; from 'agnt publish serve' ===\n", len(out.ServeStores)))
+			for _, ss := range out.ServeStores {
+				if ss.Dir != "" {
+					sb.WriteString(fmt.Sprintf("- %s  (serving %s)\n", ss.Path, ss.Dir))
+				} else {
+					sb.WriteString(fmt.Sprintf("- %s\n", ss.Path))
+				}
+				sb.WriteString(fmt.Sprintf("  read its feedback: agnt publish feedback --store %s\n", ss.Path))
+			}
+		}
 	case "feedback":
 		sb.WriteString(fmt.Sprintf("=== Feedback for %s (total=%d dropped=%d) ===\n", out.ID, out.Total, out.Dropped))
 		for _, r := range out.Feedback {
@@ -265,6 +292,47 @@ func renderPublish(out PublishOutput, raw bool) *mcp.CallToolResult {
 		}
 	}
 	return mcpText(sb.String())
+}
+
+// serveStoreMetaFile mirrors the constant in cmd/agnt/publish_serve.go: the
+// discovery metadata a serve run drops into its own store dir. Kept as a plain
+// JSON contract (not a shared type) so this package need not import package main.
+const serveStoreMetaFile = "serve.json"
+
+// discoverServeStores enumerates `agnt publish serve` stores under the user cache
+// and reports each one — the daemon does not manage them, so they are otherwise
+// invisible to `publish list`. Best-effort and read-only: a missing cache dir or
+// an unreadable entry yields fewer results, never an error, so the daemon's own
+// share list never fails because a serve store is malformed.
+func discoverServeStores() []ServeStoreInfo {
+	base, err := os.UserCacheDir()
+	if err != nil {
+		return nil
+	}
+	entries, err := os.ReadDir(filepath.Join(base, "agnt", "publish-serve"))
+	if err != nil {
+		return nil
+	}
+	var out []ServeStoreInfo
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		storeDir := filepath.Join(base, "agnt", "publish-serve", e.Name())
+		info := ServeStoreInfo{Path: storeDir}
+		if data, err := os.ReadFile(filepath.Join(storeDir, serveStoreMetaFile)); err == nil {
+			var m struct {
+				Dir  string `json:"dir"`
+				Addr string `json:"addr"`
+			}
+			if json.Unmarshal(data, &m) == nil {
+				info.Dir = m.Dir
+				info.Addr = m.Addr
+			}
+		}
+		out = append(out, info)
+	}
+	return out
 }
 
 func formatShare(s protocol.PublishShareInfo) string {

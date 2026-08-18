@@ -3,6 +3,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -194,6 +196,40 @@ func TestPublishCreateAcceptsRawOpsArtifact(t *testing.T) {
 		if !strings.Contains(string(got), op) {
 			t.Fatalf("raw op content %q did not survive: %s", op, got)
 		}
+	}
+}
+
+// TestDiscoverServeStoresSurfacedInList pins Part 3's Silent-Failure fix: a
+// `publish serve` store the daemon does not manage is discovered and surfaced by
+// `publish list`, with a pointer to its location and how to read its feedback —
+// rather than being silently invisible.
+func TestDiscoverServeStoresSurfacedInList(t *testing.T) {
+	cache := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", cache)
+
+	storeDir := filepath.Join(cache, "agnt", "publish-serve", "deadbeef")
+	if err := os.MkdirAll(storeDir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	meta := []byte(`{"dir":"/home/dev/walkthroughs","addr":"127.0.0.1:8899"}`)
+	if err := os.WriteFile(filepath.Join(storeDir, serveStoreMetaFile), meta, 0o600); err != nil {
+		t.Fatalf("write meta: %v", err)
+	}
+
+	stores := discoverServeStores()
+	if len(stores) != 1 {
+		t.Fatalf("expected 1 serve store, got %+v", stores)
+	}
+	if stores[0].Path != storeDir || stores[0].Dir != "/home/dev/walkthroughs" {
+		t.Fatalf("serve store metadata not read: %+v", stores[0])
+	}
+
+	txt := renderText(t, renderPublish(PublishOutput{Action: "list", ServeStores: stores}, false))
+	if !strings.Contains(txt, "Serve stores") || !strings.Contains(txt, storeDir) || !strings.Contains(txt, "/home/dev/walkthroughs") {
+		t.Fatalf("list render omits the serve store: %q", txt)
+	}
+	if !strings.Contains(txt, "agnt publish feedback --store "+storeDir) {
+		t.Fatalf("list render omits the feedback read hint: %q", txt)
 	}
 }
 

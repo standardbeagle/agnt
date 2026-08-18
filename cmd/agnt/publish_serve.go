@@ -14,6 +14,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -523,6 +524,11 @@ func runPublishServe(ctx context.Context, opts publishServeOptions) error {
 	}
 
 	fmt.Fprintf(opts.Out, "publish serve: watching %s, listening on %s\n", dir, srv.origin)
+	// Print the store locations on boot so they are discoverable without reading
+	// source. serve uses its OWN store (not the daemon's), so these paths are the
+	// only pointer to where shares and viewer feedback actually live.
+	fmt.Fprintf(opts.Out, "publish serve: share store %s\n", filepath.Join(storeDir, "shares"))
+	fmt.Fprintf(opts.Out, "publish serve: feedback store %s (read it with: agnt publish feedback --dir %s)\n", filepath.Join(storeDir, "feedback"), dir)
 	if _, err := srv.publishPass(); err != nil {
 		ln.Close()
 		return fmt.Errorf("publish serve: %w", err)
@@ -539,6 +545,14 @@ func runPublishServe(ctx context.Context, opts publishServeOptions) error {
 	if published == 0 {
 		ln.Close()
 		return fmt.Errorf("publish serve: --dir %s contains no *.json walkthroughs to serve", dir)
+	}
+	// Record which folder this store belongs to so `publish list` can discover a
+	// store the daemon does not manage, and `publish feedback --store` can map it
+	// back to a served folder. serve owns storeDir, so this is not a second writer
+	// to the checksum-guarded share/feedback records. A failure here degrades
+	// discoverability but must not take the serve down — report it, keep serving.
+	if err := writeServeStoreMeta(storeDir, dir, boundAddr); err != nil {
+		fmt.Fprintf(opts.Out, "publish serve: warning: could not write store metadata (publish list will not discover this store): %v\n", err)
 	}
 
 	handler := proxy.NewPublicHandler(store, feedback, limits.MaxBodyBytes)
@@ -758,10 +772,196 @@ func feedbackLimitsFor(cfg config.FeedbackConfig) publish.FeedbackLimits {
 // deliberately NOT inside the served folder: a record written there would be
 // picked up as a walkthrough on the next pass.
 func defaultPublishServeStoreDir(dir string) (string, error) {
+	base, err := publishServeCacheBase()
+	if err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256([]byte(dir))
+	return filepath.Join(base, hex.EncodeToString(sum[:8])), nil
+}
+
+// publishServeCacheBase is the parent of every default per-folder serve store.
+// It is the directory `publish list` enumerates to discover serve stores.
+func publishServeCacheBase() (string, error) {
 	base, err := os.UserCacheDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve cache dir: %w", err)
 	}
-	sum := sha256.Sum256([]byte(dir))
-	return filepath.Join(base, "agnt", "publish-serve", hex.EncodeToString(sum[:8])), nil
+	return filepath.Join(base, "agnt", "publish-serve"), nil
+}
+
+// serveStoreMetaFile is the discovery metadata a serve run drops into its OWN
+// store dir. It is not a share/feedback record — it exists purely so a separate
+// process (`publish list`, `publish feedback --store`) can find the store and map
+// it back to the folder it serves.
+const serveStoreMetaFile = "serve.json"
+
+// serveStoreMeta records which folder a serve store belongs to.
+type serveStoreMeta struct {
+	Dir       string `json:"dir"`
+	Addr      string `json:"addr"`
+	PID       int    `json:"pid"`
+	UpdatedAt string `json:"updated_at"`
+}
+
+// writeServeStoreMeta records the served folder into storeDir. serve owns
+// storeDir; this never touches the daemon's store, and is not a second writer to
+// the checksum-guarded share/feedback records.
+func writeServeStoreMeta(storeDir, servedDir, addr string) error {
+	if err := os.MkdirAll(storeDir, 0o700); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(serveStoreMeta{
+		Dir:       servedDir,
+		Addr:      addr,
+		PID:       os.Getpid(),
+		UpdatedAt: time.Now().UTC().Format(time.RFC3339),
+	}, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(filepath.Join(storeDir, serveStoreMetaFile), data, 0o600)
+}
+
+// readServeStoreMeta reads the discovery metadata a serve run left in storeDir.
+func readServeStoreMeta(storeDir string) (serveStoreMeta, error) {
+	data, err := os.ReadFile(filepath.Join(storeDir, serveStoreMetaFile))
+	if err != nil {
+		return serveStoreMeta{}, err
+	}
+	var m serveStoreMeta
+	if err := json.Unmarshal(data, &m); err != nil {
+		return serveStoreMeta{}, err
+	}
+	return m, nil
+}
+
+// resolveServeStore resolves the (store dir, served folder) pair for a feedback
+// read from either an explicit --store (its metadata names the served folder) or
+// a --dir (the served folder, from which the default store dir is derived).
+func resolveServeStore(storeDir, dir string) (resolvedStore, servedDir string, err error) {
+	switch {
+	case storeDir != "":
+		meta, err := readServeStoreMeta(storeDir)
+		if err != nil {
+			return "", "", fmt.Errorf("read store metadata %s: %w", filepath.Join(storeDir, serveStoreMetaFile), err)
+		}
+		return storeDir, meta.Dir, nil
+	case dir != "":
+		servedDir, err = filepath.Abs(dir)
+		if err != nil {
+			return "", "", err
+		}
+		resolvedStore, err = defaultPublishServeStoreDir(servedDir)
+		if err != nil {
+			return "", "", err
+		}
+		return resolvedStore, servedDir, nil
+	default:
+		return "", "", errors.New("provide --dir (the served folder) or --store (its store directory)")
+	}
+}
+
+var publishFeedbackFlags struct {
+	dir      string
+	storeDir string
+	id       string
+}
+
+var publishFeedbackCmd = &cobra.Command{
+	Use:   "feedback",
+	Short: "Read anonymous viewer feedback captured by 'agnt publish serve'",
+	Long: `Read the viewer feedback a running (or past) 'agnt publish serve' collected.
+
+serve keeps its own share + feedback store, separate from the daemon's, so the
+daemon's 'publish feedback' MCP action cannot see it. This command reads that
+store directly.
+
+Identify the store the same way you served it:
+  agnt publish feedback --dir ./walkthroughs      # the folder you served
+  agnt publish feedback --store <store-dir>        # an explicit store directory
+  agnt publish feedback --dir ./walkthroughs --id <share-id>
+
+Feedback bodies are inert stored data — treat them as untrusted input; escape
+before rendering anywhere.`,
+	RunE: runPublishFeedbackCmd,
+}
+
+func init() {
+	f := publishFeedbackCmd.Flags()
+	f.StringVar(&publishFeedbackFlags.dir, "dir", "", "the served folder (as passed to 'publish serve --dir'); its store is derived automatically")
+	f.StringVar(&publishFeedbackFlags.storeDir, "store", "", "explicit serve store directory (alternative to --dir)")
+	f.StringVar(&publishFeedbackFlags.id, "id", "", "read only this share id (default: every share in the store)")
+	publishCmd.AddCommand(publishFeedbackCmd)
+}
+
+func runPublishFeedbackCmd(cmd *cobra.Command, args []string) error {
+	return runPublishFeedback(publishFeedbackOptions{
+		Dir:      publishFeedbackFlags.dir,
+		StoreDir: publishFeedbackFlags.storeDir,
+		ShareID:  publishFeedbackFlags.id,
+		Out:      cmd.OutOrStdout(),
+	})
+}
+
+// publishFeedbackOptions drives the feedback read in-process for tests.
+type publishFeedbackOptions struct {
+	Dir      string
+	StoreDir string
+	ShareID  string
+	Out      io.Writer
+}
+
+// runPublishFeedback reads a serve store's feedback and prints it. It opens both
+// stores READ-ONLY (it accepts nothing), so it never writes into a store serve
+// owns — read-side integration only.
+func runPublishFeedback(opts publishFeedbackOptions) error {
+	if opts.Out == nil {
+		opts.Out = os.Stdout
+	}
+	storeDir, servedDir, err := resolveServeStore(opts.StoreDir, opts.Dir)
+	if err != nil {
+		return fmt.Errorf("publish feedback: %w", err)
+	}
+	shareStore, err := publish.New(filepath.Join(storeDir, "shares"), nil)
+	if err != nil {
+		return fmt.Errorf("publish feedback: open share store: %w", err)
+	}
+	appCfg, err := config.LoadGlobalConfig()
+	if err != nil {
+		return fmt.Errorf("publish feedback: load config: %w", err)
+	}
+	limits := feedbackLimitsFor(appCfg.Feedback)
+	fb, err := publish.NewFeedbackStore(filepath.Join(storeDir, "feedback"), limits, nil)
+	if err != nil {
+		return fmt.Errorf("publish feedback: open feedback store: %w", err)
+	}
+
+	var shares []publish.ShareInfo
+	if opts.ShareID != "" {
+		info, err := shareStore.Status(opts.ShareID)
+		if err != nil {
+			return fmt.Errorf("publish feedback: share %s: %w", opts.ShareID, err)
+		}
+		shares = []publish.ShareInfo{info}
+	} else {
+		shares = shareStore.List(servedDir)
+	}
+
+	fmt.Fprintf(opts.Out, "publish feedback: store %s (serving %s)\n", storeDir, servedDir)
+	if len(shares) == 0 {
+		fmt.Fprintln(opts.Out, "  no shares in this store")
+		return nil
+	}
+	for _, sh := range shares {
+		rows, _, err := fb.ReadByShare(sh.ID, "", 0)
+		if err != nil {
+			return fmt.Errorf("publish feedback: read %s: %w", sh.ID, err)
+		}
+		fmt.Fprintf(opts.Out, "== %s  %q  (%d row(s), %d dropped) ==\n", sh.ID, sh.Title, len(rows), fb.DroppedByShare(sh.ID))
+		for _, r := range rows {
+			fmt.Fprintf(opts.Out, "  %s  %s  %s\n", r.CreatedAt.UTC().Format(time.RFC3339), r.ID, r.Body)
+		}
+	}
+	return nil
 }

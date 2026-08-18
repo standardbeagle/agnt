@@ -844,3 +844,85 @@ func TestPublishServeResumeRotatePolicies(t *testing.T) {
 		}
 	})
 }
+
+func mustAbs(t *testing.T, p string) string {
+	t.Helper()
+	a, err := filepath.Abs(p)
+	if err != nil {
+		t.Fatalf("abs %s: %v", p, err)
+	}
+	return a
+}
+
+// TestPublishFeedbackReadsServeStore pins Part 3's read-side integration: a serve
+// run's own store is discoverable and its viewer feedback is readable through the
+// documented `agnt publish feedback` path — via --store (metadata maps it back to
+// the served folder) and via --dir (the default store location is derived).
+func TestPublishFeedbackReadsServeStore(t *testing.T) {
+	dir := t.TempDir()
+	storeDir := filepath.Join(t.TempDir(), "store")
+
+	// Publish one share into the serve store + drop the discovery metadata, exactly
+	// as a serve run does.
+	store, err := publish.New(filepath.Join(storeDir, "shares"), nil)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	pw, err := publish.DecodePublishedWalkthrough(walkthroughJSON(t, "demo", "Demo", ""))
+	if err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	id, _, _, err := store.PublishFile(pw, dir, "demo.json")
+	if err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if err := writeServeStoreMeta(storeDir, dir, "127.0.0.1:8899"); err != nil {
+		t.Fatalf("write meta: %v", err)
+	}
+
+	// Seed a viewer feedback row.
+	limits := publish.FeedbackLimits{RatePerMinute: 60, Burst: 10, MaxBodyBytes: 4096, MaxRowsPerShare: 100, RetentionDays: 30}
+	fb, err := publish.NewFeedbackStore(filepath.Join(storeDir, "feedback"), limits, nil)
+	if err != nil {
+		t.Fatalf("open feedback store: %v", err)
+	}
+	if err := fb.Accept(id, "", "1.2.3.4:5", []byte(`{"message":"great demo"}`)); err != nil {
+		t.Fatalf("accept feedback: %v", err)
+	}
+
+	// Read it back via --store (metadata maps the store to its served folder).
+	out := &syncBuffer{}
+	if err := runPublishFeedback(publishFeedbackOptions{StoreDir: storeDir, Out: out}); err != nil {
+		t.Fatalf("read feedback: %v", err)
+	}
+	if !strings.Contains(out.String(), "great demo") {
+		t.Fatalf("feedback row not surfaced:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), id) {
+		t.Fatalf("share id not surfaced:\n%s", out.String())
+	}
+
+	// --dir resolves the DEFAULT store location (pure derivation, no fs write).
+	gotStore, gotDir, err := resolveServeStore("", dir)
+	if err != nil {
+		t.Fatalf("resolve by dir: %v", err)
+	}
+	wantStore, err := defaultPublishServeStoreDir(mustAbs(t, dir))
+	if err != nil {
+		t.Fatalf("want store: %v", err)
+	}
+	if gotStore != wantStore || gotDir != mustAbs(t, dir) {
+		t.Fatalf("--dir resolution wrong: store=%q dir=%q", gotStore, gotDir)
+	}
+
+	// The boot path prints both store locations so they are discoverable without
+	// reading source.
+	boot := &syncBuffer{}
+	_ = runPublishServe(context.Background(), publishServeOptions{
+		Dir: t.TempDir(), Addr: "127.0.0.1:0", StoreDir: filepath.Join(t.TempDir(), "empty-store"), Out: boot,
+	})
+	// (empty dir refuses to serve, but the store-path lines print before that)
+	if !strings.Contains(boot.String(), "share store ") || !strings.Contains(boot.String(), "feedback store ") {
+		t.Fatalf("boot output does not print store paths:\n%s", boot.String())
+	}
+}
