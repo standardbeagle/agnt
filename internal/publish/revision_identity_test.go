@@ -82,3 +82,37 @@ func TestPublishFileRevisionIdentity_V1V2V1(t *testing.T) {
 		t.Fatalf("current share digest %q != latest revision digest %q", info.Digest, r[2].Digest)
 	}
 }
+
+// TestFeedbackKeyedByRevisionDigest_V1V2V1 pins the feedback side of the rule:
+// feedback is keyed by content RevisionDigest, so feedback captured on the v1
+// content and feedback captured after a v1-restoring re-publish (v1 -> v2 -> v1)
+// carry ONE digest key. Keying by the (distinct) publish-event id would have
+// split them — which is the exact failure the distinct types prevent.
+func TestFeedbackKeyedByRevisionDigest_V1V2V1(t *testing.T) {
+	clk := newFakeClock()
+	s, _ := newTestStore(t, testLimits(), clk)
+
+	digV1 := RevisionDigest("digest-of-v1-content")
+	if err := s.Accept("share-1", digV1, "1.1.1.1", []byte(`{"message":"seen on v1"}`)); err != nil {
+		t.Fatalf("accept on v1: %v", err)
+	}
+	// After v1 -> v2 -> v1 the share's current content digest is v1's again, so
+	// feedback captured now carries the SAME digest key as the earlier v1 row.
+	if err := s.Accept("share-1", digV1, "2.2.2.2", []byte(`{"message":"seen after v1->v2->v1"}`)); err != nil {
+		t.Fatalf("accept after restore: %v", err)
+	}
+
+	rows, _, err := s.ReadByShare("share-1", "", 0)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("want 2 feedback rows, got %d", len(rows))
+	}
+	for i, row := range rows {
+		if row.RevisionDigest != digV1 {
+			t.Fatalf("row %d keyed by %q, want the shared content digest %q — feedback history split",
+				i, row.RevisionDigest, digV1)
+		}
+	}
+}

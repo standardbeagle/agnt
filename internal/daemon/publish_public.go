@@ -38,8 +38,8 @@ type feedbackArrivalSink struct {
 // returns the store error unchanged (the public handler maps it to 429/413/422)
 // and emits NOTHING — but the drop is still counted in store.Dropped(), so the
 // NEXT successful arrival's event carries the updated dropped total.
-func (s *feedbackArrivalSink) Accept(shareID, revisionID, remoteAddr string, body []byte) error {
-	if err := s.store.Accept(shareID, revisionID, remoteAddr, body); err != nil {
+func (s *feedbackArrivalSink) Accept(shareID string, revisionDigest publish.RevisionDigest, remoteAddr string, body []byte) error {
+	if err := s.store.Accept(shareID, revisionDigest, remoteAddr, body); err != nil {
 		return err
 	}
 	// Success: re-scope to the owning project and fan out a counts-only event.
@@ -50,8 +50,10 @@ func (s *feedbackArrivalSink) Accept(shareID, revisionID, remoteAddr string, bod
 		return nil
 	}
 	s.hub.Emit(projectPath, FeedbackArrival{
-		ShareID:     shareID,
-		RevisionID:  revisionID,
+		ShareID: shareID,
+		// FeedbackArrival is a token-free counts event; carry the digest as a
+		// plain string (leaving the typed publish domain into a generic event).
+		RevisionID:  string(revisionDigest),
 		Total:       s.store.Count(shareID),
 		Dropped:     s.store.DroppedByShare(shareID),
 		Remediation: feedbackRemediationHint,

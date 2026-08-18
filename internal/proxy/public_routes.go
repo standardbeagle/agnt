@@ -108,12 +108,15 @@ type PublicTokenVerifier interface {
 // handler deliberately does NOT pass any client X-Forwarded-For value.
 // *publish.FeedbackStore satisfies this interface.
 type FeedbackSink interface {
-	// Accept is handed the share id, the immutable revision id, the real remote
-	// address, and the raw (already size-capped) feedback body. It must treat the
-	// body as inert data, never a command (INV-7). A rate-limit rejection returns
-	// publish.ErrFeedbackRateLimited (mapped to 429); an oversize/invalid body
-	// returns the publish feedback error family (mapped to 413/422).
-	Accept(shareID, revisionID, remoteAddr string, body []byte) error
+	// Accept is handed the share id, the immutable revision CONTENT digest, the
+	// real remote address, and the raw (already size-capped) feedback body. The
+	// revision parameter is a publish.RevisionDigest (content identity), never a
+	// minted Share.RevisionID (a publish-event id) — the distinct type stops that
+	// cross at compile time. It must treat the body as inert data, never a command
+	// (INV-7). A rate-limit rejection returns publish.ErrFeedbackRateLimited
+	// (mapped to 429); an oversize/invalid body returns the publish feedback error
+	// family (mapped to 413/422).
+	Accept(shareID string, revisionDigest publish.RevisionDigest, remoteAddr string, body []byte) error
 }
 
 // upstreamDocFetcher fetches the live upstream document a published share is a
@@ -451,8 +454,8 @@ func (h *PublicHandler) serveFeedback(w http.ResponseWriter, r *http.Request, re
 		// revisionID is the immutable revision digest threaded from the verified
 		// share (no daemon reach). r.RemoteAddr is the REAL peer the limiter keys
 		// on — never a client X-Forwarded-For header (INV-7 anti-spoof).
-		revisionID := revisionDigest(rev)
-		if err := h.feedback.Accept(shareID, revisionID, r.RemoteAddr, body); err != nil {
+		revDigest := revisionDigest(rev)
+		if err := h.feedback.Accept(shareID, revDigest, r.RemoteAddr, body); err != nil {
 			h.writeHeaders(w.Header(), kindFeedback, "")
 			http.Error(w, feedbackErrorMessage(err), feedbackErrorStatus(err))
 			return
@@ -465,7 +468,7 @@ func (h *PublicHandler) serveFeedback(w http.ResponseWriter, r *http.Request, re
 // revisionDigest returns the stable identity of the immutable published revision
 // this feedback is keyed to. A digest error (should not happen for an
 // already-validated revision) yields an empty key rather than failing the write.
-func revisionDigest(rev *publish.PublishedWalkthrough) string {
+func revisionDigest(rev *publish.PublishedWalkthrough) publish.RevisionDigest {
 	if rev == nil {
 		return ""
 	}
@@ -473,7 +476,7 @@ func revisionDigest(rev *publish.PublishedWalkthrough) string {
 	if err != nil {
 		return ""
 	}
-	return d
+	return publish.RevisionDigest(d)
 }
 
 // feedbackErrorStatus maps a sink error to its HTTP status: rate-limit → 429,

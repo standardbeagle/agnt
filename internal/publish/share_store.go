@@ -102,8 +102,10 @@ type Share struct {
 	// with ProjectPath it forms the share's owner-scoped identity.
 	SourceFile string `json:"source_file,omitempty"`
 	// RevisionID names the current immutable revision (the one Walkthrough and
-	// Digest describe). An edit mints a new one; the token does not change.
-	RevisionID string `json:"revision_id,omitempty"`
+	// Digest describe). It is a minted CSPRNG publish-EVENT id (RevisionID), not a
+	// content digest — see revision_identity.go. An edit mints a new one; the
+	// token does not change.
+	RevisionID RevisionID `json:"revision_id,omitempty"`
 	// Revisions is the append-only revision history. It records revision
 	// identity (id + digest + time) only, NOT the historical artifact bodies:
 	// nothing serves an old revision — the token always resolves to the current
@@ -124,7 +126,10 @@ type Share struct {
 // ShareRevision is one immutable published revision of a share: the identity of
 // a content state the share pointed at, not the content itself.
 type ShareRevision struct {
-	ID        string    `json:"id"`
+	// ID is the minted publish-EVENT id (distinct per publish, never reused).
+	ID RevisionID `json:"id"`
+	// Digest is the CONTENT identity of this revision (collapses across
+	// byte-identical content — this is what the feedback path keys on).
 	Digest    string    `json:"digest"`
 	CreatedAt time.Time `json:"created_at"`
 }
@@ -415,7 +420,7 @@ func (s *Store) VerifyToken(token string) (rev *PublishedWalkthrough, shareID st
 //
 // A previously revoked share is never resurrected: a file that comes back is a
 // fresh share with a fresh token, so the revoked token stays dead (INV-4).
-func (s *Store) PublishFile(pw *PublishedWalkthrough, projectPath, fileName string) (id, token, revisionID string, err error) {
+func (s *Store) PublishFile(pw *PublishedWalkthrough, projectPath, fileName string) (id, token string, revisionID RevisionID, err error) {
 	if fileName == "" {
 		return "", "", "", errors.New("publishstore: empty file name")
 	}
@@ -445,7 +450,7 @@ func (s *Store) PublishFile(pw *PublishedWalkthrough, projectPath, fileName stri
 	if digest == cur.Digest {
 		return cur.ID, "", cur.RevisionID, nil // unchanged content: no new revision
 	}
-	revID, err := mintID()
+	revID, err := mintRevisionID()
 	if err != nil {
 		return "", "", "", err
 	}
@@ -562,7 +567,7 @@ func (s *Store) createShareLocked(pw *PublishedWalkthrough, projectPath, sourceF
 	if err != nil {
 		return nil, "", err
 	}
-	revID, err := mintID()
+	revID, err := mintRevisionID()
 	if err != nil {
 		return nil, "", err
 	}
@@ -705,6 +710,17 @@ func mintID() (string, error) {
 		return "", fmt.Errorf("publishstore: csprng: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+// mintRevisionID generates a fresh CSPRNG publish-EVENT id. It shares mintID's
+// entropy but is typed RevisionID so a minted event id can never be mistaken for
+// (or passed as) a content RevisionDigest — see revision_identity.go.
+func mintRevisionID() (RevisionID, error) {
+	s, err := mintID()
+	if err != nil {
+		return "", err
+	}
+	return RevisionID(s), nil
 }
 
 // hashToken returns the hex sha256 of a token — the only representation that

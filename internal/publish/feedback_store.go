@@ -84,9 +84,14 @@ type FeedbackRecord struct {
 	ID string `json:"id"`
 	// ShareID is the viewer-safe share this feedback targets.
 	ShareID string `json:"share_id"`
-	// RevisionID is the immutable published revision digest this feedback is
-	// keyed to (spec §10: feedback keyed by publish revision).
-	RevisionID string `json:"revision_id"`
+	// RevisionDigest is the CONTENT digest of the revision this feedback is keyed
+	// to (spec §10: feedback keyed by publish revision content). It is a
+	// RevisionDigest, never a minted Share.RevisionID — see revision_identity.go.
+	// The JSON key is renamed to revision_digest to match: an on-disk record
+	// written under the old revision_id key fails load LOUD (DisallowUnknownFields),
+	// which is the correct migration signal for this unreleased feature, never a
+	// silent misread.
+	RevisionDigest RevisionDigest `json:"revision_digest"`
 	// Body is the raw, validated, inert feedback payload (stored verbatim; never
 	// reflected).
 	Body string `json:"body"`
@@ -214,7 +219,7 @@ type feedbackPayload struct {
 // connection peer (host or host:port) — never a client XFF header (see package
 // doc). Order: rate-limit first (bounds abuse work), then strict validation,
 // then atomic append + retention prune.
-func (s *FeedbackStore) Accept(shareID, revisionID, remoteAddr string, body []byte) error {
+func (s *FeedbackStore) Accept(shareID string, revisionDigest RevisionDigest, remoteAddr string, body []byte) error {
 	if shareID == "" {
 		return fmt.Errorf("%w: empty share id", ErrFeedbackInvalid)
 	}
@@ -240,11 +245,11 @@ func (s *FeedbackStore) Accept(shareID, revisionID, remoteAddr string, body []by
 		return fmt.Errorf("%w: mint id: %v", ErrFeedbackInvalid, err)
 	}
 	rec := FeedbackRecord{
-		ID:         id,
-		ShareID:    shareID,
-		RevisionID: revisionID,
-		Body:       string(body),
-		CreatedAt:  s.now(),
+		ID:             id,
+		ShareID:        shareID,
+		RevisionDigest: revisionDigest,
+		Body:           string(body),
+		CreatedAt:      s.now(),
 	}
 
 	s.mu.Lock()

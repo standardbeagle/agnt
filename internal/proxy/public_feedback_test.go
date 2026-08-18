@@ -13,7 +13,9 @@ import (
 // errSink returns a fixed error, to prove the handler's status mapping.
 type errSink struct{ err error }
 
-func (s errSink) Accept(shareID, revisionID, remoteAddr string, body []byte) error { return s.err }
+func (s errSink) Accept(shareID string, revisionDigest publish.RevisionDigest, remoteAddr string, body []byte) error {
+	return s.err
+}
 
 // TestFeedbackErrorStatusMapping asserts sink errors map to the right HTTP code:
 // rate-limit → 429, oversize → 413, other → 422.

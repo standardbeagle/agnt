@@ -42,10 +42,10 @@ type capturingSink struct {
 	calls      int
 }
 
-func (s *capturingSink) Accept(shareID, revisionID, remoteAddr string, body []byte) error {
+func (s *capturingSink) Accept(shareID string, revisionDigest publish.RevisionDigest, remoteAddr string, body []byte) error {
 	s.calls++
 	s.shareID = shareID
-	s.revisionID = revisionID
+	s.revisionID = string(revisionDigest)
 	s.remoteAddr = remoteAddr
 	s.body = body
 	return nil

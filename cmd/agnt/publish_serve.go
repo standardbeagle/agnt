@@ -248,7 +248,7 @@ func (s *publishServer) publishPass() error {
 		}
 		s.tokens[lw.File] = token
 		shares = append(shares, publishedShare{
-			File: lw.File, Title: lw.PW.Title, ID: id, Token: token, RevisionID: revID,
+			File: lw.File, Title: lw.PW.Title, ID: id, Token: token, RevisionID: string(revID),
 		})
 	}
 
