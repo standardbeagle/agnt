@@ -63,6 +63,37 @@ const spliceTake = (seg, marks, workDir, view) => {
 const SUB_STYLE = 'FontName=DejaVu Sans,FontSize=9,PrimaryColour=&H00FFFFFF,BorderStyle=4,BackColour=&HA0101317,Outline=0,Shadow=0,MarginV=22';
 // The single vp9 video-encode flag set the final mux uses whenever it re-encodes.
 const VP9_VIDEO = ['-c:v', 'libvpx-vp9', '-crf', '33', '-b:v', '0', '-deadline', 'realtime', '-cpu-used', '5', '-row-mt', '1'];
+// EBU R128 single-pass loudness normalization for VO (standard web target).
+const LOUDNORM = 'loudnorm=I=-16:TP=-1.5:LRA=11';
+// Brand overlay defaults (Part A): top-right (bottom is captions + card brand),
+// ~220px wide, 0.85 opacity — matching the create-demo-video skill recipe.
+const BRAND_PAD = 32;
+const BRAND_POS = {
+  'top-right': `main_w-overlay_w-${BRAND_PAD}:${BRAND_PAD}`,
+  'top-left': `${BRAND_PAD}:${BRAND_PAD}`,
+  'bottom-right': `main_w-overlay_w-${BRAND_PAD}:main_h-overlay_h-${BRAND_PAD}`,
+  'bottom-left': `${BRAND_PAD}:main_h-overlay_h-${BRAND_PAD}`,
+};
+
+// Resolve spec.brand into the pieces the overlay needs, or null when absent.
+// A declared brand.image that is missing on disk is a hard error (no silent
+// unbranded output). fileExists is injected so the check is unit-testable.
+const resolveBrand = (brand, demoDir, fileExists) => {
+  if (!brand) return null;
+  const image = path.resolve(demoDir, brand.image);
+  if (!fileExists(image)) throw new Error(`brand.image not found on disk: ${image}`);
+  const position = brand.position || 'top-right';
+  const xy = BRAND_POS[position];
+  if (!xy) throw new Error(`brand.position invalid: '${position}' (use ${Object.keys(BRAND_POS).join(', ')})`);
+  return {image, xy, width: brand.width || 220, opacity: brand.opacity ?? 0.85};
+};
+
+// Scale the logo to width, keep aspect, apply opacity → a [logo] link, ready to
+// overlay onto whatever base link the caller names. `idx` is the brand input's
+// ffmpeg input index (brand is always appended AFTER the audio inputs so the
+// [1:a],[2:a],… narration indices are never disturbed).
+const logoChain = (idx, brand) =>
+  `[${idx}:v]scale=${brand.width}:-1,format=rgba,colorchannelmixer=aa=${brand.opacity}[logo]`;
 
 // Final-mux filter-graph construction, extracted pure (args in → ffmpeg argv out)
 // so it is unit-testable without ever spawning ffmpeg. Both the brand overlay
@@ -74,23 +105,48 @@ const VP9_VIDEO = ['-c:v', 'libvpx-vp9', '-crf', '33', '-b:v', '0', '-deadline',
 //   - encodeCount: video encodes this invocation performs (0 = stream-copy).
 //   - path:        'silent' | 'silent-brand' | 'narrated' | 'narrated-brand'.
 export const buildFinalMuxArgs = (spec, {silent, out, srtPath}, opts) => {
-  if (!opts.voiced.length) {
-    return {argv: ['-i', silent, '-c', 'copy', out], encodeCount: 0, path: 'silent'};
+  const {voiced, totalDur, view, demoDir, fileExists = fs.existsSync} = opts;
+  const brand = resolveBrand(spec.brand, demoDir, fileExists);
+
+  if (!voiced.length) {
+    // Silent path. Without brand it stays a byte-identical stream-copy; with a
+    // brand it gains its one necessary encode to burn the overlay in.
+    if (!brand) {
+      return {argv: ['-i', silent, '-c', 'copy', out], encodeCount: 0, path: 'silent'};
+    }
+    const graph = `${logoChain(1, brand)};[0:v][logo]overlay=${brand.xy}[vout]`;
+    return {
+      argv: ['-i', silent, '-i', brand.image,
+        '-filter_complex', graph, '-map', '[vout]',
+        ...VP9_VIDEO, '-r', String(view.fps),
+        '-t', String(totalDur), out],
+      encodeCount: 1,
+      path: 'silent-brand',
+    };
   }
-  const {voiced, totalDur, view} = opts;
+
+  // Narrated path already re-encodes to burn subtitles — overlay + loudnorm join
+  // that same filter_complex for zero extra encodes.
   const audioIn = [], delays = [];
   voiced.forEach((v, i) => {
     audioIn.push('-i', v.mp3);
     delays.push(`[${i + 1}:a]adelay=${Math.round(v.at * 1000)}|${Math.round(v.at * 1000)}[a${i}]`);
   });
-  const mix = `${delays.join(';')};${voiced.map((_, i) => `[a${i}]`).join('')}amix=inputs=${voiced.length}:normalize=0[voa]`;
-  const argv = ['-i', silent, ...audioIn,
-    '-filter_complex', `${mix};[0:v]subtitles=${srtPath}:force_style='${SUB_STYLE}'[vout]`,
+  const mix = `${delays.join(';')};${voiced.map((_, i) => `[a${i}]`).join('')}amix=inputs=${voiced.length}:normalize=0,${LOUDNORM}[voa]`;
+
+  const brandInput = brand ? ['-i', brand.image] : [];
+  const brandIdx = 1 + voiced.length; // 0 = silent video, 1..N = mp3s, N+1 = brand
+  const videoGraph = brand
+    ? `[0:v]subtitles=${srtPath}:force_style='${SUB_STYLE}'[subbed];${logoChain(brandIdx, brand)};[subbed][logo]overlay=${brand.xy}[vout]`
+    : `[0:v]subtitles=${srtPath}:force_style='${SUB_STYLE}'[vout]`;
+
+  const argv = ['-i', silent, ...audioIn, ...brandInput,
+    '-filter_complex', `${mix};${videoGraph}`,
     '-map', '[vout]', '-map', '[voa]',
     ...VP9_VIDEO, '-r', String(view.fps),
     '-c:a', 'libopus', '-b:a', '96k',
     '-t', String(totalDur), out];
-  return {argv, encodeCount: 1, path: 'narrated'};
+  return {argv, encodeCount: 1, path: brand ? 'narrated-brand' : 'narrated'};
 };
 
 export const assemble = async (spec, {demoDir, workDir, outDir}) => {
