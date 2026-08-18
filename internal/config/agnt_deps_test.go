@@ -130,6 +130,97 @@ func TestParseDependsOn_ChildNodeFormat(t *testing.T) {
 	})
 }
 
+// TestParseDependsOn_FractionalTimeout pins the fix for the Silent Failure
+// Prohibition violation where `toSeconds` truncated a fractional float64 to a
+// whole second: `timeout=0.5` silently became 0, and 0 means "wait
+// indefinitely" — a half-second request became an unbounded wait. Sub-second
+// granularity is now supported end to end (Timeout is a time.Duration and the
+// autostart consumer feeds it straight into context.WithTimeout).
+//
+// This test FAILS on revert: with the old int-truncating conversion,
+// `timeout=0.5` yields Timeout==0 and every sub-second assertion below breaks.
+func TestParseDependsOn_FractionalTimeout(t *testing.T) {
+	t.Run("args format sub-second timeout is preserved", func(t *testing.T) {
+		cfg, err := ParseAgntConfig(`scripts {
+    api {
+        run "go run ."
+        autostart true
+        depends-on "redis" timeout=0.5
+    }
+    redis {
+        run "redis-server"
+        autostart true
+    }
+}`)
+		require.NoError(t, err)
+		api := cfg.Scripts["api"]
+		require.Len(t, api.DependsOn, 1)
+		// 0.5 seconds must bound the wait at 500ms, not collapse to the
+		// 0 == "wait forever" sentinel.
+		assert.Equal(t, 500*time.Millisecond, api.DependsOn[0].Timeout)
+		assert.NotEqual(t, time.Duration(0), api.DependsOn[0].Timeout,
+			"a fractional timeout must never truncate to the indefinite-wait sentinel")
+	})
+
+	t.Run("child node format sub-second timeout is preserved", func(t *testing.T) {
+		cfg, err := ParseAgntConfig(`scripts {
+    api {
+        run "go run ."
+        autostart true
+        depends-on {
+            redis timeout=1.5
+        }
+    }
+    redis {
+        run "redis-server"
+        autostart true
+    }
+}`)
+		require.NoError(t, err)
+		api := cfg.Scripts["api"]
+		require.Len(t, api.DependsOn, 1)
+		assert.Equal(t, 1500*time.Millisecond, api.DependsOn[0].Timeout)
+	})
+
+	t.Run("explicit zero still means wait indefinitely", func(t *testing.T) {
+		cfg, err := ParseAgntConfig(`scripts {
+    api {
+        run "go run ."
+        autostart true
+        depends-on "redis" timeout=0
+    }
+    redis {
+        run "redis-server"
+        autostart true
+    }
+}`)
+		require.NoError(t, err)
+		api := cfg.Scripts["api"]
+		require.Len(t, api.DependsOn, 1)
+		// The 0 sentinel is deliberately preserved: fixing sub-second support
+		// must not make 0 ambiguous.
+		assert.Equal(t, time.Duration(0), api.DependsOn[0].Timeout)
+	})
+
+	t.Run("whole-second float keeps exact-second granularity", func(t *testing.T) {
+		cfg, err := ParseAgntConfig(`scripts {
+    api {
+        run "go run ."
+        autostart true
+        depends-on "redis" timeout=45.0
+    }
+    redis {
+        run "redis-server"
+        autostart true
+    }
+}`)
+		require.NoError(t, err)
+		api := cfg.Scripts["api"]
+		require.Len(t, api.DependsOn, 1)
+		assert.Equal(t, 45*time.Second, api.DependsOn[0].Timeout)
+	})
+}
+
 func TestParseDependsOn_UnknownDependency(t *testing.T) {
 	_, err := ParseAgntConfig(`scripts {
     api {
