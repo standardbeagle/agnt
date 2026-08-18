@@ -181,16 +181,14 @@ func TestWatchProcessExit_EndToEnd(t *testing.T) {
 		t.Skip("integration test uses /bin/sh")
 	}
 
-	d := New(DaemonConfig{
+	// NewForTest skips the host-global startup ops and shortens the startup
+	// crash-watch from 3s to 200ms; this test drives ProcessManager directly
+	// and asserts exit-watch behaviour, not any startup task. NewForTest owns
+	// the Stop cleanup.
+	d := NewForTest(t, DaemonConfig{
 		SocketPath:   shortSockPath(t),
 		MaxClients:   4,
 		WriteTimeout: 2 * time.Second,
-	})
-	require.NoError(t, d.Start())
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = d.Stop(ctx)
 	})
 
 	ctx := context.Background()
@@ -288,16 +286,14 @@ func TestWatchProcessExit_NewWatcherClearsStaleInfo(t *testing.T) {
 		t.Skip("integration test uses /bin/sh")
 	}
 
-	d := New(DaemonConfig{
+	// NewForTest skips the host-global startup ops and shortens the startup
+	// crash-watch from 3s to 200ms; this test drives ProcessManager directly
+	// and asserts exit-watch behaviour, not any startup task. NewForTest owns
+	// the Stop cleanup.
+	d := NewForTest(t, DaemonConfig{
 		SocketPath:   shortSockPath(t),
 		MaxClients:   4,
 		WriteTimeout: 2 * time.Second,
-	})
-	require.NoError(t, d.Start())
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = d.Stop(ctx)
 	})
 
 	ctx := context.Background()
@@ -358,16 +354,14 @@ func TestWatchProcessExit_RaceGuard_LateWatcher(t *testing.T) {
 		t.Skip("integration test uses /bin/sh")
 	}
 
-	d := New(DaemonConfig{
+	// NewForTest skips the host-global startup ops and shortens the startup
+	// crash-watch from 3s to 200ms; this test drives ProcessManager directly
+	// and asserts exit-watch behaviour, not any startup task. NewForTest owns
+	// the Stop cleanup.
+	d := NewForTest(t, DaemonConfig{
 		SocketPath:   shortSockPath(t),
 		MaxClients:   4,
 		WriteTimeout: 2 * time.Second,
-	})
-	require.NoError(t, d.Start())
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = d.Stop(ctx)
 	})
 
 	ctx := context.Background()
@@ -468,16 +462,14 @@ func TestWatchProcessExit_CleanExit(t *testing.T) {
 		t.Skip("integration test uses /bin/sh")
 	}
 
-	d := New(DaemonConfig{
+	// NewForTest skips the host-global startup ops and shortens the startup
+	// crash-watch from 3s to 200ms; this test drives ProcessManager directly
+	// and asserts exit-watch behaviour, not any startup task. NewForTest owns
+	// the Stop cleanup.
+	d := NewForTest(t, DaemonConfig{
 		SocketPath:   shortSockPath(t),
 		MaxClients:   4,
 		WriteTimeout: 2 * time.Second,
-	})
-	require.NoError(t, d.Start())
-	t.Cleanup(func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		defer cancel()
-		_ = d.Stop(ctx)
 	})
 
 	ctx := context.Background()
