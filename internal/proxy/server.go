@@ -18,6 +18,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/httpcaps"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/store"
 )
@@ -559,19 +560,28 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 	ps.ListenAddr = listener.Addr().String()
 	ps.setBoundAddr(ps.ListenAddr)
 
-	ps.httpServer.Store(&http.Server{
+	// Potentially-public (a tunnel can expose this proxy), so it is hardened to
+	// public standard: header/idle/connection bounds via the shared constructor.
+	// It uses the Streaming carve-out because a reverse proxy streams
+	// arbitrary-length proxied bodies and hijacks WebSocket upgrades (e.g. Vite
+	// HMR) — a whole-request write deadline would sever those. Slowloris and fd
+	// exhaustion stay bounded by ReadHeaderTimeout + IdleTimeout + the connection
+	// cap below.
+	proxyCaps := httpcaps.Streaming()
+	ps.httpServer.Store(proxyCaps.Apply(&http.Server{
 		Addr:    ps.ListenAddr,
 		Handler: mux,
 		BaseContext: func(l net.Listener) context.Context {
 			return ctx
 		},
-	})
+	}))
 
 	ps.startTime = time.Now()
 	ps.running.Store(true)
 
-	// Start server in goroutine using existing listener
-	go ps.runServer(ctx, listener)
+	// Start server in goroutine using existing listener, capped to a bounded
+	// number of concurrent connections.
+	go ps.runServer(ctx, proxyCaps.LimitListener(listener))
 
 	// Start backend health probe (non-zero interval means enabled)
 	ps.backendHealthy.Store(true)
@@ -743,16 +753,19 @@ func (ps *ProxyServer) runServer(ctx context.Context, listener net.Listener) {
 			// the requested one after an auto-assign fallback. Publish it through
 			// the atomic boundAddr rather than mutating the exported ListenAddr
 			// field, which is read unsynchronized across packages.
-			listener = newListener
 			newAddr := newListener.Addr().String()
+			// Re-cap on restart exactly as at initial bind (same Streaming caps),
+			// so an auto-restart never silently drops the bounds.
+			restartCaps := httpcaps.Streaming()
+			listener = restartCaps.LimitListener(newListener)
 			ps.setBoundAddr(newAddr)
-			ps.httpServer.Store(&http.Server{
+			ps.httpServer.Store(restartCaps.Apply(&http.Server{
 				Addr:    newAddr,
 				Handler: ps.httpServer.Load().Handler,
 				BaseContext: func(l net.Listener) context.Context {
 					return ctx
 				},
-			})
+			}))
 			ps.running.Store(true)
 
 			// Continue loop to restart server

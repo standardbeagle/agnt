@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/httpcaps"
 	"github.com/standardbeagle/agnt/internal/overlay"
 )
 
@@ -55,14 +56,18 @@ func (a *AIOverlay) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create AI overlay socket: %w", err)
 	}
-	a.listener = listener
-
 	mux := http.NewServeMux()
 	mux.HandleFunc("/type", a.handleType)
 	mux.HandleFunc("/event", a.handleEvent)
 	mux.HandleFunc("/health", a.handleHealth)
 
-	a.server = &http.Server{Handler: mux}
+	// Loopback (unix socket), routed through the shared constructor for
+	// uniformity. Streaming because the interactive AI overlay holds long-lived
+	// local connections that a whole-request write deadline would sever.
+	caps := httpcaps.Streaming()
+	listener = caps.LimitListener(listener)
+	a.listener = listener
+	a.server = caps.NewServer(mux)
 
 	go func() {
 		if err := a.server.Serve(listener); err != nil && err != http.ErrServerClosed {

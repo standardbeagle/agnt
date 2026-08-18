@@ -20,6 +20,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/httpcaps"
 	"github.com/standardbeagle/agnt/internal/overlay"
 )
 
@@ -205,7 +206,6 @@ func (o *Overlay) Start(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("failed to create overlay socket at %s: %w", o.socketPath, err)
 	}
-	o.listener = listener
 	debug.Log("overlay", "socket listener started successfully")
 
 	mux := http.NewServeMux()
@@ -216,9 +216,14 @@ func (o *Overlay) Start(ctx context.Context) error {
 	mux.HandleFunc("/event", o.handleEvent)
 	mux.HandleFunc("/toast", o.handleToast)
 
-	o.server = &http.Server{
-		Handler: mux,
-	}
+	// Loopback (unix socket), routed through the shared constructor for
+	// uniformity — every listener inherits the caps, so none is uncapped by
+	// omission. Streaming because /ws is a long-lived gorilla/websocket
+	// connection a whole-request write deadline would sever.
+	caps := httpcaps.Streaming()
+	listener = caps.LimitListener(listener)
+	o.listener = listener
+	o.server = caps.NewServer(mux)
 
 	go func() {
 		if err := o.server.Serve(listener); err != nil && err != http.ErrServerClosed {

@@ -31,6 +31,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/standardbeagle/agnt/internal/config"
+	"github.com/standardbeagle/agnt/internal/httpcaps"
 	"github.com/standardbeagle/agnt/internal/platform"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/publish"
@@ -556,7 +557,12 @@ func runPublishServe(ctx context.Context, opts publishServeOptions) error {
 	}
 
 	handler := proxy.NewPublicHandler(store, feedback, limits.MaxBodyBytes)
-	httpSrv := &http.Server{Handler: handler, ReadHeaderTimeout: 10 * time.Second}
+	// Potentially-public: --tunnel is a first-class flag on this command, so the
+	// listener is hardened to public standard (full transport + connection caps).
+	// It serves bounded artifact documents, so no streaming carve-out is needed.
+	caps := httpcaps.Default()
+	ln = caps.LimitListener(ln)
+	httpSrv := caps.NewServer(handler)
 	serveErr := make(chan error, 1)
 	go func() {
 		err := httpSrv.Serve(ln)

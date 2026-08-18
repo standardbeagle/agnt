@@ -7,6 +7,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/httpcaps"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/publish"
 )
@@ -156,9 +157,15 @@ func (d *Daemon) startPublicListener() {
 			fmt.Sprintf("public plane listener failed to bind %s: %v", d.config.PublicListenAddr, err))
 		return
 	}
+	// Potentially-public: the operator can point AGNT_PUBLIC_ADDR at any interface
+	// (and a tunnel at it a moment later), so the plane is hardened unconditionally.
+	// The public plane serves bounded documents (artifact HTML, feedback), so it
+	// takes the full request/response deadline set, not the streaming carve-out.
+	caps := httpcaps.Default()
+	ln = caps.LimitListener(ln)
 	addr := ln.Addr().String()
 	d.publicAddr.Store(&addr)
-	srv := &http.Server{Handler: d.publicHandler}
+	srv := caps.NewServer(d.publicHandler)
 	d.publicServer = srv
 	d.goTracked(func() {
 		if serveErr := srv.Serve(ln); serveErr != nil && serveErr != http.ErrServerClosed {
