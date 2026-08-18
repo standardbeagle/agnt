@@ -82,6 +82,21 @@ func NewForTest(t *testing.T, cfg DaemonConfig) *Daemon {
 	if cfg.FeedbackDir == "" {
 		cfg.FeedbackDir = filepath.Join(t.TempDir(), "feedback")
 	}
+	// Same hermetic discipline for the control socket. An empty SocketPath falls
+	// through hub.New to protocol.DefaultSocketPath() — the PRODUCTION socket —
+	// so every NewForTest(t, DaemonConfig{}) caller bound the SAME fixed path.
+	// Sequentially (the real `-p 1` gate, one process) each test's t.Cleanup
+	// Stop frees the socket before the next binds it, so the collision stayed
+	// latent. Two concurrent test binaries (the repro in this file's owning
+	// task) race for that one path and the loser's bootstrap fails with
+	// "daemon already running" — an instant failure, not a timeout. It also
+	// means these tests would fight a real agnt daemon running on the dev box.
+	// A per-test temp socket removes the shared global path, closing the class
+	// for good; callers that need a specific path (e.g. the default-socket
+	// pid-tracker behaviour) still set SocketPath explicitly and are untouched.
+	if cfg.SocketPath == "" {
+		cfg.SocketPath = filepath.Join(t.TempDir(), "d.sock")
+	}
 
 	d := New(cfg)
 
