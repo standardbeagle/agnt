@@ -38,6 +38,30 @@ import {readJSON} from './lib/util.mjs';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const screenshotsDir = path.dirname(here);
 
+// Decide what to do with a spec's narration given whether edge-tts is available.
+// Pure and side-effect-free so tests can inject the availability boolean instead
+// of depending on the real PATH.
+//   assemble   → keep narration (or there is none); proceed normally.
+//   warn-drop  → narration.optional:true but edge-tts absent; drop VO, go silent.
+//   abort      → narration required but edge-tts absent; caller must fail loud.
+export function resolveNarrationMode(spec, edgeTtsAvailable) {
+  if (!spec.narration || edgeTtsAvailable) return {mode: 'assemble'};
+  if (spec.narration.optional === true) return {mode: 'warn-drop'};
+  return {
+    mode: 'abort',
+    error:
+      'edge-tts is not on PATH, but this demo declares narration. ' +
+      'Install it with: pip install edge-tts ' +
+      '(or set narration.optional:true in demo.json to assemble silent).',
+  };
+}
+
+const isMain =
+  process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (!isMain) {
+  // Imported (e.g. by the test harness): expose the pure helpers only, run nothing.
+} else {
+
 const demoArg = process.argv[2];
 const assembleOnly = process.argv.includes('--assemble-only');
 const onlyArg = process.argv.find((a) => a.startsWith('--only='));
@@ -50,9 +74,14 @@ const demoDir = path.resolve(screenshotsDir, demoArg);
 const spec = readJSON(path.join(demoDir, 'demo.json'));
 spec.viewport = spec.viewport || {width: 1440, height: 900};
 
-// Narration needs edge-tts; without it, drop VO and assemble silent+cards.
-if (spec.narration && spawnSync('which', ['edge-tts']).status !== 0) {
-  console.warn('edge-tts not on PATH — dropping narration, assembling silent');
+// Narration needs edge-tts. A demo written WITH narration must fail loud rather
+// than silently assemble silent — unless it explicitly opted into that fallback.
+const narration = resolveNarrationMode(spec, spawnSync('which', ['edge-tts']).status === 0);
+if (narration.mode === 'abort') {
+  console.error(narration.error);
+  process.exit(1);
+} else if (narration.mode === 'warn-drop') {
+  console.warn('edge-tts not on PATH — dropping optional narration, assembling silent');
   delete spec.narration;
 }
 
@@ -94,3 +123,5 @@ try {
 }
 
 await assemble(spec, {demoDir, workDir, outDir});
+
+}
