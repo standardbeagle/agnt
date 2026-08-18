@@ -88,7 +88,16 @@ func newE2EPlane(t *testing.T) *e2ePlane {
 	require.NoError(t, err, "open publish store")
 	feedback, err := publish.NewFeedbackStore(fbDir, e2eLimits(), nil)
 	require.NoError(t, err, "open feedback store")
-	h := NewPublicHandler(store, feedback, int(e2eLimits().MaxBodyBytes))
+	// The e2e plane exercises serve-path INVARIANCE across many inputs (input
+	// fuzz, revoke, header policy) — rate is orthogonal to what these assert, and
+	// a single test IP legitimately fires hundreds of GETs at one share. Install
+	// effectively-unbounded rate limiters so the throttle never masquerades as a
+	// serve-path change; the rate cap itself has its own dedicated teeth tests.
+	h := NewPublicHandler(store, feedback, int(e2eLimits().MaxBodyBytes)).
+		WithRateLimits(
+			publish.NewRateLimiter(1_000_000, 1_000_000, nil),
+			publish.NewRateLimiter(1_000_000, 1_000_000, nil),
+		)
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
 	return &e2ePlane{srv: srv, store: store, feedback: feedback, storeDir: storeDir, fbDir: fbDir}

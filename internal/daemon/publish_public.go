@@ -104,7 +104,15 @@ func (d *Daemon) buildPublicPlane() {
 	// unset field falls back to the spec §5 default rather than 0, and an operator
 	// value flows through unchanged. Keeps the handler cap and the store cap from
 	// diverging.
-	d.publicHandler = proxy.NewPublicHandler(d.publishStore, sink, limits.MaxBodyBytes)
+	// Install operator-configured request-rate limiters so the public-plane
+	// config actually drives behaviour (Config Authority / §5), not merely
+	// parses. Normalize fills any unset field with its house default.
+	ppc := d.config.PublicPlaneLimits.Normalize()
+	d.publicHandler = proxy.NewPublicHandler(d.publishStore, sink, limits.MaxBodyBytes).
+		WithRateLimits(
+			publish.NewRateLimiter(ppc.ArtifactRatePerMinute, ppc.ArtifactBurst, nil),
+			publish.NewRateLimiter(ppc.OutboundRatePerMinute, ppc.OutboundBurst, nil),
+		)
 }
 
 // projectOfShare resolves a viewer-safe share id to its owning project path via

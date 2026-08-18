@@ -140,6 +140,10 @@ func newDaemonConfig(appCfg *config.Config, socketPath, publicAddr string) daemo
 		// buildPublicPlane Normalize()s this, so a zero/unset field falls back to
 		// its spec §5 default while any NON-ZERO operator value survives.
 		FeedbackLimits: appCfg.Feedback,
+		// Thread the operator's public-plane{} rate block the same way, so the
+		// artifact + outbound rate caps honour config rather than staying on
+		// defaults regardless (Config Authority).
+		PublicPlaneLimits: appCfg.PublicPlane,
 	}
 }
 

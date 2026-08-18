@@ -44,6 +44,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/publish"
 )
@@ -147,6 +148,19 @@ type PublicHandler struct {
 	// production (NewPublicHandler installs the guarded fetcher); a nil value
 	// refuses every upstream-bearing share rather than fetching unguarded.
 	upstream upstreamDocFetcher
+
+	// artifactLimiter throttles inbound artifact GETs per (share, client IP). It
+	// bounds a single client flooding one share. Never nil (NewPublicHandler
+	// installs a default; WithRateLimits overrides for config/tests).
+	artifactLimiter *publish.RateLimiter
+
+	// outboundLimiter throttles guarded upstream fetches per upstream ORIGIN,
+	// across every share that names it. This is the amplification bound the
+	// inbound cap cannot provide: N distinct shares pointed at one origin would
+	// otherwise turn an anonymous GET flood into an outbound flood at a third
+	// party (INV-13 bounds which origins may be fetched, not how often). Never
+	// nil in production.
+	outboundLimiter *publish.RateLimiter
 }
 
 // NewPublicHandler builds the public plane over a token verifier and an optional
@@ -158,6 +172,12 @@ func NewPublicHandler(verifier PublicTokenVerifier, feedback FeedbackSink, maxBo
 	if maxBodyBytes <= 0 {
 		maxBodyBytes = defaultMaxFeedbackBody
 	}
+	// Default rate limiters come from config.DefaultPublicPlaneConfig() so the
+	// proxy-side default cannot drift from the config default (a single source of
+	// truth for the numbers). The daemon overrides these with operator-configured
+	// limiters via WithRateLimits; a direct caller (a test, `agnt publish serve`)
+	// gets the house defaults, always on.
+	ppc := config.DefaultPublicPlaneConfig()
 	return &PublicHandler{
 		verifier:        verifier,
 		feedback:        feedback,
@@ -165,7 +185,24 @@ func NewPublicHandler(verifier PublicTokenVerifier, feedback FeedbackSink, maxBo
 		assetPath:       PublicInstrumentationAssetPath(),
 		cspHash:         PublicInstrumentationAssetCSPHash(),
 		upstream:        &guardedUpstreamFetcher{},
+		artifactLimiter: publish.NewRateLimiter(ppc.ArtifactRatePerMinute, ppc.ArtifactBurst, nil),
+		outboundLimiter: publish.NewRateLimiter(ppc.OutboundRatePerMinute, ppc.OutboundBurst, nil),
 	}
+}
+
+// WithRateLimits overrides the artifact and outbound rate limiters. It is the
+// seam the daemon uses to install operator-configured limiters (config drives
+// behaviour, not just parses) and that rate tests use to inject a deterministic
+// clock. A nil argument leaves that limiter as the default. Returns h so it can
+// be chained onto NewPublicHandler.
+func (h *PublicHandler) WithRateLimits(artifact, outbound *publish.RateLimiter) *PublicHandler {
+	if artifact != nil {
+		h.artifactLimiter = artifact
+	}
+	if outbound != nil {
+		h.outboundLimiter = outbound
+	}
+	return h
 }
 
 // responseKind selects the cache policy for a public response (spec §4).
@@ -247,7 +284,7 @@ func (h *PublicHandler) serveShare(w http.ResponseWriter, r *http.Request, p str
 
 	switch sub {
 	case "":
-		h.serveArtifact(w, r, rev)
+		h.serveArtifact(w, r, rev, shareID)
 	case "/variants.json":
 		h.serveVariants(w, r, rev)
 	case "/walkthrough.json":
@@ -272,9 +309,19 @@ func (h *PublicHandler) serveShare(w http.ResponseWriter, r *http.Request, p str
 // grants cannot reach a viewer. The token was already verified in serveShare, so
 // a revoked share 404s before either branch — and therefore before any outbound
 // fetch — which is what makes revoke atomic for the proxied route too (INV-4).
-func (h *PublicHandler) serveArtifact(w http.ResponseWriter, r *http.Request, rev *publish.PublishedWalkthrough) {
+func (h *PublicHandler) serveArtifact(w http.ResponseWriter, r *http.Request, rev *publish.PublishedWalkthrough, shareID string) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		methodNotAllowed(w, "GET, HEAD")
+		return
+	}
+	// Inbound rate cap per (share, client IP). The token was already verified in
+	// serveShare, so a 429 here reveals nothing the caller does not already hold
+	// (INV-9 / Secret Hygiene): the message is a constant "rate limited", carries
+	// artifact-kind headers, and never names the share or an internal id — the
+	// same shape as the feedback route's 429.
+	if h.artifactLimiter != nil && !h.artifactLimiter.Allow(publish.ShareIPKey(shareID, r.RemoteAddr)) {
+		h.writeHeaders(w.Header(), kindArtifact, "")
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
 		return
 	}
 	if rev != nil && rev.Upstream != nil && rev.Upstream.URL != "" {
@@ -317,6 +364,15 @@ func (h *PublicHandler) serveProxiedArtifact(w http.ResponseWriter, r *http.Requ
 		h.refuseUpstream(w, fmt.Errorf("no upstream fetcher configured"))
 		return
 	}
+	// Per-origin outbound cap: bound the guarded fetch rate to this upstream
+	// origin ACROSS all shares, so a flood spread over many distinct shares that
+	// name the same origin cannot amplify into unbounded outbound traffic at a
+	// third party. Refused with a generic 503 that does not distinguish a rate
+	// refusal from any other upstream failure (no oracle for the viewer).
+	if h.outboundLimiter != nil && !h.outboundLimiter.Allow(upstreamOriginKey(rev.Upstream.URL)) {
+		h.refuseUpstreamRate(w, rev.Upstream.URL)
+		return
+	}
 	body, err := h.upstream.fetchDocument(r.Context(), rev.Upstream.URL)
 	if err != nil {
 		h.refuseUpstream(w, err)
@@ -350,6 +406,32 @@ func (h *PublicHandler) refuseUpstream(w http.ResponseWriter, err error) {
 	debug.Log("publish", "public plane refused upstream: %v", err)
 	h.writeHeaders(w.Header(), kindArtifact, "")
 	http.Error(w, "upstream unavailable", http.StatusBadGateway)
+}
+
+// refuseUpstreamRate emits a 503 when the per-origin outbound budget is spent.
+// The viewer-facing message is deliberately generic ("upstream unavailable") so
+// a rate refusal is indistinguishable from any other upstream failure — it is
+// not an oracle for how many other viewers are hitting the same origin. The
+// origin (not the share token, which this function is not given) goes to the
+// debug log for the operator. 503 rather than 429 because the limit being hit is
+// the daemon's outbound budget to a third party, not this viewer's own rate.
+func (h *PublicHandler) refuseUpstreamRate(w http.ResponseWriter, upstreamURL string) {
+	debug.Log("publish", "public plane outbound rate cap hit for origin %s", upstreamOriginKey(upstreamURL))
+	h.writeHeaders(w.Header(), kindArtifact, "")
+	http.Error(w, "upstream unavailable", http.StatusServiceUnavailable)
+}
+
+// upstreamOriginKey reduces an upstream URL to its origin (scheme://host[:port],
+// host lower-cased) so every share naming the same origin shares one outbound
+// bucket. A URL that will not parse degrades to itself as the key rather than
+// collapsing all unparseable URLs into one bucket (CheckUpstreamOrigin rejects
+// such a URL at fetch time anyway).
+func upstreamOriginKey(rawURL string) string {
+	u, err := url.Parse(rawURL)
+	if err != nil || u.Host == "" {
+		return rawURL
+	}
+	return u.Scheme + "://" + strings.ToLower(u.Host)
 }
 
 // serveSelfContainedArtifact serves the artifact HTML shell that loads ONLY the

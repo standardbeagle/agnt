@@ -154,6 +154,11 @@ type DaemonConfig struct {
 	// spec defaults so an unconfigured daemon still enforces every guard.
 	FeedbackLimits config.FeedbackConfig
 
+	// PublicPlaneLimits are the public-plane request-rate bounds (artifact GET
+	// per (share,IP) + per-origin outbound fetch). Zero-value fields normalize to
+	// the house defaults so an unconfigured daemon still rate-caps every guard.
+	PublicPlaneLimits config.PublicPlaneConfig
+
 	// PublicListenAddr is the bind address for the anonymous-viewer PUBLIC plane
 	// (P7 NewPublicHandler / spec §2b). When non-empty the daemon stands up a
 	// dedicated HTTP listener serving ONLY the token-gated public routes; the dev

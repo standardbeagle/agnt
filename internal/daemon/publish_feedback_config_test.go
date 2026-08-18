@@ -93,3 +93,45 @@ func TestPublicPlaneHonorsConfiguredBurst(t *testing.T) {
 	require.Equal(t, http.StatusTooManyRequests, postFeedback(t, addr, res.Token, `{"message":"3"}`),
 		"the 3rd rapid POST must 429 at configured burst 2 — proves the configured burst is live, not the default 5")
 }
+
+// TestPublicPlaneHonorsConfiguredArtifactRate proves the LIVE artifact-GET rate
+// cap is the operator-configured value, not the house default of burst 30. It
+// configures artifact-burst = 2; the 3rd rapid GET must 429. At the default burst
+// all three would be 200, so a silently-dropped config would fail this test —
+// this is the §5 "config drives runtime behaviour" proof for the public-plane
+// block.
+func TestPublicPlaneHonorsConfiguredArtifactRate(t *testing.T) {
+	sockPath := shortSockPath(t)
+	d := newBootedDaemonWithConfig(t, DaemonConfig{
+		SocketPath:       sockPath,
+		PublicListenAddr: "127.0.0.1:0",
+		PublicPlaneLimits: config.PublicPlaneConfig{
+			ArtifactRatePerMinute: 2, ArtifactBurst: 2,
+			// Generous outbound so it never interferes (the test share has no
+			// upstream anyway).
+			OutboundRatePerMinute: 1000, OutboundBurst: 1000,
+		},
+	})
+	addr := d.PublicPlaneAddr()
+	require.NotEmpty(t, addr, "public plane must be mounted")
+
+	c := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
+	require.NoError(t, c.Connect())
+	t.Cleanup(func() { _ = c.Close() })
+	_, err := c.SessionRegister("sess-a", "/tmp/a.sock", "/proj-a", "test", nil)
+	require.NoError(t, err)
+
+	res, err := c.PublishCreate(protocol.PublishCreateRequest{Walkthrough: publishTestWalkthrough(t)})
+	require.NoError(t, err)
+
+	// Burst 2: first two rapid artifact GETs pass, the third is 429. This would
+	// NOT happen at the house default burst of 30.
+	code1, _ := getPublic(t, "http://"+addr+"/s/"+res.Token)
+	require.Equal(t, http.StatusOK, code1)
+	code2, _ := getPublic(t, "http://"+addr+"/s/"+res.Token)
+	require.Equal(t, http.StatusOK, code2)
+	code3, body3 := getPublic(t, "http://"+addr+"/s/"+res.Token)
+	require.Equal(t, http.StatusTooManyRequests, code3,
+		"the 3rd rapid GET must 429 at configured artifact-burst 2 — proves the configured rate is live, not the default 30")
+	require.NotContains(t, body3, res.Token, "429 body must not echo the share token")
+}
