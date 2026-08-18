@@ -57,6 +57,9 @@ type AgntConfig struct {
 	// Setup configures the first-run auto-setup flow for `agnt run`.
 	Setup *SetupConfig `kdl:"setup"`
 
+	// Automation bounds daemon-global chromedp automation resources.
+	Automation *AutomationConfig `kdl:"automation"`
+
 	// AuthBreakout hijacks OAuth flows out of the proxy's content iframe.
 	// IdP pages (MSAL / login.microsoftonline.com, Figma OAuth, ...) refuse
 	// to render inside a frame, so a matching navigation is carried out in a
@@ -258,6 +261,36 @@ func (c *SessionConfig) OrphanPGIDScanEnabled() bool {
 		return true
 	}
 	return *c.OrphanPGIDScan
+}
+
+// DefaultAutomationMaxSessions is the default ceiling on concurrent chromedp
+// automation sessions. Deliberately single-digit, not 100: each session is a
+// full headless Chrome process (hundreds of MB RSS plus renderer subprocesses),
+// so an uncapped manager lets an agent looping the automation/browser tools OOM
+// the host. Kept in sync with chromedp.DefaultMaxSessions (that package must not
+// import config; both are 4).
+const DefaultAutomationMaxSessions = 4
+
+// AutomationConfig bounds the daemon-global chromedp automation subsystem.
+//
+//	automation {
+//	    max-sessions 4
+//	}
+type AutomationConfig struct {
+	// MaxSessions is the maximum number of concurrent chromedp automation
+	// sessions. Defaults to DefaultAutomationMaxSessions when unset or
+	// non-positive. Consumed by SessionManager via Daemon on session connect.
+	MaxSessions *int `kdl:"max-sessions"`
+}
+
+// MaxSessionsOrDefault returns the configured concurrent-session ceiling,
+// falling back to DefaultAutomationMaxSessions when the block is absent or the
+// value is non-positive.
+func (c *AutomationConfig) MaxSessionsOrDefault() int {
+	if c == nil || c.MaxSessions == nil || *c.MaxSessions <= 0 {
+		return DefaultAutomationMaxSessions
+	}
+	return *c.MaxSessions
 }
 
 // validSeverities is the set of accepted severity strings for ChannelConfig.

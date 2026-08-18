@@ -172,6 +172,14 @@ func (d *Daemon) RunAutostartAsync(
 	// Safe to run on every autostart; latest values win.
 	d.ApplyAlertsConfig(projectPath, agntConfig.Alerts)
 
+	// Apply the chromedp automation concurrency ceiling. Daemon-global,
+	// last-writer-wins on session connect — same reconfigure shape as
+	// ApplyAlertsConfig. This is what makes automation.max-sessions actually
+	// drive the SessionManager's cap rather than being parsed and ignored.
+	if d.sessionm != nil {
+		d.sessionm.SetMaxSessions(agntConfig.Automation.MaxSessionsOrDefault())
+	}
+
 	// Step 3: Port pre-flight check
 	autostartScripts := agntConfig.GetAutostartScripts()
 	managedPIDs := d.collectManagedPIDs()

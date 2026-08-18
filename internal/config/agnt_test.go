@@ -1630,6 +1630,38 @@ func TestParseAgntConfig_NoAutoForward(t *testing.T) {
 	assert.Nil(t, cfg.Alerts.AutoForward)
 }
 
+func TestParseAgntConfig_AutomationMaxSessions(t *testing.T) {
+	// A non-default value is parsed AND drives the accessor (config §5: a
+	// parsed key must change runtime, not merely be stored).
+	cfg, err := ParseAgntConfig(`automation {
+    max-sessions 2
+}`)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.Automation)
+	require.NotNil(t, cfg.Automation.MaxSessions)
+	assert.Equal(t, 2, *cfg.Automation.MaxSessions)
+	assert.Equal(t, 2, cfg.Automation.MaxSessionsOrDefault())
+}
+
+func TestParseAgntConfig_AutomationDefaults(t *testing.T) {
+	// Absent block → default ceiling via the nil-safe accessor.
+	cfg, err := ParseAgntConfig(`project {
+    name "x"
+}`)
+	require.NoError(t, err)
+	assert.Nil(t, cfg.Automation)
+	assert.Equal(t, DefaultAutomationMaxSessions, cfg.Automation.MaxSessionsOrDefault())
+
+	// A non-positive value also falls back to the default rather than
+	// silently disabling the cap.
+	cfg2, err := ParseAgntConfig(`automation {
+    max-sessions 0
+}`)
+	require.NoError(t, err)
+	require.NotNil(t, cfg2.Automation)
+	assert.Equal(t, DefaultAutomationMaxSessions, cfg2.Automation.MaxSessionsOrDefault())
+}
+
 func TestParsePushConfig(t *testing.T) {
 	tests := []struct {
 		name     string
