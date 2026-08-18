@@ -192,11 +192,12 @@ Each file is a `PublishedWalkthrough`:
 
 - `upstream` is **optional**. Present → that live origin is proxied (§9). Absent →
   a self-contained artifact.
-- `variantSet` is optional, and its ops may carry raw CSS/HTML/JS from your
-  authored revision (INV-6 is retired); authored script executes only because its
-  hash is pinned into `script-src` at publish time (§7) — which is why an
-  `addScript` must carry an inline `code` body; a `src` URL is refused at publish
-  with an error (§9a).
+- `variantSet` is optional, and its ops may carry raw CSS/HTML from your authored
+  revision (INV-6 is retired). **`addScript` is refused at publish**, both a `code`
+  body and a `src` URL: a published walkthrough carries the mandatory disclosure
+  indicator, and an authored script running in the badge's own realm can defeat it
+  (INV-14; see §9a). Raw CSS/HTML is unaffected — it cannot hide the indicator
+  (CSP + closed shadow root, §9b).
 - Validation failures name the file. See the spec's limits table (§5) for the size
   and selector-grammar bounds.
 
@@ -342,9 +343,14 @@ practice:
   plus a matching `integrity=` attribute on its `<script src>`. Do not "restore"
   `'self'`.
 - **`script-src` widens by one `'sha256-…'` per authored `addScript` body** in the
-  served revision, computed at publish time. That is the whole containment story:
-  your script runs because its hash is pinned; upstream or viewer script does not,
-  because theirs is not.
+  served revision, computed at publish time (`authoredScriptCSPHashes`). That is
+  the containment story for an authored body: it runs because its hash is pinned;
+  upstream or viewer script does not, because theirs is not. **Note (INV-14,
+  2026-08-18):** a **newly** published walkthrough can no longer carry any
+  `addScript` op — it is refused at publish (§9a) — so this widening now applies
+  only to revisions stored **before** that gate. The enumeration stays as the
+  correct behaviour for those, and the bundle hash source below is present on
+  every revision regardless.
 - **The `style-src` nonce exists only on the self-contained path.** The proxied-
   upstream response emits no inline `<style>` of ours and therefore passes an
   empty nonce, so that response authorises **no** inline style at all — see §9.
@@ -542,16 +548,35 @@ particular it does **not** cover `addScript src`, because nothing fetches an
 - `authoredScriptCSPHashes` **skips** any op still carrying `src`, so such an op
   contributes no `script-src` hash — for the same reason.
 
-**The supported form is an inline body.** Write `addScript` with a `code` body:
-its sha256 is pinned into the revision's `script-src` at publish time (§7), which
-is what lets it run under the hash-only CSP. A `src` URL has never been able to
-run, and now says so at publish rather than silently going missing from your
-demo.
+**Neither `addScript` form publishes on a public share.** Since the INV-14
+operator decision of 2026-08-18 (task `01M09KYHZ0CFAX2NVGMAQJ1WFW`, option (a)), a
+published walkthrough — which is exactly what the public plane serves, carrying
+the mandatory disclosure indicator (§9b) — is refused at publish if it carries
+**any** `addScript` op, `code` or `src`:
 
-*(Not implemented: spec §6a's plan is to fetch `src` at publish time, inline it,
-and pin its hash — the design that would put these fetches behind the guard. That
-decision stands as the recorded plan; the fetch half does not ship today, which is
-why `src` is refused until it does. Tracked as `01KYQJ9ARWQ0YMGWZ199B6SA3F`.)*
+- `PublishedWalkthrough.Validate` (`internal/publish/validate.go`) rejects the
+  whole artifact, naming that an authored script can defeat the disclosure
+  (INV-14) and to remove the op. The check runs at publish (create/edit) time
+  **only**; a revision stored before the gate is not re-validated on read
+  (`Store.load` verifies a checksum, not the op vocabulary), so existing shares
+  keep serving.
+- The `src` form was already refused one layer down at `Op.Validate`
+  (`internal/publish/op.go`) for a **different** reason — its publish-time fetch
+  is unimplemented (§6a, tracked as `01KYQJ9ARWQ0YMGWZ199B6SA3F`). On a public
+  share the reason a viewer never sees an authored script is now the disclosure,
+  not the missing fetch; both reasons refuse, they do not overlap by accident.
+
+**Why refuse rather than harden the badge.** An authored `addScript` body runs in
+the **same realm** as the indicator, and three real-Chrome defeats were confirmed
+against a hardened module (task `01KYQFAZRH`): id squatting (an empty div carrying
+the host id permanently silences the re-assert loop), re-assert-budget exhaustion,
+and a `Node.prototype.appendChild` monkeypatch that hides the badge from first
+paint. Same-realm script beats same-realm script; the module cannot be hardened
+against it, so the disclosure's integrity is preserved by not admitting authored
+script onto a badge-mandatory share at all. The **bare variant-set** validator
+(`DecodeVariantSet`, for sets that are never served on their own) stays
+permissive — the boundary that refuses is the published walkthrough, because that
+is the artifact a viewer actually loads.
 
 **What this is not:** an anti-phishing control. A publisher dressing up a
 legitimate public site is explicitly out of the threat model — the publisher holds
@@ -605,10 +630,23 @@ still carries the disclosure: the budget bounds the loop, not the disclosure, an
 walking away from a state with no badge at all is the one end state INV-14
 cannot accept.
 
-**Be clear about its limits.** It resists ordinary page CSS and benign removal; it
-is not adversarially tamper-proof. A hostile publisher that removes the host in a
-loop can exhaust the re-assert budget, and that is a deliberate trade (a bounded
-disclosure loss against a hostile page beats a hung page for every viewer).
+**Be clear about its limits.** It resists ordinary page CSS and benign removal.
+The *weaponized* attacks against it all needed authored script: the three
+real-Chrome defeats (id squatting, re-assert-budget exhaustion, an
+`appendChild` monkeypatch; task `01KYQFAZRH`) each required an `addScript` body
+running in the badge's own realm. Since the INV-14 operator decision of
+2026-08-18 (task `01M09KYHZ0CFAX2NVGMAQJ1WFW`) a published walkthrough carrying
+any `addScript` op is refused at publish (§9a), so a publisher can no longer put
+same-realm script on a badge-mandatory share to exhaust the budget or hide the
+host. What remains is the re-assert budget's original job — bounding re-mounts
+against a **benign** SPA that thrashes the DOM, so a runaway re-mount loop cannot
+hang the tab. That bound is a deliberate trade for the benign case (a bounded
+disclosure loss on a pathological page beats a hung tab for every viewer); it is
+no longer a door a hostile publisher can drive an authored script through. The
+indicator is still **not** a control against a hostile *host document* — a live
+upstream the publisher does not control could in principle run its own script —
+but that origin is fetched under §9a's guard and is outside the authored-op
+threat model this refusal closes.
 
 **Where the platform has no constructable stylesheets** (`CSSStyleSheet` /
 `adoptedStyleSheets` unavailable) styling is skipped and the badge renders as an
