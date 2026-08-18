@@ -699,6 +699,37 @@ The get action returns full interaction and mutation history (may be large).
 This provides a high-level view of active pages and their resources.`,
 	}, dt.makeCurrentPageHandler())
 
+	// Demo tool - narrated demo-video authoring surface. Shells to the in-repo
+	// engine (docs-site/screenshots/engine/demo.mjs) as a daemon-managed
+	// process so long recordings survive and report like any managed script.
+	addLenientTool(server, &mcp.Tool{
+		Name: "demo",
+		Description: `Author narrated demo videos with the in-repo demo engine.
+
+This is a repo-checkout capability: it drives docs-site/screenshots/engine/demo.mjs,
+which ships in the agnt repository, not the installed binary. Running it from a
+project without that engine tree returns a loud error naming the requirement.
+
+Actions:
+  list:     Enumerate demos under docs-site/screenshots/demos with a per-demo
+            segment and narration summary.
+  record:   Start a recording as a daemon-managed process; returns a process_id
+            immediately. Observe/stop it via the proc tool (output/status/stop).
+            Pass only:"seg1,seg2" to record specific segments instead of the whole demo.
+  assemble: Re-mux an already-recorded demo from its segment captures (engine
+            --assemble-only) as a managed process; returns a process_id.
+  inspect:  Cut-point authoring aid (not yet available — engine subcommand pending).
+  publish:  Share via the demo-publish target (not yet available — engine subcommand pending).
+
+Examples:
+  demo {action: "list"}
+  demo {action: "record", name: "incident-inbox"}
+  demo {action: "record", name: "incident-inbox", only: "card-intro,fix"}
+  demo {action: "assemble", name: "incident-inbox"}
+  proc {action: "output", process_id: "demo-incident-inbox"}
+  proc {action: "stop", process_id: "demo-incident-inbox"}`,
+	}, dt.makeDemoHandler())
+
 	// Watch tool - returns monitor command for Claude's Monitor tool
 	addLenientTool(server, &mcp.Tool{
 		Name: "watch",
