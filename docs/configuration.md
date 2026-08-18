@@ -93,6 +93,32 @@ scripts {
 3. **Starting** — launches autostart scripts in dependency order
 4. **Started** — confirms all scripts launched
 
+## Browser Automation Concurrency (`internal/config/agnt.go`, `automation` in `.agnt.kdl`)
+
+Caps the number of concurrent chromedp automation sessions the daemon will run.
+Each session is a full headless Chrome process (hundreds of MB RSS plus its own
+renderer subprocesses), so the ceiling is deliberately single-digit — an agent
+looping the `automation` / `browser` MCP tools, or a retry path that opens a
+session per attempt without stopping the previous one, must not be able to spawn
+unbounded Chrome instances and OOM the machine.
+
+```kdl
+automation {
+    max-sessions 4   // default; raise deliberately, memory permitting
+}
+```
+
+| Key | Default | Effect |
+|-----|---------|--------|
+| `max-sessions` | `4` (`DefaultAutomationMaxSessions`) | Maximum concurrent chromedp sessions. `Create` refuses at the cap with an actionable error naming the limit and how to free a slot; the check-and-increment is a single atomic step so the count never exceeds the ceiling even under concurrent creates. A non-positive value restores the default. |
+
+The ceiling is daemon-global and applied on session connect (last-writer-wins,
+the same reconfigure shape as `alerts.push`), so it takes effect for the whole
+daemon, not just the project whose `.agnt.kdl` set it. Lowering it below the
+current active count never evicts a session already in use — it only refuses new
+`Create` calls until the count drops. Runtime enforcement lives in
+`internal/chromedp/manager.go` (`SessionManager.SetMaxSessions` / `Start`).
+
 ## Alert Push Channels (`internal/config/agnt.go`, `alerts.push` in `.agnt.kdl`)
 
 Controls which incident-pinger channels push alerts to the AI client. The
