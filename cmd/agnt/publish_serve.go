@@ -638,31 +638,7 @@ func (s *publishServer) watch(ctx context.Context, pollInterval time.Duration) e
 	if err != nil {
 		return fmt.Errorf("publish serve: fingerprint %s: %w", s.dir, err)
 	}
-	recheck := func() {
-		fp, err := dirFingerprint(s.dir)
-		if err != nil {
-			// Do NOT treat an unreadable directory as "everything was deleted":
-			// that is the mass-revoke trap. Report and keep the current state.
-			fmt.Fprintf(s.out, "publish serve: cannot read %s (keeping the current published state): %v\n", s.dir, err)
-			return
-		}
-		if fp == last {
-			return
-		}
-		held, err := s.publishPass()
-		if err != nil {
-			fmt.Fprintf(s.out, "publish serve: republish failed, keeping the previous published state: %v\n", err)
-			return
-		}
-		if held {
-			// A first zero-walkthrough read was held pending a confirming poll.
-			// Do NOT advance the fingerprint, so the next tick re-reads: a genuine
-			// delete-everything then converges to revoked, a transient empty read
-			// (unmounted /mnt) is undone the moment files reappear.
-			return
-		}
-		last = fp
-	}
+	recheck := func() { last = s.recheckOnce(last) }
 
 	for {
 		select {
@@ -684,6 +660,53 @@ func (s *publishServer) watch(ctx context.Context, pollInterval time.Duration) e
 			recheck()
 		}
 	}
+}
+
+// recheckOnce runs one change-detection cycle and returns the fingerprint to
+// carry forward as `last`. It fingerprints the directory and, only when the
+// fingerprint has changed, runs a publish pass. Extracted from the watch loop
+// so the interaction between the change-detection fast path and the two-poll
+// empty guard is directly testable (see the flap regression test).
+func (s *publishServer) recheckOnce(last string) string {
+	fp, err := dirFingerprint(s.dir)
+	if err != nil {
+		// Do NOT treat an unreadable directory as "everything was deleted":
+		// that is the mass-revoke trap. Report and keep the current state.
+		fmt.Fprintf(s.out, "publish serve: cannot read %s (keeping the current published state): %v\n", s.dir, err)
+		return last
+	}
+	if fp == last {
+		// Unchanged since the last confirmed pass, so publishPass is skipped.
+		// But a real /mnt drop→remount HEALS to an identical fingerprint (the
+		// files' name|size|mtime are untouched), landing on exactly this fast
+		// path. If the observed directory is non-empty, a non-empty read HAS
+		// occurred and the two-poll empty guard must be reset here too — the
+		// guard lives inside publishPass, which this path bypasses, so a stale
+		// emptyHeld left by an earlier blip would otherwise let the NEXT empty
+		// read mass-revoke on its FIRST poll (the exact irreversible loss the
+		// two-poll guard exists to prevent). An empty fingerprint ("") is not a
+		// non-empty observation and must not clear the guard.
+		// (.claude/rules/publish-security-review-lessons.md §12)
+		if fp != "" {
+			s.mu.Lock()
+			s.emptyHeld = false
+			s.mu.Unlock()
+		}
+		return last
+	}
+	held, err := s.publishPass()
+	if err != nil {
+		fmt.Fprintf(s.out, "publish serve: republish failed, keeping the previous published state: %v\n", err)
+		return last
+	}
+	if held {
+		// A first zero-walkthrough read was held pending a confirming poll.
+		// Do NOT advance the fingerprint, so the next tick re-reads: a genuine
+		// delete-everything then converges to revoked, a transient empty read
+		// (unmounted /mnt) is undone the moment files reappear.
+		return last
+	}
+	return fp
 }
 
 // dirFingerprint summarises the *.json files in dir by name, size, and mtime. A

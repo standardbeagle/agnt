@@ -125,7 +125,13 @@ like a password.
   **held** for one poll and only revoked if the *second* consecutive read is also
   empty. A genuine delete-everything still converges one poll later; a transient
   empty read (a mount blipping) costs nothing. Deleting a single file among others
-  still revokes it promptly — only the transition to *zero* files waits. An empty
+  still revokes it promptly — only the transition to *zero* files waits. The
+  "second consecutive empty read" is counted **per drop**: a `/mnt` mount that
+  drops and remounts heals to a byte-identical listing (the files' name, size, and
+  mtime are untouched), which the change detector sees as *unchanged* and any
+  non-empty read — including that unchanged fast path — resets the empty-hold
+  counter. So a mount that flaps twice is two independent single-empty reads, each
+  held; it never accumulates into a false "second consecutive empty". An empty
   `--dir` **at startup refuses to serve** rather than publish nothing, so a
   mis-pointed or transiently-unmounted directory cannot mass-revoke a prior run's
   shares on the way up.

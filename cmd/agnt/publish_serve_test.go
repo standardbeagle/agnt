@@ -725,6 +725,101 @@ func TestPublishPassTwoPollGuardAgainstEmptyRead(t *testing.T) {
 	}
 }
 
+// TestPublishServeWatchFastPathDoesNotStrandEmptyGuard drives the watch loop's
+// change-detection cycle across a /mnt flap: drop → heal-to-IDENTICAL-fingerprint
+// → drop. A real /mnt remount leaves the files' name|size|mtime untouched, so the
+// healed read produces a fingerprint identical to the pre-drop one and takes the
+// `fp == last` fast path that bypasses publishPass. If that fast path does not
+// reset the two-poll empty guard, the guard state left by the FIRST drop is stale
+// on the SECOND drop, and the second drop's FIRST empty read mass-revokes every
+// live share — the exact irreversible loss the guard exists to prevent, inside its
+// documented threat model. Provenance-per-§8: assert the tokens still VERIFY, not
+// merely that records exist.
+func TestPublishServeWatchFastPathDoesNotStrandEmptyGuard(t *testing.T) {
+	dir := t.TempDir()
+	stash := t.TempDir()
+	writeFile(t, dir, "a.json", walkthroughJSON(t, "a", "A", ""))
+	writeFile(t, dir, "b.json", walkthroughJSON(t, "b", "B", ""))
+	store, err := publish.New(filepath.Join(t.TempDir(), "shares"), nil)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	srv := &publishServer{dir: dir, store: store, out: io.Discard, tokens: map[string]string{}}
+
+	// Establish the two live shares, then take the fingerprint the watch loop
+	// would carry as `last` for a settled non-empty directory.
+	if _, err := srv.publishPass(); err != nil {
+		t.Fatalf("initial pass: %v", err)
+	}
+	if got := liveShareIDs(store, dir); len(got) != 2 {
+		t.Fatalf("expected 2 live shares, got %+v", got)
+	}
+	tokens := tokenSnapshot(srv)
+	verifyAll := func(when string) {
+		t.Helper()
+		for f, tok := range tokens {
+			if _, _, ok := store.VerifyToken(tok); !ok {
+				t.Fatalf("token for %s stopped verifying %s", f, when)
+			}
+		}
+	}
+
+	// os.Rename preserves inode/size/mtime, so moving the files out (drop) and
+	// back (heal) reproduces an IDENTICAL fingerprint — the /mnt remount shape.
+	drop := func() {
+		for _, f := range []string{"a.json", "b.json"} {
+			if err := os.Rename(filepath.Join(dir, f), filepath.Join(stash, f)); err != nil {
+				t.Fatalf("drop %s: %v", f, err)
+			}
+		}
+	}
+	heal := func() {
+		for _, f := range []string{"a.json", "b.json"} {
+			if err := os.Rename(filepath.Join(stash, f), filepath.Join(dir, f)); err != nil {
+				t.Fatalf("heal %s: %v", f, err)
+			}
+		}
+	}
+
+	last, err := dirFingerprint(dir)
+	if err != nil {
+		t.Fatalf("initial fingerprint: %v", err)
+	}
+
+	// (1) First drop: an empty read, HELD once. `last` is not advanced.
+	drop()
+	last = srv.recheckOnce(last)
+	if got := liveShareIDs(store, dir); len(got) != 2 {
+		t.Fatalf("first drop's held read revoked shares: %+v", got)
+	}
+	verifyAll("during the first drop's hold")
+
+	// (2) Heal to an identical fingerprint: the fast path (fp == last) bypasses
+	// publishPass. It MUST reset the empty guard, because a non-empty directory
+	// has now been observed.
+	heal()
+	healedFP, err := dirFingerprint(dir)
+	if err != nil {
+		t.Fatalf("healed fingerprint: %v", err)
+	}
+	if healedFP != last {
+		t.Fatalf("test premise broken: heal did not reproduce an identical fingerprint (%q vs %q); the fast path is not exercised", healedFP, last)
+	}
+	last = srv.recheckOnce(last)
+	verifyAll("after the heal-to-identical-fingerprint fast path")
+
+	// (3) Second drop: because the heal reset the guard, this first empty read is
+	// HELD again — it must NOT mass-revoke. This is the assertion that fails on
+	// the pre-fix code, where the stranded guard state revokes here.
+	drop()
+	last = srv.recheckOnce(last)
+	if got := liveShareIDs(store, dir); len(got) != 2 {
+		t.Fatalf("second drop's FIRST empty poll mass-revoked live shares (stale two-poll guard): %+v", got)
+	}
+	verifyAll("after the second drop's first poll")
+	_ = last
+}
+
 // TestPublishServeEmptyDirAtStartupRefuses pins the startup decision: a directory
 // that reads as empty at boot refuses to serve rather than publishing nothing —
 // AND, critically, does not mass-revoke a pre-existing store's shares on the way
