@@ -11,7 +11,17 @@ import (
 )
 
 func (d *Daemon) hubHandleScope(_ context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	if len(cmd.Args) == 0 || cmd.Args[0] != protocol.SubVerbResolve {
+	// RESOLVE is registered as a sub-verb for SCOPE (hub_run.go), so the wire
+	// parser lifts it into cmd.SubVerb and leaves cmd.Args empty — reading
+	// cmd.Args[0] here made this handler reject EVERY real "SCOPE RESOLVE" call
+	// with "expected SCOPE RESOLVE" (the parser never leaves the token in Args
+	// once it is registered). Dispatch on cmd.SubVerb like every other router
+	// handler, tolerating a stray Args[0] spelling for a hand-built command.
+	sub := cmd.SubVerb
+	if sub == "" && len(cmd.Args) > 0 {
+		sub = cmd.Args[0]
+	}
+	if sub != protocol.SubVerbResolve {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "expected SCOPE RESOLVE")
 	}
 	filter, err := unmarshalCommand[protocol.DirectoryFilter](cmd)
