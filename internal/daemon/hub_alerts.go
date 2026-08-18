@@ -80,7 +80,7 @@ func (d *Daemon) hubHandleAlertsQuery(conn *hubpkg.Connection, cmd *hubproto.Com
 	// INCIDENTS QUERY) rather than leaking every project's alerts.
 	projectPath, global, err := d.resolveProjectScope(scopeFilter, conn.SessionCode())
 	if err != nil {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+		return d.writeScopeErr(conn, err, "session_code")
 	}
 
 	filter := AlertStoreFilter{
@@ -172,7 +172,7 @@ func (d *Daemon) hubHandleStartupLog(conn *hubpkg.Connection, cmd *hubproto.Comm
 	// that can't resolve a project fail loud (mirrors ALERTS QUERY).
 	projectPath, global, err := d.resolveProjectScope(scopeFilter, conn.SessionCode())
 	if err != nil {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+		return d.writeScopeErr(conn, err, "session_code")
 	}
 	if !global {
 		filter.ProjectPath = projectPath

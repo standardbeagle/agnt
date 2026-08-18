@@ -32,6 +32,11 @@ type GetIncidentsInput struct {
 	MarkRead     bool     `json:"mark_read,omitempty"     jsonschema:"Advance cursor and mark returned incidents as read"`
 	Limit        int      `json:"limit,omitempty"         jsonschema:"Max incidents to return (default: 20, max: 100)"`
 	Raw          bool     `json:"raw,omitempty"           jsonschema:"Return full JSON instead of compact text"`
+	// Session picks which session's inbox to read when this agent is not already
+	// attached to one. Omit it for the ordinary case; if the daemon can't resolve
+	// a session it returns the candidate sessions to choose from, and you re-call
+	// with session:<code>.
+	Session string `json:"session,omitempty" jsonschema:"Session code to read the inbox of (from a prior scope_candidates list); omit when already attached"`
 }
 
 // GetIncidentsOutput is the output for the get_incidents tool.
@@ -52,6 +57,13 @@ type GetIncidentsOutput struct {
 	// incidents are missing from this answer", which must never be silently
 	// rendered as a clean result.
 	CollectionWarnings []string `json:"collection_warnings,omitempty" jsonschema:"Ways this view is partial; non-empty means some incidents are missing from the answer"`
+	// ScopeCandidates is the progressive-disclosure answer to a scope failure:
+	// when no session inbox could be resolved (and this agent named none), the
+	// daemon returns the sessions to pick from here instead of erroring. Re-call
+	// get_incidents with session:<code>. Metadata only — no incident content.
+	ScopeCandidates []protocol.SessionCandidate `json:"scope_candidates,omitempty" jsonschema:"Sessions to pick from when no inbox was resolved; re-call with session:<code>"`
+	// ScopeAmbiguous is true when ScopeCandidates stands in for a resolved inbox.
+	ScopeAmbiguous bool `json:"scope_ambiguous,omitempty"`
 }
 
 type incidentView struct {
@@ -197,6 +209,8 @@ func makeGetIncidentsHandler(dt *DaemonTools) func(context.Context, *mcp.CallToo
 			Truncated:          truncated,
 			PipelineEnabled:    result.PipelineEnabled,
 			CollectionWarnings: result.CollectionWarnings,
+			ScopeCandidates:    result.ScopeCandidates,
+			ScopeAmbiguous:     result.ScopeAmbiguous,
 		}
 
 		if input.Raw {
@@ -302,6 +316,7 @@ func buildGetIncidentsFilter(input GetIncidentsInput) protocol.IncidentQueryFilt
 		Detail:       input.Detail,
 		MarkRead:     input.MarkRead,
 		Limit:        limit,
+		SessionCode:  input.Session,
 	}
 }
 
@@ -332,6 +347,28 @@ func recordToView(rec protocol.IncidentRecord) incidentView {
 
 func formatIncidentsCompact(out GetIncidentsOutput) string {
 	var sb strings.Builder
+
+	// Scope disambiguation short-circuits the normal render: no inbox was
+	// resolved, so there are no incidents to show — only the sessions to pick
+	// from. Returning this list (not an error) is the whole point: the agent
+	// re-calls get_incidents with session:<code> in one more round trip.
+	if out.ScopeAmbiguous {
+		sb.WriteString("=== No session inbox resolved — pick one and re-call get_incidents {session: \"<code>\"} ===\n")
+		for _, w := range out.CollectionWarnings {
+			sb.WriteString("!! " + w + "\n")
+		}
+		for _, c := range out.ScopeCandidates {
+			line := "  - " + c.SessionCode
+			if c.ProjectPath != "" {
+				line += "  (" + c.ProjectPath + ")"
+			}
+			if c.Command != "" {
+				line += "  [" + c.Command + "]"
+			}
+			sb.WriteString(line + "\n")
+		}
+		return sb.String()
+	}
 
 	s := out.InboxAfter
 	sb.WriteString(fmt.Sprintf("=== Incidents (%d) === [inbox: crit=%d err=%d warn=%d info=%d new=%d]\n",

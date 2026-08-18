@@ -614,6 +614,27 @@ type IncidentQueryFilter struct {
 	Detail       string   `json:"detail,omitempty"` // "summary" (default) | "full"
 	MarkRead     bool     `json:"mark_read,omitempty"`
 	Limit        int      `json:"limit,omitempty"` // 0 → 20; max 100
+	// SessionCode selects which session's inbox to READ when the connection is
+	// not itself session-bound (the MCP daemon connection never is). It is a
+	// read selector only — the inboxes stay hard-isolated (numbered contract 1);
+	// the caller merely picks one of its own sessions to read. Empty falls back
+	// to the connection's bound session, and a session-less query with no
+	// selector returns the candidate list to pick from (progressive disclosure)
+	// rather than a bare "no session attached" error. Contrast IncidentPinPayload,
+	// which forbids a selector because it is a WRITE path.
+	SessionCode string `json:"session_code,omitempty"`
+}
+
+// SessionCandidate is a metadata-only descriptor of a session a scope-failing
+// query could be re-issued against. It carries NO inbox / incident content — only
+// enough for the caller to pick a session — so returning a list of these never
+// crosses the per-session isolation boundary (numbered contract 1).
+type SessionCandidate struct {
+	SessionCode string `json:"session_code"`
+	ProjectPath string `json:"project_path"`
+	Command     string `json:"command,omitempty"`
+	StartedAt   string `json:"started_at,omitempty"`
+	Kind        string `json:"kind,omitempty"`
 }
 
 // IncidentPinPayload addresses one inbox entry for INCIDENTS PIN / UNPIN.
@@ -665,6 +686,18 @@ type IncidentQueryResult struct {
 	// make it non-empty: events the bus dropped before they reached any inbox,
 	// and payloads a detail:"full" pull could not hydrate.
 	CollectionWarnings []string `json:"collection_warnings,omitempty"`
+	// ScopeCandidates is populated ONLY when the query could not resolve a
+	// session inbox and there is more than zero session to pick from. It is the
+	// progressive-disclosure answer to a scope failure: instead of erroring and
+	// forcing the caller into a separate discovery call, the daemon returns the
+	// sessions it could serve so the caller re-issues with session_code:<code> in
+	// one more round trip. Metadata only — no inbox content crosses here. Empty
+	// on a normal resolved query.
+	ScopeCandidates []SessionCandidate `json:"scope_candidates,omitempty"`
+	// ScopeAmbiguous is true exactly when ScopeCandidates stands in for a
+	// resolved inbox: the query named no session and the connection was not
+	// session-bound, so Incidents is empty and the caller must pick a candidate.
+	ScopeAmbiguous bool `json:"scope_ambiguous,omitempty"`
 }
 
 // IncidentRecord is the wire shape for a single incident in a query result.

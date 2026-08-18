@@ -42,7 +42,7 @@ func (d *Daemon) hubHandleStopAll(ctx context.Context, conn *hubpkg.Connection, 
 	}
 	projectPath, global, err := d.resolveProjectScope(filter, conn.SessionCode())
 	if err != nil {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+		return d.writeScopeErr(conn, err, "session_code")
 	}
 
 	// Count resources before stopping, scoped to the resolved project.
@@ -85,7 +85,7 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 	}
 	projectPath, global, err := d.resolveProjectScope(filter, conn.SessionCode())
 	if err != nil {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+		return d.writeScopeErr(conn, err, "session_code")
 	}
 
 	// Capture running resources before stop, scoped to the resolved project.

@@ -515,7 +515,7 @@ func (d *Daemon) hubHandleSessionList(conn *hubpkg.Connection, cmd *hubproto.Com
 	// fails loud rather than listing every project's sessions.
 	projectPath, global, err := d.resolveProjectScope(filter, conn.SessionCode())
 	if err != nil {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+		return d.writeScopeErr(conn, err, "session_code")
 	}
 
 	sessions := d.sessionRegistry.List(projectPath, global)
@@ -667,7 +667,7 @@ func (d *Daemon) hubHandleSessionTasks(conn *hubpkg.Connection, cmd *hubproto.Co
 	// fails loud rather than listing every project's scheduled tasks.
 	projectPath, global, err := d.resolveProjectScope(filter, conn.SessionCode())
 	if err != nil {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+		return d.writeScopeErr(conn, err, "session_code")
 	}
 
 	tasks := d.scheduler.ListTasks(projectPath, global)

@@ -313,7 +313,7 @@ func (d *Daemon) hubHandleProcList(ctx context.Context, conn *hubpkg.Connection,
 	// projects' processes.
 	projectPath, global, err := d.resolveProjectScope(dirFilter, conn.SessionCode())
 	if err != nil {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+		return d.writeScopeErr(conn, err, "session_code")
 	}
 	sessionCode := dirFilter.SessionCode
 	if sessionCode == "" {

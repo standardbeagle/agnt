@@ -144,7 +144,7 @@ func (d *Daemon) hubHandlePortsQuery(ctx context.Context, conn *hubpkg.Connectio
 	}
 	projectPath, _, err := d.resolveProjectScope(dirFilter, conn.SessionCode())
 	if err != nil {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+		return d.writeScopeErr(conn, err, "session_code")
 	}
 
 	owners, managed, orphanPGIDs := d.cachedPortsData(ctx)
@@ -209,7 +209,7 @@ func (d *Daemon) hubHandlePortsCleanOrphans(ctx context.Context, conn *hubpkg.Co
 	}
 	projectPath, _, err := d.resolveProjectScope(dirFilter, conn.SessionCode())
 	if err != nil {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+		return d.writeScopeErr(conn, err, "session_code")
 	}
 	reaped, failed := d.reapOrphans(projectPath)
 

@@ -36,9 +36,22 @@ func (d *Daemon) incidentSession(conn *hubpkg.Connection) (string, error) {
 	}
 	sessionCode := conn.SessionCode()
 	if sessionCode == "" {
-		return "", fmt.Errorf("no session attached — call SESSION ATTACH first")
+		// Retention is a per-session WRITE path and deliberately takes no
+		// cross-session selector (see IncidentPinPayload), so the sentinel here
+		// lets the caller surface the candidate list via writeScopeErrHint —
+		// disclosure without opening a cross-session write.
+		return "", errNoSessionScope
 	}
 	return sessionCode, nil
+}
+
+// writeIncidentRetentionScopeErr surfaces the session candidates for a
+// session-less retention call. Retention cannot honor a session_code selector
+// (write-path isolation), so the instruction is to attach a session, not to pass
+// a code.
+func (d *Daemon) writeIncidentRetentionScopeErr(conn *hubpkg.Connection, err error) error {
+	return d.writeScopeErrHint(conn, err,
+		"attach one of these sessions (agnt auto-attaches by cwd) and retry")
 }
 
 // hubHandleIncidentsPin handles INCIDENTS PIN: marks one inbox entry exempt
@@ -46,7 +59,7 @@ func (d *Daemon) incidentSession(conn *hubpkg.Connection) (string, error) {
 func (d *Daemon) hubHandleIncidentsPin(conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	sessionCode, err := d.incidentSession(conn)
 	if err != nil {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+		return d.writeIncidentRetentionScopeErr(conn, err)
 	}
 	payload, err := unmarshalCommand[protocol.IncidentPinPayload](cmd)
 	if err != nil || payload.Fingerprint == "" {
@@ -84,7 +97,7 @@ func (d *Daemon) hubHandleIncidentsPin(conn *hubpkg.Connection, cmd *hubproto.Co
 func (d *Daemon) hubHandleIncidentsUnpin(conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	sessionCode, err := d.incidentSession(conn)
 	if err != nil {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+		return d.writeIncidentRetentionScopeErr(conn, err)
 	}
 	payload, err := unmarshalCommand[protocol.IncidentPinPayload](cmd)
 	if err != nil || payload.Fingerprint == "" {
@@ -115,7 +128,7 @@ func (d *Daemon) hubHandleIncidentsUnpin(conn *hubpkg.Connection, cmd *hubproto.
 func (d *Daemon) hubHandleIncidentsClear(conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	sessionCode, err := d.incidentSession(conn)
 	if err != nil {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+		return d.writeIncidentRetentionScopeErr(conn, err)
 	}
 
 	kept := d.incidentBus.PinnedCountSession(sessionCode)
@@ -142,15 +155,52 @@ func (d *Daemon) hubHandleIncidentsQuery(conn *hubpkg.Connection, cmd *hubproto.
 		return conn.WriteErr(hubproto.ErrInternal, "incident pipeline not initialized")
 	}
 
-	sessionCode := conn.SessionCode()
-	if sessionCode == "" {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, "no session attached — call SESSION ATTACH first")
-	}
-
 	var filter protocol.IncidentQueryFilter
 	if len(cmd.Data) > 0 {
 		if err := json.Unmarshal(cmd.Data, &filter); err != nil {
 			return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid filter: %v", err))
+		}
+	}
+
+	// Session resolution for a READ: an explicit filter.SessionCode picks which
+	// of the caller's own session inboxes to read (the MCP daemon connection is
+	// never session-bound, so it must be able to name one); otherwise fall back
+	// to the connection's bound session. Reading a chosen inbox does not weaken
+	// per-session isolation (numbered contract 1) — the inboxes stay separate,
+	// the caller merely selects one.
+	sessionCode := filter.SessionCode
+	if sessionCode == "" {
+		sessionCode = conn.SessionCode()
+	}
+	if sessionCode == "" {
+		// Progressive disclosure: no session to read and none named. Return the
+		// candidate inboxes to pick from in THIS response rather than erroring and
+		// forcing a separate discovery call. An error is reserved for the case
+		// where there is genuinely no session at all.
+		candidates := d.sessionCandidates()
+		if len(candidates) == 0 {
+			return conn.WriteErr(hubproto.ErrInvalidArgs, noSessionsMessage)
+		}
+		result := protocol.IncidentQueryResult{
+			ScopeCandidates: candidates,
+			ScopeAmbiguous:  true,
+		}
+		data, _ := json.Marshal(result)
+		return conn.WriteJSON(data)
+	}
+	// An explicitly named session that does not exist is a caller mistake, not a
+	// disambiguation: name it, and still hand back the real candidates.
+	if filter.SessionCode != "" {
+		if _, ok := d.sessionRegistry.Get(filter.SessionCode); !ok {
+			candidates := d.sessionCandidates()
+			result := protocol.IncidentQueryResult{
+				ScopeCandidates: candidates,
+				ScopeAmbiguous:  true,
+				CollectionWarnings: []string{fmt.Sprintf(
+					"session %q not found — pick one of the listed candidates", filter.SessionCode)},
+			}
+			data, _ := json.Marshal(result)
+			return conn.WriteJSON(data)
 		}
 	}
 

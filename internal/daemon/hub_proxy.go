@@ -270,7 +270,7 @@ func (d *Daemon) hubHandleProxyList(conn *hubpkg.Connection, cmd *hubproto.Comma
 	// fails loud rather than listing every project's proxies.
 	sc, err := d.resolveScope(dirFilter, conn.SessionCode())
 	if err != nil {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+		return d.writeScopeErr(conn, err, "session_code")
 	}
 
 	proxies := d.proxym.ListScoped(sc)

@@ -155,7 +155,7 @@ func (d *Daemon) hubHandleTunnelList(conn *hubpkg.Connection, cmd *hubproto.Comm
 	// fails loud rather than listing every project's tunnels.
 	projectPath, global, err := d.resolveProjectScope(dirFilter, conn.SessionCode())
 	if err != nil {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+		return d.writeScopeErr(conn, err, "session_code")
 	}
 
 	var infos []tunnel.TunnelInfo

@@ -202,7 +202,7 @@ func (d *Daemon) hubHandleSessionHostList(conn *hubpkg.Connection, cmd *hubproto
 	filter, _ := unmarshalCommand[protocol.DirectoryFilter](cmd)
 	projectPath, global, err := d.resolveProjectScope(filter, conn.SessionCode())
 	if err != nil {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+		return d.writeScopeErr(conn, err, "session_code")
 	}
 
 	sessions := d.sessionHosts.List(projectPath, global)

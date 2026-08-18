@@ -39,7 +39,10 @@ func (d *Daemon) hubHandleOverlayForwarding(conn *hubpkg.Connection, cmd *hubpro
 	}
 	sessionCode := conn.SessionCode()
 	if sessionCode == "" {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, "no session attached: OVERLAY FORWARDING is session-scoped")
+		// Progressive disclosure: OVERLAY FORWARDING pauses/resumes one session's
+		// agent-inbound push, so it needs a session — but return the sessions to
+		// pick from in the same round trip rather than a bare error.
+		return d.writeScopeErr(conn, errNoSessionScope, "session_code")
 	}
 	// Anything that isn't exactly "true" used to mean "resume": a typo, or a
 	// caller sending "1", silently un-paused agent-inbound push.
@@ -124,7 +127,7 @@ func (d *Daemon) hubHandleOverlayActivity(conn *hubpkg.Connection, cmd *hubproto
 		// fan activity out across every project.
 		sc, err := d.resolveScope(protocol.DirectoryFilter{}, conn.SessionCode())
 		if err != nil {
-			return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+			return d.writeScopeErr(conn, err, "session_code")
 		}
 		proxiesToBroadcast = d.proxym.ListScoped(sc)
 	}
@@ -179,7 +182,7 @@ func (d *Daemon) hubHandleOverlayOutputPreview(conn *hubpkg.Connection, cmd *hub
 	} else {
 		sc, err := d.resolveScope(protocol.DirectoryFilter{}, conn.SessionCode())
 		if err != nil {
-			return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+			return d.writeScopeErr(conn, err, "session_code")
 		}
 		proxiesToBroadcast = d.proxym.ListScoped(sc)
 	}
