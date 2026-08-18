@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -503,6 +504,73 @@ func TestPublishServeCommandWiring(t *testing.T) {
 	}
 	if got := publishServeCmd.Flags().Lookup("addr").DefValue; got != defaultPublishServeAddr {
 		t.Fatalf("--addr default = %q, want %q", got, defaultPublishServeAddr)
+	}
+}
+
+// TestDefaultPublishServeAddrIsLoopback pins the shipped-default exposure posture:
+// `agnt publish serve` with no --addr must bind loopback, not every interface.
+// AGENTS.md § Exposure Posture declares this command's shipped default as loopback,
+// widened only by explicit operator action (--tunnel or an explicit wider --addr);
+// a bare ":8899" default binds all interfaces, i.e. LAN-reachable by install default,
+// which the posture rules forbid. The default is the flag's DefValue, so this also
+// pins that a no-flag invocation resolves to a loopback host.
+func TestDefaultPublishServeAddrIsLoopback(t *testing.T) {
+	host, _, err := net.SplitHostPort(defaultPublishServeAddr)
+	if err != nil {
+		t.Fatalf("defaultPublishServeAddr %q is not a host:port: %v", defaultPublishServeAddr, err)
+	}
+	ip := net.ParseIP(host)
+	if ip == nil || !ip.IsLoopback() {
+		t.Fatalf("defaultPublishServeAddr host = %q (from %q), want a loopback IP — the shipped default must bind loopback (AGENTS.md § Exposure Posture); a bare :port binds all interfaces",
+			host, defaultPublishServeAddr)
+	}
+	// The flag's default value IS this constant, so a no-flag run resolves here.
+	if got := publishServeCmd.Flags().Lookup("addr").DefValue; got != defaultPublishServeAddr {
+		t.Fatalf("--addr default = %q, want the loopback default %q", got, defaultPublishServeAddr)
+	}
+}
+
+// TestPublishServeExplicitWideBindStillWarns pins that moving the DEFAULT to
+// loopback does not silence the loud non-loopback advisory: an operator who
+// explicitly passes a wide bind (0.0.0.0) still gets the WARNING. Deliberate
+// exposure stays possible AND stays announced — the warning keys on the bound
+// address, never on the default value.
+func TestPublishServeExplicitWideBindStillWarns(t *testing.T) {
+	// Never t.Parallel(): binds a real listener (here, briefly, on all interfaces
+	// on an ephemeral port) and is torn down immediately.
+	dir := t.TempDir()
+	writeFile(t, dir, "demo.json", walkthroughJSON(t, "demo", "Demo", ""))
+	out := &syncBuffer{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	listening := make(chan string, 1)
+	done := make(chan error, 1)
+	go func() {
+		done <- runPublishServe(ctx, publishServeOptions{
+			Dir:          dir,
+			Addr:         "0.0.0.0:0",
+			StoreDir:     filepath.Join(t.TempDir(), "store"),
+			Out:          out,
+			PollInterval: time.Second,
+			OnListen:     func(addr string) { listening <- addr },
+		})
+	}()
+	select {
+	case <-listening:
+	case err := <-done:
+		t.Fatalf("serve exited before listening: %v (output: %s)", err, out.String())
+	case <-time.After(20 * time.Second):
+		t.Fatalf("serve never listened (output: %s)", out.String())
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(20 * time.Second):
+		t.Fatalf("serve did not shut down")
+	}
+	got := out.String()
+	if !strings.Contains(got, "WARNING") || !strings.Contains(got, "all interfaces") {
+		t.Fatalf("an explicit 0.0.0.0 bind did not emit the loud non-loopback warning:\n%s", got)
 	}
 }
 
