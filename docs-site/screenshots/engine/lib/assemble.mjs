@@ -59,6 +59,40 @@ const spliceTake = (seg, marks, workDir, view) => {
   return joined;
 };
 
+// Burned-caption ASS style, shared by the final mux and its tests.
+const SUB_STYLE = 'FontName=DejaVu Sans,FontSize=9,PrimaryColour=&H00FFFFFF,BorderStyle=4,BackColour=&HA0101317,Outline=0,Shadow=0,MarginV=22';
+// The single vp9 video-encode flag set the final mux uses whenever it re-encodes.
+const VP9_VIDEO = ['-c:v', 'libvpx-vp9', '-crf', '33', '-b:v', '0', '-deadline', 'realtime', '-cpu-used', '5', '-row-mt', '1'];
+
+// Final-mux filter-graph construction, extracted pure (args in → ffmpeg argv out)
+// so it is unit-testable without ever spawning ffmpeg. Both the brand overlay
+// (Part A) and the EBU R128 loudnorm (Part B) are filters folded in HERE, into
+// the ONE final invocation — never a second encode pass.
+//
+// Returns {argv, encodeCount, path}:
+//   - argv:        the args passed to `ff` (i.e. after its `-y -v error` prefix).
+//   - encodeCount: video encodes this invocation performs (0 = stream-copy).
+//   - path:        'silent' | 'silent-brand' | 'narrated' | 'narrated-brand'.
+export const buildFinalMuxArgs = (spec, {silent, out, srtPath}, opts) => {
+  if (!opts.voiced.length) {
+    return {argv: ['-i', silent, '-c', 'copy', out], encodeCount: 0, path: 'silent'};
+  }
+  const {voiced, totalDur, view} = opts;
+  const audioIn = [], delays = [];
+  voiced.forEach((v, i) => {
+    audioIn.push('-i', v.mp3);
+    delays.push(`[${i + 1}:a]adelay=${Math.round(v.at * 1000)}|${Math.round(v.at * 1000)}[a${i}]`);
+  });
+  const mix = `${delays.join(';')};${voiced.map((_, i) => `[a${i}]`).join('')}amix=inputs=${voiced.length}:normalize=0[voa]`;
+  const argv = ['-i', silent, ...audioIn,
+    '-filter_complex', `${mix};[0:v]subtitles=${srtPath}:force_style='${SUB_STYLE}'[vout]`,
+    '-map', '[vout]', '-map', '[voa]',
+    ...VP9_VIDEO, '-r', String(view.fps),
+    '-c:a', 'libopus', '-b:a', '96k',
+    '-t', String(totalDur), out];
+  return {argv, encodeCount: 1, path: 'narrated'};
+};
+
 export const assemble = async (spec, {demoDir, workDir, outDir}) => {
   const view = {...spec.viewport, fps: spec.fps || 25};
 
@@ -167,27 +201,14 @@ export const assemble = async (spec, {demoDir, workDir, outDir}) => {
   ff(['-f', 'concat', '-safe', '0', '-i', lst, '-c', 'copy', silent]);
 
   const out = path.join(outDir, spec.name + '.webm');
-  if (!voiced.length) {
-    ff(['-i', silent, '-c', 'copy', out]);
-    console.log('assembled', out, totalDur.toFixed(1) + 's (silent)');
-    return {out, vtt: null};
+  let srtPath = null;
+  if (voiced.length) {
+    srtPath = path.join(workDir, 'captions.srt');
+    fs.writeFileSync(srtPath, srtOut);
+    fs.writeFileSync(path.join(outDir, spec.name + '.vtt'), vtt);
   }
-  const srtPath = path.join(workDir, 'captions.srt');
-  fs.writeFileSync(srtPath, srtOut);
-  fs.writeFileSync(path.join(outDir, spec.name + '.vtt'), vtt);
-  const audioIn = [], delays = [];
-  voiced.forEach((v, i) => {
-    audioIn.push('-i', v.mp3);
-    delays.push(`[${i + 1}:a]adelay=${Math.round(v.at * 1000)}|${Math.round(v.at * 1000)}[a${i}]`);
-  });
-  const mix = `${delays.join(';')};${voiced.map((_, i) => `[a${i}]`).join('')}amix=inputs=${voiced.length}:normalize=0[voa]`;
-  const subStyle = 'FontName=DejaVu Sans,FontSize=9,PrimaryColour=&H00FFFFFF,BorderStyle=4,BackColour=&HA0101317,Outline=0,Shadow=0,MarginV=22';
-  ff(['-i', silent, ...audioIn,
-    '-filter_complex', `${mix};[0:v]subtitles=${srtPath}:force_style='${subStyle}'[vout]`,
-    '-map', '[vout]', '-map', '[voa]',
-    '-c:v', 'libvpx-vp9', '-crf', '33', '-b:v', '0', '-deadline', 'realtime', '-cpu-used', '5', '-row-mt', '1', '-r', String(view.fps),
-    '-c:a', 'libopus', '-b:a', '96k',
-    '-t', String(totalDur), out]);
-  console.log('assembled', out, totalDur.toFixed(1) + 's');
-  return {out, vtt: path.join(outDir, spec.name + '.vtt')};
+  const {argv} = buildFinalMuxArgs(spec, {silent, out, srtPath}, {voiced, totalDur, view, demoDir});
+  ff(argv);
+  console.log('assembled', out, totalDur.toFixed(1) + 's' + (voiced.length ? '' : ' (silent)'));
+  return {out, vtt: voiced.length ? path.join(outDir, spec.name + '.vtt') : null};
 };
