@@ -87,8 +87,35 @@ func TestProxyWaitFor_PortProbeSurvivesAutostart(t *testing.T) {
 	clusterDir := t.TempDir()
 	d := newDaemon(t, clusterDir)
 
-	// Reserve a port, then free it so the script's probe target is initially
-	// unbound. We bind it ourselves AFTER autostart completes.
+	// Bind this test's own ephemeral sockets FIRST — the httptest backend and
+	// the proxy listen port — so they hold real ports before we pick the probe
+	// port. `ephemeralPort` bind-and-releases a `:0` port and this test then
+	// binds that exact port itself (line ~"net.Listen" below), which is the
+	// misuse its own doc warns against ("not for ports you intend to bind
+	// yourself, small TOCTOU window"). During the interval the probe port must
+	// stay unbound (so the gate stays closed), any `:0` bind can steal it: were
+	// the backend/proxy allocated AFTER probePort, they could land on the freed
+	// port and either open the gate early (probe sees it up) or fail net.Listen.
+	// Reserving them first removes this test's own two binds from that window;
+	// the residual parallel-sibling `:0` window is intrinsic to a down-then-up
+	// fixed port and is registered in docs/testing-flake-registry.md.
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer backend.Close()
+
+	created, err := d.proxym.Create(context.Background(), proxy.ProxyConfig{
+		ID:         "gated-proxy",
+		TargetURL:  backend.URL,
+		ListenPort: 0,
+		MaxLogSize: 50,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.proxym.Stop(context.Background(), "gated-proxy") })
+
+	// Now pick the probe port: guaranteed distinct from the backend and proxy
+	// ports held above. Free it so the script's probe target is initially
+	// unbound; we bind it ourselves AFTER autostart completes.
 	probePort := ephemeralPort(t)
 
 	dir := t.TempDir()
@@ -109,22 +136,9 @@ scripts {
 	require.Contains(t, result.Scripts, "backend")
 
 	// Autostart returned; its ctx is cancelled. The probe must still be alive
-	// on the daemon ctx. Register the proxy gate, then bind the port.
+	// on the daemon ctx. Register the proxy gate late (simulating the async
+	// URL-detection event), then bind the port.
 	projectPath := normalizePath(dir)
-	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	defer backend.Close()
-
-	created, err := d.proxym.Create(context.Background(), proxy.ProxyConfig{
-		ID:         "gated-proxy",
-		TargetURL:  backend.URL,
-		ListenPort: 0,
-		MaxLogSize: 50,
-	})
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = d.proxym.Stop(context.Background(), "gated-proxy") })
-
 	proxyCfg := &config.ProxyConfig{Script: "dev-frontend", WaitFor: []string{"backend"}}
 	d.registerProxyDependencies(created, "gated-proxy", proxyCfg, projectPath)
 	require.False(t, created.IsReadyForForwarding(), "gate should start closed: port not bound yet")
