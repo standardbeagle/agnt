@@ -678,13 +678,21 @@ func (pm *ProcessManager) killProcesses(ctx context.Context, pids []int) []int {
 		}
 	}
 
-	// Phase 2: Wait for graceful exit, but honor cancellation instead of a hard
-	// 3s stall on the caller's goroutine (port preflight / shutdown hot paths).
-	select {
-	case <-ctx.Done():
-		return killedPids
-	case <-time.After(3 * time.Second):
-	}
+	// Phase 2: Wait for graceful exit. Poll until every target has released its
+	// resources, escalating as soon as they are all gone rather than sleeping out
+	// a flat grace period — a process that dies instantly on SIGTERM must not
+	// stall the caller (port preflight / shutdown / startup cleanup hot paths,
+	// which pay this per orphaned port). The 3s stays as a ceiling only: a
+	// process that genuinely ignores SIGTERM still survives the full window and
+	// is SIGKILLed in Phase 3. Cancellation short-circuits the wait.
+	//
+	// UPSTREAM: local patch pending submission to
+	// github.com/standardbeagle/go-cli-server (no `replace` directive in go.mod,
+	// so `go mod vendor` will clobber this — re-apply until upstreamed).
+	// Previously an unconditional `<-time.After(3 * time.Second)` here stalled
+	// every daemon startup 3s per orphaned proxy port. See agnt worktrack task
+	// 01KYSZ89SP78N23QJR82GXKYP1.
+	waitForProcessesToExit(ctx, pids, identities, 3*time.Second)
 
 	// Phase 3: SIGKILL escalation for survivors — skip any PID whose identity no
 	// longer matches, i.e. the original exited and the PID was recycled.
