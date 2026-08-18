@@ -148,9 +148,9 @@ Given per-call `DirectoryFilter{Global, SessionCode, Directory}` and connection'
 2. explicit `SessionCode` → that session's project path (error if unknown).
 3. explicit `Directory` → normalized directory.
 4. otherwise connection's bound session's project path.
-5. none of above → `("", false, errNoSessionScope)`: **fail loud**.
+5. none of above → `("", false, errNoSessionScope)`: **return the candidate list** (progressive disclosure), not a bare error.
 
-Call that cannot resolve a project is rejected with `invalid_args: no session attached …` rather than silently leaking every project's data. After resolving the project, omitted `global` uses `scope.default-global` from `.agnt.kdl` (secure default `false`); explicit `global:true` or `global:false` wins in either direction. MCP daemon connection not session-bound, so MCP tools name project explicitly via `SessionCode` (preferred) or `Directory` (fallback) — see `collectProcessAlerts` / `handleProcList` for canonical client pattern.
+`resolveProjectScope` still returns `errNoSessionScope` — that is the sentinel, not the response. Handlers do NOT write it verbatim; they route it through `writeScopeErr` / `writeScopeErrHint` (`hub_scope_candidates.go`), which replies with the active sessions the caller can re-issue against (metadata only: code, project path, command — never inbox/incident content, so isolation holds). An error is written **only** when there is genuinely no session at all (`noSessionsMessage`). This is the owner rule "if the daemon knows the valid values, return them; never error telling the caller to go find them" — a scope failure must not force error → discovery → retry. After resolving a project, omitted `global` uses `scope.default-global` from `.agnt.kdl` (secure default `false`); explicit `global:true`/`global:false` wins. MCP daemon connection not session-bound, so MCP tools name project explicitly via `SessionCode` (preferred) or `Directory` (fallback) — see `collectProcessAlerts` / `handleProcList`.
 
 ### Uniform `global` override on MCP tools (C6)
 
@@ -158,7 +158,7 @@ Every gated MCP tool exposes the **same** optional `global *bool` override (`jso
 
 Two tools intentionally do **not** take cross-project `global`, excluded from contract test:
 
-- **`get_incidents`** — incident inbox per-session *hard-isolated* ("Cross-session isolation" numbered contract below). Stronger guarantee than project scoping; cross-session global would violate it.
+- **`get_incidents`** — incident inbox per-session *hard-isolated* ("Cross-session isolation" numbered contract below), so it carries no cross-project `global`. It DOES take a `session` selector (`IncidentQueryFilter.SessionCode`) to pick **which** of the caller's own session inboxes to READ — the MCP connection is never session-bound, so without it a session-less caller had no reachable argument and dead-ended on "no session attached". That dead end was the bug (bifrost 2026-08-01: a user routed around agnt entirely to capture errors). The fix is progressive disclosure, not a global: a session-less query returns `ScopeCandidates` (metadata) to pick from, then the caller re-issues with `session:<code>`. Selecting an inbox to read never crosses the isolation boundary — the inboxes stay separate; the caller just chooses one. Retention (pin/unpin/clear) is a WRITE path and still takes **no** selector (`IncidentPinPayload`), so it surfaces candidates but requires an attached session.
 - **`watch`** — emits `agnt monitor` command string. Monitor stream scoping is separate STREAM-EVENTS concern, not result-returning query, so `global` flag would be no-op (silent no-ops forbidden).
 
 ### Gated (must route through `resolveProjectScope`)
