@@ -51,6 +51,22 @@ const (
 	publishServePollLocal = 3 * time.Second
 )
 
+// rotate-on-resume policy: what serve does when it resumes a share persisted by
+// an EARLIER run, whose plaintext token is unrecoverable (only sha256 is kept).
+const (
+	// rotateResumeYes mints a fresh token and reprints a working URL — the old
+	// run's links die. Default; preserves the command's whole point (a URL).
+	rotateResumeYes = "yes"
+	// rotateResumeNo keeps the old token in place: the store still verifies it, so
+	// links shared by the earlier run keep working, but this run cannot reprint
+	// them. The least-destructive option.
+	rotateResumeNo = "no"
+	// rotateResumeFail refuses to start, so a scripted/CI invocation cannot
+	// silently invalidate live links (consent-flag principle,
+	// .claude/rules/lessons-ssh-transport.md §7).
+	rotateResumeFail = "fail"
+)
+
 var publishCmd = &cobra.Command{
 	Use:   "publish",
 	Short: "Publish walkthroughs behind public share URLs",
@@ -77,10 +93,11 @@ Examples:
 }
 
 var publishServeFlags struct {
-	dir      string
-	addr     string
-	tunnel   string
-	storeDir string
+	dir            string
+	addr           string
+	tunnel         string
+	storeDir       string
+	rotateOnResume string
 }
 
 func init() {
@@ -89,6 +106,8 @@ func init() {
 	f.StringVar(&publishServeFlags.addr, "addr", defaultPublishServeAddr, "local listen address for the public plane")
 	f.StringVar(&publishServeFlags.tunnel, "tunnel", "", "expose the public plane through a tunnel: cloudflare | ngrok | tailscale")
 	f.StringVar(&publishServeFlags.storeDir, "store", "", "share store directory (default: per-folder dir under the user cache)")
+	f.StringVar(&publishServeFlags.rotateOnResume, "rotate-on-resume", rotateResumeYes,
+		"when resuming a prior run whose token is unrecoverable: yes (rotate + reprint, old links die) | no (keep old links working, don't reprint) | fail (refuse to start)")
 
 	publishCmd.AddCommand(publishServeCmd)
 	rootCmd.AddCommand(publishCmd)
@@ -98,11 +117,12 @@ func runPublishServeCmd(cmd *cobra.Command, args []string) error {
 	ctx, cancel := signalContext()
 	defer cancel()
 	return runPublishServe(ctx, publishServeOptions{
-		Dir:      publishServeFlags.dir,
-		Addr:     publishServeFlags.addr,
-		Tunnel:   publishServeFlags.tunnel,
-		StoreDir: publishServeFlags.storeDir,
-		Out:      cmd.OutOrStdout(),
+		Dir:            publishServeFlags.dir,
+		Addr:           publishServeFlags.addr,
+		Tunnel:         publishServeFlags.tunnel,
+		StoreDir:       publishServeFlags.storeDir,
+		RotateOnResume: publishServeFlags.rotateOnResume,
+		Out:            cmd.OutOrStdout(),
 	})
 }
 
@@ -114,7 +134,10 @@ type publishServeOptions struct {
 	Addr     string
 	Tunnel   string
 	StoreDir string
-	Out      io.Writer
+	// RotateOnResume is the yes|no|fail policy for a share resumed from an earlier
+	// run whose token is unrecoverable. Empty is treated as "yes".
+	RotateOnResume string
+	Out            io.Writer
 
 	// PollInterval overrides the metadata poll period. Zero picks the DrvFS or
 	// local default for Dir.
@@ -200,14 +223,19 @@ func loadWalkthroughDir(dir string) ([]loadedWalkthrough, error) {
 // the plaintext tokens minted during THIS run (the store keeps only hashes), and
 // the current public origin.
 type publishServer struct {
-	dir   string
-	store *publish.Store
-	out   io.Writer
+	dir            string
+	store          *publish.Store
+	out            io.Writer
+	rotateOnResume string // yes | no | fail; "" behaves as yes
 
 	mu     sync.Mutex
 	tokens map[string]string // file -> plaintext token, this run only
 	shares []publishedShare
 	origin string
+	// resumeKeptFiles remembers files whose earlier-run token was KEPT (not
+	// rotated) under --rotate-on-resume=no, so the "kept" notice prints once
+	// rather than on every subsequent republish of an unchanged file.
+	resumeKeptFiles map[string]bool
 	// emptyHeld is the two-poll guard state: true once a zero-walkthrough read
 	// has been observed and held once, pending a confirming second read before a
 	// mass revoke is allowed. Cleared by any non-empty read.
@@ -257,6 +285,7 @@ func (s *publishServer) publishPass() (held bool, err error) {
 	}
 
 	shares := make([]publishedShare, 0, len(loaded))
+	var resumeRotated, resumeKept []string // files whose token was resumed from an earlier run
 	for _, lw := range loaded {
 		id, token, revID, err := s.store.PublishFile(lw.PW, s.dir, lw.File)
 		if err != nil {
@@ -267,22 +296,36 @@ func (s *publishServer) publishPass() (held bool, err error) {
 			// reuse the plaintext this run already holds.
 			token = s.tokens[lw.File]
 		}
-		if token == "" {
+		if token == "" && !s.resumeHandled(lw.File) {
 			// A share persisted by an EARLIER serve run: only sha256(token) was
-			// kept, so the plaintext is unrecoverable by design. This command
-			// exists to print a working URL, so mint a fresh token — and say so,
-			// because it kills any URL handed out by that earlier run.
-			token, err = s.store.Rotate(id)
-			if err != nil {
-				return false, fmt.Errorf("publish %s: rotate token: %w", lw.File, err)
+			// kept, so the plaintext is unrecoverable by design. What we do about it
+			// is the operator's --rotate-on-resume choice, because rotating kills
+			// every URL that run handed out.
+			switch s.resumePolicy() {
+			case rotateResumeFail:
+				return false, fmt.Errorf("%s was shared by an earlier run whose token is unrecoverable; --rotate-on-resume=fail refuses to silently invalidate it (use =yes to rotate and reprint a fresh URL, or =no to keep the old link working without reprinting)", lw.File)
+			case rotateResumeNo:
+				// Keep the old token: the store still verifies it, so links from the
+				// earlier run keep working. We just cannot reprint them (token stays "").
+				resumeKept = append(resumeKept, lw.File)
+				if s.resumeKeptFiles == nil {
+					s.resumeKeptFiles = map[string]bool{}
+				}
+				s.resumeKeptFiles[lw.File] = true
+			default: // rotateResumeYes
+				token, err = s.store.Rotate(id)
+				if err != nil {
+					return false, fmt.Errorf("publish %s: rotate token: %w", lw.File, err)
+				}
+				resumeRotated = append(resumeRotated, lw.File)
 			}
-			fmt.Fprintf(s.out, "publish serve: %s: minted a new token — the token from an earlier run is not recoverable, so links from that run are now dead\n", lw.File)
 		}
 		s.tokens[lw.File] = token
 		shares = append(shares, publishedShare{
 			File: lw.File, Title: lw.PW.Title, ID: id, Token: token, RevisionID: string(revID),
 		})
 	}
+	s.printResumeNoticeLocked(resumeRotated, resumeKept)
 
 	// Reconcile ONLY from a complete, fully-published set. ReconcileFiles
 	// revokes every file-backed share absent from present[], and revocation has
@@ -328,10 +371,55 @@ func (s *publishServer) setOrigin(origin string) {
 }
 
 // printSharesLocked prints the FULL public URL of every share. Caller holds mu.
+// A share with no plaintext token this run (kept under --rotate-on-resume=no) is
+// printed without a URL: this run cannot reconstruct it from the stored hash.
 func (s *publishServer) printSharesLocked(origin string) {
 	fmt.Fprintf(s.out, "publish serve: %d share(s) at %s\n", len(s.shares), origin)
 	for _, sh := range s.shares {
+		if sh.Token == "" {
+			fmt.Fprintf(s.out, "  %s  %q  (existing link preserved; not reprintable — rotate to mint a new URL)\n", sh.File, sh.Title)
+			continue
+		}
 		fmt.Fprintf(s.out, "  %s  %q  %s\n", sh.File, sh.Title, sh.URL(origin))
+	}
+}
+
+// resumePolicy returns the effective yes|no|fail policy ("" behaves as yes).
+func (s *publishServer) resumePolicy() string {
+	if s.rotateOnResume == "" {
+		return rotateResumeYes
+	}
+	return s.rotateOnResume
+}
+
+// resumeHandled reports whether a --rotate-on-resume=no decision has already been
+// recorded for file, so its notice does not repeat on later republishes.
+func (s *publishServer) resumeHandled(file string) bool {
+	return s.resumeKeptFiles[file]
+}
+
+// printResumeNoticeLocked prints ONE distinct block per resume outcome, with a
+// count and explicit wording that the earlier run's links now 404. This is the
+// loud notice S9's single inline line was too quiet to be (an operator who
+// shared a link and restarted has silently broken it for real viewers). Caller
+// holds mu.
+func (s *publishServer) printResumeNoticeLocked(rotated, kept []string) {
+	if len(rotated) > 0 {
+		fmt.Fprintf(s.out, "publish serve: RESUME — rotated %d share(s) recovered from an earlier run.\n", len(rotated))
+		fmt.Fprintf(s.out, "  The earlier run's plaintext tokens are unrecoverable (only sha256 is stored),\n")
+		fmt.Fprintf(s.out, "  so any URL you shared from that run now returns 404 to its viewers.\n")
+		fmt.Fprintf(s.out, "  Fresh URLs for these files are listed below:\n")
+		for _, f := range rotated {
+			fmt.Fprintf(s.out, "    %s\n", f)
+		}
+	}
+	if len(kept) > 0 {
+		fmt.Fprintf(s.out, "publish serve: RESUME — kept %d share(s) from an earlier run WITHOUT rotating (--rotate-on-resume=no).\n", len(kept))
+		fmt.Fprintf(s.out, "  The earlier run's links still work (the store verifies them), but this run\n")
+		fmt.Fprintf(s.out, "  cannot reprint their URLs; rotate to mint a fresh printable token.\n")
+		for _, f := range kept {
+			fmt.Fprintf(s.out, "    %s\n", f)
+		}
 	}
 }
 
@@ -380,6 +468,18 @@ func runPublishServe(ctx context.Context, opts publishServeOptions) error {
 		}
 	}
 
+	// Validate --rotate-on-resume at the boundary (Config Authority): an unknown
+	// value is a loud rejection, not a silent fallback to the default.
+	rotateOnResume := strings.ToLower(strings.TrimSpace(opts.RotateOnResume))
+	if rotateOnResume == "" {
+		rotateOnResume = rotateResumeYes
+	}
+	switch rotateOnResume {
+	case rotateResumeYes, rotateResumeNo, rotateResumeFail:
+	default:
+		return fmt.Errorf("publish serve: --rotate-on-resume %q is not one of yes|no|fail", opts.RotateOnResume)
+	}
+
 	storeDir := opts.StoreDir
 	if storeDir == "" {
 		if storeDir, err = defaultPublishServeStoreDir(dir); err != nil {
@@ -413,12 +513,13 @@ func runPublishServe(ctx context.Context, opts publishServeOptions) error {
 	boundAddr := ln.Addr().String()
 
 	srv := &publishServer{
-		dir:       dir,
-		store:     store,
-		out:       opts.Out,
-		tokens:    make(map[string]string),
-		origin:    localOrigin(boundAddr),
-		onPublish: opts.OnPublish,
+		dir:            dir,
+		store:          store,
+		out:            opts.Out,
+		rotateOnResume: rotateOnResume,
+		tokens:         make(map[string]string),
+		origin:         localOrigin(boundAddr),
+		onPublish:      opts.OnPublish,
 	}
 
 	fmt.Fprintf(opts.Out, "publish serve: watching %s, listening on %s\n", dir, srv.origin)

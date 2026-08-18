@@ -496,7 +496,7 @@ func TestPublishServeCommandWiring(t *testing.T) {
 	if _, _, err := rootCmd.Find([]string{"publish", "serve"}); err != nil {
 		t.Fatalf("publish serve is not reachable from the root: %v", err)
 	}
-	for _, flag := range []string{"dir", "addr", "tunnel", "store"} {
+	for _, flag := range []string{"dir", "addr", "tunnel", "store", "rotate-on-resume"} {
 		if publishServeCmd.Flags().Lookup(flag) == nil {
 			t.Fatalf("missing --%s flag", flag)
 		}
@@ -602,8 +602,13 @@ func TestPublishServeResumeMintsFreshTokenLoudly(t *testing.T) {
 		t.Fatalf("resume created a different share instead of rotating: %q vs %q",
 			second.shares[0].ID, first.shares[0].ID)
 	}
-	if !strings.Contains(out.String(), "minted a new token") {
-		t.Fatalf("token rotation on resume was silent:\n%s", out.String())
+	// The notice is a LOUD, distinct block: a count of invalidated shares and
+	// explicit wording that the earlier run's viewers now get a 404.
+	if !strings.Contains(out.String(), "rotated 1 share(s)") {
+		t.Fatalf("resume notice lacks the invalidated-share count:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "404") {
+		t.Fatalf("resume notice does not warn viewers now get a 404:\n%s", out.String())
 	}
 	if _, _, ok := reopened.VerifyToken(newToken); !ok {
 		t.Fatalf("freshly minted token does not verify")
@@ -755,4 +760,87 @@ func TestPublishServeEmptyDirAtStartupRefuses(t *testing.T) {
 	if got := liveShareIDs(reopened, dir); len(got) != 1 {
 		t.Fatalf("startup on an empty dir revoked the pre-existing share: %+v", got)
 	}
+}
+
+// TestPublishServeResumeRotatePolicies pins --rotate-on-resume=yes|no|fail. yes
+// (the default) is covered by TestPublishServeResumeMintsFreshTokenLoudly; here
+// fail refuses to serve without invalidating anything, no keeps the earlier
+// run's links working while declining to reprint them, and an unknown value is
+// rejected at the boundary.
+func TestPublishServeResumeRotatePolicies(t *testing.T) {
+	// setup publishes one file through a first run, then returns the folder, the
+	// share dir, and the first run's (now unrecoverable-by-design) token.
+	setup := func(t *testing.T) (dir, shareDir, firstToken string) {
+		dir = t.TempDir()
+		writeFile(t, dir, "demo.json", walkthroughJSON(t, "demo", "Demo", ""))
+		shareDir = filepath.Join(t.TempDir(), "shares")
+		store, err := publish.New(shareDir, nil)
+		if err != nil {
+			t.Fatalf("open store: %v", err)
+		}
+		first := &publishServer{dir: dir, store: store, out: io.Discard, tokens: map[string]string{}}
+		if _, err := first.publishPass(); err != nil {
+			t.Fatalf("first run: %v", err)
+		}
+		return dir, shareDir, first.shares[0].Token
+	}
+
+	t.Run("fail refuses without invalidating", func(t *testing.T) {
+		dir, shareDir, firstToken := setup(t)
+		store, err := publish.New(shareDir, nil)
+		if err != nil {
+			t.Fatalf("reopen: %v", err)
+		}
+		srv := &publishServer{dir: dir, store: store, out: io.Discard, tokens: map[string]string{}, rotateOnResume: rotateResumeFail}
+		if _, err := srv.publishPass(); err == nil || !strings.Contains(err.Error(), "rotate-on-resume=fail") {
+			t.Fatalf("fail policy should refuse the resume, got %v", err)
+		}
+		// fail is non-destructive: the earlier run's token is untouched.
+		if _, _, ok := store.VerifyToken(firstToken); !ok {
+			t.Fatalf("fail policy invalidated the earlier run's token")
+		}
+	})
+
+	t.Run("no keeps old links working, does not reprint or repeat", func(t *testing.T) {
+		dir, shareDir, firstToken := setup(t)
+		store, err := publish.New(shareDir, nil)
+		if err != nil {
+			t.Fatalf("reopen: %v", err)
+		}
+		out := &syncBuffer{}
+		srv := &publishServer{dir: dir, store: store, out: out, tokens: map[string]string{}, rotateOnResume: rotateResumeNo}
+		if _, err := srv.publishPass(); err != nil {
+			t.Fatalf("no pass: %v", err)
+		}
+		// The earlier run's link still WORKS — that is the whole point of "no".
+		if _, _, ok := store.VerifyToken(firstToken); !ok {
+			t.Fatalf("no policy broke the earlier run's still-valid token")
+		}
+		if srv.shares[0].Token != "" {
+			t.Fatalf("no policy should not mint a printable token, got %q", srv.shares[0].Token)
+		}
+		if !strings.Contains(out.String(), "WITHOUT rotating") {
+			t.Fatalf("no policy notice missing:\n%s", out.String())
+		}
+		// The notice does not repeat on an unchanged republish.
+		before := out.String()
+		if _, err := srv.publishPass(); err != nil {
+			t.Fatalf("second no pass: %v", err)
+		}
+		if added := strings.TrimPrefix(out.String(), before); strings.Contains(added, "WITHOUT rotating") {
+			t.Fatalf("no policy notice repeated on an unchanged republish:\n%s", added)
+		}
+	})
+
+	t.Run("unknown value rejected at the boundary", func(t *testing.T) {
+		dir := t.TempDir()
+		writeFile(t, dir, "demo.json", walkthroughJSON(t, "demo", "Demo", ""))
+		err := runPublishServe(context.Background(), publishServeOptions{
+			Dir: dir, Addr: "127.0.0.1:0", StoreDir: filepath.Join(t.TempDir(), "store"),
+			RotateOnResume: "maybe", Out: io.Discard,
+		})
+		if err == nil || !strings.Contains(err.Error(), "rotate-on-resume") {
+			t.Fatalf("an unknown --rotate-on-resume must be rejected, got %v", err)
+		}
+	})
 }
