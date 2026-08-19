@@ -169,11 +169,37 @@ Two generalizations:
    it hides this class exactly as it hides cross-package port contention above.
    Widening a deadline can never fix a result that fails at 0.00s.
 
-## Sanctioned `--no-verify` on a GREEN commit that flakes only on the `-race` hook
+## Sanctioned `--no-verify` cases (ratified 2026-08-19)
 
-`AGENTS.md` § Testing sanctions `--no-verify` for a RED-first TDD commit. Task
+The tracked pre-commit hook (`core.hooksPath`, commit `2b4223d8`) BLOCKS a
+commit whose staged packages fail. There are **exactly two** sanctioned reasons
+to bypass it; a third does not exist, and any `--no-verify` outside these two is
+gate-evasion. Ratified under task `01KYR0XXXQJVF5SWS86N97RW3Y`.
+
+### Case A — RED-first TDD commit
+
+A RED commit is an intentionally-failing test committed with no implementation
+yet, so its bisect point pins the defect the next commit fixes. Because the hook
+runs the staged package's tests, this commit legitimately uses
+`git commit --no-verify`. Requirements:
+
+1. The commit **body discloses** that it is a deliberate RED commit and why the
+   separate bisect point is worth it (the RED→GREEN boundary is the review /
+   rewind lifeline).
+2. The **paired GREEN commit runs the full hook** — it is the one that must be
+   gate-green.
+
+The `--no-verify` here is the sanctioned TDD path, not an escape hatch.
+**Alternative:** landing the failing test and its fix in **one** commit (with
+the RED output recorded in the body) is an equally legitimate choice when a
+separate bisect point does not matter. Pick the two-commit RED/GREEN split when
+bisectability is load-bearing; pick the single commit when it is not.
+
+### Case B — GREEN commit that flakes only on the `-race` hook
+
+Task
 `01M0B18S8K5D68FMJPF0QYS6V8` (commit `2cae85df`, reviewer verdict `pass`, no
-rewinds) is a second, distinct sanctioned case: a **GREEN** commit whose only
+rewinds) is the second, distinct sanctioned case: a **GREEN** commit whose only
 gate failure was the pre-commit `-race` full-package run flaking on
 **pre-existing, load-sensitive teardown artifacts in untouched code** — here
 the `explicit_dependency_timeout` wall-clock ceiling (11.8s > 10s; the
@@ -203,8 +229,10 @@ classes above *before* reaching for `--no-verify`. If the same test fails under
 
 ## See also
 
-- `AGENTS.md` § Testing — pre-commit hook's `-p 1` contract; RED-first
-  `--no-verify` sanction (this doc adds the GREEN-commit `-race`-flake case)
+- `AGENTS.md` § Testing — pre-commit hook's `-p 1` contract; one-line pointer
+  to both `--no-verify` cases formalized above
+- `.claude/rules/testing-conventions.md` — the node-driven JS test tier and
+  test-harness file-shape conventions ratified in the same task
 - `.claude/rules/testing-timing-assertion-flakes.md` — the wall-clock-ceiling
   flake family one of the sanctioned bypasses above belongs to
 - `.claude/rules/daemon-architecture.md` § Port-Kill Guard, § Session Containment — why daemon tests bind real ports

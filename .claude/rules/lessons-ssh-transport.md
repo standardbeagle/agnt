@@ -323,19 +323,17 @@ body will act on (protocol banner, not bare TCP accept) — see lesson 2's
 `href-updated != document-loaded` for the same shape of bug in a different
 transport.
 
-**Convention note (flagged for promotion, not yet promoted):** the harness
-is a non-`_test.go` file (`testharness_reconnect.go`) using a `*testing.T`
-parameter purely as a compile-time fence against production import, mirroring
-`internal/daemon/test_helpers.go`'s `NewForTest`. This is now the **third**
-in-repo instance of that shape — `internal/testutil/testutil.go` is the
-second. Three independent instances of the same convention with no shared
-naming/location rule is a candidate for a repo-wide steering note (e.g. a
-short `.claude/rules/testing-conventions.md` entry: "a cross-package test
-harness is a plain `.go` file, not `_test.go`, fenced by a `*testing.T`
-parameter"), but the right home is ambiguous between `daemon-architecture.md`
-§ Test startup contract (where the pattern is already documented for the
-daemon case) and a new standalone doc — left for operator decision rather
-than silently promoted here.
+**Convention note (PROMOTED 2026-08-19, task `01KYR0XXXQJVF5SWS86N97RW3Y`):**
+the harness is a non-`_test.go` file (`testharness_reconnect.go`) using a
+`*testing.T` parameter purely as a compile-time fence against production
+import, mirroring `internal/daemon/test_helpers.go`'s `NewForTest`. This was
+the **third** in-repo instance of that shape (`internal/testutil/testutil.go`
+the second), and the repo-wide steering note it called for now exists:
+`.claude/rules/testing-conventions.md` § 2 owns the general file-shape rule
+("a cross-package test harness is a plain `.go` file, not `_test.go`, fenced
+by a `*testing.T` parameter"), while `daemon-architecture.md` § Test startup
+contract remains the source of truth for what the daemon harness specifically
+skips.
 
 ## 10. Remote-exec paths must drive the daemon protocol directly, not bake CLI flags into a remote command line
 
