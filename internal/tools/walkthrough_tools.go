@@ -117,6 +117,11 @@ func (dt *DaemonTools) makeWalkthroughHandler() func(context.Context, *mcp.CallT
 // buildWalkthroughExec builds the JS snippet for a walkthrough action. The
 // snippet calls window.__devtool.walkthrough.<action>(...), which (running in
 // the active content frame) forwards to the chrome-frame walkthrough host.
+//
+// MIRROR: docs-site/screenshots/engine/lib/daemon.mjs buildWalkthroughCall
+// emits the same snippet over the same PROXY EXEC wire path (there is no
+// walkthrough daemon verb). Any change to the guard, entry point, actions,
+// or payload shape here must be applied there in lockstep.
 func buildWalkthroughExec(input WalkthroughInput) (string, error) {
 	wt := "window.__devtool && window.__devtool.walkthrough"
 	guard := func(call string) string {
