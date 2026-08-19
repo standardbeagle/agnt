@@ -546,6 +546,66 @@ somewhere.
        attempt 1, no rewinds;
      commits f61821ae, 85e6b409 -->
 
+## 15. A reverse-proxy header rewrite is a CSRF trust boundary — rewrite only the value the proxy manufactured, never blanket
+
+A browser served from agnt's dev proxy (backend fronted on a hash-derived
+port 10000-60000) sends `Origin: http://localhost:<proxy-port>`, which the
+`ReverseProxy` Director forwarded verbatim to a backend whose CORS allowlist
+only knows its own origin — so the backend's CORS middleware logged a
+mismatch on every request. Harmless (the browser sees same-origin on the
+proxy port, so the CORS decision never mattered), but it was agnt's cosmetic
+noise in the user's log (external report from the bifrost project). The
+tempting fix — have the Director rewrite `Origin` to the backend's own origin
+— is a **CSRF hole if applied unconditionally**: a genuinely cross-site
+request would then look same-origin to the backend, silently defeating its
+Origin/CSRF checks.
+
+The shape that shipped (`internal/proxy/server.go` Director,
+`origin_rewrite_test.go`, commit `cdd832b9`):
+
+1. **Rewrite iff the inbound Origin is the origin agnt itself introduced.**
+   The guard is host-equality against the proxy's own request `Host` captured
+   **before** the Director runs (`originalHost`): rewrite only when
+   `url.Parse(Origin).Host == originalHost`. For a same-origin browser
+   request the two are equal because both derive from the one navigated proxy
+   URL — robust across `localhost`/`127.0.0.1` naming since both sides come
+   from that single URL. A third-party Origin and an absent Origin are
+   forwarded **verbatim**.
+2. **The regression test asserts the exact forwarded value the backend
+   captured** (`got != thirdParty`), not merely that the request succeeded —
+   the strongest provenance form (§8). It is **mutation-verified**: reverting
+   the scope guard to a blanket rewrite makes the backend see the backend
+   origin instead of `evil.example.com`, and the CSRF-safety assertion fails
+   as required — proving it is not tautological (§8 extension).
+
+**Generalize**: any reverse-proxy rewrite of a header a backend security
+control keys on — `Origin`, `Referer`, `Host` — must rewrite only the value
+the proxy manufactured (matched against the pre-Director `req.Host`), never
+blanket. Blanket-rewriting the class of header that a downstream control
+trusts converts "cosmetic cleanup" into "silently disarm the backend's
+cross-origin defense." This is the §12 shape ("make the dangerous input
+unrepresentable") applied to an *outbound* header: the dangerous case
+(cross-site Origin laundered to same-origin) is never constructible because
+the guard fires only on the one origin the proxy owns.
+
+**Corollary — trace the dispatch path before trusting a "may weaken X"
+hazard.** The concern that this rewrite could weaken agnt's own
+control-channel WS origin check (`checkWSOrigin`) was dispelled by reading the
+wiring, not by adding a defensive fallback: `checkWSOrigin` is wired only into
+`ps.wsUpgrader` for the `/__devtool_metrics` path, served by `handleWebSocket`,
+which **never invokes the Director** — so it still evaluates the browser's
+original un-rewritten Origin. A Director header change is structurally unable
+to reach it. (Backend WS upgrades *do* run the Director, but the scoped
+rewrite is consistent there too: proxy-own origin → same-origin, third-party
+WS Origin preserved.) Same family as §11: verify the mechanism against the
+code before hardening against a hazard that may not exist on the real path.
+
+<!-- provenance: §15 —
+     written_at 2026-08-18;
+     source_event task 01KYZ0H4HB21ZPQ6KGC9KVG4MN (workspace agnt),
+       verdict pass, 0 blockers, attempt 1, no rewinds;
+     commit cdd832b9 -->
+
 ## See also
 
 - `.claude/rules/platform-build-and-flake-lessons.md` — the vendored-fork

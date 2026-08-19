@@ -81,6 +81,16 @@ that a file was not theirs** before they could trust their own diff. That is the
 same wasted-attribution tax as the `-p 1` class above, just paid in review
 cycles instead of reruns.
 
+Later sighting (2026-08-18, task `01KYZ0H4HB21ZPQ6KGC9KVG4MN`, an
+`internal/proxy` fix unrelated to `cmd/agnt`): the `go test -p 1 ./...` gate
+failed attempt 1 with `cmd/agnt` alone red — both flake shapes at once, a
+`.../AGENTS.md: no such file or directory` from the `shell_resolve_test.go`
+binary spawn (this section) and `port 5173 in use locally` (the `-p 1`
+cross-package-contention class above) — then passed unchanged on attempt 2
+(bounded retry). Confirms the retry-to-green disposition: a `cmd/agnt`-only red
+under the full serial gate, on a task that never touched `cmd/agnt`, is this
+harness class, not the task's product change.
+
 The mechanism to watch for is a **cwd-relative write in production code**
 (`phaseCmdArgsAndPrompt`/`writePersistentContext` write `AGENTS.md` next to the
 project directory, which `run.go` resolved from `os.Getwd()`) reached either
