@@ -205,6 +205,39 @@ func (h *PublicHandler) WithRateLimits(artifact, outbound *publish.RateLimiter) 
 	return h
 }
 
+// UpstreamSeam carries the test-only transport injection for the guarded
+// upstream fetcher, letting a caller OUTSIDE internal/proxy (a serve-level
+// integration test) drive the guarded DOCUMENT route end to end. Its fields are
+// exactly the seams already defined on guardedUpstreamFetcher; the public wrapper
+// only makes them reachable across the package boundary.
+//
+// It OBSERVES the guard rather than disabling it (publish-security-review-lessons
+// §7): a test supplies a Resolve answering with a genuinely public address and a
+// Dial that asserts it was handed exactly that address before redirecting to a
+// local listener. The https-only deny-list, the pin-and-dial, and the per-hop
+// re-check all run their real logic — nothing is stubbed out. A nil field falls
+// back to the production resolver/dialer/tls, so a zero UpstreamSeam is itself
+// the production fetcher.
+type UpstreamSeam struct {
+	Resolve   publish.Resolver
+	Dial      func(ctx context.Context, network, addr string) (net.Conn, error)
+	TLSConfig *tls.Config
+}
+
+// WithUpstreamSeam installs a guarded upstream fetcher wired through the given
+// test seam. It mirrors WithRateLimits: an opt-in override, chainable onto
+// NewPublicHandler, used only by tests. Production never calls it, so an
+// unconfigured handler keeps the default &guardedUpstreamFetcher{} and its
+// behaviour byte-for-byte. Returns h so it can be chained.
+func (h *PublicHandler) WithUpstreamSeam(seam UpstreamSeam) *PublicHandler {
+	h.upstream = &guardedUpstreamFetcher{
+		resolve:   seam.Resolve,
+		dial:      seam.Dial,
+		tlsConfig: seam.TLSConfig,
+	}
+	return h
+}
+
 // responseKind selects the cache policy for a public response (spec §4).
 type responseKind int
 

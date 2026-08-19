@@ -161,6 +161,13 @@ type publishServeOptions struct {
 	// OnPublish, when non-nil, is called after every successful publish pass
 	// with the origin used for the printed URLs and the shares in file order.
 	OnPublish func(origin string, shares []publishedShare)
+
+	// UpstreamSeam, when non-nil, replaces the production guarded upstream fetcher
+	// with one wired through a test transport seam, so a serve-level integration
+	// test can drive the proxied DOCUMENT route against a fake upstream without
+	// weakening the SSRF guard. Nil in every production caller, so the handler
+	// keeps its default fetcher and behaviour unchanged.
+	UpstreamSeam *proxy.UpstreamSeam
 }
 
 // publishedShare is one served file's share, as printed and as handed to
@@ -576,6 +583,11 @@ func runPublishServe(ctx context.Context, opts publishServeOptions) error {
 	}
 
 	handler := proxy.NewPublicHandler(store, feedback, limits.MaxBodyBytes)
+	// Test-only: drive the guarded proxied-document route against a fake upstream.
+	// Nil in production, so the default guarded fetcher stands unchanged.
+	if opts.UpstreamSeam != nil {
+		handler = handler.WithUpstreamSeam(*opts.UpstreamSeam)
+	}
 	// Potentially-public: --tunnel is a first-class flag on this command, so the
 	// listener is hardened to public standard (full transport + connection caps).
 	// It serves bounded artifact documents, so no streaming carve-out is needed.

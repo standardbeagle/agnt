@@ -3,9 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +17,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/platform"
+	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/publish"
 )
 
@@ -90,6 +94,12 @@ type publishPassResult struct {
 }
 
 func startServe(t *testing.T, dir string) *serveHarness {
+	return startServeConfigured(t, dir, nil)
+}
+
+// startServeConfigured is startServe with a hook to mutate the options before
+// the serve goroutine starts — used to inject the upstream test seam.
+func startServeConfigured(t *testing.T, dir string, configure func(*publishServeOptions)) *serveHarness {
 	t.Helper()
 	// Never t.Parallel(): this binds a real listener and, with a tunnel, would
 	// start real OS processes (AGENTS.md).
@@ -117,6 +127,9 @@ func startServe(t *testing.T, dir string) *serveHarness {
 			default:
 			}
 		},
+	}
+	if configure != nil {
+		configure(&opts)
 	}
 	go func() { h.done <- runPublishServe(ctx, opts) }()
 	select {
@@ -1087,5 +1100,125 @@ func TestPublishFeedbackReadsServeStore(t *testing.T) {
 	// (empty dir refuses to serve, but the store-path lines print before that)
 	if !strings.Contains(boot.String(), "share store ") || !strings.Contains(boot.String(), "feedback store ") {
 		t.Fatalf("boot output does not print store paths:\n%s", boot.String())
+	}
+}
+
+// dialRecorder captures the addresses the guarded fetcher's dialer was handed.
+// The serve goroutine writes it while the test reads it, so it is mutex-guarded
+// (unlike the in-package proxy testUpstream, whose handler runs synchronously).
+type dialRecorder struct {
+	mu   sync.Mutex
+	seen []string
+}
+
+func (d *dialRecorder) record(addr string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.seen = append(d.seen, addr)
+}
+
+func (d *dialRecorder) snapshot() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.seen...)
+}
+
+// servePublicAddr is a genuinely PUBLIC address the seam resolver answers with,
+// so the SSRF deny-list runs its real logic and PASSES on its own merits rather
+// than being bypassed. A local listener is on loopback, which the deny-list
+// refuses by design, so this indirection is the only way to drive the guarded
+// document route end to end without weakening the guard.
+var servePublicAddr = netip.MustParseAddr("93.184.216.34")
+
+// TestPublishServeProxiesUpstreamDocumentThroughGuard is the serve-level cover
+// of the PROXIED document route that S9 could not reach: it drives runPublishServe
+// against a fake upstream through the newly-exposed UpstreamSeam and asserts the
+// guard OBSERVED it — the dialer received exactly the guard-validated public
+// address (publish-security-review-lessons §7/§8). Mutation check: delete the
+// pin in guardedUpstreamFetcher.get and the transport re-resolves example.com to
+// a DIFFERENT address, the dialer's assertion rejects it, the fetch 502s, and the
+// 200/marker/dialed-address assertions below all fail — the refusal is
+// attributable to the pin, not to an incidental error.
+func TestPublishServeProxiesUpstreamDocumentThroughGuard(t *testing.T) {
+	const upstreamMarker = `id="live-hero"`
+	upstreamDoc := `<!DOCTYPE html><html><head><title>Live App</title></head>` +
+		`<body><h1 ` + upstreamMarker + `>Real upstream page</h1></body></html>`
+
+	upSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// A hostile upstream also seeds headers the public plane must NOT propagate.
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.Header().Set("Content-Security-Policy", "script-src 'unsafe-inline' *")
+		w.Header().Set("Set-Cookie", "upstream=1")
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		io.WriteString(w, upstreamDoc)
+	}))
+	t.Cleanup(upSrv.Close)
+
+	dialed := &dialRecorder{}
+	seam := &proxy.UpstreamSeam{
+		Resolve: func(_ context.Context, host string) ([]netip.Addr, error) {
+			if host != "example.com" {
+				return nil, errors.New("unexpected resolve of " + host)
+			}
+			return []netip.Addr{servePublicAddr}, nil
+		},
+		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			dialed.record(addr)
+			// The pin under test: the dialer must be handed the guard-validated
+			// PUBLIC address, never a re-resolution of the hostname.
+			if addr != servePublicAddr.String()+":443" {
+				return nil, errors.New("dial address is not the guard-validated one: " + addr)
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, upSrv.Listener.Addr().String())
+		},
+		// example.com is the name httptest's cert is issued for, so TLS verifies
+		// for real rather than being skipped.
+		TLSConfig: upSrv.Client().Transport.(*http.Transport).TLSClientConfig.Clone(),
+	}
+
+	dir := t.TempDir()
+	writeFile(t, dir, "proxied.json", walkthroughJSON(t, "proxied", "Proxied demo", "https://example.com/app"))
+
+	h := startServeConfigured(t, dir, func(o *publishServeOptions) { o.UpstreamSeam = seam })
+	pass := h.nextPass()
+	share := shareFor(t, pass.shares, "proxied.json")
+
+	// The DOCUMENT route (not walkthrough.json): fetches the upstream through the
+	// guarded seam and serves it with the RolePublic bundle injected. A raw GET so
+	// the response HEADERS are inspectable for the wholesale-policy assertion.
+	resp, err := http.Get(share.URL(h.origin))
+	if err != nil {
+		t.Fatalf("GET proxied document route: %v", err)
+	}
+	defer resp.Body.Close()
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read proxied document body: %v", err)
+	}
+	body := string(raw)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("proxied document route = %d, body %q", resp.StatusCode, body)
+	}
+	if !strings.Contains(body, upstreamMarker) {
+		t.Fatalf("served body is not the upstream document (marker %q missing):\n%q", upstreamMarker, body)
+	}
+
+	// Provenance (§8): the guard's pin actually ran — the dialer got exactly the
+	// validated public address, once. A deleted pin dials a different address and
+	// this assertion (and the 200 above) fail.
+	if got := dialed.snapshot(); len(got) != 1 || got[0] != servePublicAddr.String()+":443" {
+		t.Fatalf("dialer received %v, want exactly [%s:443] — the guard pin was bypassed", got, servePublicAddr)
+	}
+
+	// Wholesale header policy (INV-11/INV-12): a hostile upstream's CSP, cookies,
+	// and CORS grants must never reach the viewer.
+	if csp := resp.Header.Get("Content-Security-Policy"); strings.Contains(csp, "unsafe-inline") {
+		t.Fatalf("hostile upstream CSP survived onto the served response: %q", csp)
+	}
+	if sc := resp.Header.Get("Set-Cookie"); sc != "" {
+		t.Fatalf("upstream Set-Cookie leaked to the viewer: %q", sc)
+	}
+	if ao := resp.Header.Get("Access-Control-Allow-Origin"); ao != "" {
+		t.Fatalf("upstream CORS grant leaked to the viewer: %q", ao)
 	}
 }
