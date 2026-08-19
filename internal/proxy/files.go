@@ -43,8 +43,22 @@ func (ps *ProxyServer) saveScreenshot(name string, dataURL string) (string, erro
 	// it and would put this project's screenshots in another project's tree.
 	auditDir, err := GetAuditDir(ps.Path)
 	if err != nil {
-		// Fallback to temp dir if audit directory unavailable. The saved path
-		// is returned to the caller, so the file is still locatable.
+		// DELIBERATE exemption from the Silent Failure Prohibition
+		// (.claude/rules/daemon-architecture.md § Silent Failure Prohibition).
+		// GetAuditDir fails LOUD when the project root is missing; here we
+		// intentionally catch that and fall back to os.TempDir() rather than
+		// propagate the error, for three reasons:
+		//   1. Data-preservation > loud-fail on THIS path: losing a screenshot
+		//      outright is worse than writing it somewhere less convenient.
+		//   2. A missing project root is legitimate for some proxy shapes, so
+		//      this is a "sometimes-expected" condition — surfacing it to the
+		//      agent/incident path on every fallback would flood the queue
+		//      (anti-spam; cf. § toast-vs-agent-surfaces / messaging-queue).
+		//   3. This is NOT a harmful silent failure: the full temp-dir path is
+		//      RETURNED to the caller, so the caller sees a real /tmp/... path
+		//      and knows the capture did not land in the project tree. The
+		//      caller is not blind.
+		// This is a DOCUMENTED exemption, not an undocumented debug.Log.
 		debug.Log("proxy", "audit dir unavailable, saving screenshot to temp dir: %v", err)
 		auditDir = os.TempDir()
 	}
@@ -96,7 +110,13 @@ func (ps *ProxyServer) LookupCapture(name string) string {
 func (ps *ProxyServer) savePNGBytes(name string, data []byte) (string, error) {
 	auditDir, err := GetAuditDir(ps.Path)
 	if err != nil {
-		// Fallback to temp dir; the saved path is returned to the caller.
+		// DELIBERATE exemption from the Silent Failure Prohibition — see the
+		// matching fallback in saveScreenshot above for the full rationale.
+		// Summary: data-preservation beats loud-fail here (losing a capture is
+		// worse than an odd location); a missing project root is legitimate for
+		// some proxy shapes so surfacing every fallback would spam the agent
+		// queue; and the returned filePath is the real /tmp/... location, so the
+		// caller is not blind. Documented exemption, not an undocumented log.
 		debug.Log("proxy", "audit dir unavailable, saving PNG to temp dir: %v", err)
 		auditDir = os.TempDir()
 	}
