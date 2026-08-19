@@ -68,6 +68,11 @@ func findAgntBinary(t *testing.T) string {
 // getBinaryVersion returns the version of the agnt binary.
 func getBinaryVersion(t *testing.T, binaryPath string) string {
 	cmd := exec.Command(binaryPath, "--version")
+	// rule 1a (testing-parallel-package-flakes.md): a spawn of our own binary
+	// must not inherit this test's cwd, or the child re-resolves cwd-relative
+	// writes (e.g. AGENTS.md) into the repo tree. "--version" writes nothing
+	// today, but pin cmd.Dir to a scratch dir so it stays true unconditionally.
+	cmd.Dir = t.TempDir()
 	output, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("Failed to get binary version: %v", err)
@@ -147,6 +152,13 @@ func TestDaemonUpgrade_FullCycle(t *testing.T) {
 	defer cancel()
 
 	t.Log("Starting upgrade...")
+	// rule 1a (testing-parallel-package-flakes.md): Upgrade() spawns our own
+	// binary as "daemon start" (via daemonclient AutoStartClient), so the child
+	// inherits this test's cwd. That is repo-tree-safe here on two independent
+	// grounds: the "daemon" subcommand never calls writePersistentContext (only
+	// the `agnt run`/AI-adapter path in cmd/agnt/pty_common.go does), and its
+	// socket lives under t.TempDir(). cmd.Dir is not settable from the test —
+	// the spawn is owned by production autostart, not an exec.Command here.
 	if err := upgrader.Upgrade(ctx); err != nil {
 		t.Fatalf("Upgrade failed: %v", err)
 	}
@@ -233,7 +245,10 @@ func TestUpgradeLock_ConcurrentAttempts(t *testing.T) {
 		Verbose:         false,
 	})
 
-	// Start first upgrade in goroutine
+	// Start first upgrade in goroutine.
+	// rule 1a: both Upgrade() calls spawn "daemon start" (our own binary) under
+	// this test's inherited cwd — repo-tree-safe because the daemon subcommand
+	// never runs writePersistentContext and the socket is under t.TempDir().
 	errCh1 := make(chan error, 1)
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -309,6 +324,9 @@ func TestUpgradeStaleSocket(t *testing.T) {
 	defer cancel()
 
 	t.Log("Starting upgrade with stale socket...")
+	// rule 1a: Upgrade() spawns "daemon start" (our own binary) under this
+	// test's inherited cwd — repo-tree-safe because the daemon subcommand never
+	// runs writePersistentContext and the socket is under t.TempDir().
 	if err := upgrader.Upgrade(ctx); err != nil {
 		t.Fatalf("Upgrade failed: %v", err)
 	}
@@ -364,6 +382,10 @@ func TestUpgradeVersionCheck(t *testing.T) {
 	defer cancel()
 
 	t.Log("Starting upgrade without force flag (versions match)...")
+	// rule 1a: if this Upgrade() spawns "daemon start" (our own binary) it does
+	// so under this test's inherited cwd — repo-tree-safe because the daemon
+	// subcommand never runs writePersistentContext and the socket is under
+	// t.TempDir().
 	if err := upgrader.Upgrade(ctx); err != nil {
 		t.Fatalf("Upgrade failed: %v", err)
 	}
