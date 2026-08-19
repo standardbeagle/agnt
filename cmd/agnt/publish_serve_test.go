@@ -1212,8 +1212,26 @@ func TestPublishServeProxiesUpstreamDocumentThroughGuard(t *testing.T) {
 
 	// Wholesale header policy (INV-11/INV-12): a hostile upstream's CSP, cookies,
 	// and CORS grants must never reach the viewer.
-	if csp := resp.Header.Get("Content-Security-Policy"); strings.Contains(csp, "unsafe-inline") {
-		t.Fatalf("hostile upstream CSP survived onto the served response: %q", csp)
+	//
+	// The upstream sets "script-src 'unsafe-inline' *". The served response does
+	// carry 'unsafe-inline' — in style-src, ours, for the upstream's own inline
+	// styles (INV-18) — so a substring scan for that token no longer distinguishes
+	// our policy from the upstream's. What does: the served script-src is
+	// hash-sources-only, and the upstream's wildcard appears nowhere.
+	csp := resp.Header.Get("Content-Security-Policy")
+	if strings.Contains(csp, "*") {
+		t.Fatalf("hostile upstream CSP wildcard survived onto the served response: %q", csp)
+	}
+	for _, directive := range strings.Split(csp, ";") {
+		directive = strings.TrimSpace(directive)
+		if !strings.HasPrefix(directive, "script-src ") {
+			continue
+		}
+		for _, src := range strings.Fields(strings.TrimPrefix(directive, "script-src ")) {
+			if !strings.HasPrefix(src, "'sha256-") {
+				t.Fatalf("served script-src carries the non-hash source %q (upstream CSP survived?): %q", src, csp)
+			}
+		}
 	}
 	if sc := resp.Header.Get("Set-Cookie"); sc != "" {
 		t.Fatalf("upstream Set-Cookie leaked to the viewer: %q", sc)

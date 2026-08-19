@@ -637,10 +637,19 @@ func TestProxiedArtifactAppliesWholesaleCSP(t *testing.T) {
 		t.Fatalf("CSP must be a single wholesale-set header, got %d", n)
 	}
 	csp := w.Header().Get("Content-Security-Policy")
-	for _, forbidden := range []string{"unsafe-inline", "unsafe-eval", "script-src 'self'"} {
-		if strings.Contains(csp, forbidden) {
-			t.Fatalf("INV-12 violated on the proxied path: %q present in %q", forbidden, csp)
+	// INV-12 is a claim about script-src specifically, so it is asserted against
+	// that directive's own sources. The proxied response's style-src does carry
+	// 'unsafe-inline' by design (INV-18) — a whole-header substring scan would
+	// conflate the two and report the deliberate style widening as a script
+	// capability it is not.
+	scriptSrcSources := strings.Fields(mustCSPDirective(t, csp, "script-src"))
+	for _, src := range scriptSrcSources {
+		if !strings.HasPrefix(src, "'sha256-") {
+			t.Fatalf("INV-12 violated on the proxied path: script-src carries the non-hash source %q in %q", src, csp)
 		}
+	}
+	if strings.Contains(csp, "unsafe-eval") || strings.Contains(csp, "unsafe-hashes") {
+		t.Fatalf("public CSP admitted an unsafe-eval/unsafe-hashes source: %q", csp)
 	}
 	if !strings.Contains(csp, "'"+h.cspHash+"'") || !strings.Contains(csp, "'"+cspSHA256([]byte(authored))+"'") {
 		t.Fatalf("proxied CSP must pin bundle + authored hashes: %q", csp)
@@ -1137,7 +1146,17 @@ func cspDirectives(t *testing.T, csp string) map[string][]string {
 // style-src's nonce source is the one value that legitimately varies: the
 // self-contained shell carries one for its own reset, the proxied path passes an
 // empty nonce and so must carry none.
-func assertPublicCSPUnchanged(t *testing.T, h *PublicHandler, csp string, wantNonce bool) {
+// styleExtra names the ONE source a response shape may carry in style-src
+// beyond 'self': the self-contained shell's per-response nonce, or the proxied
+// artifact's 'unsafe-inline' (INV-18). Any other value on any shape fails.
+type styleExtra string
+
+const (
+	styleExtraNonce          styleExtra = "nonce"
+	styleExtraUpstreamInline styleExtra = "unsafe-inline"
+)
+
+func assertPublicCSPUnchanged(t *testing.T, h *PublicHandler, csp string, extraAllowed styleExtra) {
 	t.Helper()
 	got := cspDirectives(t, csp)
 
@@ -1162,17 +1181,28 @@ func assertPublicCSPUnchanged(t *testing.T, h *PublicHandler, csp string, wantNo
 			continue
 		}
 		if name == "style-src" {
-			// 'self' plus, on the self-contained shell only, one nonce source.
+			// 'self' plus exactly ONE further source, and only the one this shape
+			// is entitled to: the shell's nonce, or the proxied document's
+			// 'unsafe-inline' (INV-18). Never both, never anything else.
 			if len(gotSrc) == 0 || gotSrc[0] != "'self'" {
 				t.Errorf("style-src must start with 'self': %v", gotSrc)
 			}
 			extra := gotSrc[1:]
-			if wantNonce {
-				if len(extra) != 1 || !strings.HasPrefix(extra[0], "'nonce-") {
-					t.Errorf("style-src must carry exactly the shell nonce, got %v", extra)
+			if len(extra) != 1 {
+				t.Errorf("style-src must carry exactly one source beyond 'self', got %v", extra)
+				continue
+			}
+			switch extraAllowed {
+			case styleExtraNonce:
+				if !strings.HasPrefix(extra[0], "'nonce-") {
+					t.Errorf("the self-contained shell's style-src must carry the shell nonce, got %v", extra)
 				}
-			} else if len(extra) != 0 {
-				t.Errorf("proxied style-src must carry no extra source (empty nonce), got %v", extra)
+			case styleExtraUpstreamInline:
+				if extra[0] != "'unsafe-inline'" {
+					t.Errorf("the proxied document's style-src must carry 'unsafe-inline' for the upstream's own inline styles, got %v", extra)
+				}
+			default:
+				t.Errorf("unexpected style-src extra %v for an unentitled shape", extra)
 			}
 			continue
 		}
@@ -1186,10 +1216,24 @@ func assertPublicCSPUnchanged(t *testing.T, h *PublicHandler, csp string, wantNo
 			}
 		}
 	}
-	// Belt and braces on the two sources that would make the whole hash pin moot.
-	for _, forbidden := range []string{"unsafe-inline", "unsafe-eval", "unsafe-hashes", "script-src 'self'"} {
-		if strings.Contains(csp, forbidden) {
-			t.Errorf("public CSP admitted %q: %q", forbidden, csp)
+	// Belt and braces on the sources that would make the whole hash pin moot.
+	// 'unsafe-inline' is checked PER DIRECTIVE rather than over the whole header:
+	// it is admissible in style-src on exactly one shape (INV-18) and admissible
+	// nowhere in script-src on any shape (INV-12), and a whole-header substring
+	// scan cannot tell those apart.
+	for name, sources := range got {
+		for _, src := range sources {
+			if name == "style-src" && src == "'unsafe-inline'" {
+				continue // adjudicated above, against this shape's entitlement
+			}
+			if strings.Contains(src, "unsafe-") {
+				t.Errorf("directive %q admitted %q: %q", name, src, csp)
+			}
+		}
+	}
+	for _, src := range got["script-src"] {
+		if !strings.HasPrefix(src, "'sha256-") {
+			t.Errorf("script-src admitted the non-hash source %q: %q", src, csp)
 		}
 	}
 }
@@ -1320,7 +1364,7 @@ func TestDemoIndicatorDoesNotWidenPublicCSP(t *testing.T) {
 	if n := len(selfContained.Header().Values("Content-Security-Policy")); n != 1 {
 		t.Fatalf("CSP must be a single wholesale-set header, got %d", n)
 	}
-	assertPublicCSPUnchanged(t, h, selfContained.Header().Get("Content-Security-Policy"), true)
+	assertPublicCSPUnchanged(t, h, selfContained.Header().Get("Content-Security-Policy"), styleExtraNonce)
 
 	up := upstreamHandler(t, upstreamRevision("https://demo.example.com/app"), &countingFetcher{body: []byte(upstreamDoc)})
 	proxied := do(up, http.MethodGet, sharePrefix+validToken, "", nil)
@@ -1330,5 +1374,5 @@ func TestDemoIndicatorDoesNotWidenPublicCSP(t *testing.T) {
 	if n := len(proxied.Header().Values("Content-Security-Policy")); n != 1 {
 		t.Fatalf("proxied CSP must be a single wholesale-set header, got %d", n)
 	}
-	assertPublicCSPUnchanged(t, up, proxied.Header().Get("Content-Security-Policy"), false)
+	assertPublicCSPUnchanged(t, up, proxied.Header().Get("Content-Security-Policy"), styleExtraUpstreamInline)
 }

@@ -413,7 +413,10 @@ func (h *PublicHandler) serveArtifact(w http.ResponseWriter, r *http.Request, re
 // The document's CSS, image, and font references are rewritten to the guarded
 // subresource route (serveSubresource) so they load from 'self'. JS references
 // are NOT — script-src is hash-only (INV-12) and proxied script would be bytes
-// nothing can execute.
+// nothing can execute. This is also the ONE response shape whose style-src
+// carries 'unsafe-inline' (INV-18, see proxiedUpstreamStyleSrc): without it the
+// upstream's own inline <style> blocks and style= attributes are refused and the
+// page renders broken no matter what the subresource route serves.
 func (h *PublicHandler) serveProxiedArtifact(w http.ResponseWriter, r *http.Request, rev *publish.PublishedWalkthrough, shareID, token string) {
 	if h.upstream == nil {
 		// Fail closed. A missing fetcher must never degrade into an unguarded
@@ -436,10 +439,13 @@ func (h *PublicHandler) serveProxiedArtifact(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	// No nonce: this response emits no inline <style> of ours (the reset in the
-	// self-contained shell would restyle someone else's page). A nonce source
-	// nothing in the document carries would authorise nothing.
-	h.writeHeaders(w.Header(), kindArtifact, "", authoredScriptCSPHashes(rev)...)
+	// No nonce: this response emits no inline <style> of OURS (the reset in the
+	// self-contained shell would restyle someone else's page). The style-src
+	// widening is for the UPSTREAM's inline style — a nonce cannot serve that,
+	// because the upstream's own <style> blocks carry no nonce attribute and we
+	// do not rewrite them (spec §3.2/§3.3 reject both hashing and rewriting).
+	// This is the only call site of writeHeadersStyle (INV-18).
+	h.writeHeadersStyle(w.Header(), kindArtifact, proxiedUpstreamStyleSrc, authoredScriptCSPHashes(rev)...)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	// Bind every admitted subresource reference to this share before the bundle
@@ -838,15 +844,47 @@ func authoredScriptCSPHashes(rev *publish.PublishedWalkthrough) []string {
 	return hashes
 }
 
+// proxiedUpstreamStyleSrc is the style-src of the ONE response shape that
+// carries 'unsafe-inline': the proxied live-upstream artifact document (INV-18,
+// design spec §3.1).
+//
+// Why it is safe here and nowhere else. The only authors of style on that
+// response are the upstream — whose entire document we have already chosen to
+// display, so refusing its inline <style> and style= while serving its HTML
+// protects nothing — and the publisher, who is trusted. No viewer input can
+// reach the document: feedback is never reflected (INV-7) and the player renders
+// narration as text.
+//
+// 'unsafe-inline' in style-src grants NO script execution; the script story is
+// unchanged and unchangeable here (script-src stays hash-sources-only, INV-12).
+// CSS-driven exfiltration stays bounded by the FETCH directives, which do not
+// widen anywhere: img-src 'self' data:, connect-src 'self', and font-src falling
+// to default-src 'self'. That is the same containment argument the keystone spec
+// already relies on.
+//
+// Style is presentation of a document we display; script is capability. The two
+// directives move independently, and only this one moved.
+const proxiedUpstreamStyleSrc = "'self' 'unsafe-inline'"
+
+// writeHeaders applies the policy with the DEFAULT style-src: bare 'self', plus
+// the shell's nonce when one is supplied. Every response shape except the
+// proxied artifact goes through here, so 'unsafe-inline' is unreachable from it.
 func (h *PublicHandler) writeHeaders(hdr http.Header, kind responseKind, nonce string, scriptHashes ...string) {
-	// INV-12: wholesale delete of any upstream CSP, then set agnt's. NEVER the
-	// stripFrameDenyHeaders strip-merge path (which preserves upstream script-src).
-	hdr.Del("Content-Security-Policy")
-	hdr.Del("Content-Security-Policy-Report-Only")
 	styleSrc := "'self'"
 	if nonce != "" {
 		styleSrc = "'self' 'nonce-" + nonce + "'"
 	}
+	h.writeHeadersStyle(hdr, kind, styleSrc, scriptHashes...)
+}
+
+// writeHeadersStyle is writeHeaders with an explicit style-src. It exists so the
+// widening lives at exactly one call site (serveProxiedArtifact) instead of
+// being reachable by passing a magic value through the common path.
+func (h *PublicHandler) writeHeadersStyle(hdr http.Header, kind responseKind, styleSrc string, scriptHashes ...string) {
+	// INV-12: wholesale delete of any upstream CSP, then set agnt's. NEVER the
+	// stripFrameDenyHeaders strip-merge path (which preserves upstream script-src).
+	hdr.Del("Content-Security-Policy")
+	hdr.Del("Content-Security-Policy-Report-Only")
 	hdr.Set("Content-Security-Policy", strings.Join([]string{
 		"default-src 'self'",
 		// script-src OMITS 'self' deliberately: with 'self' present the hash
