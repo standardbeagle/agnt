@@ -156,10 +156,15 @@ func TestRawOpGuards(t *testing.T) {
 		{"addScript-src-and-code", set(`{"op":"addScript","src":"https://cdn.example.com/a.js","code":"x=1"}`)},
 		{"addScript-neither", set(`{"op":"addScript"}`)},
 		{"addScript-rejects-selector", set(`{"op":"addScript","selector":".x","code":"x=1"}`)},
-		// src is a publish-time fetch input under §4a/INV-13: https only.
-		{"addScript-http-src", set(`{"op":"addScript","src":"http://cdn.example.com/a.js"}`)},
-		{"addScript-data-src", set(`{"op":"addScript","src":"data:text/javascript,alert(1)"}`)},
-		{"addScript-javascript-src", set(`{"op":"addScript","src":"javascript:alert(1)"}`)},
+		// addScript's `src` refusal is pinned — with teeth — by
+		// TestAddScriptSrcRefusedAtPublish. It is scheme-agnostic: src is refused
+		// wholesale because publish-time fetching is unimplemented (op.go
+		// OpAddScript), NOT by an https-only scheme check — none exists. Rows that
+		// varied the src scheme (http/data/javascript) once lived here claiming to
+		// test "§4a/INV-13: https only"; that assertion was vacuous, because the
+		// code makes no scheme distinction, so each row passed on the wholesale
+		// refusal regardless of scheme. Deleted rather than kept as three
+		// indistinguishable copies of the src refusal.
 		// Raw content does not smuggle in stray declarative fields.
 		{"setHTML-stray-value", set(`{"op":"setHTML","selector":".x","html":"<b/>","value":"y"}`)},
 		{"setText-stray-html", set(`{"op":"setText","selector":".x","value":"y","html":"<b/>"}`)},

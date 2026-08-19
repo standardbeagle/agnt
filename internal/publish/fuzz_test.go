@@ -14,11 +14,14 @@ func FuzzValidate(f *testing.F) {
 		`{}`, `[]`, `null`, `"x"`, `{"version":"v9"}`,
 		`{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"color":"url(x)"}}]}]}`,
 		`{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"setImageSrc","selector":"img","url":"javascript:1"}]}]}`,
-		// §6a raw-content ops widened the accepted input space: these bodies are
-		// now ACCEPTED (INV-6 retired), so the fuzzer must exercise the
-		// re-validation / canonical / digest path on them, not just the reject
-		// path. The mixed and malformed shapes below are the boundaries between
-		// the two.
+		// §6a raw-content ops widened the accepted input space: the setHTML,
+		// addStyle, and addScript{code} bodies below are ACCEPTED (INV-6 retired),
+		// so the fuzzer exercises the re-validation / canonical / digest path on
+		// them, not just the reject path. The addScript{src} seed is the exception:
+		// src is now REFUSED at publish because publish-time fetching is
+		// unimplemented (op.go OpAddScript), so it exercises the reject path — it
+		// stays as a no-panic boundary seed. The mixed and malformed shapes below
+		// are the boundaries between accept and reject.
 		`{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"setHTML","selector":".x","html":"<script>alert(1)</script>"}]}]}`,
 		`{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"addStyle","css":"@import url(https://x/y); .a{position:fixed}"}]}]}`,
 		`{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"addScript","code":"alert(1)"}]}]}`,
