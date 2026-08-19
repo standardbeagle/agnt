@@ -6,7 +6,55 @@ import {execFileSync} from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import {chromium} from 'playwright';
-import {ff, probeDur, normalize, readJSON, writeJSON} from './util.mjs';
+import {ff, probeDur, normalize, readJSON, writeJSON, ttsKey, mezzKey, fileFastKey} from './util.mjs';
+
+// --- content-keyed assembly cache seams -------------------------------------
+// Both generate expensive artifacts (edge-tts audio, splice+normalize encodes)
+// only on a miss. The actual generation is an injected `run` seam so unit tests
+// can count invocations without ever spawning edge-tts or ffmpeg. A corrupt or
+// unreadable cache entry falls through to a miss (regenerate); it is never a
+// hard error. Cache writes are best-effort. Cache is per-demo + unbounded — out/
+// is gitignored and hand-cleanable, so there is no eviction machinery.
+
+// Synthesize one narration line (mp3 + srt) with a hit skipping edge-tts.
+export const cachedTTS = (voice, rate, spoken, {cacheDir, mp3Out, srtOut}, deps) => {
+  const {run, existsSync = fs.existsSync, copyFile = fs.copyFileSync, log = console.log} = deps;
+  const key = ttsKey(voice, rate, spoken);
+  const short = key.slice(0, 12);
+  const cMp3 = path.join(cacheDir, key + '.mp3');
+  const cSrt = path.join(cacheDir, key + '.srt');
+  if (existsSync(cMp3) && existsSync(cSrt)) {
+    try {
+      copyFile(cMp3, mp3Out);
+      copyFile(cSrt, srtOut);
+      log(`  cache hit  tts ${short}`);
+      return {mp3: mp3Out, srt: srtOut};
+    } catch { /* corrupt/unreadable cache → fall through and regenerate */ }
+  }
+  log(`  cache miss tts ${short}`);
+  run(voice, rate, spoken, mp3Out, srtOut);
+  try { copyFile(mp3Out, cMp3); copyFile(srtOut, cSrt); } catch { /* cache write best-effort */ }
+  return {mp3: mp3Out, srt: srtOut};
+};
+
+// Splice+normalize one take into its mezzanine with a hit skipping the encode.
+export const cachedMezz = (takeFastKey, seg, view, {cacheDir, mezzOut}, deps) => {
+  const {run, existsSync = fs.existsSync, copyFile = fs.copyFileSync, log = console.log} = deps;
+  const key = mezzKey(takeFastKey, seg, view);
+  const short = key.slice(0, 12);
+  const cMezz = path.join(cacheDir, key + '.webm');
+  if (existsSync(cMezz)) {
+    try {
+      copyFile(cMezz, mezzOut);
+      log(`  cache hit  mezz ${short}`);
+      return mezzOut;
+    } catch { /* corrupt/unreadable cache → fall through and regenerate */ }
+  }
+  log(`  cache miss mezz ${short}`);
+  run(mezzOut);
+  try { copyFile(mezzOut, cMezz); } catch { /* cache write best-effort */ }
+  return mezzOut;
+};
 
 const cardHTML = (kicker, title, sub, view) => `<!DOCTYPE html><html><head><style>
   body { margin:0; width:${view.width}px; height:${view.height}px; background:#0f1117; color:#e6e9ef;
@@ -151,6 +199,8 @@ export const buildFinalMuxArgs = (spec, {silent, out, srtPath}, opts) => {
 
 export const assemble = async (spec, {demoDir, workDir, outDir}) => {
   const view = {...spec.viewport, fps: spec.fps || 25};
+  const cacheDir = path.join(workDir, 'cache');
+  fs.mkdirSync(cacheDir, {recursive: true});
 
   // --- 1. Mezzanine: cards rendered, takes spliced + normalized ------------
   const browser = await chromium.launch();
@@ -170,9 +220,11 @@ export const assemble = async (spec, {demoDir, workDir, outDir}) => {
     } else {
       const marksPath = path.join(workDir, seg.id + '.json');
       const marks = fs.existsSync(marksPath) ? readJSON(marksPath).events : [];
-      const spliced = spliceTake(seg, marks, workDir, view);
+      const take = path.join(workDir, seg.id + '.webm');
       file = path.join(workDir, seg.id + '-mezz.webm');
-      normalize(spliced, file, view, seg.trimSeconds);
+      cachedMezz(fileFastKey(take), seg, view, {cacheDir, mezzOut: file}, {
+        run: (mezzOut) => normalize(spliceTake(seg, marks, workDir, view), mezzOut, view, seg.trimSeconds),
+      });
     }
     timeline.push({id: seg.id, file});
     console.log('  seg', seg.id, probeDur(file).toFixed(2) + 's');
@@ -217,8 +269,10 @@ export const assemble = async (spec, {demoDir, workDir, outDir}) => {
       const mp3 = path.join(workDir, 'vo-' + n.id + '.mp3');
       const srt = path.join(workDir, 'vo-' + n.id + '.srt');
       const spoken = n.text.replace(/\bagnt\b/gi, 'agent');
-      execFileSync('edge-tts', ['--voice', spec.narration.voice, '--rate', spec.narration.rate,
-        '--text', spoken, '--write-media', mp3, '--write-subtitles', srt]);
+      cachedTTS(spec.narration.voice, spec.narration.rate, spoken, {cacheDir, mp3Out: mp3, srtOut: srt}, {
+        run: (voice, rate, sp, mp3Out, srtOut) => execFileSync('edge-tts',
+          ['--voice', voice, '--rate', rate, '--text', sp, '--write-media', mp3Out, '--write-subtitles', srtOut]),
+      });
       const dur = probeDur(mp3);
       let cues = parseSRT(srt);
       // Rewrite cue text back to the original spelling ("agnt" ≠ "agent").
