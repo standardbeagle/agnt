@@ -86,6 +86,17 @@ make demo NAME=vhs-spiral DEMOFLAGS=--inspect      # contact sheets for picking 
   agent + SYNC_DIR marker dance with deterministic playback. Marks
   (`d.mark(name)`) + per-segment `keep` ranges splice out waits at assembly
   (endpoints: `"start"`, `"end"`, `"mark:<name>±<sec>"`).
+- **walkthrough segments**: `await d.walkthrough(stepsOrScriptId, opts)` runs the
+  guided-tour overlay inside the take — the *same* tour a coding agent starts
+  through the `walkthrough` MCP tool, over the same wire path (a `PROXY EXEC` of
+  `window.__devtool.walkthrough.start`; `lib/daemon.mjs`'s
+  `buildWalkthroughCall` mirrors `buildWalkthroughExec` in
+  `internal/tools/walkthrough_tools.go`, and there is no separate walkthrough
+  daemon verb). A tour is therefore authored once, not once for the docs and
+  once for the video. Each step transition drops a `step:<n>` mark at its real
+  time (`d.walkthroughStep(n)` waits on the overlay's own status, never a
+  sleep); `d.walkthroughNext(n)` steps a `mode:"manual"` tour, `d.walkthroughStop()`
+  ends it. `demos/walkthrough-tour` is the worked fixture.
 - **--inspect** (cut-point authoring aid): picking `keep` endpoints used to be
   trial-and-error — cut, assemble, watch, adjust `mark:<name>±<s>`, repeat.
   `node engine/demo.mjs demos/<name> --inspect[=<seg-id>]` (or `make demo
@@ -105,7 +116,12 @@ make demo NAME=vhs-spiral DEMOFLAGS=--inspect      # contact sheets for picking 
   start/stop the demo proxy over the daemon socket automatically — the daemon
   must already be running.
 - **narration** (optional): edge-tts VO + burned/WebVTT captions, anchors
-  `"<seg-id>"`, `"<seg-id>+<sec>"`, `"<seg-id>+end"`. If edge-tts is not on
+  `"<seg-id>"`, `"<seg-id>+<sec>"`, `"<seg-id>+end"`, or
+  `"<seg-id>+mark:<name>±<sec>"` — anchoring a line to a recorded mark (e.g. a
+  walkthrough's `step:2`) so a re-record on a slower machine moves the voice
+  line with the step instead of desyncing. Mark times are take-relative, so a
+  segment that declares `keep` or `trimSeconds` **rejects** mark anchors loudly
+  rather than drifting. If edge-tts is not on
   PATH the engine assembles silent instead of failing. VO is loudness-normalized
   to the EBU R128 web target (`I=-16 LUFS, TP=-1.5 dBTP, LRA=11`) in the final
   mux — a single `loudnorm` pass on the mixed narration, so volume is even across
