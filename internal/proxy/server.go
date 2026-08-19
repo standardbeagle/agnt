@@ -467,6 +467,36 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 		// Set protocol - proxy is HTTP
 		req.Header.Set("X-Forwarded-Proto", "http")
 
+		// Rewrite Origin ONLY when the inbound Origin is the proxy's own listen
+		// origin — i.e. the origin agnt itself introduced by fronting the backend
+		// on a hash-derived port (10000-60000). Left untouched, the browser sends
+		// `Origin: http://localhost:<proxy-port>` and we forward it verbatim to a
+		// backend whose CORS allowlist only knows its own origin; the backend's
+		// CORS middleware then logs a mismatch on every request (harmless — the
+		// browser sees same-origin on the proxy port so the CORS decision never
+		// mattered — but it is agnt's cosmetic noise in the user's log).
+		// Rewriting it to the backend's own origin makes that noise vanish.
+		//
+		// This is deliberately SCOPED, never a blanket rewrite: a genuinely
+		// third-party Origin (a real cross-site request) is forwarded UNCHANGED
+		// so the backend still sees it as cross-origin and its CSRF/CORS checks
+		// fire. Blanket-rewriting every Origin would make a cross-site request
+		// look same-origin to the backend — a CSRF hole. We only ever rewrite the
+		// origin we manufactured, matched against the proxy's own request Host
+		// (originalHost), which for a same-origin browser request equals the
+		// Origin host because both derive from the same navigated proxy URL.
+		//
+		// Note: agnt's own control-channel WebSocket origin check (checkWSOrigin,
+		// wired into ps.wsUpgrader for /__devtool_metrics) is unaffected — that
+		// path is served by handleWebSocket and never runs this Director, so it
+		// still evaluates the browser's original, un-rewritten Origin.
+		if origin := req.Header.Get("Origin"); origin != "" {
+			if ou, err := url.Parse(origin); err == nil && ou.Host != "" &&
+				strings.EqualFold(ou.Host, originalHost) {
+				req.Header.Set("Origin", targetURL.Scheme+"://"+targetURL.Host)
+			}
+		}
+
 		// Filter Accept-Encoding to only include formats we can decompress
 		// This prevents the backend from sending unsupported formats
 		// that would result in garbled output when we can't decompress them
