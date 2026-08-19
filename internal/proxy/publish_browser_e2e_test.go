@@ -36,6 +36,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"net/url"
+	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -486,4 +490,356 @@ func TestE2E_PublicPlane_RealBrowser_ProxiedUpstream(t *testing.T) {
 	require.NoError(t, cdp.Run(ctx,
 		cdp.Evaluate(`document.querySelector('.msg').classList.contains('hl')`, &msgHasClass)))
 	assert.True(t, msgHasClass, "the variant addClass op must apply to the upstream-delivered .msg node")
+}
+
+// --- Subresource route: real-Chrome RENDERING coverage -----------------------
+//
+// The ~25 Go-level tests around the subresource route prove the guard, the MAC
+// binding, the media-type allowlist, the caps, and the CSP composition on the
+// wire. None of them can prove the property the route exists for: that a real
+// browser FETCHES a rewritten stylesheet through /s/{token}/sub and APPLIES it
+// to the upstream-delivered document. That is what this fixture and test carry.
+
+const (
+	subE2EMarker = "live-hero"
+	// The color app.css paints onto the upstream-delivered #title. Written in the
+	// exact serialization getComputedStyle returns so the assertion is an equality,
+	// not a fuzzy match.
+	subE2EStyledColor = "rgb(0, 128, 64)"
+	// late.css is NOT referenced by the upstream document. It exists only so the
+	// forged-signature case has a genuine counterpart: the same URL under a valid
+	// MAC must style #live-hero, which is what makes the forged refusal non-vacuous.
+	subE2ELateColor = "rgb(200, 0, 50)"
+)
+
+// subresourceUpstream records what the DAEMON asked the fake origin for. It is
+// the origin-side half of the route's provenance: a stylesheet that reached the
+// browser without a recorded upstream fetch would not have come through the route.
+type subresourceUpstream struct {
+	mu        sync.Mutex
+	paths     []string
+	sawCookie bool
+	sawRefer  bool
+}
+
+func (u *subresourceUpstream) record(r *http.Request) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.paths = append(u.paths, r.URL.Path)
+	u.sawCookie = u.sawCookie || r.Header.Get("Cookie") != ""
+	u.sawRefer = u.sawRefer || r.Header.Get("Referer") != ""
+}
+
+func (u *subresourceUpstream) snapshot() ([]string, bool, bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return append([]string(nil), u.paths...), u.sawCookie, u.sawRefer
+}
+
+// dialRecorder counts guarded dials under concurrency: a browser fetches the
+// document and its subresources on separate connections, so the bare slice the
+// document-only fixture uses would be a data race here.
+type dialRecorder struct {
+	mu    sync.Mutex
+	addrs []string
+}
+
+func (d *dialRecorder) add(addr string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.addrs = append(d.addrs, addr)
+}
+
+func (d *dialRecorder) snapshot() []string {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return append([]string(nil), d.addrs...)
+}
+
+// subresourceE2EPlane is newProxiedE2EPlane's sibling: the same observed-seam
+// wiring (publish-security-review-lessons §7 — the resolver answers with a
+// genuinely public address and the dialer asserts it was handed exactly that one,
+// so the real guard runs and nothing is stubbed), over an upstream that serves a
+// DOCUMENT REFERENCING AN EXTERNAL STYLESHEET plus a second, unreferenced sheet.
+//
+// It keeps the *PublicHandler because the forged-signature case needs the
+// daemon's own signer to mint the genuine counterpart of the forged reference.
+type subresourceE2EPlane struct {
+	*e2ePlane
+	h        *PublicHandler
+	dialed   *dialRecorder
+	upstream *subresourceUpstream
+}
+
+func newSubresourceE2EPlane(t *testing.T) *subresourceE2EPlane {
+	t.Helper()
+
+	// The document references its stylesheet RELATIVELY. That matters: the
+	// rewriter resolves references against the fetched document's own URL, so a
+	// relative href is the real path a live app takes into the route.
+	upstreamDoc := `<!DOCTYPE html><html lang="en"><head><meta charset="utf-8"><title>Live App</title>` +
+		`<link rel="stylesheet" href="app.css"></head>` +
+		`<body><div id="app"><h1 id="title">Original</h1><p class="msg">hi</p></div>` +
+		`<div id="` + subE2EMarker + `">proxied upstream page</div></body></html>`
+
+	up := &subresourceUpstream{}
+	upSrv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		up.record(r)
+		switch r.URL.Path {
+		case "/app":
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			w.Header().Set("Content-Security-Policy", "script-src 'unsafe-inline' *")
+			io.WriteString(w, upstreamDoc)
+		case "/app.css":
+			w.Header().Set("Content-Type", "text/css; charset=utf-8")
+			io.WriteString(w, "#title { color: "+subE2EStyledColor+"; }\n")
+		case "/late.css":
+			w.Header().Set("Content-Type", "text/css; charset=utf-8")
+			io.WriteString(w, "#"+subE2EMarker+" { color: "+subE2ELateColor+"; }\n")
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upSrv.Close)
+
+	dialed := &dialRecorder{}
+	seam := UpstreamSeam{
+		Resolve: func(_ context.Context, host string) ([]netip.Addr, error) {
+			if host != "example.com" {
+				return nil, errors.New("unexpected resolve of " + host)
+			}
+			return []netip.Addr{publicAddr}, nil
+		},
+		Dial: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			dialed.add(addr)
+			if addr != publicAddr.String()+":443" {
+				return nil, errors.New("dial address is not the guard-validated one: " + addr)
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, upSrv.Listener.Addr().String())
+		},
+		TLSConfig: upSrv.Client().Transport.(*http.Transport).TLSClientConfig.Clone(),
+	}
+
+	storeDir := t.TempDir()
+	fbDir := t.TempDir()
+	store, err := publish.New(storeDir, nil)
+	require.NoError(t, err, "open publish store")
+	feedback, err := publish.NewFeedbackStore(fbDir, e2eLimits(), nil)
+	require.NoError(t, err, "open feedback store")
+	h := NewPublicHandler(store, feedback, int(e2eLimits().MaxBodyBytes)).
+		WithRateLimits(
+			publish.NewRateLimiter(1_000_000, 1_000_000, nil),
+			publish.NewRateLimiter(1_000_000, 1_000_000, nil),
+		).
+		WithUpstreamSeam(seam)
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	return &subresourceE2EPlane{
+		e2ePlane: &e2ePlane{srv: srv, store: store, feedback: feedback, storeDir: storeDir, fbDir: fbDir},
+		h:        h,
+		dialed:   dialed,
+		upstream: up,
+	}
+}
+
+// subresourceRefURL builds the same-origin reference the route accepts. Callers
+// pass the signature so both the genuine and the forged case go through one
+// builder and differ in exactly the byte under test.
+func subresourceRefURL(token, absURL string, depth int, sig string) string {
+	q := url.Values{}
+	q.Set("u", absURL)
+	q.Set("d", strconv.Itoa(depth))
+	q.Set("sig", sig)
+	return sharePrefix + token + subresourceSubPath + "?" + q.Encode()
+}
+
+// TestE2E_PublicPlane_RealBrowser_ProxiedSubresourceRendering closes the
+// declared scope reduction of the subresource-route slice: the Go-level tests
+// prove the bytes, the guard, the MAC, and the caps, but RENDERING — a real
+// browser fetching a rewritten stylesheet through /s/{token}/sub and that
+// stylesheet actually taking effect on the proxied document — is only observable
+// in a real browser.
+//
+// The name embeds TestE2E_PublicPlane_RealBrowser on purpose so `make
+// e2e-publish-browser` (-run 'TestE2E_PublicPlane_RealBrowser') covers it too.
+//
+// It asserts, on the REAL served proxied document in a REAL headless Chrome:
+//
+//	(a) the stylesheet is fetched THROUGH THE SUBRESOURCE ROUTE, not from the
+//	    upstream origin: the served <link href> is the signed same-origin path,
+//	    the loaded CSSOM sheet resolves to this listener's origin and its rules
+//	    are readable (a cross-origin sheet's cssRules throw), the daemon-side
+//	    fetch of /app.css is recorded at the fake origin, and the guarded dialer
+//	    was handed the validated public address once per fetch (§8 provenance);
+//	(b) the sheet APPLIES to an UPSTREAM-DELIVERED element — #title's computed
+//	    color, polled as the real DOM signal being asserted on, never
+//	    location.href (lessons-ssh-transport §2);
+//	(c) a FORGED signature is refused with an observable in-browser consequence:
+//	    the link fires `error`, the target element keeps its unstyled color, and
+//	    NO new dial happens (the refusal precedes the socket). Its genuine
+//	    counterpart — same URL, valid MAC — then styles that element, which is
+//	    what makes the refusal assertion non-vacuous rather than a URL that never
+//	    could have worked.
+func TestE2E_PublicPlane_RealBrowser_ProxiedSubresourceRendering(t *testing.T) {
+	skipIfNoBrowser(t)
+
+	p := newSubresourceE2EPlane(t)
+
+	wt := e2eWalkthrough()
+	wt.Upstream = &publish.UpstreamConfig{URL: "https://example.com/app"}
+	_, token, err := p.store.Create(wt, e2eProjectA)
+	require.NoError(t, err, "an upstream-bearing share must publish")
+
+	_, shareID, ok := p.store.VerifyToken(token)
+	require.True(t, ok, "the freshly minted token must verify")
+	require.NotNil(t, p.h.signer, "premise broken: the daemon has no subresource signer, so the route serves nothing")
+
+	ctx := newPublicBrowser(t)
+
+	var ready bool
+	require.NoError(t, cdp.Run(ctx,
+		cdp.Navigate(p.srv.URL+"/s/"+token),
+		cdp.Poll(`!!(window.__variantEngine && window.__walkthroughViewer)`, &ready,
+			cdp.WithPollingTimeout(10*time.Second)),
+	))
+	require.True(t, ready, "the RolePublic bundle injected into the proxied upstream document must load")
+
+	// The served DOM is the upstream document (the element exists only there).
+	var upstreamServed bool
+	require.NoError(t, cdp.Run(ctx,
+		cdp.Poll(`(function(){var e=document.getElementById('`+subE2EMarker+`');return !!(e && e.textContent.indexOf('proxied upstream page')!==-1);})()`,
+			&upstreamServed, cdp.WithPollingTimeout(10*time.Second)),
+	))
+	require.True(t, upstreamServed, "the served document must be the PROXIED upstream page")
+
+	// (b) The stylesheet APPLIED. Poll the computed style of the upstream-delivered
+	// #title — the actual DOM signal being asserted on.
+	var styled bool
+	require.NoError(t, cdp.Run(ctx,
+		cdp.Poll(`getComputedStyle(document.getElementById('title')).color === '`+subE2EStyledColor+`'`,
+			&styled, cdp.WithPollingTimeout(15*time.Second)),
+	))
+	require.True(t, styled,
+		"the upstream stylesheet, served through the subresource route, must APPLY to the upstream-delivered #title node")
+
+	// (a) …and it got there through the route, not from the upstream origin.
+	var linkHref, sheetState string
+	require.NoError(t, cdp.Run(ctx,
+		cdp.Evaluate(`(function(){var l=document.querySelector('link[rel="stylesheet"]');return l?l.getAttribute('href'):'';})()`, &linkHref),
+		cdp.Evaluate(`(function(){
+			var l = document.querySelector('link[rel="stylesheet"]');
+			if (!l) return 'no-link';
+			var want = new URL(l.getAttribute('href'), location.href).href;
+			for (var i = 0; i < document.styleSheets.length; i++) {
+				var s = document.styleSheets[i];
+				if (s.href !== want) continue;
+				try { return s.cssRules.length > 0 ? 'readable' : 'empty'; }
+				catch (e) { return 'opaque'; }
+			}
+			return 'missing';
+		})()`, &sheetState),
+	))
+	assert.True(t, strings.HasPrefix(linkHref, sharePrefix+token+subresourceSubPath+"?"),
+		"the served <link href> must be the signed same-origin subresource path, got %q", linkHref)
+	assert.Contains(t, linkHref, url.QueryEscape("https://example.com/app.css"),
+		"the rewritten reference must carry the absolute upstream URL it was minted for")
+	assert.Contains(t, linkHref, "sig=", "the rewritten reference must be MAC-bound")
+	assert.Equal(t, "readable", sheetState,
+		"the applied sheet must be the same-origin route response (a cross-origin sheet's cssRules are opaque)")
+
+	paths, sawCookie, sawRefer := p.upstream.snapshot()
+	assert.Contains(t, paths, "/app", "the daemon must have fetched the upstream document")
+	assert.Contains(t, paths, "/app.css", "the daemon must have fetched the stylesheet itself — the browser never reaches the origin")
+	assert.False(t, sawCookie, "no viewer Cookie may be forwarded upstream")
+	assert.False(t, sawRefer, "no Referer may be forwarded upstream (it would carry the share token, INV-9)")
+
+	dials := p.dialed.snapshot()
+	require.Len(t, dials, 2, "exactly two guarded fetches must have happened: the document and the stylesheet")
+	for i, addr := range dials {
+		assert.Equal(t, publicAddr.String()+":443", addr,
+			"dial %d must receive the guard-validated public address, not a re-resolution", i)
+	}
+
+	// (c) Forged signature, then its genuine counterpart.
+	const lateURL = "https://example.com/late.css"
+	genuineSig := p.h.signer.Sign(shareID, lateURL, 1)
+	require.NotEmpty(t, genuineSig, "premise broken: the signer minted no signature")
+	forgedSig := flipFirstRune(genuineSig)
+	require.NotEqual(t, genuineSig, forgedSig, "premise broken: the forged signature equals the genuine one")
+
+	var baseColor string
+	require.NoError(t, cdp.Run(ctx,
+		cdp.Evaluate(`getComputedStyle(document.getElementById('`+subE2EMarker+`')).color`, &baseColor)))
+	require.NotEqual(t, subE2ELateColor, baseColor,
+		"premise broken: the target element already carries the late-stylesheet color before it is loaded")
+
+	t.Run("forged_signature_is_refused_and_the_element_stays_unstyled", func(t *testing.T) {
+		require.NoError(t, cdp.Run(ctx, cdp.Evaluate(`(function(){
+			window.__forgedResult = 'pending';
+			var l = document.createElement('link');
+			l.rel = 'stylesheet';
+			l.id = '__forged';
+			l.onload = function(){ window.__forgedResult = 'load'; };
+			l.onerror = function(){ window.__forgedResult = 'error'; };
+			l.href = `+jsonString(subresourceRefURL(token, lateURL, 1, forgedSig))+`;
+			document.head.appendChild(l);
+			return true;
+		})()`, nil)))
+
+		var settled bool
+		require.NoError(t, cdp.Run(ctx,
+			cdp.Poll(`window.__forgedResult !== 'pending'`, &settled, cdp.WithPollingTimeout(10*time.Second))))
+		require.True(t, settled, "the forged stylesheet request must settle")
+
+		var result, color string
+		require.NoError(t, cdp.Run(ctx,
+			cdp.Evaluate(`window.__forgedResult`, &result),
+			cdp.Evaluate(`getComputedStyle(document.getElementById('`+subE2EMarker+`')).color`, &color),
+		))
+		assert.Equal(t, "error", result, "a forged-MAC reference must be REFUSED by the route")
+		assert.Equal(t, baseColor, color, "a refused stylesheet must leave the element unstyled")
+
+		// The refusal precedes the socket: no fetch was made for it (§8 — assert the
+		// dangerous side effect was never reached, not merely that something failed).
+		assert.Len(t, p.dialed.snapshot(), 2, "a forged reference must be refused BEFORE any upstream dial")
+	})
+
+	t.Run("genuine_signature_for_the_same_url_does_style_it", func(t *testing.T) {
+		// This is the forged case's premise: the URL, the depth, the media type and
+		// the stylesheet itself are all fine — only the MAC was wrong above.
+		require.NoError(t, cdp.Run(ctx, cdp.Evaluate(`(function(){
+			var l = document.createElement('link');
+			l.rel = 'stylesheet';
+			l.id = '__genuine';
+			l.href = `+jsonString(subresourceRefURL(token, lateURL, 1, genuineSig))+`;
+			document.head.appendChild(l);
+			return true;
+		})()`, nil)))
+
+		var lateStyled bool
+		require.NoError(t, cdp.Run(ctx,
+			cdp.Poll(`getComputedStyle(document.getElementById('`+subE2EMarker+`')).color === '`+subE2ELateColor+`'`,
+				&lateStyled, cdp.WithPollingTimeout(15*time.Second))))
+		require.True(t, lateStyled,
+			"a genuinely signed reference to the same URL must be served and applied — otherwise the forged refusal above proves nothing")
+
+		paths, _, _ := p.upstream.snapshot()
+		assert.Contains(t, paths, "/late.css", "the genuine reference must have provoked exactly the upstream fetch the forged one did not")
+		assert.Len(t, p.dialed.snapshot(), 3, "the genuine reference must add exactly one guarded dial")
+	})
+}
+
+// flipFirstRune returns s with its first byte changed, so a forged signature is
+// the same length and alphabet as the genuine one and differs in exactly the
+// field under test.
+func flipFirstRune(s string) string {
+	if s == "" {
+		return "x"
+	}
+	first := "A"
+	if s[0] == 'A' {
+		first = "B"
+	}
+	return first + s[1:]
 }
