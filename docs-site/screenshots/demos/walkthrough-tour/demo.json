@@ -1,0 +1,29 @@
+{
+  "name": "walkthrough-tour",
+  "viewport": {"width": 1280, "height": 800},
+  "fps": 25,
+  "env": {"PROXY_ID": "demo-wt", "PROXY_PORT": 18207, "UPSTREAM_PORT": 8027},
+  "setup": {
+    "upstream": "./upstream.mjs",
+    "waitFor": "http://127.0.0.1:8027/",
+    "proxy": {"id": "demo-wt", "target": "http://127.0.0.1:8027", "port": 18207}
+  },
+  "segments": [
+    {
+      "id": "card-intro", "type": "card", "dur": 3.6,
+      "kicker": "agnt demo · walkthrough",
+      "title": "Author the tour once",
+      "sub": "The same guided walkthrough the agent runs live is what the camera records."
+    },
+    {
+      "id": "tour", "type": "browser", "script": "./segments/tour.mjs"
+    }
+  ],
+  "narration": {
+    "voice": "en-US-AndrewNeural",
+    "rate": "+4%",
+    "segments": [
+      {"id": "n1", "at": "tour+mark:step:2", "text": "Step two lands on rollout — the narration is anchored to the tour step, not to a stopwatch."}
+    ]
+  }
+}
