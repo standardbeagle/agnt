@@ -501,6 +501,160 @@ func TestBus_Fire_AfterClose_NoBlock(t *testing.T) {
 	}
 }
 
+// ── ClearSessionBeforeSync (FIFO ordering + saturation refusal) ────────────────
+
+// TestBus_ClearSessionBeforeSync_FIFO_RetiresEarlierPublish pins the first
+// load-bearing property of ClearSessionBeforeSync: because the clear rides the
+// SAME single buffered inbound channel drained by the SAME single dispatch
+// goroutine, an incident published BEFORE the clear is guaranteed to be ingested
+// BEFORE the clear runs, and therefore cannot survive a boundary it predates.
+//
+// Ordering is driven by CONSTRUCTION, not timing: with dispatch paused, the
+// incident is enqueued FIRST (synchronously) and the control op SECOND. A FIFO
+// channel + single consumer makes "incident ingested, then clear applied" the
+// only reachable interleaving. The assertion is the retired count (a sequence
+// fact), never elapsed wall-clock.
+//
+// This is exactly why ClearSessionBeforeSync routes through the control-clear
+// path instead of calling the inbox directly. MUTATION-VERIFIED: rewriting the
+// production method to clear the inbox directly (bypassing the FIFO channel)
+// makes the count assertion below fail — see the completion note.
+func TestBus_ClearSessionBeforeSync_FIFO_RetiresEarlierPublish(t *testing.T) {
+	// No t.Parallel(): manipulates the shared dispatch gate.
+	bus := NewMPSCBus(nil)
+	defer bus.Close()
+	bus.AddSession("sess", nil, nil, nil)
+
+	base := time.Now()
+
+	// Pause dispatch so nothing is consumed while we stage the FIFO order.
+	bus.pauseDispatch()
+
+	ev := NewIncidentEvent(SourceProcessAlert, SeverityError, "go", "stale before clear", Context{SessionID: "sess"}, nil)
+	ev.ReceivedAt = base
+	require.True(t, bus.fire(&ev), "incident must enqueue while dispatch paused")
+
+	// The clear is enqueued strictly AFTER the incident (already buffered above).
+	// before = base+1ms >= incident.LastSeenAt, so a correctly ordered clear
+	// retires exactly that one earlier incident.
+	type result struct {
+		n  int
+		ok bool
+	}
+	resCh := make(chan result, 1)
+	go func() {
+		n, ok := bus.ClearSessionBeforeSync("sess", base.Add(time.Millisecond))
+		resCh <- result{n, ok}
+	}()
+
+	// Do NOT resume until the clear has committed to its path, so the outcome is
+	// a property of ordering, not of resume timing. Two reachable states:
+	//   - FIFO path (correct): the clear registers its ack and blocks awaiting
+	//     dispatch — observable as one pending ack.
+	//   - bypass path (a hypothetical direct-inbox clear): it returns WITHOUT
+	//     touching the ack table, having run against the not-yet-ingested inbox
+	//     — observable as an early result.
+	// Resuming only after one of these is reached makes a bypass's premature
+	// clear land deterministically on the count assertion below. This is the
+	// mutation-verified discriminator: with the clear rewritten to hit the inbox
+	// directly, the early result carries n=0 and the assertion fails.
+	pendingAcks := func() int {
+		bus.ackMu.Lock()
+		defer bus.ackMu.Unlock()
+		return len(bus.acks)
+	}
+	var early *result
+	deadline := time.Now().Add(2 * time.Second)
+	for early == nil && pendingAcks() != 1 {
+		select {
+		case r := <-resCh:
+			early = &r
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("clear neither staged on the FIFO channel nor returned")
+		}
+		runtime.Gosched()
+	}
+
+	bus.resumeDispatch()
+
+	var r result
+	if early != nil {
+		r = *early
+	} else {
+		select {
+		case r = <-resCh:
+		case <-time.After(2 * time.Second):
+			t.Fatal("ClearSessionBeforeSync never returned")
+		}
+	}
+	require.True(t, r.ok, "clear must be applied on a healthy bus")
+	require.Equal(t, 1, r.n, "clear must retire the incident published before it (FIFO ordering)")
+
+	require.Nil(t, bus.FindFingerprintSession("sess", ev.Fingerprint),
+		"the incident predating the clear must be gone")
+}
+
+// TestBus_ClearSessionBeforeSync_SaturatedReturnsNotOk pins the second
+// load-bearing property: a control enqueue that the bus DROPS (saturated inbound
+// channel) must return ok=false so the caller surfaces the failure (the daemon
+// turns this into ErrInternal), never silently report a clear that did not run.
+//
+// The refusal's PROVENANCE is asserted, not merely that ok==false: the same
+// call succeeds (ok=true) on a healthy bus, and under saturation the drop
+// counter advances by exactly one and the registered ack is released — proving
+// the false came from the control-enqueue DROP path specifically, not a missing
+// session, closed bus, or leaked ack.
+func TestBus_ClearSessionBeforeSync_SaturatedReturnsNotOk(t *testing.T) {
+	// No t.Parallel(): fills the shared inbound channel and pauses dispatch.
+	bus := NewMPSCBus(nil)
+	defer bus.Close()
+	bus.AddSession("sess", nil, nil, nil)
+
+	pendingAcks := func() int {
+		bus.ackMu.Lock()
+		defer bus.ackMu.Unlock()
+		return len(bus.acks)
+	}
+
+	// Anchor: on a healthy bus the identical call IS applied. This isolates
+	// saturation as the ONLY difference the failing path below introduces.
+	n, ok := bus.ClearSessionBeforeSync("sess", time.Now())
+	require.True(t, ok, "healthy-bus clear must be applied")
+	require.Equal(t, 0, n, "no incidents queued, so nothing to retire")
+	require.Equal(t, 0, pendingAcks(), "healthy clear must release its ack")
+
+	// Saturate: pause dispatch, then drive inbound to a CONFIRMED-full state.
+	// A paused dispatch drains at most one already-selected event before it
+	// gates, so a static fill can leave one free slot; instead fire until a fire
+	// is dropped (returns false), which can only happen once inbound is full and
+	// the paused consumer is no longer draining it. Once full it stays full.
+	bus.pauseDispatch()
+	filler := NewIncidentEvent(SourceBrowserJS, SeverityError, "T", "filler", Context{SessionID: "sess"}, nil)
+	saturated := false
+	for i := 0; i < busInboundCap*2; i++ {
+		if !bus.fire(&filler) { // first dropped fire proves inbound is full
+			saturated = true
+			break
+		}
+	}
+	require.True(t, saturated, "inbound channel never saturated")
+
+	beforeDrops := bus.Dropped()
+
+	gotN, gotOk := bus.ClearSessionBeforeSync("sess", time.Now())
+
+	require.False(t, gotOk, "saturated control enqueue must return ok=false (never a silent success)")
+	require.Equal(t, 0, gotN, "a clear that did not run reports zero retired")
+	require.Equal(t, beforeDrops+1, bus.Dropped(),
+		"the refusal must be the dropped control enqueue itself, not another failure mode")
+	require.Equal(t, 0, pendingAcks(),
+		"a dropped control op must release its ack (no leak per releaseAck)")
+
+	bus.resumeDispatch()
+}
+
 // ── Stress tests ──────────────────────────────────────────────────────────────
 
 func TestStress_100Producers_1kEventsPerSec_NoPanic(t *testing.T) {
