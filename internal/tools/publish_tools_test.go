@@ -176,6 +176,47 @@ func TestMergeUpstreamCarriesManualControlPlaneInputs(t *testing.T) {
 	}
 }
 
+// TestMergeUpstreamExplicitNullEqualsAbsent pins the item-4 null semantics: an
+// `"upstream": null` key is treated exactly like an absent key — a nil
+// *UpstreamConfig ("no upstream") downstream — so a non-empty param FILLS the
+// declared-but-empty slot rather than being reported as a contradiction with a
+// url of "". This FAILS on a revert to unmarshalling `null` into a zero struct.
+func TestMergeUpstreamExplicitNullEqualsAbsent(t *testing.T) {
+	const withNull = `{"version":"v1","id":"demo","title":"Demo","upstream":null,"steps":[]}`
+
+	// Param empty + explicit null: passes through byte-transparent (null decodes
+	// to no upstream downstream), just like absent.
+	got, err := mergeUpstream(json.RawMessage(withNull), "")
+	if err != nil {
+		t.Fatalf("empty param over null upstream: %v", err)
+	}
+	if string(got) != withNull {
+		t.Fatalf("empty param rewrote a null-upstream artifact: %s", got)
+	}
+
+	// Param present + explicit null: the origin is folded in, NOT rejected as a
+	// contradiction. The pre-fix code unmarshalled null into url:"" and errored.
+	got, err = mergeUpstream(json.RawMessage(withNull), "https://shop.example.com/cart")
+	if err != nil {
+		t.Fatalf("explicit null must accept a param, not contradict: %v", err)
+	}
+	var merged struct {
+		ID       string `json:"id"`
+		Upstream struct {
+			URL string `json:"url"`
+		} `json:"upstream"`
+	}
+	if err := json.Unmarshal(got, &merged); err != nil {
+		t.Fatalf("decode merged over null: %v (%s)", err, got)
+	}
+	if merged.Upstream.URL != "https://shop.example.com/cart" {
+		t.Fatalf("param not folded into null-upstream slot: %s", got)
+	}
+	if merged.ID != "demo" {
+		t.Fatalf("merge lost an artifact field: %s", got)
+	}
+}
+
 // TestPublishCreateAcceptsRawOpsArtifact pins that a variant set carrying the
 // raw-content ops (setHTML/addStyle/addScript) plus an upstream survives the
 // tool's own handling unaltered — the tool must not filter the op vocabulary it

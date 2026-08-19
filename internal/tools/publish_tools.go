@@ -207,6 +207,18 @@ func makePublishHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolRequ
 // The merged artifact is still fully validated daemon-side by the P2 validators
 // (DecodePublishedWalkthrough) before anything is stored — this function is a
 // convenience over the JSON shape, not a trust boundary.
+//
+// The `upstream` KEY on the artifact has three spellings, and the zero value is
+// never allowed to decide between them silently:
+//   - absent: no upstream declared. A non-empty param is folded in.
+//   - JSON null: treated identically to absent. Downstream, upstream is a
+//     *UpstreamConfig, so `null` and an omitted key both decode to a nil
+//     pointer ("no upstream", legal — see UpstreamConfig.Validate); this layer
+//     honours that same equivalence rather than unmarshalling `null` into a
+//     zero-URL struct and misreporting it as a URL of "". A non-empty param
+//     fills the declared-but-empty slot.
+//   - a concrete object: an existing origin. A param naming a DIFFERENT origin
+//     is the only real contradiction and is rejected.
 func mergeUpstream(walkthrough json.RawMessage, upstream string) (json.RawMessage, error) {
 	upstream = strings.TrimSpace(upstream)
 	if upstream == "" {
@@ -216,7 +228,7 @@ func mergeUpstream(walkthrough json.RawMessage, upstream string) (json.RawMessag
 	if err := json.Unmarshal(walkthrough, &artifact); err != nil {
 		return nil, fmt.Errorf("walkthrough must be a JSON object to merge upstream into: %w", err)
 	}
-	if existing, ok := artifact["upstream"]; ok {
+	if existing, ok := artifact["upstream"]; ok && !isJSONNull(existing) {
 		var cur struct {
 			URL string `json:"url"`
 		}
@@ -244,6 +256,13 @@ func mergeUpstream(walkthrough json.RawMessage, upstream string) (json.RawMessag
 		return nil, fmt.Errorf("re-encode walkthrough: %w", err)
 	}
 	return json.RawMessage(bytes.TrimRight(buf.Bytes(), "\n")), nil
+}
+
+// isJSONNull reports whether a raw JSON value is the literal null token, so an
+// explicit `"upstream": null` can be routed to the absent-key path rather than
+// being unmarshalled into a zero-value struct.
+func isJSONNull(raw json.RawMessage) bool {
+	return bytes.Equal(bytes.TrimSpace(raw), []byte("null"))
 }
 
 func renderPublish(out PublishOutput, raw bool) *mcp.CallToolResult {
