@@ -1,6 +1,16 @@
 // Demo engine entry point.
 //
 //   node docs-site/screenshots/engine/demo.mjs demos/<name> [--assemble-only]
+//   node docs-site/screenshots/engine/demo.mjs demos/<name> --inspect[=<seg-id>]
+//
+// --inspect is a read-only cut-point authoring aid: for each recorded take in
+// out/.work it emits a contact sheet (one thumbnail/second) with a timeline
+// strip beneath, overlaying every mark from <seg>.json at its timestamp so the
+// `mark:<name>±<s>` keep-range endpoints can be picked in one look. It writes
+// only out/inspect/<seg>.png, touches no mezzanine/output, needs neither the
+// daemon nor edge-tts, and is a fully independent path from assembly (the
+// content-keyed assembly cache is untouched). A missing take is a loud
+// per-segment message, not a crash. See lib/inspect.mjs.
 //
 // A demo is a directory with a demo.json:
 //   {
@@ -33,6 +43,7 @@ import {spawnSync} from 'node:child_process';
 import {recordCLI} from './lib/vhs.mjs';
 import {recordBrowser, setupLiveStack} from './lib/browser.mjs';
 import {assemble} from './lib/assemble.mjs';
+import {inspectDemo} from './lib/inspect.mjs';
 import {readJSON} from './lib/util.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -73,6 +84,24 @@ if (!demoArg) {
 const demoDir = path.resolve(screenshotsDir, demoArg);
 const spec = readJSON(path.join(demoDir, 'demo.json'));
 spec.viewport = spec.viewport || {width: 1440, height: 900};
+
+// --inspect: read-only cut-point authoring aid over existing takes. Runs before
+// the narration gate and any live-stack setup — it needs neither edge-tts nor
+// the daemon — and exits without recording or assembling.
+const inspectArg = process.argv.find((a) => a === '--inspect' || a.startsWith('--inspect='));
+if (inspectArg) {
+  const only = inspectArg.startsWith('--inspect=') ? inspectArg.slice('--inspect='.length) : null;
+  const {results, missing} = inspectDemo(spec, {
+    demoDir,
+    workDir: path.join(demoDir, 'out', '.work'),
+    outDir: path.join(demoDir, 'out'),
+  }, {only});
+  if (!results.length) {
+    console.error('inspect: nothing rendered' + (missing ? ` (${missing} take(s) missing — record them first)` : ''));
+    process.exit(1);
+  }
+  process.exit(0);
+}
 
 // Narration needs edge-tts. A demo written WITH narration must fail loud rather
 // than silently assemble silent — unless it explicitly opted into that fallback.
