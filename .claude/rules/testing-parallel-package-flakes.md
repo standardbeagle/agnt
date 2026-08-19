@@ -169,9 +169,44 @@ Two generalizations:
    it hides this class exactly as it hides cross-package port contention above.
    Widening a deadline can never fix a result that fails at 0.00s.
 
+## Sanctioned `--no-verify` on a GREEN commit that flakes only on the `-race` hook
+
+`AGENTS.md` § Testing sanctions `--no-verify` for a RED-first TDD commit. Task
+`01M0B18S8K5D68FMJPF0QYS6V8` (commit `2cae85df`, reviewer verdict `pass`, no
+rewinds) is a second, distinct sanctioned case: a **GREEN** commit whose only
+gate failure was the pre-commit `-race` full-package run flaking on
+**pre-existing, load-sensitive teardown artifacts in untouched code** — here
+the `explicit_dependency_timeout` wall-clock ceiling (11.8s > 10s; the
+timing-assertion family, `testing-timing-assertion-flakes.md`) and a goleak on
+the autostart `/proc`-scan goroutines
+(`AutostartManager.run → RunAutostartAsync → collectManagedPIDs →
+platform.Scan`). The diff itself added no goroutine and its behavior change (a
+URL early-exit, see `lessons-liveness-probes.md` § readiness extension) is
+never activated by the flaking test's URL-less `sleep` processes, so it cannot
+touch that test's timing.
+
+Bypassing the hook here is legitimate **only when all three hold**, else it is
+gate-evasion:
+
+1. the failing test is an **already-documented, load-sensitive** flake in code
+   the diff does not touch (not a new failure the diff introduced);
+2. a **non-`-race` gate is green as corroboration** — the worktrack `-p 1 ./...`
+   gate passed, and the affected test passes under `-race` in isolation; and
+3. a **reviewer independently confirms the flake is causally unrelated** to the
+   diff (no added goroutine → no goleak surface; the changed code path is not
+   exercised by the flaking test) and that confirmation is **recorded in the
+   audit** (commit body + review verdict), not asserted only by the author.
+
+Signature check first: attribute a `-race`-only hook failure to the flake
+classes above *before* reaching for `--no-verify`. If the same test fails under
+`-p 1` or in isolation, condition 1 is false and the failure is real.
+
 ## See also
 
-- `AGENTS.md` § Testing — pre-commit hook's `-p 1` contract
+- `AGENTS.md` § Testing — pre-commit hook's `-p 1` contract; RED-first
+  `--no-verify` sanction (this doc adds the GREEN-commit `-race`-flake case)
+- `.claude/rules/testing-timing-assertion-flakes.md` — the wall-clock-ceiling
+  flake family one of the sanctioned bypasses above belongs to
 - `.claude/rules/daemon-architecture.md` § Port-Kill Guard, § Session Containment — why daemon tests bind real ports
 - per-user memory `feedback_flaky_test_hunt`, `project_flake_class_2026_07`
 - `.claude/rules/publish-security-review-lessons.md` — the epic whose tail paid

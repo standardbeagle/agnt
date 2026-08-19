@@ -10,7 +10,10 @@ sources:
   - commit:d6a8ab062a0fe819e8f519ae8676d18bc7d23b04
   - commit:f5d65a9a89c8f92a921f04ea9ed3aa74de47c550
   - reviewer_verdict:01KX972C67V05EPEB5CPEJ7YNC (pass_with_changes, no rewinds)
-written_at_last_update: 2026-07-11T18:45:00Z
+  - task:01M0B18S8K5D68FMJPF0QYS6V8 (startup-monitor early exit, readiness extension)
+  - commit:2cae85df601e4841a04dce2122b8b10a961e9c52
+  - reviewer_verdict:01M0C0HYFT4GCY26Q1F463Z0TN (pass, high confidence, no rewinds)
+written_at_last_update: 2026-08-18T00:00:00Z
 ---
 
 # Lesson: an indefinite-blocking liveness probe is a liveness lie
@@ -73,3 +76,49 @@ liveness signal must explicitly branch on *why* the underlying operation
 ended — signal fired (dead) vs. ended without the signal (clean/cooperative
 exit) — rather than treating "the loop returned" as a single case that
 always means "reconnect."
+
+## Extension: the readiness/early-SUCCESS predicate is the mirror image — it must be affirmative self-emitted health, never absence-of-failure and never an ambient probe
+
+Task `01M0B18S8K5D68FMJPF0QYS6V8` (commit `2cae85df`, reviewer verdict
+`pass`, high confidence, no rewinds) is the success-side sibling of the two
+lessons above. `internal/daemon/startup_resilience.go` `monitorStartupFailure`
+watched a process for a crash window (default 3s) but had **no positive-exit
+path**: its only way to report "healthy" was the deadline expiring, so every
+SUCCESSFUL autostart blocked the caller for the whole window and stacked ~3s
+per dependency layer. The fix added an early return, and the whole lesson is
+in *which* signal was chosen for it:
+
+- **Chosen: a URL detected in the process's OWN captured output**
+  (`urlTracker.GetURLs`). This is unambiguous affirmative health — a URL
+  cannot be printed by a process that is mid-crash, and (unlike a socket
+  probe) it cannot be attributed to a *pre-existing* port holder because it
+  comes from the process's own stdout/stderr, not the socket table.
+- **Rejected: `state == Running` ("has not crashed yet").** This is the
+  not-yet-crashed trap — the absence of a negative is not the presence of a
+  positive. A `sleep 0.3 && exit 1` process is "still running" for its first
+  ticks yet is unhealthy. The `delayed_exit` regression test is the
+  mutation-killer: relaxing the predicate to `state==Running => ready` makes
+  it return `nil` at ~100ms, and the review **mutation-verified** exactly that
+  before accepting.
+- **Rejected: a bare expected-port TCP probe.** A probe can succeed against a
+  pre-existing/protected holder while our own process is mid-EADDRINUSE-crash
+  — the same ambient-signal ambiguity §1's "a URL cannot be attributed to a
+  pre-existing holder" avoids — which would regress the in-monitor EADDRINUSE
+  recovery path.
+- **Ordering is load-bearing**: the affirmative-health check runs AFTER the
+  failure (EADDRINUSE/crash) checks and BEFORE the deadline check, so a
+  failure on the same tick is still classified as failure first.
+
+Generalize: whenever you add an early-SUCCESS/ready exit to a watch/health
+window, the exit predicate must be a **positive signal emitted by the subject
+itself** (a readiness line in its own output, an explicit ready RPC/callback
+it sends), never "no error has arrived yet" and never an ambient probe a third
+party can satisfy (TCP connect, socket-table presence, a shared health
+endpoint). This is symmetric with §1: §1 says a *failure/liveness* probe must
+be time-bounded so a hang cannot masquerade as "still fine"; this says a
+*readiness* predicate must be affirmative so "not yet failed" cannot
+masquerade as "healthy." Test it deterministically the way this task did —
+inject the ready signal and set a never-firing deadline, then assert the
+OUTCOME (returned via readiness) rather than any wall-clock latency bound, and
+keep a mutation-guard crash case (`sleep 0.3; exit 1`) that fails the moment
+the predicate is relaxed to absence-of-failure.
