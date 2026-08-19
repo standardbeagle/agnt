@@ -31,6 +31,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/standardbeagle/agnt/internal/config"
+	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/httpcaps"
 	"github.com/standardbeagle/agnt/internal/platform"
 	"github.com/standardbeagle/agnt/internal/proxy"
@@ -516,7 +517,7 @@ func runPublishServe(ctx context.Context, opts publishServeOptions) error {
 	if err != nil {
 		return fmt.Errorf("publish serve: load config: %w", err)
 	}
-	limits := feedbackLimitsFor(appCfg.Feedback)
+	limits := daemon.FeedbackLimitsFromConfig(appCfg.Feedback)
 	// Persist viewer feedback rather than accepting and dropping it: a nil sink
 	// is a documented safe stub, but silently discarding what a viewer typed is
 	// exactly the failure this repo prohibits.
@@ -814,20 +815,6 @@ func portOf(boundAddr string) int {
 	return p
 }
 
-// feedbackLimitsFor maps the operator's feedback{} config to the publish
-// package's limits, normalizing so an unset field becomes its spec default
-// rather than an invalid zero.
-func feedbackLimitsFor(cfg config.FeedbackConfig) publish.FeedbackLimits {
-	n := cfg.Normalize()
-	return publish.FeedbackLimits{
-		RatePerMinute:   n.RatePerMinute,
-		Burst:           n.Burst,
-		MaxBodyBytes:    n.MaxBodyBytes,
-		MaxRowsPerShare: n.MaxRowsPerShare,
-		RetentionDays:   n.RetentionDays,
-	}
-}
-
 // defaultPublishServeStoreDir is a per-folder store under the user cache. It is
 // deliberately NOT inside the served folder: a record written there would be
 // picked up as a walkthrough on the next pass.
@@ -991,7 +978,7 @@ func runPublishFeedback(opts publishFeedbackOptions) error {
 	if err != nil {
 		return fmt.Errorf("publish feedback: load config: %w", err)
 	}
-	limits := feedbackLimitsFor(appCfg.Feedback)
+	limits := daemon.FeedbackLimitsFromConfig(appCfg.Feedback)
 	fb, err := publish.NewFeedbackStore(filepath.Join(storeDir, "feedback"), limits, nil)
 	if err != nil {
 		return fmt.Errorf("publish feedback: open feedback store: %w", err)

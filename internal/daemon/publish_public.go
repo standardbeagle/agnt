@@ -72,7 +72,7 @@ func (d *Daemon) buildPublicPlane() {
 	if feedbackDir == "" {
 		feedbackDir = DefaultFeedbackDir()
 	}
-	limits := feedbackLimitsFromConfig(d.config.FeedbackLimits)
+	limits := FeedbackLimitsFromConfig(d.config.FeedbackLimits)
 
 	if store, err := publish.NewFeedbackStore(feedbackDir, limits, nil); err != nil {
 		d.daemonStartupLog("error", "feedback_store_load_failed",
@@ -197,10 +197,11 @@ func (d *Daemon) startPublicListener() {
 		fmt.Sprintf("public plane listening on %s", addr))
 }
 
-// feedbackLimitsFromConfig converts the normalized config.FeedbackConfig into
+// FeedbackLimitsFromConfig converts the normalized config.FeedbackConfig into
 // the package-publish FeedbackLimits (keeps package publish free of a config
-// import). Normalize fills any zero field with its spec default.
-func feedbackLimitsFromConfig(c config.FeedbackConfig) publish.FeedbackLimits {
+// import). Normalize fills any zero field with its spec default. Exported so the
+// `publish serve` CLI path shares this one mapping rather than duplicating it.
+func FeedbackLimitsFromConfig(c config.FeedbackConfig) publish.FeedbackLimits {
 	n := c.Normalize()
 	return publish.FeedbackLimits{
 		RatePerMinute:   n.RatePerMinute,
