@@ -577,6 +577,39 @@ func (d *Daemon) monitorStartupFailure(
 				}
 			}
 
+			// Positive-readiness early exit.
+			//
+			// A URL detected in the process's OWN output (URLTracker scans stdout
+			// and stderr — see urltracker.go) is AFFIRMATIVE evidence of health:
+			// the process itself announced a serving URL (e.g. Vite's
+			// "Local: http://localhost:5173/"). That is categorically different
+			// from "has not crashed yet" — a URL cannot be printed by a process
+			// that is mid-crash, and it cannot be attributed to a pre-existing
+			// port holder (unlike a bare TCP probe), because it comes from the
+			// process's captured output, not from the socket table. Once we have
+			// it, blocking the caller for the remainder of the crash-watch window
+			// buys nothing: the outcome is no longer uncertain.
+			//
+			// Ordering is load-bearing: this check runs AFTER both EADDRINUSE
+			// checks above, so a process that logged EADDRINUSE (dead OR still
+			// alive) is classified as a failure on this same tick before any
+			// readiness is considered — crash/EADDRINUSE detection is fully
+			// preserved. It also runs BEFORE the deadline check, so a healthy
+			// process exits early instead of waiting out the full window.
+			//
+			// We deliberately do NOT treat "the process is still alive and has
+			// produced no error" as ready — that is exactly the not-yet-crashed
+			// trap: a `sleep 0.3 && exit 1` process is "not crashed" for its
+			// first few ticks yet is not healthy. Readiness requires an
+			// affirmative signal, not the absence of a negative one. (A bare
+			// expected-port TCP probe was considered and rejected here: a probe
+			// can succeed against a pre-existing holder while our own process is
+			// mid-EADDRINUSE-crash, which would regress the in-monitor EADDRINUSE
+			// recovery path. URL-from-own-output has no such ambiguity.)
+			if d.urlTracker != nil && len(d.urlTracker.GetURLs(proc.ID)) > 0 {
+				return nil
+			}
+
 			// Timeout check
 			if time.Now().After(deadline) {
 				// Process survived startup period - assume success

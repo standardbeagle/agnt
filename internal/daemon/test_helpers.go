@@ -59,14 +59,16 @@ func NewForTest(t *testing.T, cfg DaemonConfig) *Daemon {
 	t.Helper()
 
 	// monitorStartupFailure blocks the caller for the full StartupMonitorTimeout
-	// (default 3s) on every SUCCESSFUL start — it only returns "no early failure"
-	// once the deadline passes. Production wants that 3s crash-watch window; tests
-	// assert process state directly and do not, so the default added ~3s to every
-	// real-process test (dozens of them, serialized). A short window keeps
+	// (default 3s) on every SUCCESSFUL start UNLESS it observes affirmative
+	// health first: a process that announces a serving URL in its own output now
+	// returns via the positive-readiness early exit (see monitorStartupFailure in
+	// startup_resilience.go). Test processes are typically bare `sleep 60` with no
+	// such signal, so they would still block the full window. A short window keeps
 	// early-crash detection intact (the monitor polls every 100ms, so an
 	// immediate `exit 1` is still caught on the first tick) while cutting the
-	// healthy-start wait to a couple of ticks. Tests that specifically need a
-	// longer crash-watch set StartupMonitorTimeout explicitly in their cfg.
+	// healthy-start wait for those URL-less test processes to a couple of ticks.
+	// Tests that specifically need a longer crash-watch set StartupMonitorTimeout
+	// explicitly in their cfg.
 	if cfg.StartupMonitorTimeout == 0 {
 		cfg.StartupMonitorTimeout = 200 * time.Millisecond
 	}
