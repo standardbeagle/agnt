@@ -3,3 +3,4 @@
 // directory with no path argument also discovers the *.test.mjs files directly.
 import './narration-gating.test.mjs';
 import './final-mux.test.mjs';
+import './assembly-cache.test.mjs';
