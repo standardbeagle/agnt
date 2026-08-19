@@ -15,8 +15,9 @@ response.
 
 **Four things that will bite you — read these before you hand out a link:**
 
-1. A share that proxies a live upstream serves the **document only**, so the page
-   renders **unstyled** (§9).
+1. A share that proxies a live upstream serves its document, CSS, images, and
+   fonts — but **never its JavaScript**, by design and permanently. A
+   client-rendered site will therefore still look empty (§9).
 2. **One malformed `*.json` aborts the whole `agnt publish serve` run** — valid
    siblings are not published (§2).
 3. **Restarting `serve` rotates every token by default**, so links from the
@@ -244,7 +245,7 @@ proxy — not the dev proxy with auth bolted on. Concretely:
 | Control surface | present (metrics WS, proxy exec, `__devtool/*`) | **absent** — never registered, `403`/`404` |
 | Session scope | resolves a project scope | resolves **no** scope; a token maps to an immutable revision, never a project (INV-1) |
 | Listener | dev proxy port(s) | separate, **opt-in** listener (`AGNT_PUBLIC_ADDR`, or `agnt publish serve`) |
-| Upstream | live reverse-proxies a dev-server origin, **subresources and all** | live-proxies the **document only**, through the INV-13 origin guard, for a share that names an upstream — see §9 |
+| Upstream | live reverse-proxies a dev-server origin, **subresources and all** | live-proxies the document **plus its CSS/images/fonts** — each through the INV-13 origin guard, each bound to that share by an HMAC, JS excluded by design — for a share that names an upstream; see §9 |
 
 ---
 
@@ -291,7 +292,8 @@ Share <share-id>
 
 ### revoke / rotate
 
-- **`revoke`** tombstones the share. `GET /s/{token}`, `/variants.json`,
+- **`revoke`** tombstones the share, killing the subresource route with it —
+  the token check runs before any of them. `GET /s/{token}`, `/variants.json`,
   `/walkthrough.json`, and `POST /s/{token}/feedback` **all `404` atomically** —
   no grace window, no cache that outlives revoke (INV-4). The share stays visible
   in `list` marked `revoked` for audit.
@@ -310,6 +312,7 @@ serve` is running (same `PublicHandler`). Token is in the **path segment**
 |-------|---------|--------|
 | `GET /s/{token}` | GET, HEAD | Artifact HTML shell; loads only the `RolePublic` bundle |
 | `GET /s/{token}/variants.json` | GET, HEAD | Immutable published variant-set snapshot |
+| `GET /s/{token}/sub?u=…&d=…&sig=…` | GET, HEAD | One CSS/image/font subresource of a proxied upstream, fetched through the INV-13 guard. Serves **only** references the daemon minted for this share (HMAC-bound); anything else 404s without opening a socket |
 | `GET /s/{token}/walkthrough.json` | GET, HEAD | Immutable published walkthrough script |
 | `POST /s/{token}/feedback` | POST | Appends one anonymous feedback row (`application/json` only) |
 | `GET /__devtool/inject.<hash>.js` | GET | The content-addressed `RolePublic` bundle (the only permitted `/__devtool` path) |
@@ -326,7 +329,7 @@ serve` is running (same `PublicHandler`). Token is in the **path segment**
 
 | Header | Value |
 |--------|-------|
-| `Content-Security-Policy` | `default-src 'self'; script-src 'sha256-<bundle>' 'sha256-<authored-script>'…; style-src 'self' ['nonce-<n>']; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'` |
+| `Content-Security-Policy` | `default-src 'self'; script-src 'sha256-<bundle>' 'sha256-<authored-script>'…; style-src 'self' ['nonce-<n>' \| 'unsafe-inline']; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'` |
 | `X-Frame-Options` | `DENY` |
 | `Referrer-Policy` | `no-referrer` (token path never leaks to third-party subresource hosts) |
 | `X-Content-Type-Options` | `nosniff` |
@@ -334,8 +337,13 @@ serve` is running (same `PublicHandler`). Token is in the **path segment**
 | `Cache-Control` (feedback) | `no-store` |
 | `Set-Cookie` / `Access-Control-Allow-Origin` | **never** (deleted wholesale) |
 
-No `unsafe-inline`, no `unsafe-eval` (INV-11 / INV-12). Three details bite in
-practice:
+No `unsafe-eval` anywhere, and no `unsafe-inline` in `script-src` on any
+response (INV-11 / INV-12). `style-src` carries at most **one** source beyond
+`'self'`, and which one depends on the response: the self-contained shell's
+per-response `'nonce-<n>'`, or `'unsafe-inline'` on the proxied live-upstream
+document alone (INV-18, 2026-08-19) so the upstream's own inline styles apply.
+Every other response — JSON, feedback, refusals, subresources — is bare `'self'`.
+The fetch-governing directives never vary. Three details bite in practice:
 
 - **`script-src` carries hash sources only — `'self'` is deliberately absent.**
   Source expressions are a union, so `'self'` would authorise every same-origin
@@ -429,27 +437,42 @@ publish {action: "create", walkthrough: {...}, upstream: "https://shop.example.c
 publish {action: "create", walkthrough: {..., "upstream": {"url": "https://shop.example.com/cart"}}}
 ```
 
-### READ THIS FIRST: only the document is proxied, so a proxied demo renders unstyled
+### READ THIS FIRST: a proxied demo renders styled, but its scripts never run
 
-Two independent things strip the upstream's presentation, and the second is the
-one people miss:
+Both halves of the old "renders unstyled" gap closed on 2026-08-19; what remains
+excluded is deliberate and permanent. Concretely:
 
-1. **There is no subresource proxy route.** The public CSP confines subresources
-   to `'self'` — `script-src` is hash-only, `img-src` is `'self' data:` — so the
-   upstream's own external CSS, JS, fonts, and images **do not load**.
-2. **The nonce is empty on the proxied path**, so `style-src` is bare `'self'`
-   and authorises **no inline style whatsoever**. The upstream's own inline
-   `<style>` blocks and its `style=` attributes die too — not just its external
-   stylesheets.
+1. **CSS, images, and fonts load, through a guarded subresource route.** The
+   daemon rewrites the references it finds in the fetched document (and in
+   fetched stylesheets) to `/s/{token}/sub?…`, and serves each one from `'self'`
+   after fetching it through the **same** origin guard as the document. Only
+   references the daemon itself minted are servable — each carries an HMAC bound
+   to that share and that nesting depth — so the route cannot be pointed at a URL
+   of a viewer's choosing.
+2. **The upstream's inline styles are authorised.** The proxied artifact document
+   is the one response whose `style-src` is `'self' 'unsafe-inline'`, so its own
+   `<style>` blocks and `style=` attributes apply.
 
-So what a viewer sees is the upstream's markup with your walkthrough running over
-it, stripped of both external *and* inline presentation.
+**Upstream JavaScript still does not run, and that will not change.** `script-src`
+is hash-sources-only, so proxied script would be bytes nothing can execute;
+`<script src>` references are deliberately left pointing at the upstream rather
+than rewritten. A demo of a site whose content is client-rendered will therefore
+still look empty — for those, publish a self-contained artifact.
 
-This is a known gap with a follow-up filed for the subresource route; each proxied
-subresource is another guarded outbound fetch and another content-type surface on
-an anonymous route, so it is deliberately its own slice. Until it lands: expect
-naked HTML, and prefer a self-contained artifact when presentation matters more
-than liveness.
+Four further limits, stated rather than discovered:
+
+- **SVG is refused** along with HTML and JS. It is a document format that can
+  carry script and style, not an image for this purpose.
+- **`srcset` and `<picture>` references are not rewritten**; they fail under CSP
+  as before. `<link rel=stylesheet|icon>`, `<img src>`, and `url()`/`@import`
+  (in inline `<style>` and in fetched CSS) are.
+- **Bounds:** 2 MiB per subresource (refused, never truncated), 64 distinct
+  references per document or stylesheet (the excess is left exactly as the
+  upstream wrote it), and a nesting depth of 2 — document → CSS → font/image. A
+  stylesheet reached at that depth still serves; only the chain stops.
+- **A daemon restart invalidates outstanding subresource URLs.** They 404, the
+  artifact revalidates on its next load, and the fresh document carries freshly
+  signed references — a repaint, not an error you need to act on.
 
 ### What else the proxied path does
 

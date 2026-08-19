@@ -1,7 +1,11 @@
 # Subresource Proxying for Live-Upstream Shares — style-src + Guarded Fetch Route
 
 Date: 2026-08-19
-Status: DRAFT — design only, awaiting owner decisions (see §8). No code ships from this document.
+Status: **IMPLEMENTED 2026-08-19** (task `01KYQFAZSV6AQTKASQHYVPKJZC`). The owner's ruling was
+"follow the spec's recommendations", so every §8 open question resolves to this document's own
+recommended position, or — where it stated none — to the most conservative option. Those
+resolutions and the implementation's divergences from the plan are recorded in §9; §0-§7 are
+left as written so the reasoning that produced the design stays auditable.
 Kind: Design spec extending `2026-07-13-public-walkthrough-publish-security.md` (the security keystone). Invariant numbering continues after INV-15; no existing invariant is changed, retired, or renumbered here.
 Worktrack: `01KYQFAZSV6AQTKASQHYVPKJZC` (follow-up declared by S6 `01KYJC0CQTMCV91FZ5B251V50S`, sharpened by S10's code verification).
 
@@ -282,3 +286,74 @@ optimisation; v1 correctness must not depend on it.
    code comment); confirm so the comment can say "by design", not "for now".
 7. **SVG**: leave excluded until someone asks, or design the sandboxed-serve
    path now?
+
+---
+
+## 9. Amendment 2026-08-19 — open questions resolved, and what shipped
+
+Owner ruling: *follow the spec's recommendations.* Each §8 question is answered
+below by this document's own stated lean; Q7, where the document expressed none,
+takes the option that grants least.
+
+### 9a. Resolutions
+
+| # | Question | Resolution | Basis |
+|---|---|---|---|
+| Q1 | Privacy vs surface: option (a) daemon-proxied, or (c) direct viewer→upstream fetches | **(a)**, scoped to CSS + images + fonts. All subresource traffic routes through the daemon; the viewer's IP, User-Agent, TLS fingerprint, and timing never reach the upstream. | §4's recommendation. (c) breaks the shipped privacy contract §1 records, and admits only same-origin assets anyway. |
+| Q2 | `'unsafe-inline'` in `style-src` on the proxied response, or per-response hashing | **`style-src 'self' 'unsafe-inline'`, proxied artifact only.** | §3.1. §3.2's hashing is a content-derived pin of *untrusted* content — the same permission with a drift failure mode; §3.3's rewriting is a full HTML transform over hostile input. |
+| Q3 | Reference binding: HMAC-signed rewritten URLs, or a publish-time manifest | **HMAC**, over `(shareID, absolute-url, depth)`, key per-daemon. | §4a. A manifest cannot name URLs that appear only in live-fetched CSS, and reintroduces option (d)'s drift. `depth` joined the tuple during implementation (see 9b). |
+| Q4 | CSS nesting depth 2, or deeper `@import` chains | **Depth 2** (document → CSS → font/image). | §4d's proposal, unchanged. Deeper chains are the amplification multiplier growing without a matching need. |
+| Q5 | Cap numbers | **2 MiB per subresource, 64 distinct references per resource, shared rate buckets** — the existing per-`(share, IP)` inbound bucket and per-origin outbound bucket, unchanged. | §4d as proposed. No new config key was added: an unused knob is a config-authority defect, and the existing buckets already cover the route. |
+| Q6 | Is the JS exclusion permanent | **Permanent, and the route's code comment says "by design", not "for now".** | §4/§7. `script-src` is hash-only (INV-12) and stays so, therefore proxied script is bytes nothing can execute; a route serving it would only create the impression that upstream JS runs on a published artifact. |
+| Q7 | SVG: leave excluded, or design a sandboxed-serve path now | **Leave excluded** (refused with HTML and JS). | The document expressed no lean, so the least-granting option wins. SVG is a document format carrying script and style; admitting it needs a forced `Content-Disposition` or a per-response sandboxing CSP — a decision, not a default. |
+
+### 9b. Divergences from §4 as planned
+
+1. **`depth` is inside the MAC**, which §4a did not state. Without it a viewer
+   could replay a document-level reference as though it had come from a
+   stylesheet and walk the chain past the §4d cap; the cap is a security bound,
+   so it must be bound. MAC fields are length-prefixed for the same reason —
+   otherwise `("ab","c")` and `("a","bc")` collide.
+2. **§4e.1 `Content-Encoding`: this plane REFUSES rather than decodes.** §4e
+   permitted either. Refusal is the conservative half: a decoder here is a
+   decompression-bomb surface an anonymous viewer can aim at a third-party
+   origin, whereas the dev sibling's decode path runs where the operator owns
+   both ends. Go's transport already solicits and transparently decodes gzip, so
+   only *unsolicited* encodings are refused, and loudly (502).
+3. **The MAC key is in memory, not persisted with the store.** §4a said "held
+   with the publish store". A restart therefore invalidates outstanding
+   subresource URLs — which fails closed, because the artifact revalidates on
+   every load (`Cache-Control: max-age=0, must-revalidate`) and the fresh
+   document carries freshly signed references. Persisting it would add a
+   long-lived on-disk secret for no correctness gain.
+4. **A stylesheet reached at the depth cap SERVES; only the chain stops.** §4d
+   said deeper chains "refuse loudly". The reference cap in the same table
+   already had the shape "leave it un-rewritten and log the refusal", and the
+   resource itself is allowlisted and bounded, so refusing it outright would
+   break a legitimate asset to enforce a bound about its *children*. The refusal
+   is logged; the un-rewritten references then fail under CSP exactly as today.
+5. **The HTML rewriter is regex-scoped, not a parser.** It rewrites
+   `<link rel=stylesheet|icon>` `href`, `<img src>`, and `url()`/`@import`
+   inside inline `<style>` blocks and fetched CSS. It only ever replaces an
+   attribute *value* with a percent-encoded same-origin path and never inserts
+   markup, so a mis-parse leaves a reference un-rewritten — today's behaviour —
+   rather than injecting content. `srcset` and `<picture>` are **not** covered;
+   those references stay un-rewritten and fail under CSP as before.
+6. **No `chromee2e` rendering assertion shipped in this slice.** §6's
+   traceability lists one in `internal/proxy/publish_browser_e2e_test.go`. That
+   file was outside this task's file scope, and per
+   `publish-security-review-lessons.md` §9 a criterion naming a test tier belongs
+   to a slice that can reach it. Declared, not silently dropped: the host-safe
+   tier covers the guard, the binding, the allowlist, the caps, revoke, and the
+   header table; what is not yet asserted is that a real browser *applies* the
+   proxied stylesheet.
+
+### 9c. Where it lives
+
+| Concern | File |
+|---|---|
+| MAC binding (`SubresourceSigner`) | `internal/publish/subresource.go` |
+| Reference rewriter + caps | `internal/proxy/public_subresource.go` |
+| Route, guarded subresource fetch, allowlist read, `style-src` widening | `internal/proxy/public_routes.go` |
+| Shared media-type predicates (S6 advisory 2) | `internal/proxy/mediatype.go` |
+| Tests | `internal/proxy/public_subresource_test.go`, `public_csp_table_test.go`, `mediatype_test.go`, `internal/publish/subresource_test.go` |
