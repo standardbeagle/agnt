@@ -540,7 +540,15 @@ particular it does **not** cover `addScript src`, because nothing fetches an
 - `Op.Validate` (`internal/publish/op.go`) **rejects** any `addScript` op
   carrying `src`, with an error naming that publish-time fetching of `src` is not
   implemented and telling you to inline the body in `code` instead. Publishing
-  such a file fails loudly; nothing about it reaches a browser.
+  such a file fails loudly; nothing about it reaches a browser. **The blast radius
+  is the whole run, not just that file:** decode+validation happens during the
+  directory load (`loadWalkthroughDir`, `cmd/agnt/publish_serve.go`), and one
+  rejected file aborts the entire load before any publish or reconcile — so a
+  single pre-existing on-disk walkthrough carrying `src` takes down the whole
+  `serve --dir` run and its valid siblings are not published either. This is the
+  invalid-file policy in §2 ("One invalid `*.json` aborts the entire run"), not a
+  separate rule: an aborted load is what keeps a partial set from reaching the
+  mass-revoking reconcile.
 - The variant engine's render-time refusal (`addScript: src must be inlined at
   publish time; the renderer emits no <script src>`) is **kept as defence in
   depth**, and it still covers any revision published before the publish-time
