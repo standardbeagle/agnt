@@ -272,6 +272,34 @@ on an input **coincidence** (equal digests, colliding keys, equal hashes, same
 timestamp) must assert that coincidence as a named premise, or it will pass
 vacuously the moment the coincidence stops holding.
 
+### Extension: a pin written in terms of the value it pins asserts nothing
+
+The subresource/style-src task (§16-§18) found the extension above earning its
+keep on its first outing, in a shape worth naming: the CSP assertion compared
+the served `style-src` against **`proxiedUpstreamStyleSrc`, the production
+constant under test**. Narrowing that constant therefore narrowed the expected
+value in lockstep and the mutation **PASSED** — a test that looked rigorous and
+asserted nothing. Restating the expected directive as a **literal** made the
+same mutation fail exactly the two proxied rows and nothing else.
+
+Rule: a test that pins a security-relevant constant must spell the expected
+value out as a literal, never by referencing the production symbol that
+produces it. And the only reliable way to find this class is to run the
+mutation — reasoning about "would this fail?" got the wrong answer here.
+
+Sibling defect found in the same task, same family — **an assertion that does
+not mean what it says**: three pre-existing tests scanned the **whole CSP
+header** for `unsafe-inline` as a proxy for "script cannot run". The day one
+directive (`style-src`) legitimately gained that token, all three failed while
+the property they existed to protect was fully intact — so the correct fix was
+to *undo the conflation*, not to relax the assertion: each now asserts against
+the directive it actually means (`script-src` sources are all sha256 hashes;
+the upstream wildcard appears nowhere; `style-src` carries exactly the one
+source its response shape is entitled to). Generalize: a security assertion
+must name the directive/field/entity it means, never a document-wide substring
+that happens to correlate today. The conflation is invisible until it fires,
+and then it reads as a regression in the code rather than in the test.
+
 ## 9. A criterion that names a test tier must ship in a fileScope that can reach it
 
 S6's acceptance criteria demanded "real-Chrome assertion is chromee2e-tagged",
@@ -605,6 +633,110 @@ code before hardening against a hazard that may not exist on the real path.
      source_event task 01KYZ0H4HB21ZPQ6KGC9KVG4MN (workspace agnt),
        verdict pass, 0 blockers, attempt 1, no rewinds;
      commit cdd832b9 -->
+
+## 16. Sign the exact byte string you will fetch — a normalization gap is the bypass
+
+The public subresource route (`/s/{token}/sub?u=<abs>&d=<depth>&sig=<mac>`,
+`internal/publish/subresource.go` + `internal/proxy/public_subresource.go`)
+turns one inbound GET into daemon-side outbound fetches, so an unbound `u`
+would be an open relay bounded only by the SSRF deny-list — which contradicts
+the plane's keystone premise that every fetched origin is *publisher-named*.
+
+The binding is an HMAC-SHA256 over `(shareID, url, depth)`, and three
+properties are each load-bearing:
+
+- **The MAC input and the fetch input are the same string.** `Verify()` and
+  `CheckUpstreamOrigin`/dial both consume the identical `q.Get("u")` value;
+  nothing re-normalizes between check and use. Percent-encoding, case, and
+  default-port variants therefore **break the MAC** instead of slipping past
+  a check that saw a different spelling than the socket did. This is §12's
+  family applied to a signed capability: the normalization ambiguity is not
+  *checked away*, it is *constructed away*.
+- **Fields are length-prefixed**, so a byte shifted across a field boundary
+  cannot collide two distinct tuples onto one MAC.
+- **`shareID` and `depth` are both inside the tuple.** `shareID` because
+  cross-share replay and revoke are the same question — a reference minted for
+  one share must not resolve under another live token. `depth` because the
+  nesting cap is a *security bound*, not a hint: unbound, a viewer replays a
+  document-level reference as a CSS-level one and walks the chain past the cap.
+
+The key is per-daemon, CSPRNG, in memory only — a restart invalidating
+outstanding references **fails closed** (the artifact revalidates and the
+fresh document carries freshly signed references), which is strictly better
+than a long-lived on-disk secret. A nil signer refuses the whole route and
+rewrites nothing, so "no key" degrades to the pre-existing document-only
+behaviour, never to an unsigned relay.
+
+**Generalize**: for any signed-reference / capability-URL surface, (a) MAC the
+exact bytes the privileged operation will consume and never re-parse or
+re-normalize between verify and use; (b) length-prefix the tuple; (c) include
+every field that is a *bound* (owner id, depth, expiry), not only the payload;
+and (d) make the missing-key path refuse rather than fall through.
+
+## 17. On an anonymous route, refuse what you would decode on an operator-owned one
+
+`readUpstreamDocument`/`readUpstreamSubresource` **refuse** any non-identity
+`Content-Encoding` (502, loud) rather than decoding it, while the dev-plane
+sibling in `internal/proxy/rewrite.go` decodes the same set. The asymmetry is
+deliberate and the code comment says so, because the next reader would
+otherwise "fix" it.
+
+The reasoning that picks the half: Go's transport already solicits and
+transparently decodes gzip, so anything still encoded on the response is
+**unsolicited**. A decoder there is a decompression-bomb surface **an
+anonymous viewer can aim at a third-party origin** — on the dev plane the
+operator owns both ends and is their own blast victim. The design spec
+permitted either behaviour; refusal is the conservative half, and it is loud
+rather than a silently un-spliced document.
+
+**Generalize**: when a spec permits "refuse or handle", decide with two
+questions — *who controls the input* and *who absorbs the blast*. Where those
+are different parties, refuse. And when the same code shape exists on both an
+operator-owned and an anonymous plane, expect them to diverge and write the
+reason at the divergence, or a future DRY pass will collapse the safe half
+into the convenient one.
+
+Corollary from the same commit: the media-type test that gates injection was
+`strings.Contains(ct, "text/html")`, which admits `application/x-text/html`.
+Tolerable as a dev convenience; not tolerable as the shared basis of an
+allowlist on an anonymous route. It was replaced with one exact-match
+predicate family (`internal/proxy/mediatype.go`, `mime.ParseMediaType`,
+deny-by-default on parse failure) **before** the subresource allowlist was
+built on it — doing that first was load-bearing, not bookkeeping, because it
+prevented the substring dialect from surviving into a new security surface.
+
+## 18. A second guarded route must share the guard's walk, not copy it
+
+`fetchSubresource` and `fetchDocument` share the single
+`guardedUpstreamFetcher.walk()` implementation. The per-hop
+`CheckUpstreamOrigin` re-check (§7/§8) is therefore a **structural** fact
+about both routes rather than a convention two functions independently
+uphold — a future edit cannot get it half-right on one route.
+
+**Generalize**: when adding the *second* outbound-fetch (or second privileged
+egress) route, the correct shape is to extract the guard walk into one shared
+function that both routes call, never to copy a per-hop check into the new
+route. This is §12's corollary for egress: the "guard missing on the newer
+route" defect becomes unrepresentable instead of being a review checklist item
+forever. The parameters that legitimately differ (`Accept` header, media-type
+allowlist) get parametrised; the walk does not fork.
+
+Same shape one layer up, for a security-*relaxing* header exception:
+`writeHeaders` delegates to `writeHeadersStyle`, and the relaxing parameter
+exists only on the inner function. `serveProxiedArtifact` is its sole caller
+with the widened value; every other response shape keeps the safe value **by
+construction, not by discipline**, and the widening is unreachable by passing
+a magic value through the common API. Prefer a one-callsite delegate over
+threading a mode parameter through twelve call sites.
+
+<!-- provenance: §16-§18, and the §8 tautological-pin extension —
+     written_at 2026-08-19;
+     source_event task 01KYQFAZSV6AQTKASQHYVPKJZC (workspace agnt,
+       subresource proxying + style-src), verdict pass, 0 blockers,
+       attempt 1, no rewinds; adversarial reviewer independently re-ran
+       the delete-MAC mutation and confirmed behavioural failure
+       provenance;
+     commits c1505de6, 3b136fc2, 2a4f0d51, c6c63248, 996f4c27 -->
 
 ## See also
 
