@@ -5,3 +5,4 @@ import './narration-gating.test.mjs';
 import './final-mux.test.mjs';
 import './assembly-cache.test.mjs';
 import './inspect.test.mjs';
+import './injection-settle.test.mjs';
