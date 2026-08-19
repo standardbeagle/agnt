@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -97,22 +99,65 @@ var replaytestFreeActions = map[string]bool{
 	"show": true,
 }
 
+// replaytestWriteActions are the actions that persist scenario/report files to
+// the store. Their destination must be caller-supplied — never resolved from
+// the process working directory. (stop also writes, but to the directory
+// captured at record time, so it is validated at record, not on the stop call.)
+var replaytestWriteActions = map[string]bool{
+	"record": true,
+	"replay": true,
+	"refine": true,
+}
+
+// replaytestDir resolves the directory whose .agnt/replaytests store this tool
+// reads and writes, from an EXPLICIT source only: the `directory` argument, or
+// AGNT_PROJECT_PATH (set by `agnt run`). It deliberately does NOT fall back to
+// os.Getwd() the way getProjectPath() does. That ambient fallback let a daemon
+// running in some unrelated tree — e.g. this repo during tests — get
+// .agnt/replaytests/*.json written into its working tree, dirtying the tree and
+// breaking scope-check gates that read the whole tree (the AGNT.md leak class).
+// getProjectPath() keeps its cwd fallback for the read/filter callers (process/
+// proxy scoping, where cwd is a reasonable last resort and the precedence test
+// pins it); the write destination is a separate concern and must be explicit.
+// Returns "" when no explicit source is present so write actions error rather
+// than writing to an ambient location.
+func replaytestDir(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	if envPath := os.Getenv("AGNT_PROJECT_PATH"); envPath != "" {
+		if abs, err := filepath.Abs(envPath); err == nil {
+			return abs
+		}
+		return envPath
+	}
+	return ""
+}
+
 func (h *replaytestHandler) handle(ctx context.Context, in ReplaytestInput) (*mcp.CallToolResult, ReplaytestOutput, error) {
 	if !replaytestGatedActions[in.Action] && !replaytestFreeActions[in.Action] {
 		return fail[ReplaytestOutput]("unknown action: " + in.Action)
 	}
 
-	// Scope the scenario store to the caller's session project when no
-	// explicit directory is supplied, mirroring the other session-scoped
-	// tools instead of handing NewStore an empty path.
-	if in.Directory == "" {
-		in.Directory = getProjectPath()
-	}
+	// Resolve the store directory from an explicit source only (arg or
+	// AGNT_PROJECT_PATH); never the process cwd. See replaytestDir — the cwd
+	// fallback is the defect that dirtied the working tree with scenario files.
+	in.Directory = replaytestDir(in.Directory)
 
 	if replaytestGatedActions[in.Action] {
 		if _, err := h.lic.Check(license.CapAdvancedTesting); err != nil {
 			return fail[ReplaytestOutput]("advanced_testing requires a Pro license — run `agnt activate <key>` to enable replaytest")
 		}
+	}
+
+	// Write actions must have a caller-supplied destination — refuse rather
+	// than fall back to an ambient location. Checked after the license gate so
+	// an unlicensed caller still gets the license message first.
+	if replaytestWriteActions[in.Action] && in.Directory == "" {
+		return fail[ReplaytestOutput]("replaytest " + in.Action + " needs a project directory: pass `directory` or run under `agnt` so AGNT_PROJECT_PATH is set — the scenario store is never written to the process working directory")
+	}
+
+	if replaytestGatedActions[in.Action] {
 		switch in.Action {
 		case "replay":
 			return h.handleReplay(ctx, in)
