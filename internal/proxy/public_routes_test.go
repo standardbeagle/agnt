@@ -543,6 +543,15 @@ func (f *countingFetcher) fetchDocument(_ context.Context, rawURL string) ([]byt
 	return f.body, f.err
 }
 
+// fetchSubresource keeps countingFetcher a complete upstreamDocFetcher. It
+// counts into the same call tally, so the "a revoked share does no outbound
+// work" assertions cover the subresource route too.
+func (f *countingFetcher) fetchSubresource(_ context.Context, rawURL string) ([]byte, string, error) {
+	f.calls++
+	f.gotURL = rawURL
+	return f.body, "text/css", f.err
+}
+
 const upstreamDoc = `<!DOCTYPE html><html><head><title>Live App</title></head>` +
 	`<body><h1 id="hero">Real upstream page</h1></body></html>`
 

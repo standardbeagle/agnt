@@ -129,6 +129,13 @@ type upstreamDocFetcher interface {
 	// must never return partial bytes alongside an error, and must never fall
 	// back to an unguarded fetch.
 	fetchDocument(ctx context.Context, rawURL string) ([]byte, error)
+
+	// fetchSubresource returns one allowlisted subresource body plus its
+	// canonical media type, under the SAME guard obligations as fetchDocument
+	// (INV-16): origin and every redirect hop re-checked, fail-closed cap,
+	// pin-and-dial. A body whose media type is not on the INV-17 allowlist is an
+	// error, never a relayed body.
+	fetchSubresource(ctx context.Context, rawURL string) ([]byte, string, error)
 }
 
 // PublicHandler serves the anonymous-viewer public plane. It is deny-by-default:
@@ -161,6 +168,14 @@ type PublicHandler struct {
 	// party (INV-13 bounds which origins may be fetched, not how often). Never
 	// nil in production.
 	outboundLimiter *publish.RateLimiter
+
+	// signer binds every subresource reference to (share, url, depth) so the
+	// subresource route serves only references THIS daemon minted from a guarded
+	// fetch of that share's publisher-named upstream (INV-16). A nil signer fails
+	// closed in both directions: no reference is rewritten and the route refuses
+	// everything, so the plane degrades to the document-only behaviour rather
+	// than becoming an unbound relay.
+	signer *publish.SubresourceSigner
 }
 
 // NewPublicHandler builds the public plane over a token verifier and an optional
@@ -178,6 +193,15 @@ func NewPublicHandler(verifier PublicTokenVerifier, feedback FeedbackSink, maxBo
 	// limiters via WithRateLimits; a direct caller (a test, `agnt publish serve`)
 	// gets the house defaults, always on.
 	ppc := config.DefaultPublicPlaneConfig()
+	// A signer that cannot be generated leaves the subresource route dead rather
+	// than unbound: rewriting stops, /s/{token}/sub refuses everything, and the
+	// plane behaves exactly as it did before the route existed. Loud, because a
+	// silently document-only plane looks like a rendering bug.
+	signer, err := publish.NewSubresourceSigner()
+	if err != nil {
+		debug.Log("publish", "public plane: subresource signing key unavailable (%v) — the subresource route is disabled; proxied demos will render without upstream CSS/images", err)
+		signer = nil
+	}
 	return &PublicHandler{
 		verifier:        verifier,
 		feedback:        feedback,
@@ -187,6 +211,7 @@ func NewPublicHandler(verifier PublicTokenVerifier, feedback FeedbackSink, maxBo
 		upstream:        &guardedUpstreamFetcher{},
 		artifactLimiter: publish.NewRateLimiter(ppc.ArtifactRatePerMinute, ppc.ArtifactBurst, nil),
 		outboundLimiter: publish.NewRateLimiter(ppc.OutboundRatePerMinute, ppc.OutboundBurst, nil),
+		signer:          signer,
 	}
 }
 
@@ -317,7 +342,9 @@ func (h *PublicHandler) serveShare(w http.ResponseWriter, r *http.Request, p str
 
 	switch sub {
 	case "":
-		h.serveArtifact(w, r, rev, shareID)
+		h.serveArtifact(w, r, rev, shareID, token)
+	case subresourceSubPath:
+		h.serveSubresource(w, r, rev, shareID)
 	case "/variants.json":
 		h.serveVariants(w, r, rev)
 	case "/walkthrough.json":
@@ -342,7 +369,7 @@ func (h *PublicHandler) serveShare(w http.ResponseWriter, r *http.Request, p str
 // grants cannot reach a viewer. The token was already verified in serveShare, so
 // a revoked share 404s before either branch — and therefore before any outbound
 // fetch — which is what makes revoke atomic for the proxied route too (INV-4).
-func (h *PublicHandler) serveArtifact(w http.ResponseWriter, r *http.Request, rev *publish.PublishedWalkthrough, shareID string) {
+func (h *PublicHandler) serveArtifact(w http.ResponseWriter, r *http.Request, rev *publish.PublishedWalkthrough, shareID, token string) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		methodNotAllowed(w, "GET, HEAD")
 		return
@@ -358,7 +385,7 @@ func (h *PublicHandler) serveArtifact(w http.ResponseWriter, r *http.Request, re
 		return
 	}
 	if rev != nil && rev.Upstream != nil && rev.Upstream.URL != "" {
-		h.serveProxiedArtifact(w, r, rev)
+		h.serveProxiedArtifact(w, r, rev, shareID, token)
 		return
 	}
 	h.serveSelfContainedArtifact(w, r, rev)
@@ -383,14 +410,11 @@ func (h *PublicHandler) serveArtifact(w http.ResponseWriter, r *http.Request, re
 //     a share that names an upstream is a demo OF that upstream, and serving a
 //     different page under the same URL is a silent failure, not degradation.
 //
-// KNOWN LIMITATION, stated rather than hidden: only the DOCUMENT is proxied.
-// The public CSP confines subresources to 'self' (script-src is hash-only,
-// img-src is 'self' data:), and there is no subresource proxy route, so the
-// upstream's own CSS/JS/images do not load. §4 anticipates this ("upstream
-// images genuinely needed must be proxied through 'self'"); building that route
-// is a separate slice, because each proxied subresource is another guarded
-// outbound fetch and another content-type surface on an anonymous route.
-func (h *PublicHandler) serveProxiedArtifact(w http.ResponseWriter, r *http.Request, rev *publish.PublishedWalkthrough) {
+// The document's CSS, image, and font references are rewritten to the guarded
+// subresource route (serveSubresource) so they load from 'self'. JS references
+// are NOT — script-src is hash-only (INV-12) and proxied script would be bytes
+// nothing can execute.
+func (h *PublicHandler) serveProxiedArtifact(w http.ResponseWriter, r *http.Request, rev *publish.PublishedWalkthrough, shareID, token string) {
 	if h.upstream == nil {
 		// Fail closed. A missing fetcher must never degrade into an unguarded
 		// fetch or into the self-contained shell.
@@ -418,12 +442,145 @@ func (h *PublicHandler) serveProxiedArtifact(w http.ResponseWriter, r *http.Requ
 	h.writeHeaders(w.Header(), kindArtifact, "", authoredScriptCSPHashes(rev)...)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
+	// Bind every admitted subresource reference to this share before the bundle
+	// is spliced in. The rewriter reads only bytes the guard already fetched, so
+	// the route it points at can serve only references this daemon minted
+	// (INV-16); with no signer it is a no-op and the document is served exactly
+	// as it was before the route existed.
+	body = rewriteUpstreamDocumentRefs(body, rev.Upstream.URL, token, shareID, h.signer)
+
 	doc := injectPublicBundle(body, h.assetPath, h.cspHash)
 	w.Header().Set("Content-Length", strconv.Itoa(len(doc)))
 	if r.Method == http.MethodHead {
 		return
 	}
 	w.Write(doc)
+}
+
+// serveSubresource is the /s/{token}/sub route: it serves ONE stylesheet, image,
+// or font that the daemon itself found in a guarded fetch of this share's
+// publisher-named upstream (design spec §4a, INV-16..19).
+//
+// It is not an open relay, and every clause below is what makes that true:
+//
+//   - The reference must carry a MAC this daemon minted for THIS share at THIS
+//     depth. A viewer-composed URL — forged MAC, another share's reference, an
+//     altered target, a depth downgrade — is refused BEFORE any socket opens.
+//   - The fetch runs the same guardedUpstreamFetcher obligations as the
+//     document: CheckUpstreamOrigin on the origin and every redirect hop,
+//     fail-closed redirect cap, pin-and-dial, no viewer header forwarded.
+//   - The served media type comes from a closed allowlist (INV-17). HTML, JS,
+//     and SVG refuse loudly; nothing here can reach a script-executing context,
+//     and script-src stays hash-only on this response as on every other.
+//   - Both rate caps apply: the inbound (share, IP) bucket the artifact route
+//     already uses, and the per-origin outbound bucket that bounds amplification.
+//   - A revoked token 404s in serveShare before this function runs, so revoke
+//     kills every subresource URL atomically with the artifact (INV-4).
+//
+// A share that names no upstream has no subresources: the route does not exist
+// for it, rather than existing with nothing to serve.
+func (h *PublicHandler) serveSubresource(w http.ResponseWriter, r *http.Request, rev *publish.PublishedWalkthrough, shareID string) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		methodNotAllowed(w, "GET, HEAD")
+		return
+	}
+	if rev == nil || rev.Upstream == nil || rev.Upstream.URL == "" {
+		http.NotFound(w, r)
+		return
+	}
+	// Same inbound bucket as the artifact GET: one page load is one document
+	// plus N subresources, so they are one client's budget against one share.
+	if h.artifactLimiter != nil && !h.artifactLimiter.Allow(publish.ShareIPKey(shareID, r.RemoteAddr)) {
+		h.writeHeaders(w.Header(), kindArtifact, "")
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
+		return
+	}
+
+	q := r.URL.Query()
+	rawURL := q.Get("u")
+	depth, derr := strconv.Atoi(q.Get("d"))
+	// Deny-by-default on the reference itself. 404 (not 403) so the route is no
+	// oracle: an unbound reference is indistinguishable from a route that does
+	// not exist. No fetch, no dial, no log of the viewer's chosen URL beyond the
+	// operator-facing debug line.
+	if derr != nil || depth < 1 || depth > maxSubresourceDepth ||
+		h.signer == nil || !h.signer.Verify(shareID, rawURL, depth, q.Get("sig")) {
+		debug.Log("publish", "public plane: refused an unbound subresource reference (depth %q) — no fetch was made", q.Get("d"))
+		http.NotFound(w, r)
+		return
+	}
+
+	// Per-origin outbound cap, shared with the document fetch: one origin, one
+	// budget, so a subresource flood cannot exceed what INV-13 permits per origin.
+	if h.outboundLimiter != nil && !h.outboundLimiter.Allow(upstreamOriginKey(rawURL)) {
+		h.refuseUpstreamRate(w, rawURL)
+		return
+	}
+
+	body, mediaType, err := h.upstreamFetcher().fetchSubresource(r.Context(), rawURL)
+	if err != nil {
+		h.refuseUpstream(w, err)
+		return
+	}
+
+	// A stylesheet's own url()/@import references are rewritten one level deeper,
+	// bounded by the nesting cap. Anything else is served byte-for-byte.
+	if mediaType == "text/css" {
+		body = rewriteUpstreamCSSRefs(body, rawURL, shareTokenFromPath(r.URL.Path), shareID, h.signer, depth)
+	}
+
+	h.writeHeaders(w.Header(), kindArtifact, "")
+	w.Header().Set("Content-Type", subresourceContentType(mediaType))
+	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	if r.Method == http.MethodHead {
+		return
+	}
+	w.Write(body)
+}
+
+// upstreamFetcher returns the configured fetcher, or a fetcher that refuses
+// everything when none is installed. It never falls back to an unguarded fetch.
+func (h *PublicHandler) upstreamFetcher() upstreamDocFetcher {
+	if h.upstream == nil {
+		return refusingFetcher{}
+	}
+	return h.upstream
+}
+
+// refusingFetcher is the fail-closed stand-in for a missing fetcher.
+type refusingFetcher struct{}
+
+func (refusingFetcher) fetchDocument(context.Context, string) ([]byte, error) {
+	return nil, fmt.Errorf("no upstream fetcher configured")
+}
+
+func (refusingFetcher) fetchSubresource(context.Context, string) ([]byte, string, error) {
+	return nil, "", fmt.Errorf("no upstream fetcher configured")
+}
+
+// shareTokenFromPath recovers the token from an already-matched /s/{token}/sub
+// path so a served stylesheet can mint references under the same token the
+// viewer is holding. The path was matched by serveShare, so the prefix is known
+// to be present; an unexpected shape yields "" and the rewriter then declines to
+// rewrite rather than emitting a broken reference.
+func shareTokenFromPath(p string) string {
+	rest := strings.TrimPrefix(p, sharePrefix)
+	if i := strings.IndexByte(rest, '/'); i >= 0 {
+		return rest[:i]
+	}
+	return ""
+}
+
+// subresourceContentType returns the header value for an allowlisted media type.
+// It is composed from the ALLOWLISTED type, never echoed from the upstream
+// header, so no upstream parameter (a bogus charset, a smuggled boundary) is
+// relayed. text/css gets an explicit charset so a stylesheet is not decoded per
+// the browser's locale default.
+func subresourceContentType(mediaType string) string {
+	if mediaType == "text/css" {
+		return "text/css; charset=utf-8"
+	}
+	return mediaType
 }
 
 // refuseUpstream emits the loud 502 for an upstream that could not be served,
@@ -813,6 +970,27 @@ func (f *guardedUpstreamFetcher) dialer() func(ctx context.Context, network, add
 // fetchDocument runs the guarded redirect walk and returns the upstream HTML.
 // Every return path is either a complete document or an error — never both.
 func (f *guardedUpstreamFetcher) fetchDocument(ctx context.Context, rawURL string) ([]byte, error) {
+	body, _, err := f.walk(ctx, rawURL, "text/html", readUpstreamDocument)
+	return body, err
+}
+
+// fetchSubresource runs the SAME guarded redirect walk for one subresource and
+// returns its body with the canonical media type the allowlist admitted. Sharing
+// walk() with fetchDocument is the point: there is one guarded fetch mechanism
+// on this plane, so a hop check cannot be present on one route and absent on the
+// other (INV-16).
+func (f *guardedUpstreamFetcher) fetchSubresource(ctx context.Context, rawURL string) ([]byte, string, error) {
+	return f.walk(ctx, rawURL, subresourceAcceptHeader, readUpstreamSubresource)
+}
+
+// subresourceAcceptHeader advertises exactly the INV-17 allowlist. It is a hint
+// to the origin, never the enforcement — readUpstreamSubresource refuses on the
+// response's own Content-Type regardless of what was asked for.
+const subresourceAcceptHeader = "text/css,image/*,font/*"
+
+// walk performs the guarded redirect walk and hands the terminal response to
+// read. Every return path is either a complete body or an error — never both.
+func (f *guardedUpstreamFetcher) walk(ctx context.Context, rawURL, accept string, read func(*http.Response) ([]byte, string, error)) ([]byte, string, error) {
 	ctx, cancel := context.WithTimeout(ctx, upstreamFetchTimeout)
 	defer cancel()
 
@@ -820,46 +998,46 @@ func (f *guardedUpstreamFetcher) fetchDocument(ctx context.Context, rawURL strin
 	for hop := 0; ; hop++ {
 		if hop > maxUpstreamRedirects {
 			// Fail closed: refuse, rather than serving whatever the last hop gave.
-			return nil, fmt.Errorf("upstream: redirect chain exceeded %d hops", maxUpstreamRedirects)
+			return nil, "", fmt.Errorf("upstream: redirect chain exceeded %d hops", maxUpstreamRedirects)
 		}
 		// INV-13 on EVERY hop, not just the origin. A chain whose final hop lands
 		// on 169.254.169.254 is refused at that hop.
 		addrs, err := publish.CheckUpstreamOrigin(ctx, current, f.resolver())
 		if err != nil {
-			return nil, fmt.Errorf("upstream refused: %w", err)
+			return nil, "", fmt.Errorf("upstream refused: %w", err)
 		}
-		resp, err := f.get(ctx, current, addrs[0])
+		resp, err := f.get(ctx, current, addrs[0], accept)
 		if err != nil {
-			return nil, fmt.Errorf("upstream fetch failed: %w", err)
+			return nil, "", fmt.Errorf("upstream fetch failed: %w", err)
 		}
 
 		if isRedirectStatus(resp.StatusCode) {
 			location := resp.Header.Get("Location")
 			resp.Body.Close()
 			if location == "" {
-				return nil, fmt.Errorf("upstream: %d with no Location", resp.StatusCode)
+				return nil, "", fmt.Errorf("upstream: %d with no Location", resp.StatusCode)
 			}
 			next, err := resolveRedirectTarget(current, location)
 			if err != nil {
-				return nil, fmt.Errorf("upstream: bad redirect target: %w", err)
+				return nil, "", fmt.Errorf("upstream: bad redirect target: %w", err)
 			}
 			current = next
 			continue
 		}
 
-		body, err := readUpstreamDocument(resp)
+		body, mediaType, err := read(resp)
 		resp.Body.Close()
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
-		return body, nil
+		return body, mediaType, nil
 	}
 }
 
 // get performs one guarded request. addr is the guard-validated address and is
 // the ONLY address dialed; the URL's hostname is still what TLS verifies against,
 // so pinning the address does not weaken certificate validation.
-func (f *guardedUpstreamFetcher) get(ctx context.Context, rawURL string, addr netip.Addr) (*http.Response, error) {
+func (f *guardedUpstreamFetcher) get(ctx context.Context, rawURL string, addr netip.Addr, accept string) (*http.Response, error) {
 	u, err := url.Parse(rawURL)
 	if err != nil {
 		return nil, err
@@ -898,7 +1076,7 @@ func (f *guardedUpstreamFetcher) get(ctx context.Context, rawURL string, addr ne
 	// forwarding Referer would hand the share token to the upstream (INV-9), and
 	// forwarding Cookie/authorization would make the daemon a credential relay.
 	req.Header.Set("User-Agent", "agnt-publish")
-	req.Header.Set("Accept", "text/html")
+	req.Header.Set("Accept", accept)
 
 	client := &http.Client{
 		Transport: transport,
@@ -962,26 +1140,56 @@ func checkUpstreamEncoding(resp *http.Response) error {
 // Non-200, non-HTML, and over-cap all refuse: this document is about to be
 // served as the published artifact, so anything we are not sure is a complete
 // HTML document must not be presented as one.
-func readUpstreamDocument(resp *http.Response) ([]byte, error) {
+func readUpstreamDocument(resp *http.Response) ([]byte, string, error) {
 	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("upstream: status %d", resp.StatusCode)
+		return nil, "", fmt.Errorf("upstream: status %d", resp.StatusCode)
 	}
 	if ct := resp.Header.Get("Content-Type"); !isHTMLDocumentMediaType(ct) {
 		// The artifact route serves a document. Passing arbitrary upstream bytes
 		// through it would turn an anonymous route into a general-purpose relay
 		// for whatever the origin decides to return. EXACT media-type match, not a
 		// substring scan (S6 advisory 2): "x-text/html-ish" is not a document.
-		return nil, fmt.Errorf("upstream: content-type %q is not HTML", ct)
+		return nil, "", fmt.Errorf("upstream: content-type %q is not HTML", ct)
 	}
 	if err := checkUpstreamEncoding(resp); err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	body, truncated, err := readAllCapped(resp.Body, resp.ContentLength, maxPublicUpstreamBytes)
 	if err != nil {
-		return nil, fmt.Errorf("upstream: read failed: %w", err)
+		return nil, "", fmt.Errorf("upstream: read failed: %w", err)
 	}
 	if truncated {
-		return nil, fmt.Errorf("upstream: document exceeds %d bytes", maxPublicUpstreamBytes)
+		return nil, "", fmt.Errorf("upstream: document exceeds %d bytes", maxPublicUpstreamBytes)
 	}
-	return body, nil
+	return body, "text/html", nil
+}
+
+// readUpstreamSubresource validates and reads one non-redirect subresource
+// response (INV-17/INV-19). Order is load-bearing: status, then the media-type
+// ALLOWLIST, then the encoding check, and only then the bounded read — a refused
+// type never has its body buffered, let alone relayed. An over-cap body is
+// refused, never truncated.
+func readUpstreamSubresource(resp *http.Response) ([]byte, string, error) {
+	if resp.StatusCode != http.StatusOK {
+		return nil, "", fmt.Errorf("upstream: status %d", resp.StatusCode)
+	}
+	ct := resp.Header.Get("Content-Type")
+	if !isAllowedSubresourceMediaType(ct) {
+		// HTML, JS, SVG, JSON, octet-stream, and anything unrecognised. Serving
+		// these from 'self' would turn a bounded asset route into a relay for
+		// whatever the origin decides to return — and SVG specifically is a
+		// document format carrying script and style, not an image.
+		return nil, "", fmt.Errorf("upstream: subresource content-type %q is not allowlisted", ct)
+	}
+	if err := checkUpstreamEncoding(resp); err != nil {
+		return nil, "", err
+	}
+	body, truncated, err := readAllCapped(resp.Body, resp.ContentLength, maxPublicSubresourceBytes)
+	if err != nil {
+		return nil, "", fmt.Errorf("upstream: subresource read failed: %w", err)
+	}
+	if truncated {
+		return nil, "", fmt.Errorf("upstream: subresource exceeds %d bytes", maxPublicSubresourceBytes)
+	}
+	return body, canonicalMediaType(ct), nil
 }
