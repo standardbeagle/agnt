@@ -51,7 +51,7 @@ func TestRunLifecycleHook_RespectsTimeout(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		cmd = "Start-Sleep -Seconds 60"
 	} else {
-		cmd = "sleep 60"
+		cmd = stayAliveCmd()
 	}
 	// The property under test is "an overrunning hook is killed and reports
 	// timeout", not "the default window is 5 seconds". Injecting a short
@@ -64,8 +64,9 @@ func TestRunLifecycleHook_RespectsTimeout(t *testing.T) {
 	elapsed := time.Since(start)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "timeout")
-	// The hook sleeps 60s, so anything short of that proves the deadline killed
-	// it. A generous ceiling, not a latency budget.
+	// The hook sleeps stayAliveSeconds (20s), well past this 10s ceiling, so
+	// finishing under 10s proves the deadline killed it rather than the sleep
+	// running to completion. A generous ceiling, not a latency budget.
 	assert.Less(t, elapsed, 10*time.Second, "overrunning hook must be killed by its deadline, not run to completion")
 
 	// Pin the production default directly. This is what the old elapsed-time

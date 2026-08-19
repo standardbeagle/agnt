@@ -37,9 +37,11 @@ func newHubProcTestDaemon(t *testing.T) (*Daemon, *daemonclient.Client, string) 
 
 // longRunningCmd returns a shell command string that stays alive long
 // enough for SCRIPT LIST / ProcessManager assertions to race past the
-// start barrier. Matches the pattern in autostart_async_test.go.
+// start barrier. Matches the pattern in autostart_async_test.go. Delegates
+// to stayAliveCmd so the keep-alive duration has a single source of truth
+// and a bounded orphan lifetime — see stayAliveSeconds.
 func longRunningCmd() string {
-	return "sleep 60"
+	return stayAliveCmd()
 }
 
 func TestAgntProcExtendsSharedHubProcessCommands(t *testing.T) {

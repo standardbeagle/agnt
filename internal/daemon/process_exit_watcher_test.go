@@ -326,7 +326,7 @@ func TestWatchProcessExit_NewWatcherClearsStaleInfo(t *testing.T) {
 		ID:          "race-test",
 		ProjectPath: proc1.ProjectPath,
 		Command:     "/bin/sh",
-		Args:        []string{"-c", "sleep 60"},
+		Args:        stayAliveArgs(),
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() {
@@ -388,7 +388,7 @@ func TestWatchProcessExit_RaceGuard_LateWatcher(t *testing.T) {
 		ID:          "late-race",
 		ProjectPath: t.TempDir(),
 		Command:     "/bin/sh",
-		Args:        []string{"-c", "sleep 60"},
+		Args:        stayAliveArgs(),
 	})
 	require.NoError(t, err)
 	t.Cleanup(func() {

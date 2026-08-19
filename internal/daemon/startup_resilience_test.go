@@ -39,7 +39,7 @@ func TestMonitorStartupFailure_EarlySuccessOnURLDetected(t *testing.T) {
 		ID:          procID,
 		ProjectPath: t.TempDir(),
 		Command:     "/bin/sh",
-		Args:        []string{"-c", "sleep 60"}, // healthy: stays alive, never crashes
+		Args:        stayAliveArgs(), // healthy: stays alive, never crashes
 	})
 	require.NoError(t, err)
 	defer func() { _ = d.hub.ProcessManager().StopProcess(context.Background(), proc) }()
