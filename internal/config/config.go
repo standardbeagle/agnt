@@ -69,7 +69,8 @@ type CommandConfig struct {
 	Args []string `json:"args"`
 	// Description is a human-readable description.
 	Description string `json:"description,omitempty"`
-	// Timeout is the command timeout in seconds.
+	// Timeout is the command timeout in whole seconds (0 = no timeout;
+	// sub-second values are refused at KDL parse time, see validateKDLCommands).
 	Timeout int `json:"timeout,omitempty"`
 	// Persistent indicates this is a long-running process.
 	Persistent bool `json:"persistent,omitempty"`

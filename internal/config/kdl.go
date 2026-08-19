@@ -79,12 +79,36 @@ type KDLLanguage struct {
 }
 
 // KDLCommand holds a command configuration.
+//
+// Timeout is float64 (not int) for the same reason as KDLSettings' timeout
+// fields: kdl-go silently truncates a float literal into an int struct field
+// with no error, and the consumer treats timeout 0 as the "no timeout / run
+// forever" sentinel — so a fractional `timeout 0.5` would silently collapse to
+// an unbounded run (the bound-into-absence hazard in
+// .claude/rules/config-contracts.md). Sub-second granularity is not supported,
+// so we REFUSE a fractional value at parse time rather than pretend to honor it.
 type KDLCommand struct {
 	Command    string            `kdl:"cmd"`
 	Args       []string          `kdl:"args"`
-	Timeout    int               `kdl:"timeout"`
+	Timeout    float64           `kdl:"timeout"`
 	Persistent bool              `kdl:"persistent"`
 	Env        map[string]string `kdl:"env"`
+}
+
+// validateKDLCommands rejects any command whose timeout is not a whole number
+// of seconds, naming the command so the error is actionable. Reuses
+// requireWholeSeconds (the same guard KDLSettings.validate applies) so the
+// granularity rule lives in exactly one place.
+func validateKDLCommands(commands map[string]*KDLCommand) error {
+	for name, cmd := range commands {
+		if cmd == nil {
+			continue
+		}
+		if err := requireWholeSeconds(fmt.Sprintf("command %s.timeout", name), cmd.Timeout); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // KDLProjectConfig holds per-project configuration.
@@ -134,6 +158,14 @@ func ParseKDLConfig(data string) (*Config, error) {
 	}
 	if err := kdlCfg.Settings.validate(); err != nil {
 		return nil, err
+	}
+	for _, lang := range []*KDLLanguage{kdlCfg.Languages.Go, kdlCfg.Languages.Node, kdlCfg.Languages.Python} {
+		if lang == nil {
+			continue
+		}
+		if err := validateKDLCommands(lang.Commands); err != nil {
+			return nil, err
+		}
 	}
 
 	return kdlConfigToConfig(&kdlCfg), nil
@@ -204,9 +236,10 @@ func mergeLanguageConfig(cfg *Config, name string, kdlLang *KDLLanguage) {
 			continue
 		}
 		cmdCfg := CommandConfig{
-			Command:    kdlCmd.Command,
-			Args:       kdlCmd.Args,
-			Timeout:    kdlCmd.Timeout,
+			Command: kdlCmd.Command,
+			Args:    kdlCmd.Args,
+			// Validated whole seconds (validateKDLCommands), so the int cast is lossless.
+			Timeout:    int(kdlCmd.Timeout),
 			Persistent: kdlCmd.Persistent,
 			Env:        kdlCmd.Env,
 		}
@@ -239,6 +272,9 @@ func ParseProjectConfig(data string) (*ProjectConfig, error) {
 	if err := kdl.Unmarshal([]byte(data), &kdlCfg); err != nil {
 		return nil, err
 	}
+	if err := validateKDLCommands(kdlCfg.Commands); err != nil {
+		return nil, err
+	}
 
 	return kdlProjectConfigToProjectConfig(&kdlCfg), nil
 }
@@ -256,9 +292,10 @@ func kdlProjectConfigToProjectConfig(kdlCfg *KDLProjectConfig) *ProjectConfig {
 			continue
 		}
 		cfg.Commands[name] = CommandConfig{
-			Command:    kdlCmd.Command,
-			Args:       kdlCmd.Args,
-			Timeout:    kdlCmd.Timeout,
+			Command: kdlCmd.Command,
+			Args:    kdlCmd.Args,
+			// Validated whole seconds (validateKDLCommands), so the int cast is lossless.
+			Timeout:    int(kdlCmd.Timeout),
 			Persistent: kdlCmd.Persistent,
 			Env:        kdlCmd.Env,
 		}
