@@ -24,10 +24,26 @@
 #      misdirects blame. This guard runs the full suite twice from a clean tree
 #      and requires the tree to be empty after BOTH.
 #
-# NOT SATISFIABLE BY GITIGNORE. The point is that tests do not write into the
-# tree, not that we stop noticing. This guard reads `git status --porcelain`,
-# which lists untracked-but-not-ignored files; adding a .gitignore entry to
-# silence it is a defect, not a fix.
+# NOT SATISFIABLE BY GITIGNORE (criterion 6). The point is that tests do not
+# write into the tree, not that we stop noticing. This guard does NOT judge on
+# plain `git status --porcelain`, which is BLIND to gitignored paths — that
+# blindness was the defect the first attempt shipped: adding a .gitignore entry
+# for a leaked artifact emptied porcelain and the guard passed silently, which
+# is exactly the escape criterion 6 prohibits.
+#
+# Instead it snapshots the FULL file set INCLUDING ignored paths
+# (`git status --porcelain --ignored`) as a BASELINE before the runs, then after
+# each run flags any newly-appeared entry — tracked, untracked, OR ignored
+# (`!!`) — that the baseline did not already have. Adding a .gitignore entry
+# does not silence a leak: the artifact still shows up as a new `!!` entry that
+# is absent from the baseline, so the guard fails on it.
+#
+# ALLOWLIST BY BASELINE. Legitimate ignored churn that ALREADY EXISTS before the
+# runs (root binaries, coverage `*.out`, `.agnt/`, `*.original.md` backups, ...)
+# is captured in the baseline and is therefore never flagged. Only entries that
+# appear AFTER a run, and were not present before it, are treated as pollution.
+# This keeps false positives bounded to genuinely new files without a hand-kept
+# allowlist that would drift.
 #
 # USAGE
 #   scripts/check-tree-clean.sh            # default: 2 runs of `go test -p 1 -v ./...`
@@ -54,19 +70,29 @@ RULE_DOC=".claude/rules/testing-parallel-package-flakes.md"
 TEST_CMD="${TREE_CLEAN_TEST_CMD:-go test -p 1 -count=1 -v ./...}"
 RUNS="${TREE_CLEAN_RUNS:-2}"
 
+# porcelain: tracked changes + untracked-but-NOT-ignored files. Used ONLY for the
+# start-of-run precondition (refuse to run from an already-dirty committed tree).
 porcelain() { git status --porcelain; }
+
+# snapshot: the full pre/post file set git knows is not committed-clean, INCLUDING
+# ignored paths (`!!`). This is what the baseline captures and what each post-run
+# state is diffed against, so a gitignored leak cannot hide (criterion 6).
+snapshot() { git status --porcelain --ignored; }
 
 print_dirty_paths() { git status --porcelain | sed 's/^/    /'; }
 
 fail_dirty() {
   local phase="$1"
+  local new_entries="$2"
   echo ""
   echo "=================================================================="
   echo "TREE-CLEAN GUARD FAILED — the test suite left the working tree DIRTY"
   echo "  ($phase)"
   echo ""
-  echo "Offending path(s) (git status --porcelain):"
-  print_dirty_paths
+  echo "Newly-appeared path(s) not present in the pre-run baseline"
+  echo "(git status --porcelain --ignored diff — INCLUDES gitignored '!!' entries,"
+  echo " so a .gitignore entry does NOT silence this):"
+  printf '%s\n' "$new_entries" | sed 's/^/    /'
   echo ""
   echo "A test wrote into the repository working tree. This is the"
   echo "source-tree-pollution class documented in:"
@@ -91,6 +117,14 @@ if [ -n "$(porcelain)" ]; then
   echo "suite introduces can be attributed to it."
   exit 1
 fi
+
+# --- Baseline: snapshot the FULL pre-run file set, including ignored paths -----
+# Everything present now (committed-clean plus any pre-existing ignored churn) is
+# the allowlist. Each post-run diff is taken against this, so ONLY files that
+# appear after a run — tracked, untracked, or gitignored `!!` — are flagged.
+BASELINE_FILE="$(mktemp)"
+trap 'rm -f "$BASELINE_FILE"' EXIT
+snapshot | LC_ALL=C sort >"$BASELINE_FILE"
 
 # --- Run the suite under a PTY so PTY-gated tests EXECUTE ---------------------
 run_under_pty() {
@@ -127,10 +161,15 @@ for i in $(seq 1 "$RUNS"); do
   rm -f "$log"
 
   # The tree-dirty verdict is primary and checked on EVERY run, pass or fail.
-  if [ -n "$(porcelain)" ]; then
-    fail_dirty "after suite run $i of $RUNS"
+  # Diff the current full (--ignored) snapshot against the baseline: any line
+  # present now but not at baseline is a newly-appeared path. `comm -13` prints
+  # lines unique to the second (current) input; both inputs are C-sorted so a
+  # gitignored `!!` leak surfaces here even though plain porcelain would miss it.
+  new_entries="$(snapshot | LC_ALL=C sort | comm -13 "$BASELINE_FILE" -)"
+  if [ -n "$new_entries" ]; then
+    fail_dirty "after suite run $i of $RUNS" "$new_entries"
   fi
-  echo "run $i: working tree clean OK"
+  echo "run $i: working tree clean OK (no new paths vs baseline, incl. ignored)"
 
   if [ "$status" -ne 0 ]; then
     suite_failed="$status"
