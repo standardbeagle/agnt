@@ -72,6 +72,7 @@ into a single assembled webm — demos-as-code, re-runnable on every release.
 make demo NAME=vhs-spiral                          # record + assemble
 make demo NAME=vhs-spiral DEMOFLAGS=--only=fix     # re-record one segment
 make demo NAME=vhs-spiral DEMOFLAGS=--assemble-only # re-cut from existing takes
+make demo NAME=vhs-spiral DEMOFLAGS=--inspect      # contact sheets for picking cuts
 ```
 
 - **cli segment**: `tape` lines are raw VHS commands; the engine adds
@@ -85,6 +86,21 @@ make demo NAME=vhs-spiral DEMOFLAGS=--assemble-only # re-cut from existing takes
   agent + SYNC_DIR marker dance with deterministic playback. Marks
   (`d.mark(name)`) + per-segment `keep` ranges splice out waits at assembly
   (endpoints: `"start"`, `"end"`, `"mark:<name>±<sec>"`).
+- **--inspect** (cut-point authoring aid): picking `keep` endpoints used to be
+  trial-and-error — cut, assemble, watch, adjust `mark:<name>±<s>`, repeat.
+  `node engine/demo.mjs demos/<name> --inspect[=<seg-id>]` (or `make demo
+  NAME=<name> DEMOFLAGS=--inspect`) instead renders each recorded take in
+  `out/.work` into a **contact sheet** (one thumbnail/second via ffmpeg's
+  `tile` filter) with a **timeline strip** beneath it, overlaying every mark
+  from `<seg>.json` at its timestamp — so the endpoints can be read off in one
+  look. Output lands in `out/inspect/<seg-id>.png` and the paths are printed.
+  It is **read-only over the takes** (reads `<seg>.webm` + `<seg>.json`, writes
+  only `out/inspect/`, never a mezzanine or the assembled output — so the
+  assembly cache is untouched), needs neither the daemon nor edge-tts, and a
+  **missing take is a loud per-segment message, not a crash**. The mark→x-pixel
+  mapping and tile-grid layout are pure (`lib/inspect.mjs`), unit-tested via
+  `make demo-engine-test`; `make demo-inspect-check` runs the real ffmpeg render
+  on a fixture and loud-skips when ffmpeg is absent.
 - **setup**: `demo.json` can spawn the upstream (`serve-live.mjs`) and
   start/stop the demo proxy over the daemon socket automatically — the daemon
   must already be running.
@@ -113,8 +129,9 @@ Output lands in `demos/<name>/out/<name>.webm` (gitignored).
 Verify the final-mux graph construction and the real ffmpeg output:
 
 ```bash
-make demo-engine-test   # unit: constructed ffmpeg argv (overlay, loudnorm, one-encode)
-make demo-mux-check     # integration: brand pixels + EBU R128 loudness on a fixture
+make demo-engine-test    # unit: constructed ffmpeg argv (overlay, loudnorm, one-encode, inspect geometry)
+make demo-mux-check      # integration: brand pixels + EBU R128 loudness on a fixture
+make demo-inspect-check  # integration: --inspect contact-sheet PNG + read-only over a fixture
 ```
 
 `demo-mux-check` runs real ffmpeg on a synthetic fixture and loud-skips when
