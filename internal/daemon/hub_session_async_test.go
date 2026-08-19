@@ -29,11 +29,11 @@ func TestSessionRegister_AsyncReturnsImmediately(t *testing.T) {
 	configContent := `
 scripts {
     slow-dep {
-        run "sleep 60"
+        run "` + stayAliveCmd() + `"
         autostart true
     }
     slow-main {
-        run "sleep 60"
+        run "` + stayAliveCmd() + `"
         autostart true
         depends-on "slow-dep" timeout=30
     }
@@ -61,7 +61,7 @@ scripts {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	// The observed "starting" state while the 60-second autostart remains in
+	// The observed "starting" state while the long-running autostart remains in
 	// flight proves registration returned asynchronously; no scheduler-sensitive
 	// IPC wall-clock budget is needed.
 	assert.Equal(t, "starting", result["status"], "first caller should see status=starting")
@@ -78,7 +78,7 @@ func TestSessionRegister_AutostartConsoleErrorReachesOwningAgent(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".agnt.kdl"), []byte(`
 scripts {
     serve {
-        run "echo 'fatal: console signal'; sleep 60"
+        run "echo 'fatal: console signal'; `+stayAliveCmd()+`"
         autostart true
     }
 }
@@ -117,7 +117,7 @@ func TestSessionRegister_JoinAsObserver(t *testing.T) {
 	configContent := `
 scripts {
     a {
-        run "sleep 60"
+        run "` + stayAliveCmd() + `"
         autostart true
     }
 }
@@ -270,11 +270,11 @@ func TestSessionRegister_ProgressSnapshotIncludesHistory(t *testing.T) {
 	configContent := `
 scripts {
     a {
-        run "sleep 60"
+        run "` + stayAliveCmd() + `"
         autostart true
     }
     b {
-        run "sleep 60"
+        run "` + stayAliveCmd() + `"
         autostart true
         depends-on "a" timeout=10
     }
@@ -349,7 +349,7 @@ func TestSessionRegister_NoGlobalSerialization(t *testing.T) {
 	slowConfig := `
 scripts {
     slow {
-        run "sleep 60"
+        run "` + stayAliveCmd() + `"
         autostart true
     }
 }

@@ -15,14 +15,18 @@ import (
 )
 
 // clusterAConfig is one long-running script named "test"; shared by Cluster A subtests.
-const clusterAConfig = `
+// Built from stayAliveCmd so the keep-alive duration is single-sourced and the
+// worst-case orphan lifetime is bounded — see stayAliveSeconds.
+func clusterAConfig() string {
+	return `
 scripts {
     test {
-        run "sleep 60"
+        run "` + stayAliveCmd() + `"
         autostart true
     }
 }
 `
+}
 
 // clusterBConfig builds the shared Cluster B config with a per-call ephemeral
 // port for script "a". The port is intentionally one no process will bind to
@@ -33,17 +37,17 @@ func clusterBConfig(t *testing.T) string {
 	return fmt.Sprintf(`
 scripts {
     a {
-        run "sleep 60"
+        run "%s"
         autostart true
         ports %d
     }
     b {
-        run "sleep 60"
+        run "%s"
         autostart true
         depends-on "a"
     }
 }
-`, ephemeralPort(t))
+`, stayAliveCmd(), ephemeralPort(t), stayAliveCmd())
 }
 
 // newDaemon boots a daemon with a unique socket under dir and registers a
@@ -122,7 +126,7 @@ func TestRunAutostartAsync_SimpleScripts(t *testing.T) {
 
 	t.Run("nil progress channel", func(t *testing.T) {
 		dir := t.TempDir()
-		writeConfig(t, dir, clusterAConfig)
+		writeConfig(t, dir, clusterAConfig())
 
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -137,7 +141,7 @@ func TestRunAutostartAsync_SimpleScripts(t *testing.T) {
 
 	t.Run("delegates to async (RunAutostart wraps)", func(t *testing.T) {
 		dir := t.TempDir()
-		writeConfig(t, dir, clusterAConfig)
+		writeConfig(t, dir, clusterAConfig())
 
 		result := d.RunAutostart(context.Background(), dir)
 
@@ -149,24 +153,24 @@ func TestRunAutostartAsync_SimpleScripts(t *testing.T) {
 
 	t.Run("progress_events_in_order", func(t *testing.T) {
 		dir := t.TempDir()
-		writeConfig(t, dir, `
+		writeConfig(t, dir, fmt.Sprintf(`
 scripts {
     a {
-        run "sleep 60"
+        run "%[1]s"
         autostart true
     }
     b {
-        run "sleep 60"
+        run "%[1]s"
         autostart true
         depends-on "a" timeout=5
     }
     c {
-        run "sleep 60"
+        run "%[1]s"
         autostart true
         depends-on "b" timeout=5
     }
 }
-`)
+`, stayAliveCmd()))
 		progress := make(chan AutostartProgress, 200)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
@@ -240,7 +244,7 @@ func TestRunAutostartAsync_ScriptFailureEmitsProgress(t *testing.T) {
 	configContent := `
 scripts {
     good {
-        run "sleep 60"
+        run "` + stayAliveCmd() + `"
         autostart true
     }
     bad {
@@ -377,17 +381,17 @@ func TestRunAutostartAsync_DependencyWait(t *testing.T) {
 		writeConfig(t, dir, fmt.Sprintf(`
 scripts {
     a {
-        run "sleep 60"
+        run "%[1]s"
         autostart true
-        ports %d
+        ports %[2]d
     }
     b {
-        run "sleep 60"
+        run "%[1]s"
         autostart true
         depends-on "a" timeout=1
     }
 }
-`, ephemeralPort(t)))
+`, stayAliveCmd(), ephemeralPort(t)))
 		progress := make(chan AutostartProgress, 200)
 		ctx, cancel := context.WithCancel(context.Background())
 		defer cancel()

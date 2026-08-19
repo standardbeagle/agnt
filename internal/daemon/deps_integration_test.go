@@ -86,17 +86,17 @@ func TestDepsIntegration(t *testing.T) {
 		writeConfig(t, dir, fmt.Sprintf(`
 scripts {
     server {
-        run "sleep 1 && echo Listening on http://localhost:%d && sleep 60"
+        run "sleep 1 && echo Listening on http://localhost:%[1]d && sleep %[3]d"
         autostart true
-        ports %d
+        ports %[2]d
     }
     client {
-        run "echo client-started && sleep 60"
+        run "echo client-started && sleep %[3]d"
         autostart true
         depends-on "server" timeout=10
     }
 }
-`, serverPort, serverPort))
+`, serverPort, serverPort, stayAliveSeconds))
 
 		client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 		require.NoError(t, client.Connect())
@@ -185,17 +185,17 @@ scripts {
 		writeConfig(t, dir, fmt.Sprintf(`
 scripts {
     server {
-        run "sleep 60"
+        run "sleep %[2]d"
         autostart true
-        ports %d
+        ports %[1]d
     }
     client {
-        run "echo client-started && sleep 60"
+        run "echo client-started && sleep %[2]d"
         autostart true
         depends-on "server" timeout=1
     }
 }
-`, serverPort))
+`, serverPort, stayAliveSeconds))
 
 		client := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
 		require.NoError(t, client.Connect())
@@ -244,7 +244,7 @@ scripts {
 		// Generous liveness ceiling: catches a regression to the old 120s implicit
 		// fallback, 60x away from this value.
 		assert.Less(t, elapsed.Seconds(), 10.0,
-			"expected RunAutostart to complete well before the 60s sleep finishes, took %v", elapsed)
+			"expected RunAutostart to complete well before the keep-alive sleep finishes, took %v", elapsed)
 
 		serverID := makeProcessID(dir, "server")
 		clientID := makeProcessID(dir, "client")

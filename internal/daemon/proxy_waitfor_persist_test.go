@@ -36,7 +36,7 @@ func TestProxyWaitFor_ReadyPersistsPastAutostart(t *testing.T) {
 	writeConfig(t, dir, `
 scripts {
     dev-lib {
-        run "sleep 60"
+        run "`+stayAliveCmd()+`"
         autostart true
     }
 }
@@ -122,7 +122,7 @@ func TestProxyWaitFor_PortProbeSurvivesAutostart(t *testing.T) {
 	writeConfig(t, dir, `
 scripts {
     backend {
-        run "sleep 60"
+        run "`+stayAliveCmd()+`"
         autostart true
         ports `+strconv.Itoa(probePort)+`
     }

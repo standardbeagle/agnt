@@ -42,7 +42,7 @@ func TestLifecycleHooks_OnStart(t *testing.T) {
 
 	writeConfig(t, dir, `scripts {
     svc {
-        run "sleep 60"
+        run "`+stayAliveCmd()+`"
         autostart true
         hooks {
             on-start "touch `+flagFile+`"
@@ -74,7 +74,7 @@ func TestLifecycleHooks_OnStop(t *testing.T) {
 
 	writeConfig(t, dir, `scripts {
     svc {
-        run "sleep 60"
+        run "`+stayAliveCmd()+`"
         autostart true
         hooks {
             on-stop "touch `+flagFile+`"
@@ -110,7 +110,7 @@ func TestLifecycleHooks_EnvVarsInjected(t *testing.T) {
 
 	writeConfig(t, dir, `scripts {
     svc {
-        run "sleep 60"
+        run "`+stayAliveCmd()+`"
         autostart true
         hooks {
             on-start "printf '%s:%s' \"$AGNT_EVENT\" \"$AGNT_SCRIPT_ID\" > `+envFile+`"
