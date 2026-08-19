@@ -129,9 +129,38 @@
       return cp >= 0x1F1E6 && cp <= 0x1F1FF;
     }
 
+    // nextClusterEnd returns the code-unit index just past the grapheme cluster
+    // that begins at code-unit `start` (which must itself be a cluster boundary).
+    // It walks whole code points — never half a surrogate pair — and keeps a ZWJ
+    // emoji sequence, a flag's regional-indicator pair, a skin-tone modifier, or a
+    // combining mark together as one cluster. This is the SINGLE cluster walker in
+    // this file: both truncateToBytes (byte-bounded truncation) and revealBody
+    // (typewriter reveal stride) advance through it, so neither can split a
+    // character and there is no second copy of this traversal to drift.
+    function nextClusterEnd(s, start) {
+      var i = start;
+      if (i >= s.length) { return i; }
+      var cp = s.codePointAt(i);
+      i += String.fromCodePoint(cp).length;
+      if (isRegionalIndicator(cp) && i < s.length && isRegionalIndicator(s.codePointAt(i))) {
+        i += String.fromCodePoint(s.codePointAt(i)).length;
+      }
+      while (i < s.length) {
+        var ncp = s.codePointAt(i);
+        if (isExtender(ncp)) { i += String.fromCodePoint(ncp).length; continue; }
+        if (ncp === 0x200D) { // ZWJ: binds the next code point into this cluster
+          i += String.fromCodePoint(ncp).length;
+          if (i < s.length) { i += String.fromCodePoint(s.codePointAt(i)).length; }
+          continue;
+        }
+        break;
+      }
+      return i;
+    }
+
     // truncateToBytes returns the longest prefix of s that fits in maxBytes UTF-8
     // bytes. Truncating to N BYTES is not slicing to N code units: it must cut on
-    // a character boundary, so this walks whole code points (never half a
+    // a character boundary, so this advances through nextClusterEnd (never half a
     // surrogate pair) and keeps grapheme clusters intact — a ZWJ emoji sequence,
     // a flag's regional-indicator pair, a skin-tone modifier, or a combining mark
     // is either wholly kept or wholly dropped, never cut into mojibake. A single
@@ -142,30 +171,9 @@
       var used = 0;
       var i = 0;
       while (i < s.length) {
-        var cp = s.codePointAt(i);
-        var cluster = String.fromCodePoint(cp);
-        i += cluster.length;
-        if (isRegionalIndicator(cp) && i < s.length && isRegionalIndicator(s.codePointAt(i))) {
-          var pair = String.fromCodePoint(s.codePointAt(i));
-          cluster += pair;
-          i += pair.length;
-        }
-        while (i < s.length) {
-          var ncp = s.codePointAt(i);
-          var nch = String.fromCodePoint(ncp);
-          if (isExtender(ncp)) { cluster += nch; i += nch.length; continue; }
-          if (ncp === 0x200D) { // ZWJ: binds the next code point into this cluster
-            cluster += nch;
-            i += nch.length;
-            if (i < s.length) {
-              var jch = String.fromCodePoint(s.codePointAt(i));
-              cluster += jch;
-              i += jch.length;
-            }
-            continue;
-          }
-          break;
-        }
+        var end = nextClusterEnd(s, i);
+        var cluster = s.slice(i, end);
+        i = end;
         var w = utf8Len(cluster);
         if (used + w > maxBytes) { break; }
         out += cluster;
@@ -589,7 +597,17 @@
         var i = 0;
         var id = setInterval(function () {
           if (destroyed) { clearInterval(id); return; }
-          i += 2;
+          // Advance ~2 code units per tick, but snap the cursor to the next
+          // grapheme-cluster boundary via the shared nextClusterEnd walker. i
+          // stays a CODE-UNIT cursor (the guards below index the same string in
+          // code units); only the step boundary moved. A raw i += 2 could land
+          // between the halves of a surrogate pair, so text.slice(0, i) would end
+          // on a lone high surrogate — the browser paints that as U+FFFD (a
+          // replacement box) on astral content until the next frame completes it.
+          var target = i + 2;
+          while (i < text.length && i < target) {
+            i = nextClusterEnd(text, i);
+          }
           if (i >= text.length) {
             bodyEl.textContent = text;
             clearInterval(id);

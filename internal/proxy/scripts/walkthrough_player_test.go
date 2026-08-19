@@ -537,6 +537,7 @@ func playerTruncationDriver(t *testing.T) string {
 		"function utf8Len(s)",
 		"function isExtender(cp)",
 		"function isRegionalIndicator(cp)",
+		"function nextClusterEnd(s, start)",
 		"function truncateToBytes(s, maxBytes)",
 		"function clampText(s, maxBytes)",
 		"function isSafeSelector(sel)",
