@@ -69,12 +69,42 @@ type AlertScannerConfig struct {
 	MaxPending int
 }
 
-// protectedBatchWindow is the coalesce window used when the pending batch is
-// started by a protected (explicit user action) entry. Kept short so an
-// interactive panel message / sketch is delivered promptly when the agent is
-// idle, rather than waiting the full error-oriented batch window. Protected
-// entries still honor activity-deferral, so they never land mid-response.
-const protectedBatchWindow = 150 * time.Millisecond
+// Batch-window policy — stated in ONE place so the divergence between the
+// short and default windows is explicit rather than inferred from constants
+// scattered across files.
+//
+// Three forces set how long the scanner coalesces before flushing to the agent:
+//
+//   - defaultBatchWindow (3s): the anti-churn window for ordinary output
+//     (warnings/info). Coalescing a noisy log stream over a few seconds keeps
+//     the agent from being churned one line at a time. This is the value
+//     NewAlertScanner falls back to when the caller sets no BatchWindow, and the
+//     "default 3s" referenced by internal/daemon/daemon.go.
+//
+//   - protectedBatchWindow (150ms): an explicit user action (panel message,
+//     sketch, design interaction) should reach an idle agent promptly rather
+//     than wait out the error-oriented window.
+//
+//   - errorBatchWindow (250ms): the HIGHEST-severity signal — an error-level
+//     alert such as a dying autostart script / `fatal:` line — is exactly when
+//     the agent most needs to steer, so it must not be the slowest to arrive.
+//     Chosen slightly above protectedBatchWindow to give a genuine error burst a
+//     marginally wider coalesce window (errors storm more readily than user
+//     actions) while still delivering ~12x faster than the 3s default. It stays
+//     within the 150-300ms band this behaviour was scoped to.
+//
+// Both short windows only ever pull the flush IN: they apply when strictly
+// shorter than the window otherwise in effect, and a later same-severity match
+// never pushes the deadline back out. So an error storm coalesces over one
+// short window measured from its first line — anti-churn survives, it is just
+// fast. All three are honored equally under activity-deferral (nothing lands
+// mid-response). Protected/error matches still route through the same dedup and
+// overload-throttle path; only the flush TIMING scales with severity.
+const (
+	defaultBatchWindow   = 3 * time.Second
+	protectedBatchWindow = 150 * time.Millisecond
+	errorBatchWindow     = 250 * time.Millisecond
+)
 
 // matchBufSize is the fixed capacity of the ring buffer for recent matches.
 const matchBufSize = 200
@@ -121,6 +151,7 @@ type AlertScanner struct {
 	mu            sync.Mutex
 	pending       []*AlertMatch
 	batchTimer    *time.Timer
+	batchDeadline time.Time            // absolute time batchTimer will fire; pull-in only
 	dedupe        map[string]time.Time // fingerprint -> last seen
 	enabled       atomic.Bool
 	stopped       atomic.Bool
@@ -172,7 +203,7 @@ type AlertScanner struct {
 func NewAlertScanner(cfg AlertScannerConfig) *AlertScanner {
 	batchWindow := cfg.BatchWindow
 	if batchWindow == 0 {
-		batchWindow = 3 * time.Second
+		batchWindow = defaultBatchWindow
 	}
 	dedupeWindow := cfg.DedupeWindow
 	if dedupeWindow == 0 {
@@ -427,18 +458,44 @@ func (s *AlertScanner) addMatch(m *AlertMatch) {
 		}
 	}
 
-	// Start batch timer if not already running. Protected user actions use a
-	// short coalesce window so interactive messages are not delayed by the
-	// full batch window when the agent is idle; they still defer while active.
-	if s.batchTimer == nil {
-		window := s.batchWindow
-		if m.Protected && protectedBatchWindow < window {
-			window = protectedBatchWindow
-		}
-		s.batchTimer = s.afterFunc(window, func() {
-			s.flush()
-		})
+	// Schedule the batch flush, scaling the coalesce window by severity (see the
+	// batch-window policy block). Higher-severity / protected matches target a
+	// shorter window; if one arrives while a longer window is already pending,
+	// pull the deadline IN. The pull is strictly one-directional (earlier only),
+	// so an error storm cannot repeatedly defer its own flush — the batch fires a
+	// short window after its FIRST high-severity line and coalesces the rest.
+	window := s.batchWindowFor(m)
+	deadline := s.clockNow().Add(window)
+	switch {
+	case s.batchTimer == nil:
+		s.batchDeadline = deadline
+		s.batchTimer = s.afterFunc(window, func() { s.flush() })
+	case s.flushRetries == 0 && deadline.Before(s.batchDeadline):
+		// A pending normal batch timer (not an activity-deferral retry) is set
+		// to fire later than this higher-severity match wants. Pull it in.
+		s.batchTimer.Stop()
+		s.batchDeadline = deadline
+		s.batchTimer = s.afterFunc(window, func() { s.flush() })
 	}
+}
+
+// batchWindowFor returns the coalesce window a single match should target. The
+// highest-severity signals collapse the wait: an explicit user action, and an
+// error-level alert (a dying autostart script / `fatal:` line), each flush at
+// their short window so they reach the agent promptly; warnings/info keep the
+// full anti-churn window. A short window only applies when strictly shorter than
+// the configured batch window, so callers with an already-tiny window (tests)
+// are unaffected. Coalescing still applies within the returned window — a
+// shorter window bounds latency, it does not disable dedup/batching.
+func (s *AlertScanner) batchWindowFor(m *AlertMatch) time.Duration {
+	w := s.batchWindow
+	if m.Protected && protectedBatchWindow < w {
+		w = protectedBatchWindow
+	}
+	if m.Pattern != nil && m.Pattern.Severity == AlertSeverityError && errorBatchWindow < w {
+		w = errorBatchWindow
+	}
+	return w
 }
 
 // evictOneLocked removes a single droppable entry from pending to honor the

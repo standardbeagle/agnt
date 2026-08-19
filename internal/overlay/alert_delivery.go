@@ -86,12 +86,14 @@ func (s *AlertScanner) flush() {
 
 	if len(s.pending) == 0 {
 		s.batchTimer = nil
+		s.batchDeadline = time.Time{}
 		s.flushRetries = 0
 		s.mu.Unlock()
 		return
 	}
 
 	s.batchTimer = nil
+	s.batchDeadline = time.Time{}
 	s.flushRetries = 0
 	byScript, suppressed := s.drainPendingLocked()
 	s.mu.Unlock()
