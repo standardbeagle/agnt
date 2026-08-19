@@ -1,4 +1,4 @@
-.PHONY: build release test test-unit test-integration test-browser test-e2e e2e-publish-browser test-chrome-e2e test-isolated test-ssh test-ssh-coverage test-flake check-dirty-tree clean clean-zombies install install-local install-windows install-hooks run lint test-webapp mockagent generate generate-check vendor cross-compile cross-compile-check demo demo-engine-test demo-mux-check
+.PHONY: build release test test-unit test-integration test-browser test-e2e e2e-publish-browser test-chrome-e2e test-isolated test-ssh test-ssh-coverage test-flake check-dirty-tree clean clean-zombies install install-local install-windows install-hooks run lint test-webapp mockagent generate generate-check vendor cross-compile cross-compile-check demo demo-engine-test demo-mux-check demo-inspect-check
 
 # Binary names
 BINARY := devtool-mcp
@@ -338,6 +338,12 @@ demo-engine-test:
 # the narration measures at the EBU R128 target loudness. Loud-skips without ffmpeg.
 demo-mux-check:
 	cd docs-site/screenshots && node engine/test/integration-mux.mjs
+
+# Integration check for --inspect: runs REAL ffmpeg on a synthetic take+marks
+# fixture and asserts the contact-sheet PNG is produced at the predicted geometry
+# and the run stays read-only over mezzanine/output. Loud-skips without ffmpeg.
+demo-inspect-check:
+	cd docs-site/screenshots && node engine/test/integration-inspect.mjs
 
 # Show help
 help:
