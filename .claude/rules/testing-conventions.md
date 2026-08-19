@@ -50,7 +50,7 @@ Instances on the current tree (`internal/proxy/scripts/`):
 | `TestPlayerByteTruncationIsClusterSafe` (`walkthrough_player_test.go`) | `TestPlayerCapsAndClampsAreByteDenominated` |
 | `TestPlayerRevealNoSplitSurrogateFrames` (`walkthrough_reveal_boundary_test.go`) | `TestPlayerRevealAdvancesOnClusterBoundary` |
 | `TestLiveWalkthroughGestureLabelByteRefused` (`walkthrough_live_gesture_label_test.go`) | `TestLiveWalkthroughGestureLabelCapIsByteDenominated` |
-| `TestDemoIndicatorExhaustionAndPlacement` (`demo_indicator_test.go`) | `TestDemoIndicatorExhaustedBudgetStillCarriesTheBadge`, `…FirstChildPlacementIsGatedOnStyling` |
+| `TestDemoIndicatorExhaustionAndPlacementUnderNode` (`demo_indicator_test.go`) | `TestDemoIndicatorExhaustedBudgetStillCarriesTheBadge`, `…FirstChildPlacementIsGatedOnStyling` |
 
 All four are already env-gated with a paired guard as of ratification; no gate
 alignment was required.
