@@ -238,21 +238,36 @@ func TestShellResolve_ProfilePATH(t *testing.T) {
 	assert.Contains(t, cmd.Args[2], "test-profile-cmd")
 }
 
-func TestShellResolve_E2E_Binary(t *testing.T) {
-	// Full E2E: agnt run --no-overlay <cmd> with custom HOME/SHELL.
-	// Requires TTY — skips gracefully when not available.
-	if f, err := os.Open("/dev/tty"); err != nil {
-		t.Skip("test requires TTY - skipping in non-interactive environment")
-	} else {
-		f.Close()
-	}
-
+// TestRunBinary_WritesAgentContextUnderCmdDir spawns the real `agnt run`
+// binary and pins that it resolves its agent-context destination from its OWN
+// cwd (cmd.Dir), never leaking a file into the repository working tree. This
+// is the assertion that catches the leak documented in
+// .claude/rules/testing-parallel-package-flakes.md.
+//
+// It was formerly TestShellResolve_E2E_Binary, which additionally carried a
+// marker assertion meant to prove shell PATH resolution end-to-end through the
+// real binary. That assertion was structurally DEAD, not conditionally
+// skipped: isolateFromTTY sets SysProcAttr{Setsid:true}, which detaches the
+// child from any controlling terminal, so the child ALWAYS fails to enter raw
+// mode ("inappropriate ioctl") and never reaches the point where the marker
+// could be emitted — the old test always fell through to a t.Skip and the
+// marker assertion never ran on any platform. The dead assertion, its
+// raw-mode skip, and the misleading "requires TTY" skip have been deleted
+// rather than left as false comfort. Shell resolution is covered by the unit
+// tests above: TestWrapInShell_RespectsSHELL/DefaultsToSH and
+// TestShellResolve_BashrcPATH/BashrcAlias/ZshrcPATH/ProfilePATH.
+//
+// The containment pin below runs UNCONDITIONALLY (no TTY needed, no skip):
+// `agnt run` writes its agent-context file before it ever touches the PTY, so
+// the file lands under cmd.Dir on both the raw-mode-failure and success paths.
+func TestRunBinary_WritesAgentContextUnderCmdDir(t *testing.T) {
 	agntPath := findAgntBinary(t)
 
 	binDir := t.TempDir()
-	marker := "E2E_BINARY_MARKER"
-	createTestScript(t, binDir, "test-e2e-cmd", marker)
+	createTestScript(t, binDir, "test-e2e-cmd", "E2E_BINARY_MARKER")
 
+	// HOME points at a temp dir so the spawned binary cannot write config into
+	// the developer's real HOME during the run.
 	homeDir := t.TempDir()
 	bashrc := "export PATH=" + binDir + ":$PATH\n"
 	require.NoError(t, os.WriteFile(filepath.Join(homeDir, ".bashrc"), []byte(bashrc), 0644))
@@ -286,33 +301,21 @@ func TestShellResolve_E2E_Binary(t *testing.T) {
 	select {
 	case <-done:
 	case <-time.After(10 * time.Second):
+		// Safety net only — under Setsid the child fails raw mode and exits
+		// fast; it should not reach this. Kill and still assert containment.
 		cmd.Process.Kill()
 		<-done // drain output after kill
-		outStr := string(output)
-		if strings.Contains(outStr, "failed to set raw mode") ||
-			strings.Contains(outStr, "inappropriate ioctl") {
-			t.Skip("test requires TTY - skipping in non-interactive environment")
-		}
-		t.Fatal("command timed out")
 	}
 
-	// Positive proof of containment, asserted BEFORE the raw-mode skips below:
-	// the child writes its agent-context file before it ever touches the PTY, so
-	// this holds on the skip path too. Absence of a repo-tree artifact alone
-	// would also be satisfied by a child that never ran; this shows the write
-	// happened AND landed under cmd.Dir.
+	// Positive proof of containment: the child writes its agent-context file
+	// before it ever touches the PTY, so this holds regardless of whether the
+	// child reached raw mode. Absence of a repo-tree artifact alone would also
+	// be satisfied by a child that never ran; this shows the write happened AND
+	// landed under cmd.Dir.
 	if _, err := os.Stat(filepath.Join(workDir, "AGENTS.md")); err != nil {
 		t.Errorf("child's agent-context write did not land under cmd.Dir (%v); "+
 			"if it ran at all it resolved the destination elsewhere: %s", err, string(output))
 	}
-
-	outStr := string(output)
-	if strings.Contains(outStr, "failed to set raw mode") ||
-		strings.Contains(outStr, "inappropriate ioctl") {
-		t.Skip("test requires TTY - skipping in non-interactive environment")
-	}
-
-	assert.Contains(t, outStr, marker, "expected marker in output: %s", outStr)
 }
 
 func TestShellResolve_ArgumentPreservation(t *testing.T) {
