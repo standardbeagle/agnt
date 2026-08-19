@@ -126,6 +126,33 @@ make demo NAME=vhs-spiral DEMOFLAGS=--inspect      # contact sheets for picking 
 
 Output lands in `demos/<name>/out/<name>.webm` (gitignored).
 
+### Publish a demo into the docs-site
+
+`make demo-publish NAME=<name>` promotes a rendered demo's gitignored
+`out/<name>.webm` into the three committed assets `<ModeVideo/>` references —
+no hand-run ffmpeg recipes:
+
+```bash
+make demo-publish NAME=vhs-spiral
+```
+
+| Asset | Path | How |
+|-------|------|-----|
+| clip | `docs-site/static/video/<name>.webm` | copied verbatim |
+| captions | `docs-site/static/video/<name>.vtt` | copied **only** when an `out/<name>.vtt` sidecar exists; skipped silently for a silent demo |
+| poster | `docs-site/static/img/<name>-poster.webp` | `ffmpeg -ss 2` still, scaled to 960 wide |
+| README/GitHub animation | `docs-site/static/img/<name>-demo.webp` | 8fps, 720 wide, infinite loop |
+
+A missing `out/<name>.webm` fails loud (nonzero exit, `run 'make demo
+NAME=<name>' first`) and writes nothing — each artifact is rendered to a temp
+file and moved into place only after every render succeeds, so a partial run
+never leaves a stale poster or webp behind, and a re-run overwrites
+deterministically. The command prints the ready-to-paste embed:
+
+```jsx
+<ModeVideo src="/video/<name>.webm" poster="/img/<name>-poster.webp" label="..." />
+```
+
 Verify the final-mux graph construction and the real ffmpeg output:
 
 ```bash

@@ -1,4 +1,4 @@
-.PHONY: build release test test-unit test-integration test-browser test-e2e e2e-publish-browser test-chrome-e2e test-isolated test-ssh test-ssh-coverage test-flake check-dirty-tree clean clean-zombies install install-local install-windows install-hooks run lint test-webapp mockagent generate generate-check vendor cross-compile cross-compile-check demo demo-engine-test demo-mux-check demo-inspect-check
+.PHONY: build release test test-unit test-integration test-browser test-e2e e2e-publish-browser test-chrome-e2e test-isolated test-ssh test-ssh-coverage test-flake check-dirty-tree clean clean-zombies install install-local install-windows install-hooks run lint test-webapp mockagent generate generate-check vendor cross-compile cross-compile-check demo demo-publish demo-engine-test demo-mux-check demo-inspect-check
 
 # Binary names
 BINARY := devtool-mcp
@@ -328,6 +328,13 @@ deps:
 # Usage: make demo NAME=vhs-spiral [DEMOFLAGS=--only=attempt-1]
 demo:
 	cd docs-site/screenshots && node engine/demo.mjs demos/$(NAME) $(DEMOFLAGS)
+
+# Publish a rendered demo into the docs-site as committed assets (video + poster
+# + animated README/GitHub webp), then print the <ModeVideo/> embed snippet.
+# Fails loud if the source webm is missing (run `make demo NAME=<x>` first).
+# Usage: make demo-publish NAME=vhs-spiral
+demo-publish:
+	scripts/demo-publish.sh $(NAME)
 
 # Unit tests for the demo engine's pure helpers (final-mux graph, narration gating).
 demo-engine-test:
