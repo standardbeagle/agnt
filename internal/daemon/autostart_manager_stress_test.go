@@ -189,25 +189,44 @@ func TestAutostartManager_SlowDrain(t *testing.T) {
 	const events = 500
 
 	// The drain loop in run() is single-threaded per handle, so we cannot
-	// "slow" it from outside. Instead we measure: when the producer emits
-	// 500 events with no sleep through a buffer of 64, does the system stay
-	// correct (no panic, no loss, monotonic ordering, all events recorded
-	// via broadcast)?
+	// "slow" it from outside. Instead we simulate back-pressure: the producer
+	// emits 500 events with no sleep through a 64-slot buffer, and the drain's
+	// broadcast callback yields its timeslice so the producer outruns it and
+	// fills the buffer. We then verify the system stays correct under that
+	// saturation (no panic, no loss, monotonic ordering, all events recorded
+	// via broadcast).
+	//
+	// The yield here is runtime.Gosched(), NOT a sleep. This callback runs
+	// synchronously in the drain loop (per autostart_manager.go contract), so
+	// yielding the drain's timeslice lets the producer fill the 64-slot buffer,
+	// which is what puts the producer's blocking send under back-pressure. That
+	// is a scheduling property, not a timing one.
+	//
+	// It previously slept 50µs per event on the reasoning that this paced the
+	// drain. Go cannot sleep 50µs: a timer park costs ~0.5ms+, so the intended
+	// pacing was off by ~an order of magnitude (the same arithmetic bug as the
+	// sibling TestAutostartManager_ProgressBufferOverflow, whose 10µs×10k was
+	// ~5s not ~100ms). Wall-clock duration was never the property under test:
+	// what is asserted below is completeness (no event lost), ordering (strict
+	// layer sequence, no reordering inside the drain), and termination
+	// (PhaseDone last) — all deterministic and clock-free.
 	var (
 		broadcastMu sync.Mutex
 		broadcasts  []AutostartProgress
 	)
 	mgr := NewAutostartManagerWithBroadcast(func(_ string, ev AutostartProgress) {
-		// Inject backpressure: this broadcast callback runs synchronously in
-		// the drain loop (per autostart_manager.go contract). A slow callback
-		// must not cause event loss because production startFn does blocking
-		// sends.
-		time.Sleep(50 * time.Microsecond)
+		runtime.Gosched()
 		broadcastMu.Lock()
 		broadcasts = append(broadcasts, ev)
 		broadcastMu.Unlock()
 	})
 
+	// Count how often the producer found the buffer full. This makes the
+	// back-pressure an asserted observable rather than an assumption: without
+	// the yield above, deleting it would leave a fast drain that never
+	// saturates the buffer, and the test would still pass while no longer
+	// exercising the slow-drain condition it is named for.
+	var blocked atomic.Int64
 	var producerPanicked atomic.Bool
 	startFn := func(ctx context.Context, progress chan<- AutostartProgress) *AutostartResult {
 		defer func() {
@@ -215,13 +234,43 @@ func TestAutostartManager_SlowDrain(t *testing.T) {
 				producerPanicked.Store(true)
 			}
 		}()
-		return synthStartFn(events, 0, 0)(ctx, progress)
+		for i := 0; i < events; i++ {
+			ev := AutostartProgress{
+				Phase:  PhaseScriptStarting,
+				Script: fmt.Sprintf("s%d", i),
+				Layer:  i,
+			}
+			select {
+			case progress <- ev:
+			default:
+				// Buffer full — the drain is behind. Record it, then commit to
+				// the blocking send production emitters use.
+				blocked.Add(1)
+				select {
+				case <-ctx.Done():
+					return &AutostartResult{}
+				case progress <- ev:
+				}
+			}
+		}
+		return &AutostartResult{Scripts: []string{"synth"}}
 	}
 
 	h := mgr.GetOrCreate(pathN(0), startFn)
 	<-h.Done()
 
 	assert.False(t, producerPanicked.Load(), "producer must not panic under slow drain")
+
+	// Measured on a 6-core dev box: ~490 of 500 sends block with the yield in
+	// place, versus ~10 with it removed. Back-pressure does arise without the
+	// yield, but only incidentally, and could reach zero on another scheduler;
+	// the yield is what makes saturation the sustained norm this test is named
+	// for. Logged rather than bounded, because the exact count is
+	// scheduler-dependent and only its presence is a real invariant.
+	t.Logf("producer blocked on a full buffer %d of %d sends", blocked.Load(), events)
+	assert.Positive(t, blocked.Load(),
+		"producer never found the 64-slot buffer full, so no back-pressure was exercised: "+
+			"%d events drained without the producer ever blocking", events)
 
 	// All events recorded in handle history.
 	rec := h.Progress()
