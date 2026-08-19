@@ -218,6 +218,11 @@ func portIsFree(port int) bool {
 // This test asserts the port is free within a 3s window and session B
 // can bind it.
 func TestSessionContainment_PortReuseAfterCleanup(t *testing.T) {
+	// This cleanup reaps a live pgid, so it writes a "reaped session" record.
+	// Redirect selflog into a test-scoped file — a suite run must never append
+	// a fabricated cdsp reap record to the user's real ~/.cache/agnt/errors.log,
+	// the log this investigation adjudicated from.
+	readSelflog := selflogSink(t)
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
 	tmpDir := t.TempDir()
 
@@ -269,6 +274,14 @@ func TestSessionContainment_PortReuseAfterCleanup(t *testing.T) {
 	// And the pgid itself must be empty, otherwise the kill was partial.
 	require.Empty(t, platform.MembersOfPGID(pgid),
 		"session pgid still has members after cleanup")
+
+	// The reap must have left exactly one record, in the test-scoped sink —
+	// proving both that the kill happened and that the redirect caught the
+	// write instead of the user's real selflog.
+	entries := readSelflog()
+	require.Len(t, entries, 1, "a reap that killed a live pgid must leave one selflog record")
+	require.Contains(t, entries[0].Message, "session-A", "record must name the reaped session")
+	require.Equal(t, "daemon", entries[0].Component)
 }
 
 // TestSessionContainment_SetsidEscapes is the negative guardrail: a child
@@ -283,6 +296,9 @@ func TestSessionContainment_PortReuseAfterCleanup(t *testing.T) {
 // that (a) the daemon completes cleanup without error, and (b) the
 // escaped process is still alive afterwards.
 func TestSessionContainment_SetsidEscapes(t *testing.T) {
+	// Cleanup reaps session A's own (outer) pgid, which writes a reap record.
+	// Redirect it away from the user's real ~/.cache/agnt/errors.log.
+	readSelflog := selflogSink(t)
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
 	tmpDir := t.TempDir()
 
@@ -367,6 +383,12 @@ func TestSessionContainment_SetsidEscapes(t *testing.T) {
 		LastSeen:    time.Now(),
 	}))
 	d.CleanupSessionResources("session-A-escape")
+
+	// The reap of session A's own pgid must have recorded — into the sink, not
+	// the user's real selflog.
+	entries := readSelflog()
+	require.Len(t, entries, 1, "reaping session A's pgid must leave one selflog record")
+	require.Contains(t, entries[0].Message, "session-A-escape", "record must name the reaped session")
 
 	// Give the kill grace window time to execute. The port holder must
 	// still be alive — setsid is on the "accepted escape hatches" list.

@@ -69,6 +69,11 @@ func exitedOwnerPID(t *testing.T) int {
 // had its process tree killed out from under it, while every project-scoped
 // session was given that window.
 func TestDeferredCleanup_NoProjectPath_HonorsGracePeriod(t *testing.T) {
+	// This is the only test in this file whose reap actually fires (the grace
+	// expires and the pgid is killed), so it writes a "reaped session" record.
+	// Redirect selflog into a test-scoped file — the suite must never append a
+	// fabricated cdsp reap record to the user's real ~/.cache/agnt/errors.log.
+	readSelflog := selflogSink(t)
 	d := newDeferredCleanupDaemon(t, 400*time.Millisecond)
 	pgid, exited := startPGIDLeader(t)
 
@@ -98,6 +103,12 @@ func TestDeferredCleanup_NoProjectPath_HonorsGracePeriod(t *testing.T) {
 		_, ok := d.sessionRegistry.Get("no-project")
 		return !ok
 	}, 5*time.Second, 10*time.Millisecond, "session never unregistered")
+
+	// Unregister completes strictly after the reap records, so the record is
+	// present by now — in the test-scoped sink, proving the redirect caught it.
+	entries := readSelflog()
+	require.Len(t, entries, 1, "the deferred reap of a live pgid must leave one selflog record")
+	require.Contains(t, entries[0].Message, "no-project", "record must name the reaped session")
 }
 
 // A socket/control-plane outage is not evidence that agnt run exited. While

@@ -27,6 +27,10 @@ import (
 // CleanupSessionResources, and asserts the pgid has zero surviving members.
 func TestCleanupSessionResources_KillsSessionPGID(t *testing.T) {
 	// No t.Parallel(): spawns a real setsid sh + sleep group and pgid-kills it; PID/pgid reuse under high concurrency reaps unrelated processes.
+	// The reap records into selflog; redirect it into a test-scoped file so the
+	// suite never appends a fabricated cdsp reap record to the user's real
+	// ~/.cache/agnt/errors.log.
+	readSelflog := selflogSink(t)
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
 	tmpDir := t.TempDir()
 
@@ -70,6 +74,11 @@ func TestCleanupSessionResources_KillsSessionPGID(t *testing.T) {
 	// Trigger cleanup. doCleanupExact's first action is killSessionPGID,
 	// which should reap everything.
 	d.CleanupSessionResources("test-pgid")
+
+	// The reap recorded — into the test-scoped sink, not the user's real log.
+	entries := readSelflog()
+	require.Len(t, entries, 1, "reaping a live session pgid must leave one selflog record")
+	require.Contains(t, entries[0].Message, "test-pgid", "record must name the reaped session")
 
 	// Wait for the leader process to be reaped. doCleanupExact uses a 2s
 	// graceful timeout; we give a bit more slack here for CI noise.
