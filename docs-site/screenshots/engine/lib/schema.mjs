@@ -11,11 +11,12 @@
 // being present) are out of scope here; this is a shape check only.
 
 // Keep-range endpoint grammar, mirrored from lib/assemble.mjs endpointSec:
-//   "start" | "end" | "mark:<name>[+|-<seconds>]"
-const KEEP_ENDPOINT = /^(start|end|mark:[A-Za-z0-9_-]+(?:[+-][0-9.]+)?)$/;
-// Narration anchor grammar, mirrored from lib/assemble.mjs anchorSec:
+//   "start" | "end" | "mark:<name>[+|-<seconds>]"   (names may carry ':', e.g. step:2)
+const KEEP_ENDPOINT = /^(start|end|mark:[A-Za-z0-9_:-]+(?:[+-][0-9.]+)?)$/;
+// Narration anchor grammar, mirrored from lib/assemble.mjs narrationAnchorSec:
 //   "<seg-id>" | "<seg-id>+<seconds>" | "<seg-id>+end"
-const NARRATION_ANCHOR = /^([A-Za-z0-9_-]+)(?:\+(?:end|[0-9.]+))?$/;
+//   | "<seg-id>+mark:<name>[+|-<seconds>]"   (e.g. a walkthrough "step:2" mark)
+const NARRATION_ANCHOR = /^([A-Za-z0-9_-]+)(?:\+(?:end|[0-9.]+|mark:[A-Za-z0-9_:-]+(?:[+-][0-9.]+)?))?$/;
 // Brand overlay positions, mirrored from lib/assemble.mjs BRAND_POS.
 const BRAND_POSITIONS = ['top-right', 'top-left', 'bottom-right', 'bottom-left'];
 const SEGMENT_TYPES = ['card', 'cli', 'browser'];

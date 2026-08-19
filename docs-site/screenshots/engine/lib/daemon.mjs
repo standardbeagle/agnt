@@ -47,6 +47,51 @@ export const exec = async (proxyId, code, socketPath) => {
   return res;
 };
 
+// Walkthrough overlay control. There is NO dedicated walkthrough daemon verb:
+// the MCP `walkthrough` tool (internal/tools/walkthrough_tools.go,
+// buildWalkthroughExec → dt.client.ProxyExec) ships a JS snippet over
+// PROXY EXEC, served by the hub's "EXEC" handler
+// (internal/daemon/hub_proxy.go:30 → hubHandleProxyExec). The engine takes that
+// same wire path through exec() above; buildWalkthroughCall mirrors the Go
+// snippet builder so the browser-side entry point (window.__devtool.walkthrough)
+// is identical. Nothing here invents a parallel path.
+export const buildWalkthroughCall = (action, {script, scriptId, mode} = {}) => {
+  const guard = (call) =>
+    `(function(){var w=window.__devtool && window.__devtool.walkthrough; ` +
+    `if(!w){return JSON.stringify({error:'walkthrough not available'});} ` +
+    `return JSON.stringify(${call});})()`;
+
+  switch (action) {
+    case 'load':
+      if (!script) throw new Error('walkthrough load: script required');
+      return guard(`w.load(${JSON.stringify(script)})`);
+    case 'start': {
+      if (mode !== undefined && mode !== 'auto' && mode !== 'manual') {
+        throw new Error(`walkthrough start: invalid mode ${JSON.stringify(mode)} (auto|manual)`);
+      }
+      const opts = `{mode:${JSON.stringify(mode || 'auto')}}`;
+      if (script) return guard(`w.start(${JSON.stringify(script)}, ${opts})`);
+      if (scriptId) return guard(`w.start(${JSON.stringify(scriptId)}, ${opts})`);
+      throw new Error('walkthrough start: script or scriptId required');
+    }
+    case 'stop': case 'next': case 'prev':
+    case 'play': case 'pause': case 'status': case 'list':
+      return guard(`w.${action}()`);
+    default:
+      throw new Error(`walkthrough: unknown action ${JSON.stringify(action)}`);
+  }
+};
+
+export const walkthrough = async (proxyId, action, opts, socketPath) => {
+  const res = await exec(proxyId, buildWalkthroughCall(action, opts), socketPath);
+  // The overlay reports its own failures inside the exec result; surface them
+  // instead of letting a tour silently never appear in a take.
+  if (/walkthrough not available|walkthrough host frame unavailable/.test(res)) {
+    throw new Error(`walkthrough ${action} on ${proxyId}: ${res}`);
+  }
+  return res;
+};
+
 // CHAOS ADD-RULE <proxy-id> with JSON ChaosRuleConfig as data payload.
 // Rule shape: {id, type: "latency"|"http_error"|..., enabled, url_pattern,
 // methods, probability, min_latency_ms, max_latency_ms, error_codes, ...}

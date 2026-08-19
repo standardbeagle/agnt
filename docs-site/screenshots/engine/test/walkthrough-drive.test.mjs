@@ -84,10 +84,10 @@ test('schema accepts step-mark keep endpoints and narration anchors', () => {
   const spec = {
     name: 'wt',
     segments: [{id: 'tour', type: 'browser', script: './s.mjs', keep: [['mark:step:1', 'mark:step:3+1.0']]}],
-    narration: {segments: [{id: 'n1', at: 'tour+mark:step:2', text: 'hi'}]},
+    narration: {voice: 'en-US-AvaNeural', segments: [{id: 'n1', at: 'tour+mark:step:2', text: 'hi'}]},
   };
   assert.deepEqual(validateDemoSpec(spec), {ok: true, errors: []});
 
-  const bad = {...spec, narration: {segments: [{id: 'n1', at: 'nope+mark:step:2', text: 'hi'}]}};
+  const bad = {...spec, narration: {voice: 'en-US-AvaNeural', segments: [{id: 'n1', at: 'nope+mark:step:2', text: 'hi'}]}};
   assert.equal(validateDemoSpec(bad).ok, false);
 });

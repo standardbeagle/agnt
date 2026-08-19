@@ -75,15 +75,48 @@ const cardHTML = (kicker, title, sub, view) => `<!DOCTYPE html><html><head><styl
 
 // Keep-range endpoint grammar: "start" | "end" | "mark:<name>[+|-<seconds>]".
 // A keep range [a, b] keeps footage from a to b; everything else in the take
-// (e.g. scripted-agent latency) is spliced out.
-const endpointSec = (tok, marks, takeDur) => {
+// (e.g. scripted-agent latency) is spliced out. Mark names carry ':' so the
+// walkthrough driver's per-step marks ("step:2") are addressable; the offset
+// suffix stays unambiguous because '+'/'-' are not in the name charset.
+export const endpointSec = (tok, marks, takeDur) => {
   if (tok === 'start') return 0;
   if (tok === 'end') return takeDur;
-  const m = tok.match(/^mark:([A-Za-z0-9_-]+)([+-][\d.]+)?$/);
+  const m = tok.match(/^mark:([A-Za-z0-9_:-]+)([+-][\d.]+)?$/);
   if (!m) throw new Error(`bad keep endpoint: ${tok}`);
   const e = marks.find((x) => x.name === m[1]);
   if (!e) throw new Error(`missing mark ${m[1]}`);
   return e.tMs / 1000 + (m[2] ? parseFloat(m[2]) : 0);
+};
+
+// Narration anchor grammar: "<seg-id>" (segment start), "<seg-id>+<sec>",
+// "<seg-id>+end" (right-aligned: the line ENDS ~1s before the segment does), or
+// "<seg-id>+mark:<name>[+|-<sec>]" — anchored to a recorded mark, e.g. the
+// walkthrough driver's "step:2". `seg` is the timeline entry (start/dur),
+// `specSeg` the demo.json segment, `marks` that segment's recorded events.
+//
+// Mark times are TAKE-relative while the timeline is mezzanine-relative, so a
+// mark anchor is only honest when the take was not spliced or trimmed. Rather
+// than silently drifting, a spliced/trimmed segment rejects mark anchors.
+export const narrationAnchorSec = (tok, dur, seg, specSeg, marks) => {
+  const m = tok.match(/^([A-Za-z0-9_-]+)(?:\+(end|[\d.]+|mark:[A-Za-z0-9_:-]+(?:[+-][\d.]+)?))?$/);
+  if (!m) throw new Error(`bad narration anchor: ${tok}`);
+  if (!seg) throw new Error(`narration anchor ${m[1]} not a segment`);
+  if (!m[2]) return seg.start + 0.4;
+  if (m[2] === 'end') return Math.max(seg.start + 0.4, seg.start + seg.dur - dur - 1.0);
+  if (!m[2].startsWith('mark:')) return seg.start + parseFloat(m[2]);
+
+  if (specSeg?.keep?.length) {
+    throw new Error(`narration anchor ${tok}: segment ${m[1]} declares keep ranges — ` +
+      'mark times are take-relative and would not line up; anchor with +<sec> instead');
+  }
+  if (specSeg?.trimSeconds) {
+    throw new Error(`narration anchor ${tok}: segment ${m[1]} declares trimSeconds — ` +
+      'mark times are take-relative and would not line up; anchor with +<sec> instead');
+  }
+  const mm = m[2].match(/^mark:([A-Za-z0-9_:-]+)([+-][\d.]+)?$/);
+  const e = (marks || []).find((x) => x.name === mm[1]);
+  if (!e) throw new Error(`narration anchor ${tok}: missing mark ${mm[1]} in segment ${m[1]}`);
+  return seg.start + e.tMs / 1000 + (mm[2] ? parseFloat(mm[2]) : 0);
 };
 
 // Splice a recorded take down to its keep ranges → one mezzanine file.
@@ -204,6 +237,7 @@ export const assemble = async (spec, {demoDir, workDir, outDir}) => {
   const view = {...spec.viewport, fps: spec.fps || 25};
   const cacheDir = path.join(workDir, 'cache');
   fs.mkdirSync(cacheDir, {recursive: true});
+  const marksById = new Map();   // seg id → recorded marks, for mark: anchors
 
   // --- 1. Mezzanine: cards rendered, takes spliced + normalized ------------
   // Chromium is only needed to render title cards. A card-less demo skips it
@@ -230,6 +264,7 @@ export const assemble = async (spec, {demoDir, workDir, outDir}) => {
     } else {
       const marksPath = path.join(workDir, seg.id + '.json');
       const marks = fs.existsSync(marksPath) ? readJSON(marksPath).events : [];
+      marksById.set(seg.id, marks);
       const take = path.join(workDir, seg.id + '.webm');
       file = path.join(workDir, seg.id + '-mezz.webm');
       cachedMezz(fileFastKey(take), seg, view, {cacheDir, mezzOut: file}, {
@@ -248,18 +283,12 @@ export const assemble = async (spec, {demoDir, workDir, outDir}) => {
   console.log('  timeline', timeline.map((t) => `${t.id}@${t.start.toFixed(1)}`).join(' '), 'total', totalDur.toFixed(1) + 's');
 
   // --- 2. Narration (optional) ----------------------------------------------
-  // anchor grammar in narration.json: "<seg-id>" (start), "<seg-id>+<sec>",
-  // "<seg-id>+end" (right-aligned: line ENDS ~1s before the segment does).
+  // anchor grammar in narration.json: see narrationAnchorSec above.
   const voiced = [];
   if (spec.narration?.segments?.length) {
     const anchorSec = (tok, dur) => {
-      const m = tok.match(/^([A-Za-z0-9_-]+)(?:\+(end|[\d.]+))?$/);
-      if (!m) throw new Error(`bad narration anchor: ${tok}`);
-      const seg = at(m[1]);
-      if (!seg) throw new Error(`narration anchor ${m[1]} not a segment`);
-      if (!m[2]) return seg.start + 0.4;
-      if (m[2] === 'end') return Math.max(seg.start + 0.4, seg.start + seg.dur - dur - 1.0);
-      return seg.start + parseFloat(m[2]);
+      const id = tok.split('+')[0];
+      return narrationAnchorSec(tok, dur, at(id), spec.segments.find((s) => s.id === id), marksById.get(id));
     };
     const parseSRT = (file) => {
       const txt = fs.readFileSync(file, 'utf8').replace(/\r/g, '');

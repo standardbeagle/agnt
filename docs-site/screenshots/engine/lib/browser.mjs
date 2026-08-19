@@ -12,7 +12,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {chromium} from 'playwright';
-import {toast as daemonToast, proxyStart, proxyStop, ping, chaosAddRule, chaosClear, exec as daemonExec} from './daemon.mjs';
+import {toast as daemonToast, proxyStart, proxyStop, ping, chaosAddRule, chaosClear, exec as daemonExec,
+  walkthrough as daemonWalkthrough} from './daemon.mjs';
 import {spawnLogged, waitForURL, writeJSON} from './util.mjs';
 
 // Generous liveness ceiling for the event-based injection settle. This is NOT a
@@ -45,6 +46,26 @@ export function contentInjectionReady(win) {
     win.__devtool_core.isConnected());
 }
 
+// Walkthrough step/panel predicates. Same dual-context shape as the injection
+// predicates above: Playwright serializes them into the chrome shell (where
+// `win` is undefined, so they read the in-page `window`), the unit test passes a
+// fake window. The walkthrough host lives in the chrome frame — walkthrough.js
+// installs __devtool_walkthrough_host there; content frames only forward.
+export function walkthroughAtStep(idx, win) {
+  win = win || (typeof window !== 'undefined' ? window : null);
+  const h = win && win.__devtool_walkthrough_host;
+  if (!h || typeof h.status !== 'function') return false;
+  const st = h.status();
+  return !!st && st.running === true && st.stepIndex === idx;
+}
+export function walkthroughPanelVisible(win) {
+  win = win || (typeof window !== 'undefined' ? window : null);
+  if (!win) return false;
+  const root = (typeof win.__devtoolGetMountRoot === 'function') ? win.__devtoolGetMountRoot() : win.document;
+  const el = (root && typeof root.querySelector === 'function') ? root.querySelector('#__wt_panel') : null;
+  return !!el && (el.textContent || '').trim() !== '';
+}
+
 export class BrowserDriver {
   constructor(pg, cf, mark, env) {
     this.page = pg;
@@ -72,6 +93,56 @@ export class BrowserDriver {
   // The scripted agent acts: real PROXY EXEC in the content frame — the same
   // path MCP proxy exec/navigate take.
   agentExec(code) { return daemonExec(this.env.PROXY_ID, code, this.env.AGNT_SOCKET); }
+
+  // Drive the walkthrough overlay from inside a recorded segment — the same
+  // scripted tour a coding agent runs through the `walkthrough` MCP tool, over
+  // the same PROXY EXEC wire path (see daemon.mjs walkthrough()). A `step:<n>`
+  // mark lands at every real step transition, so keep-ranges and narration
+  // anchors reference tour steps instead of hand-timed offsets.
+  //
+  //   await d.walkthrough(steps)                  // inline steps array
+  //   await d.walkthrough({id, title, steps})     // full script object
+  //   await d.walkthrough('already-loaded-id')    // previously loaded script
+  //
+  // opts: {id, title, mode: 'auto'|'manual', timeout}
+  async walkthrough(stepsOrRef, opts = {}) {
+    let script;
+    let scriptId;
+    if (Array.isArray(stepsOrRef)) {
+      script = {id: opts.id || 'demo-tour', title: opts.title || '', steps: stepsOrRef};
+    } else if (typeof stepsOrRef === 'string') {
+      scriptId = stepsOrRef;
+    } else if (stepsOrRef && Array.isArray(stepsOrRef.steps)) {
+      script = stepsOrRef;
+    } else {
+      throw new Error('d.walkthrough: expected a steps array, a {id,title,steps} script, or a loaded script id');
+    }
+    await daemonWalkthrough(this.env.PROXY_ID, 'start',
+      {script, scriptId, mode: opts.mode || 'auto'}, this.env.AGNT_SOCKET);
+    await this.walkthroughStep(1, opts);
+    return this;
+  }
+
+  // Wait for the overlay to actually be on step n (1-based) and mark it. The
+  // wait is on the real in-page state, never a sleep, so the mark carries the
+  // transition's true time.
+  async walkthroughStep(n, {timeout = 30000} = {}) {
+    await this.page.waitForFunction(walkthroughAtStep, n - 1, {timeout});
+    await this.page.waitForFunction(walkthroughPanelVisible, undefined, {timeout});
+    this.mark('step:' + n);
+    return this;
+  }
+
+  // Manual advance (same verb path). Pass the expected step number to wait for
+  // the transition and mark it.
+  async walkthroughNext(n, opts) {
+    await daemonWalkthrough(this.env.PROXY_ID, 'next', {}, this.env.AGNT_SOCKET);
+    if (n) await this.walkthroughStep(n, opts);
+    return this;
+  }
+
+  walkthroughStatus() { return daemonWalkthrough(this.env.PROXY_ID, 'status', {}, this.env.AGNT_SOCKET); }
+  walkthroughStop() { return daemonWalkthrough(this.env.PROXY_ID, 'stop', {}, this.env.AGNT_SOCKET); }
 
   sleep(ms) { return this.page.waitForTimeout(ms); }
 }
