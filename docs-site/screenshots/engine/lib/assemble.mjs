@@ -5,8 +5,11 @@
 import {execFileSync} from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import {chromium} from 'playwright';
 import {ff, probeDur, normalize, readJSON, writeJSON, ttsKey, mezzKey, fileFastKey} from './util.mjs';
+// playwright (and its chromium browser) is imported lazily inside assemble(),
+// only when a demo has at least one `card` segment. A demo built entirely from
+// pre-recorded cli/browser takes assembles with ffmpeg alone — which is what
+// lets the CI smoke run `--assemble-only` with no Chrome installed.
 
 // --- content-keyed assembly cache seams -------------------------------------
 // Both generate expensive artifacts (edge-tts audio, splice+normalize encodes)
@@ -203,8 +206,15 @@ export const assemble = async (spec, {demoDir, workDir, outDir}) => {
   fs.mkdirSync(cacheDir, {recursive: true});
 
   // --- 1. Mezzanine: cards rendered, takes spliced + normalized ------------
-  const browser = await chromium.launch();
-  const pg = await browser.newPage({viewport: {width: view.width, height: view.height}});
+  // Chromium is only needed to render title cards. A card-less demo skips it
+  // entirely, so `--assemble-only` needs neither playwright nor a browser.
+  const hasCard = spec.segments.some((s) => s.type === 'card');
+  let browser = null, pg = null;
+  if (hasCard) {
+    const {chromium} = await import('playwright');
+    browser = await chromium.launch();
+    pg = await browser.newPage({viewport: {width: view.width, height: view.height}});
+  }
   const timeline = [];
   for (const seg of spec.segments) {
     let file;
@@ -229,7 +239,7 @@ export const assemble = async (spec, {demoDir, workDir, outDir}) => {
     timeline.push({id: seg.id, file});
     console.log('  seg', seg.id, probeDur(file).toFixed(2) + 's');
   }
-  await browser.close();
+  if (browser) await browser.close();
 
   let acc = 0;
   for (const t of timeline) { t.start = acc; t.dur = probeDur(t.file); acc += t.dur; }
