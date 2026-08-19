@@ -643,8 +643,14 @@ func TestReconcileScriptStates_DeadPIDTransitioned(t *testing.T) {
 	projectPath := "/home/user/project"
 
 	// Register a script and set it to Running
+	// The Run string is a config placeholder only — this test never spawns it
+	// (no StartScript; reconcileScriptStates detects the entry as dead because no
+	// managed process exists for its ProcessID). Route it through stayAliveCmd so
+	// no long-sleep magic literal survives outside the deliberate process-tree
+	// escape repros, and so it carries the bounded keep-alive duration if a future
+	// edit ever does start it.
 	entry, err := d.scriptRegistry.Register("dev", projectPath, &script.Config{
-		Run: "sleep 999",
+		Run: stayAliveCmd(),
 	})
 	if err != nil {
 		t.Fatalf("Register failed: %v", err)
