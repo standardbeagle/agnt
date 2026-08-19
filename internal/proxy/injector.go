@@ -308,9 +308,13 @@ func InjectProxyMeta(body []byte, proxyID string) []byte {
 }
 
 // ShouldInject determines if JavaScript should be injected based on content type.
+//
+// It delegates to the ONE shared media-type predicate (mediatype.go) rather than
+// carrying its own substring scan: the same "is this an HTML document" question
+// is now asked by the public plane's guarded upstream reader, where a substring
+// scan is a security defect rather than a convenience (S6 advisory 2).
 func ShouldInject(contentType string) bool {
-	contentType = strings.ToLower(contentType)
-	return strings.Contains(contentType, "text/html")
+	return isHTMLDocumentMediaType(contentType)
 }
 
 // frameMarkerParam is the query parameter the proxy stamps on the content-frame

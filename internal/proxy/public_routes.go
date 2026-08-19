@@ -935,6 +935,29 @@ func resolveRedirectTarget(from, location string) (string, error) {
 	return base.ResolveReference(loc).String(), nil
 }
 
+// checkUpstreamEncoding refuses a body carrying a Content-Encoding we did not
+// solicit (S6 advisory 1). The guarded fetch sets no Accept-Encoding, so Go's
+// transport adds "gzip" itself and transparently decodes it — deleting the header
+// before we ever see it. Anything LEFT on the response is therefore an
+// unsolicited encoding (br, deflate, zstd, or a bogus token), and its bytes are
+// NOT what their Content-Type says they are: splicing our bundle tag into a
+// brotli stream labelled text/html would serve corrupt compressed bytes as an
+// HTML document.
+//
+// The dev sibling (ProxyServer.modifyResponse, rewrite.go) DECODES the same set;
+// this path deliberately REFUSES instead. The spec (§4e.1) permits either, and
+// refusal is the conservative half of the choice on this plane: a decoder here is
+// a decompression-bomb surface reachable by an anonymous viewer through a
+// third-party origin, whereas on the dev plane the operator owns both ends. A
+// refusal is loud (502), never a silently un-spliced document.
+func checkUpstreamEncoding(resp *http.Response) error {
+	enc := strings.TrimSpace(strings.ToLower(resp.Header.Get("Content-Encoding")))
+	if enc == "" || enc == "identity" {
+		return nil
+	}
+	return fmt.Errorf("upstream: unsolicited Content-Encoding %q", enc)
+}
+
 // readUpstreamDocument validates and reads one non-redirect upstream response.
 // Non-200, non-HTML, and over-cap all refuse: this document is about to be
 // served as the published artifact, so anything we are not sure is a complete
@@ -943,11 +966,15 @@ func readUpstreamDocument(resp *http.Response) ([]byte, error) {
 	if resp.StatusCode != http.StatusOK {
 		return nil, fmt.Errorf("upstream: status %d", resp.StatusCode)
 	}
-	if ct := resp.Header.Get("Content-Type"); !ShouldInject(ct) {
+	if ct := resp.Header.Get("Content-Type"); !isHTMLDocumentMediaType(ct) {
 		// The artifact route serves a document. Passing arbitrary upstream bytes
 		// through it would turn an anonymous route into a general-purpose relay
-		// for whatever the origin decides to return.
+		// for whatever the origin decides to return. EXACT media-type match, not a
+		// substring scan (S6 advisory 2): "x-text/html-ish" is not a document.
 		return nil, fmt.Errorf("upstream: content-type %q is not HTML", ct)
+	}
+	if err := checkUpstreamEncoding(resp); err != nil {
+		return nil, err
 	}
 	body, truncated, err := readAllCapped(resp.Body, resp.ContentLength, maxPublicUpstreamBytes)
 	if err != nil {
