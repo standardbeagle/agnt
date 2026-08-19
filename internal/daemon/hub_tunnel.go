@@ -48,11 +48,21 @@ func (d *Daemon) hubHandleTunnelStart(ctx context.Context, conn *hubpkg.Connecti
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "local_port is required")
 	}
 
+	// Validate the provider at the boundary (S9 ParseProvider) rather than
+	// casting the raw string straight to tunnel.Provider. The cast only
+	// surfaced a typo later as Start's generic "unsupported tunnel provider";
+	// ParseProvider fails loud here naming the legal set, and normalizes the
+	// value the tunnel is actually started with.
+	provider, err := tunnel.ParseProvider(config.Provider)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+	}
+
 	// Get project path from session for session scoping
 	projectPath := d.getSessionProjectPath(conn)
 
 	tunnelConfig := tunnel.Config{
-		Provider:   tunnel.Provider(config.Provider),
+		Provider:   provider,
 		LocalPort:  config.LocalPort,
 		LocalHost:  config.LocalHost,
 		BinaryPath: config.BinaryPath,
@@ -79,7 +89,7 @@ func (d *Daemon) hubHandleTunnelStart(ctx context.Context, conn *hubpkg.Connecti
 
 	resp := map[string]interface{}{
 		"id":         tunnelID,
-		"provider":   config.Provider,
+		"provider":   string(provider),
 		"local_port": config.LocalPort,
 		"public_url": publicURL,
 		"status":     "running",

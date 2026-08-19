@@ -1,6 +1,7 @@
 package tunnel
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -176,5 +177,42 @@ func TestTunnelInfo(t *testing.T) {
 	}
 	if info.LocalAddr != "127.0.0.1:3000" {
 		t.Errorf("expected 127.0.0.1:3000, got %s", info.LocalAddr)
+	}
+}
+
+// TestParseProviderBoundary pins that ParseProvider validates a provider name at
+// the boundary: every supported provider round-trips (case-insensitively,
+// trimmed), and an unknown provider returns an actionable error that names the
+// rejected value AND the legal set — the provenance a bare Provider() cast could
+// not give. FAILS on a revert to casting the raw string straight to Provider.
+func TestParseProviderBoundary(t *testing.T) {
+	ok := map[string]Provider{
+		"cloudflare":   ProviderCloudflare,
+		"  Cloudflare": ProviderCloudflare,
+		"NGROK":        ProviderNgrok,
+		"tailscale ":   ProviderTailscale,
+	}
+	for in, want := range ok {
+		got, err := ParseProvider(in)
+		if err != nil {
+			t.Fatalf("ParseProvider(%q) unexpected error: %v", in, err)
+		}
+		if got != want {
+			t.Fatalf("ParseProvider(%q) = %q, want %q", in, got, want)
+		}
+	}
+
+	_, err := ParseProvider("bogus")
+	if err == nil {
+		t.Fatalf("unknown provider was accepted instead of rejected")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "bogus") {
+		t.Fatalf("error should name the rejected value: %v", err)
+	}
+	for _, legal := range []string{"cloudflare", "ngrok", "tailscale"} {
+		if !strings.Contains(msg, legal) {
+			t.Fatalf("error should name the legal set (%s): %v", legal, err)
+		}
 	}
 }
