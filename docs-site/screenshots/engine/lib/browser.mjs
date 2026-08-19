@@ -15,6 +15,36 @@ import {chromium} from 'playwright';
 import {toast as daemonToast, proxyStart, proxyStop, ping, chaosAddRule, chaosClear, exec as daemonExec} from './daemon.mjs';
 import {spawnLogged, waitForURL, writeJSON} from './util.mjs';
 
+// Generous liveness ceiling for the event-based injection settle. This is NOT a
+// latency SLO — it is the "the bundle never came up at all" backstop. On an idle
+// machine the gate resolves in well under this; under CPU load it waits exactly
+// as long as the real signal takes, instead of the old fixed +1200ms floor.
+const INJECT_SETTLE_CEILING_MS = 15000;
+
+// Injection-readiness predicates: the ACTUAL runtime signals the recorder gates
+// on, replacing the old fixed 1200ms settle. Each keys on (a) the frame's
+// subsystem object being mounted AND (b) the websocket transport being OPEN
+// (window.__devtool_core.isConnected()). Per lessons-ssh-transport.md #2: gate
+// on the transport actually being live, not on an object merely existing or a
+// timer firing earlier than the connection completes.
+//
+// These are drift-free across the two execution contexts: Playwright serializes
+// the function source into the page (where `win` is undefined, so it reads the
+// in-page `window`), while the unit test passes a fake window as `win`. One
+// source, verified in Node, correct in the browser.
+export function chromeInjectionReady(win) {
+  win = win || (typeof window !== 'undefined' ? window : null);
+  return !!(win && win.__devtool && win.__devtool.indicator &&
+    win.__devtool_core && typeof win.__devtool_core.isConnected === 'function' &&
+    win.__devtool_core.isConnected());
+}
+export function contentInjectionReady(win) {
+  win = win || (typeof window !== 'undefined' ? window : null);
+  return !!(win && win.__devtool && win.__devtool.toast &&
+    win.__devtool_core && typeof win.__devtool_core.isConnected === 'function' &&
+    win.__devtool_core.isConnected());
+}
+
 export class BrowserDriver {
   constructor(pg, cf, mark, env) {
     this.page = pg;
@@ -105,9 +135,14 @@ export const recordBrowser = async (seg, {demoDir, workDir, viewport, env}) => {
     await pg.goto(seg.url || env.UPSTREAM_URL || env.PROXY_URL, {waitUntil: 'load'});
   } else {
     await pg.goto(seg.url || env.PROXY_URL, {waitUntil: 'load'});
-    await pg.waitForFunction(() => window.__devtool && window.__devtool.indicator, {timeout: 15000});
-    await (await waitForFrame()).waitForFunction(() => window.__devtool && window.__devtool.toast, {timeout: 15000});
-    await pg.waitForTimeout(1200); // injection settle, matches record-live
+    // Event-based injection settle: wait for the injected bundle to be actually
+    // live in each frame — chrome indicator mounted + ws OPEN, then content
+    // toast subsystem live + ws OPEN — instead of a fixed +1200ms floor.
+    const settleStart = Date.now();
+    await pg.waitForFunction(chromeInjectionReady, undefined, {timeout: INJECT_SETTLE_CEILING_MS});
+    await (await waitForFrame()).waitForFunction(contentInjectionReady, undefined, {timeout: INJECT_SETTLE_CEILING_MS});
+    console.log('  injection settle', (Date.now() - settleStart) + 'ms',
+      '(event-based, ws-connected gate; ceiling ' + INJECT_SETTLE_CEILING_MS + 'ms)');
   }
 
   const d = new BrowserDriver(pg, cf, mark, env);
