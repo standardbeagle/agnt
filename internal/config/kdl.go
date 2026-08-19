@@ -1,6 +1,8 @@
 package config
 
 import (
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,10 +29,38 @@ type KDLConfig struct {
 }
 
 // KDLSettings holds global settings from KDL.
+//
+// The two timeout fields are float64 rather than int so a fractional literal
+// can be detected and REFUSED at parse time. kdl-go silently truncates a
+// float into an int struct field with no error, and for default-timeout that
+// truncation lands on 0 — the "no timeout / run forever" sentinel — so a
+// half-second limit would silently become an unbounded run (the bound-into-
+// absence hazard in .claude/rules/config-contracts.md). Sub-second granularity
+// is not supported end to end, so we reject rather than pretend to honor it.
 type KDLSettings struct {
-	DefaultTimeout  int `kdl:"default-timeout"`
-	MaxOutputBuffer int `kdl:"max-output-buffer"`
-	GracefulTimeout int `kdl:"graceful-timeout"`
+	DefaultTimeout  float64 `kdl:"default-timeout"`
+	MaxOutputBuffer int     `kdl:"max-output-buffer"`
+	GracefulTimeout float64 `kdl:"graceful-timeout"`
+}
+
+// validate rejects sub-second timeout values. The KDL timeout fields are whole
+// seconds; a fractional value cannot be honored (there is no consumer that
+// applies sub-second process timeouts), so accepting it would be a
+// parse-but-no-effect lie and truncating it silently is worse — for
+// default-timeout it lands on the "no timeout" sentinel. Refuse with an
+// actionable message naming the field, the value, and the granularity limit.
+func (s KDLSettings) validate() error {
+	if err := requireWholeSeconds("settings.default-timeout", s.DefaultTimeout); err != nil {
+		return err
+	}
+	return requireWholeSeconds("settings.graceful-timeout", s.GracefulTimeout)
+}
+
+func requireWholeSeconds(field string, v float64) error {
+	if v != math.Trunc(v) {
+		return fmt.Errorf("%s must be a whole number of seconds (got %v); sub-second timeouts are not supported", field, v)
+	}
+	return nil
 }
 
 // KDLLanguages holds language configurations.
@@ -102,6 +132,9 @@ func ParseKDLConfig(data string) (*Config, error) {
 	if err := kdl.Unmarshal([]byte(data), &kdlCfg); err != nil {
 		return nil, err
 	}
+	if err := kdlCfg.Settings.validate(); err != nil {
+		return nil, err
+	}
 
 	return kdlConfigToConfig(&kdlCfg), nil
 }
@@ -127,15 +160,16 @@ func kdlConfigToConfig(kdlCfg *KDLConfig) *Config {
 	// defaults and a partial block never disables a guard.
 	cfg.PublicPlane = kdlCfg.PublicPlane.toPublicPlaneConfig()
 
-	// Settings
+	// Settings. Timeout values are validated whole seconds (see KDLSettings.validate),
+	// so the int64 cast is lossless; 0 stays the "no timeout" sentinel via the >0 guard.
 	if kdlCfg.Settings.DefaultTimeout > 0 {
-		cfg.Settings.DefaultTimeout = time.Duration(kdlCfg.Settings.DefaultTimeout) * time.Second
+		cfg.Settings.DefaultTimeout = time.Duration(int64(kdlCfg.Settings.DefaultTimeout)) * time.Second
 	}
 	if kdlCfg.Settings.MaxOutputBuffer > 0 {
 		cfg.Settings.MaxOutputBuffer = kdlCfg.Settings.MaxOutputBuffer
 	}
 	if kdlCfg.Settings.GracefulTimeout > 0 {
-		cfg.Settings.GracefulTimeout = time.Duration(kdlCfg.Settings.GracefulTimeout) * time.Second
+		cfg.Settings.GracefulTimeout = time.Duration(int64(kdlCfg.Settings.GracefulTimeout)) * time.Second
 	}
 
 	// Languages
@@ -254,11 +288,11 @@ func WriteDefaultConfig(path string) error {
 version "1.0"
 
 settings {
-    // Default process timeout in seconds (0 = no timeout)
+    // Default process timeout, whole seconds (0 = no timeout; sub-second not supported)
     default-timeout 0
     // Output buffer size in bytes (256KB default)
     max-output-buffer 262144
-    // Graceful shutdown timeout in seconds
+    // Graceful shutdown timeout, whole seconds (sub-second not supported)
     graceful-timeout 5
 }
 
