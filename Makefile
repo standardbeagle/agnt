@@ -1,4 +1,4 @@
-.PHONY: build release test test-unit test-integration test-browser test-e2e e2e-publish-browser test-chrome-e2e test-isolated test-ssh test-ssh-coverage test-flake clean clean-zombies install install-local install-windows install-hooks run lint test-webapp mockagent generate generate-check vendor cross-compile cross-compile-check demo demo-engine-test demo-mux-check
+.PHONY: build release test test-unit test-integration test-browser test-e2e e2e-publish-browser test-chrome-e2e test-isolated test-ssh test-ssh-coverage test-flake check-dirty-tree clean clean-zombies install install-local install-windows install-hooks run lint test-webapp mockagent generate generate-check vendor cross-compile cross-compile-check demo demo-engine-test demo-mux-check
 
 # Binary names
 BINARY := devtool-mcp
@@ -128,6 +128,22 @@ test-ssh-coverage:
 	done; \
 	if [ "$$fail" != 0 ]; then exit 1; fi; \
 	echo "test-ssh-coverage gate passed (both packages >= $(SSH_COVERAGE_MIN)%)"
+
+# Standing guard: fail the build if the test suite leaves the working tree
+# dirty. Runs the full suite twice under a PTY (so PTY-gated tests actually
+# EXECUTE — a TTY-less run skips them and gives a FALSE CLEAN) and requires
+# `git status --porcelain` to be empty after BOTH runs (idempotent, not merely
+# clean-once). On dirtiness it names the offending path(s) and points at
+# .claude/rules/testing-parallel-package-flakes.md § source-tree-pollution.
+#
+# The default suite command is `go test -p 1 -count=1 -v ./...` — -count=1 is
+# load-bearing: it defeats the test cache so the SECOND run actually executes
+# (a cached run cannot prove idempotency). The logic lives in
+# scripts/check-tree-clean.sh so this target — and any CI step — stays a
+# one-liner (same pattern as test-ssh-coverage). Env overrides:
+# TREE_CLEAN_RUNS, TREE_CLEAN_TEST_CMD.
+check-dirty-tree: clean-zombies
+	./scripts/check-tree-clean.sh
 
 # Hunt flakes via parallel stress run (50-count, 4-way parallel, shuffled)
 test-flake: ## Hunt flakes via parallel stress run
@@ -332,6 +348,7 @@ help:
 	@echo "  test-isolated    - Run procisolation tests inside unshare PID namespace (Linux)"
 	@echo "  test-ssh-coverage - Enforce >=70% line coverage on sshclient + sessionhost"
 	@echo "  test-flake       - Hunt flakes via parallel stress run (50-count, shuffled)"
+	@echo "  check-dirty-tree - Fail if the suite dirties the working tree (2x under PTY)"
 	@echo "  test-unit        - Run unit tests only"
 	@echo "  test-integration - Run integration tests (requires dependencies)"
 	@echo "  test-browser     - Run browser automation tests (requires Chrome)"
