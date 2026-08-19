@@ -1,0 +1,68 @@
+name: Demo Engine Smoke
+
+# Engine changes that break a committed demo were only ever caught by the next
+# hand-run of `make demo NAME=<x>` (which needs Chrome, VHS, edge-tts, and the
+# daemon). This job catches them in CI with none of that:
+#
+#   * demo-check      — validate every demos/*/demo.json against the schema
+#                       (pure node, lib/schema.mjs).
+#   * demo-engine-test — the engine's pure unit tests (schema, final-mux graph,
+#                       narration gating, assembly cache, injection predicates).
+#   * demo-assemble-check — run the committed ci-fixture through
+#                       `--assemble-only` and assert a playable output.
+#
+# Deliberately NO Chrome / VHS / daemon: the fixture is card-less (cards are the
+# only assembly step that needs chromium) and declares no narration or setup, so
+# assembly is ffmpeg + node only. The playwright npm package is still installed
+# (demo.mjs imports it transitively) but PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1 keeps
+# the ~150 MB Chrome binary out — nothing here ever launches a browser. Runs on
+# ubuntu-latest; total job is well under 5 minutes.
+
+on:
+  push:
+    branches: [main, develop]
+    paths:
+      - 'docs-site/screenshots/**'
+      - 'Makefile'
+      - '.github/workflows/demo-smoke.yml'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'docs-site/screenshots/**'
+      - 'Makefile'
+      - '.github/workflows/demo-smoke.yml'
+  workflow_dispatch:
+
+jobs:
+  demo-smoke:
+    name: Schema check + assembly smoke (no Chrome/VHS/daemon)
+    runs-on: ubuntu-latest
+    env:
+      # Install the playwright JS package but skip the browser binary download.
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: docs-site/package-lock.json
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Install docs-site deps (playwright JS only, no Chrome)
+        working-directory: docs-site
+        run: npm ci
+
+      - name: Validate every demo.json against the schema
+        run: make demo-check
+
+      - name: Demo engine unit tests
+        run: make demo-engine-test
+
+      - name: Assembly smoke over the committed fixture (--assemble-only)
+        run: make demo-assemble-check
