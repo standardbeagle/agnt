@@ -623,7 +623,9 @@ func New(config DaemonConfig) *Daemon {
 	// alertScanner scans daemon-managed process output (proc run) for error
 	// patterns and routes matches into alertStore + eventHub — the same
 	// surfaces get_incidents and agnt monitor query. OnAlert fires after the
-	// scanner's batch window (default 3s) to avoid per-line churn.
+	// scanner's severity-scaled batch window to avoid per-line churn: error-level
+	// alerts (a dying script / fatal line) flush fast, warnings/info keep the 3s
+	// anti-churn window. See the batch-window policy block in internal/overlay/alerts.go.
 	d.alertScanner = overlay.NewAlertScanner(overlay.AlertScannerConfig{
 		OnAlert: func(batch *overlay.AlertBatch) {
 			ts := time.Now()
