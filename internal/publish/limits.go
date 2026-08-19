@@ -44,4 +44,13 @@ const (
 	MaxGestureLabelLength = 64
 	// MaxAttrValueLength bounds a setAttribute value; reuses the text cap.
 	MaxAttrValueLength = MaxTextBytes
+
+	// MaxRawHTMLBytes caps one setHTML fragment (§5: "Max raw-HTML fragment
+	// (setHTML) = 8192 bytes per op"). A parse-cost bound, not an injection
+	// control.
+	MaxRawHTMLBytes = 8192
+	// MaxRawScriptBytes caps the raw script an authored revision may carry
+	// (§5: "Max raw-script size (addScript) = 16384 bytes per authored
+	// revision"). Also bounds the script-src hash set INV-12 must pin.
+	MaxRawScriptBytes = 16384
 )

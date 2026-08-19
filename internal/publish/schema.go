@@ -28,20 +28,6 @@ var supportedVersions = map[SchemaVersion]bool{
 // isSupportedVersion reports whether v is a version this build can serve.
 func isSupportedVersion(v SchemaVersion) bool { return supportedVersions[v] }
 
-// Raw-content size caps from spec §5. They belong beside the other limits in
-// limits.go; they are declared here only because this slice's file scope
-// excludes that file — fold them in the next time limits.go is touched.
-const (
-	// MaxRawHTMLBytes caps one setHTML fragment (§5: "Max raw-HTML fragment
-	// (setHTML) = 8192 bytes per op"). A parse-cost bound, not an injection
-	// control.
-	MaxRawHTMLBytes = 8192
-	// MaxRawScriptBytes caps the raw script an authored revision may carry
-	// (§5: "Max raw-script size (addScript) = 16384 bytes per authored
-	// revision"). Also bounds the script-src hash set INV-12 must pin.
-	MaxRawScriptBytes = 16384
-)
-
 // OpType is the discriminant of the closed op vocabulary (spec §6). The renderer
 // is a switch over these and an unknown op is a rejection, never a passthrough.
 //
