@@ -1,7 +1,15 @@
+// Neither `stall` nor `max-cpu` is pinned here, and both omissions are deliberate.
+//
+// `stall` is a hang backstop, not a runtime budget: the scaffolded 60s fired 32 times across 959
+// supervised runs and caught no actual hang, killing healthy work like a cold `go build ./...`.
+// Omitting it takes tman's built-in 30m, and keeps taking whatever the corrected built-in is —
+// writing 60s here is exactly what stopped these files inheriting that fix. Use `max-time` for a
+// real deadline.
+//
+// `max-cpu` is normalised across all cores, so the scaffolded 95 meant "kill anything that
+// saturates this machine" — which is what a healthy parallel build or threaded test run does.
 defaults {
-    stall "60s"
     max-mem 2048
-    max-cpu 95
     max-parallel 2
 }
 
