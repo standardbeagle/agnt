@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"reflect"
 
 	"github.com/google/jsonschema-go/jsonschema"
@@ -41,5 +42,42 @@ func addLenientTool[In, Out any](s *mcp.Server, t *mcp.Tool, h mcp.ToolHandlerFo
 		schema.AdditionalProperties = nil
 		t.InputSchema = schema
 	}
+	// An `any`-typed output field infers an unrestricted schema, which marshals
+	// to the boolean shorthand `true`. That is valid JSON Schema, but Claude
+	// Code's SDK entrypoint validates tools/list strictly and rejects boolean
+	// property schemas — and one rejected tool fails the WHOLE list, so an
+	// SDK-spawned agent sees no agnt tools at all. Pre-generate the output
+	// schema and give every unrestricted subschema an explicit annotated form.
+	ot := reflect.TypeFor[Out]()
+	if ot.Kind() == reflect.Pointer {
+		ot = ot.Elem()
+	}
+	if ot.Kind() == reflect.Struct {
+		if outSchema, err := jsonschema.ForType(ot, &jsonschema.ForOptions{}); err == nil {
+			normalizeUnrestricted(outSchema)
+			t.OutputSchema = outSchema
+		}
+	}
 	mcp.AddTool(s, t, h)
+}
+
+// normalizeUnrestricted rewrites subschemas that would marshal to the boolean
+// shorthand `true` into an annotated form. Detection is by the marshalled
+// bytes — exactly the representation the strict client rejects.
+func normalizeUnrestricted(s *jsonschema.Schema) {
+	if s == nil {
+		return
+	}
+	for name, p := range s.Properties {
+		if p == nil {
+			continue
+		}
+		if b, err := json.Marshal(p); err == nil && string(b) == "true" {
+			s.Properties[name] = &jsonschema.Schema{Description: "Arbitrary JSON value"}
+			continue
+		}
+		normalizeUnrestricted(p)
+	}
+	normalizeUnrestricted(s.Items)
+	normalizeUnrestricted(s.AdditionalProperties)
 }
