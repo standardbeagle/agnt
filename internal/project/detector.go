@@ -301,10 +301,14 @@ func detectPython(path string) *Project {
 	return proj
 }
 
-// detectDotnet checks for a .NET project: a solution (.sln) or any project
-// file (.csproj / .fsproj / .vbproj) in the directory.
+// detectDotnet checks for a .NET project: a solution (.sln, or the XML
+// .slnx format introduced with .NET 9 SDK) or any project file
+// (.csproj / .fsproj / .vbproj) in the directory.
 func detectDotnet(path string) *Project {
 	sln := firstFileWithExt(path, ".sln")
+	if sln == "" {
+		sln = firstFileWithExt(path, ".slnx")
+	}
 	proj := firstFileWithExt(path, ".csproj")
 	if proj == "" {
 		proj = firstFileWithExt(path, ".fsproj")
@@ -329,6 +333,9 @@ func detectDotnet(path string) *Project {
 	}
 	if sln != "" {
 		p.Metadata["solution"] = filepath.Base(sln)
+	}
+	if proj != "" {
+		p.Metadata["project"] = filepath.Base(proj)
 	}
 	return p
 }

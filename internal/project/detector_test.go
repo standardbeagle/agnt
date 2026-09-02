@@ -396,3 +396,31 @@ func TestDefaultWailsCommands(t *testing.T) {
 		t.Error("expected 'doctor' command in Wails commands")
 	}
 }
+
+func TestDetect_DotnetSolution(t *testing.T) {
+	for _, ext := range []string{".sln", ".slnx"} {
+		t.Run(ext, func(t *testing.T) {
+			dir := t.TempDir()
+			// Projects live under src/; only the solution marks the root.
+			if err := os.WriteFile(filepath.Join(dir, "Track"+ext), []byte("<Solution/>"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			proj, err := Detect(dir)
+			if err != nil {
+				t.Fatalf("Detect failed: %v", err)
+			}
+			if proj.Type != ProjectDotnet {
+				t.Fatalf("expected type=dotnet, got %s", proj.Type)
+			}
+			if proj.Name != "Track" {
+				t.Errorf("expected name=Track, got %s", proj.Name)
+			}
+			if proj.Metadata["solution"] != "Track"+ext {
+				t.Errorf("expected solution metadata %q, got %q", "Track"+ext, proj.Metadata["solution"])
+			}
+			if !HasCommand(proj, "dev") {
+				t.Error("expected 'dev' command")
+			}
+		})
+	}
+}
