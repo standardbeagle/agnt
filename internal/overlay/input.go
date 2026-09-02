@@ -199,9 +199,9 @@ func (r *InputRouter) setForwarding(paused bool) {
 	}
 	r.overlay.SetForwardPaused(paused)
 	if paused {
-		r.overlay.DrawStatusBarMessage("🔇 agent forwarding paused — errors still pullable via get_incidents")
+		r.overlay.Notify(Notification{ID: "forwarding", Level: LevelInfo, Text: "🔇 agent forwarding paused — errors still pullable via get_incidents"})
 	} else {
-		r.overlay.DrawStatusBarMessage("🔊 agent forwarding resumed")
+		r.overlay.Notify(Notification{ID: "forwarding", Level: LevelInfo, Text: "🔊 agent forwarding resumed"})
 	}
 }
 
@@ -855,52 +855,55 @@ func (r *InputRouter) dispatchPaletteCommand(c PaletteCommand, args string) {
 
 	r.overlay.mu.Unlock()
 	// These are explicit user-invoked palette commands; a daemon-side failure
-	// must not vanish. Surface it to the debug log (the only PTY-safe sink).
+	// must not vanish. Surface it as an error notification.
+	fail := func(what string, err error) {
+		r.overlay.Notify(Notification{Level: LevelError, Text: fmt.Sprintf("%s failed: %v", what, err)})
+	}
 	switch c.Name {
 	case "start":
 		if args != "" {
 			if err := r.scriptController.StartScript(args); err != nil {
-				debug.Log("overlay", "palette start %q failed: %v", args, err)
+				fail("start "+args, err)
 			}
 		}
 	case "stop":
 		if args != "" {
 			if err := r.scriptController.StopScript(args); err != nil {
-				debug.Log("overlay", "palette stop %q failed: %v", args, err)
+				fail("stop "+args, err)
 			}
 		}
 	case "restart":
 		if args != "" {
 			if err := r.scriptController.RestartScript(args); err != nil {
-				debug.Log("overlay", "palette restart %q failed: %v", args, err)
+				fail("restart "+args, err)
 			}
 		}
 	case "kill-port":
 		if p, err := strconv.Atoi(strings.TrimSpace(args)); err == nil && p > 0 {
 			if err := r.scriptController.KillPort(p); err != nil {
-				debug.Log("overlay", "palette kill-port %d failed: %v", p, err)
+				fail(fmt.Sprintf("kill-port %d", p), err)
 			}
 		}
 	case "kill-orphans":
 		if err := r.scriptController.CleanOrphans(); err != nil {
-			debug.Log("overlay", "palette kill-orphans failed: %v", err)
+			fail("kill-orphans", err)
 		}
 	case "restart-proxy":
 		if args != "" {
 			if err := r.scriptController.RestartProxy(args); err != nil {
-				debug.Log("overlay", "palette restart-proxy %q failed: %v", args, err)
+				fail("restart-proxy "+args, err)
 			}
 		}
 	case "stop-proxy":
 		if args != "" {
 			if err := r.scriptController.StopProxy(args); err != nil {
-				debug.Log("overlay", "palette stop-proxy %q failed: %v", args, err)
+				fail("stop-proxy "+args, err)
 			}
 		}
 	case "stop-tunnel":
 		if args != "" {
 			if err := r.scriptController.StopTunnel(args); err != nil {
-				debug.Log("overlay", "palette stop-tunnel %q failed: %v", args, err)
+				fail("stop-tunnel "+args, err)
 			}
 		}
 	case "run":
@@ -1203,7 +1206,8 @@ type win32ParseState struct {
 // debugLog logs a message if DebugWin32Input is enabled.
 func debugLog(format string, args ...interface{}) {
 	if DebugWin32Input {
-		fmt.Fprintf(os.Stderr, "[win32] "+format+"\r\n", args...)
+		// Never os.Stderr here: this runs inside a live PTY session.
+		debug.Log("win32", format, args...)
 	}
 }
 

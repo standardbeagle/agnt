@@ -1,13 +1,13 @@
 package main
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 
 	"github.com/standardbeagle/agnt/internal/autoconfig"
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/overlay"
 	"github.com/standardbeagle/agnt/internal/project"
 )
 
@@ -46,8 +46,7 @@ func tryAutoConfig(projectPath string) bool {
 		return false
 	}
 
-	fmt.Fprintf(os.Stdout,
-		"agnt: detected %s project %q — wrote %s. Edit it to customize; changes apply live.\n",
+	notifyUser(overlay.LevelInfo, "detected %s project %q — wrote %s. Edit it to customize; changes apply live.",
 		detected.Type, detected.Name, config.AgntConfigFileName)
 	return true
 }

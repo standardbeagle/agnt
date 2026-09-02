@@ -119,7 +119,7 @@ func runPTYChild(ctx context.Context, args []string, socketPath string, sessionC
 		childHeight = height - 1
 	}
 	if err := pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(childHeight), Cols: uint16(width)}); err != nil {
-		debug.Warn("run", "error setting pty size: %s", err)
+		notifyUser(overlay.LevelWarn, "error setting pty size: %s", err)
 	}
 
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))

@@ -425,7 +425,7 @@ func mergeAutostartResult(handle *daemonSessionHandle, result map[string]interfa
 // The visible string is assembled from daemon-supplied `autostartStatus`
 // ("starting", ...) and the project basename, so grepping for the whole line
 // finds nothing — search for this function or "autostart status" instead.
-func printAutostartProgressNotice(w io.Writer, handle *daemonSessionHandle, started []string, hasErrors bool) {
+func printAutostartProgressNotice(notify overlay.Notifier, handle *daemonSessionHandle, started []string, hasErrors bool) {
 	if !debug.IsEnabled() {
 		return
 	}
@@ -434,35 +434,39 @@ func printAutostartProgressNotice(w io.Writer, handle *daemonSessionHandle, star
 	if !inProgress || !nothingSurfaced {
 		return
 	}
-	msg := "[agnt] autostart " + handle.autostartStatus
+	msg := "autostart " + handle.autostartStatus
 	if handle.autostartHandle != "" {
 		msg += " for " + filepath.Base(handle.autostartHandle)
 	}
-	fmt.Fprintf(w, "\x1b[2m%s — check `daemon startup_log` or `proc list` for progress\x1b[0m\r\n", msg)
+	notify.Notify(overlay.Notification{ID: "autostart-progress", Level: overlay.LevelInfo,
+		Text: msg + " — check `daemon startup_log` or `proc list` for progress"})
 }
 
-// displayAutostartResults waits for daemon registration to complete and shows
-// autostart results in the overlay status bar. Success messages appear as a
-// transient status bar message that fades back to the normal indicator after 3s.
-// Errors are written to the fallback writer since they need more space.
-func displayAutostartResults(ctx context.Context, handle *daemonSessionHandle, ov *overlay.Overlay, router *overlay.InputRouter, w io.Writer, timeout time.Duration) {
+// displayAutostartResults waits for daemon registration to complete and
+// reports autostart results through notify (one-line outcomes: started
+// set, cleared ports, registration failures). Only the interactive
+// port-conflict prompt and the multi-line autostart error dump still write
+// to w, the gated terminal writer, because a notification row cannot hold
+// a prompt or a captured output block.
+func displayAutostartResults(handle *daemonSessionHandle, notify overlay.Notifier, router *overlay.InputRouter, w io.Writer, timeout time.Duration) {
 	if handle == nil {
 		return
 	}
 	if !handle.WaitRegistered(timeout) {
-		fmt.Fprintf(w, "\x1b[31m[agnt] daemon session registration timed out after %s\x1b[0m\r\n", timeout)
-		fmt.Fprintf(w, "\x1b[2m  autostart and project-scoped startup logs may not run until the daemon session registers\x1b[0m\r\n")
+		notify.Notify(overlay.Notification{Level: overlay.LevelError,
+			Text: fmt.Sprintf("daemon session registration timed out after %s — autostart and project-scoped startup logs may not run until the daemon session registers", timeout)})
 		return
 	}
 	if handle.registrationErr != nil {
-		fmt.Fprintf(w, "\x1b[31m[agnt] daemon session unavailable: %v\x1b[0m\r\n", handle.registrationErr)
-		fmt.Fprintf(w, "\x1b[2m  autostart and project-scoped startup logs will not run until the daemon session registers\x1b[0m\r\n")
+		notify.Notify(overlay.Notification{Level: overlay.LevelError,
+			Text: fmt.Sprintf("daemon session unavailable: %v — autostart and project-scoped startup logs will not run until the daemon session registers", handle.registrationErr)})
 		return
 	}
 
 	// Show auto-cleared ports (auto-kill mode)
 	for _, c := range handle.portsCleared {
-		fmt.Fprintf(w, "\x1b[33m[agnt] cleared port %d (was: %s PID %v)\x1b[0m\r\n", c.Port, c.ProcessName, c.PIDs)
+		notify.Notify(overlay.Notification{Level: overlay.LevelWarn,
+			Text: fmt.Sprintf("cleared port %d (was: %s PID %v)", c.Port, c.ProcessName, c.PIDs)})
 	}
 
 	// Handle port conflicts (prompt mode)
@@ -541,27 +545,16 @@ func displayAutostartResults(ctx context.Context, handle *daemonSessionHandle, o
 
 	started := append(handle.autostartScripts, handle.autostartProxies...)
 	hasErrors := len(handle.autostartErrors) > 0
-	printAutostartProgressNotice(w, handle, started, hasErrors)
+	printAutostartProgressNotice(notify, handle, started, hasErrors)
 
-	if len(started) > 0 && ov != nil {
+	if len(started) > 0 {
 		msg := "auto-started: " + strings.Join(started, ", ")
+		level := overlay.LevelInfo
 		if hasErrors {
 			msg += fmt.Sprintf(" (%d errors)", len(handle.autostartErrors))
+			level = overlay.LevelWarn
 		}
-		ov.DrawStatusBarMessage(msg)
-
-		// Restore the normal indicator after 3 seconds, unless the session ends
-		// first — a bare sleep here redraws against an overlay that teardown has
-		// already restored, and outlives the process's own shutdown.
-		go func() {
-			timer := time.NewTimer(3 * time.Second)
-			defer timer.Stop()
-			select {
-			case <-timer.C:
-				ov.RedrawIndicator()
-			case <-ctx.Done():
-			}
-		}()
+		notify.Notify(overlay.Notification{ID: "autostart-summary", Level: level, Text: msg})
 	}
 
 	// Errors still go to the terminal since they need multiple lines
@@ -589,7 +582,7 @@ func setupAlertScanner(projectPath, sessionCode string, netOverlay *Overlay, dae
 	if err != nil {
 		// No silent default substitution: a broken config must not quietly
 		// change alert behavior. Skip the feature loudly.
-		debug.Warn("alerts", "failed to load config for alert scanner (alerts disabled): %v", err)
+		notifyUser(overlay.LevelWarn, "alerts disabled: failed to load config for alert scanner: %v", err)
 		return nil
 	}
 
@@ -823,8 +816,8 @@ Overlay Features:
 - Status bar: Shows running services and proxy URLs for browser access
 - Auto-start: Loads .agnt.kdl to auto-start configured dev scripts and proxies
 
-The overlay listens on port 19191 for WebSocket connections from devtool-mcp
-to receive events that can be injected as user input. Sessions can receive
+The overlay listens on a per-session Unix socket (see DefaultOverlaySocketPath)
+for events from the daemon that can be injected as user input. Sessions can receive
 scheduled messages via MCP tools, CLI commands, or the devtools API.`,
 	DisableFlagParsing: true,
 	Args:               cobra.MinimumNArgs(1),
@@ -1111,6 +1104,9 @@ func generateSessionCode(command string) string {
 // those files under their line budget (TestRunFilesUnderBudget).
 func finishSession(height int, waitErr error, userInterrupted bool, rt *pipelineRuntime) {
 	cleanupTerminal(height)
+	if rt != nil && rt.restoreNotifier != nil {
+		rt.restoreNotifier()
+	}
 	var launch agentLaunch
 	var tail, res []string
 	if rt != nil {
@@ -1319,7 +1315,7 @@ func firstRunOrCoding(projectPath string, args []string,
 		args:        args,
 		launch:      launch,
 		reap:        reap,
-		notice:      func(msg string) { fmt.Fprintf(os.Stderr, "agnt: %s\n", msg) },
+		notice:      func(msg string) { notifyUser(overlay.LevelWarn, "%s", msg) },
 	})
 }
 
@@ -1496,6 +1492,7 @@ type pipelineRuntime struct {
 	netOverlay      *Overlay
 	daemonHandle    *daemonSessionHandle
 	termOverlay     *overlay.Overlay
+	restoreNotifier func() // reinstates the stderr notifier after teardown
 	inputRouter     *overlay.InputRouter
 	statusFetcher   *overlay.StatusFetcher
 	outputFilter    *overlay.ProtectedWriter
@@ -1587,7 +1584,7 @@ func runOverlayPipeline(
 	// Network overlay (browser → agent message channel).
 	rt.netOverlay = newOverlay(resolvedOverlayPath, handle.Backend)
 	if err := rt.netOverlay.Start(ctx); err != nil {
-		debug.Warn("overlay", "socket failed to start: %v (proxy→agent messages will not work)", err)
+		notifyUser(overlay.LevelWarn, "overlay socket failed to start: %v (proxy→agent messages will not work)", err)
 	}
 
 	// Daemon session registration (autostart + overlay endpoint scoping).
@@ -1605,8 +1602,13 @@ func runOverlayPipeline(
 	})
 
 	// Terminal overlay (indicator bar, menus, status fetcher, input router).
+	// From here on user messages go through the overlay's notification
+	// stack (or CRLF lines in raw passthrough); finishSession restores stderr.
 	if useTermOverlay {
 		setupTerminalOverlay(ctx, handle, rt)
+		rt.restoreNotifier = setUserNotifier(rt.termOverlay)
+	} else {
+		rt.restoreNotifier = setUserNotifier(overlay.NewLineNotifier(os.Stderr, true))
 	}
 
 	// Initial indicator draw after a short delay so the child has a chance
@@ -1632,6 +1634,10 @@ func runOverlayPipeline(
 	// Splash text fills the gap between PTY start and first child output.
 	if handle.EnableSplash && rt.outputGate != nil {
 		rt.startupSplash = overlay.NewStartupSplash(rt.outputGate, handle.Width, handle.Height)
+		if rt.termOverlay != nil {
+			// Notifications own the rows above the status bar while active.
+			rt.startupSplash.YieldTo(rt.termOverlay.HasNotifications)
+		}
 		rt.startupSplash.Start()
 	}
 
@@ -1644,7 +1650,7 @@ func runOverlayPipeline(
 		if rt.outputGate != nil {
 			autostartOut = rt.outputGate
 		}
-		displayAutostartResults(ctx, rt.daemonHandle, rt.termOverlay, rt.inputRouter, autostartOut, 10*time.Second)
+		displayAutostartResults(rt.daemonHandle, userNotifier.Load().n, rt.inputRouter, autostartOut, 10*time.Second)
 	}()
 
 	// Resize watcher — platform-specific dispatcher (SIGWINCH on Unix,
