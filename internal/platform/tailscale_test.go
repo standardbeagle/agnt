@@ -54,3 +54,45 @@ func TestParseTailscaleDNSName(t *testing.T) {
 		})
 	}
 }
+
+func TestParseTailscaleSelfIdentities(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected []string
+	}{
+		{
+			name:     "dns name and ips",
+			input:    `{"Self":{"DNSName":"machine.tailnet.ts.net.","TailscaleIPs":["100.101.102.103","fd7a:115c:a1e0::1"]}}`,
+			expected: []string{"machine.tailnet.ts.net", "100.101.102.103", "fd7a:115c:a1e0::1"},
+		},
+		{
+			name:     "ips only",
+			input:    `{"Self":{"DNSName":"","TailscaleIPs":["100.101.102.103"]}}`,
+			expected: []string{"100.101.102.103"},
+		},
+		{
+			name:     "missing Self",
+			input:    `{}`,
+			expected: nil,
+		},
+		{
+			name:     "malformed JSON",
+			input:    `not json`,
+			expected: nil,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := parseTailscaleSelfIdentities([]byte(tt.input))
+			if len(got) != len(tt.expected) {
+				t.Fatalf("parseTailscaleSelfIdentities() = %v, want %v", got, tt.expected)
+			}
+			for i := range got {
+				if got[i] != tt.expected[i] {
+					t.Fatalf("parseTailscaleSelfIdentities() = %v, want %v", got, tt.expected)
+				}
+			}
+		})
+	}
+}

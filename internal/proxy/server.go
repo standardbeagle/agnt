@@ -19,6 +19,7 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/httpcaps"
+	"github.com/standardbeagle/agnt/internal/platform"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/store"
 )
@@ -47,16 +48,22 @@ type ProxyServer struct {
 	// resolve their URL after the proxy is already serving, so SetPublicURL
 	// races request-path readers (checkWSOrigin, URL rewriting, Stats) —
 	// hence atomic. Access via GetPublicURL/SetPublicURL only.
-	publicURL  atomic.Pointer[string]
-	wsUpgrader websocket.Upgrader
-	proxy      *httputil.ReverseProxy
-	running    atomic.Bool
-	startTime  time.Time
-	requestSeq atomic.Int64
-	mu         sync.Mutex
-	cancelFunc context.CancelFunc
-	wsConns    sync.Map     // Active WebSocket connections
-	lastError  atomic.Value // stores last error (string) if server crashed
+	publicURL atomic.Pointer[string]
+	// tailnetIdentities resolves the authorities (MagicDNS name, tailscale
+	// IPs) this node answers under on its tailnet, for checkWSOrigin. The
+	// zero value is the production path (platform.TailscaleSelfIdentities);
+	// tests inject a stub. Results are cached in tailnetCache.
+	tailnetIdentities func(context.Context) []string
+	tailnetCache      atomic.Pointer[tailnetIdentitySet]
+	wsUpgrader        websocket.Upgrader
+	proxy             *httputil.ReverseProxy
+	running           atomic.Bool
+	startTime         time.Time
+	requestSeq        atomic.Int64
+	mu                sync.Mutex
+	cancelFunc        context.CancelFunc
+	wsConns           sync.Map     // Active WebSocket connections
+	lastError         atomic.Value // stores last error (string) if server crashed
 
 	// Ready signal - closed when server is ready to accept connections
 	ready     chan struct{}
@@ -821,7 +828,8 @@ func (ps *ProxyServer) checkWSOrigin(r *http.Request) bool {
 	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") {
 		return false
 	}
-	if strings.EqualFold(u.Host, r.Host) && isLoopbackAuthority(r.Host) {
+	sameOrigin := strings.EqualFold(u.Host, r.Host)
+	if sameOrigin && isLoopbackAuthority(r.Host) {
 		return true
 	}
 	if publicURL := ps.GetPublicURL(); publicURL != "" {
@@ -829,7 +837,60 @@ func (ps *ProxyServer) checkWSOrigin(r *http.Request) bool {
 			return true
 		}
 	}
-	return false
+	// A same-origin request whose authority is one of this node's own
+	// tailnet identities (MagicDNS name or tailscale IP) is a browser on the
+	// tailnet talking to a proxy bound beyond loopback. This does not reopen
+	// DNS rebinding: an attacker-controlled hostname is never the node's own
+	// identity. Checked last so loopback traffic never pays the lookup.
+	return sameOrigin && ps.isTailnetAuthority(r.Context(), r.Host)
+}
+
+// tailnetIdentityTTL bounds how long a `tailscale status` answer is reused.
+// The lookup shells out (~tens of ms), so it must not run per upgrade; the
+// node's identities change only on re-login, so a minute of staleness is
+// harmless.
+const tailnetIdentityTTL = time.Minute
+
+type tailnetIdentitySet struct {
+	hosts   map[string]struct{}
+	expires time.Time
+}
+
+// isTailnetAuthority reports whether authority's host (port stripped) is one
+// of this node's tailnet identities. Fails closed when tailscale is absent,
+// logged out, or the lookup times out.
+func (ps *ProxyServer) isTailnetAuthority(ctx context.Context, authority string) bool {
+	host := authority
+	if parsedHost, _, err := net.SplitHostPort(authority); err == nil {
+		host = parsedHost
+	} else {
+		host = strings.Trim(authority, "[]")
+	}
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	if host == "" {
+		return false
+	}
+	_, ok := ps.tailnetIdentitySet(ctx).hosts[host]
+	return ok
+}
+
+// tailnetIdentitySet returns the cached identity set, refreshing it when
+// expired. Concurrent refreshes race benignly: each publishes an equivalent
+// set, and the lookup is bounded by tailnetIdentityTTL either way.
+func (ps *ProxyServer) tailnetIdentitySet(ctx context.Context) *tailnetIdentitySet {
+	if cached := ps.tailnetCache.Load(); cached != nil && time.Now().Before(cached.expires) {
+		return cached
+	}
+	resolve := ps.tailnetIdentities
+	if resolve == nil {
+		resolve = platform.TailscaleSelfIdentities
+	}
+	set := &tailnetIdentitySet{hosts: make(map[string]struct{}), expires: time.Now().Add(tailnetIdentityTTL)}
+	for _, id := range resolve(ctx) {
+		set.hosts[strings.TrimSuffix(strings.ToLower(id), ".")] = struct{}{}
+	}
+	ps.tailnetCache.Store(set)
+	return set
 }
 
 func isLoopbackAuthority(authority string) bool {

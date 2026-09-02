@@ -569,6 +569,27 @@ tunnel {action: "start", provider: "cloudflare", local_port: 12345, proxy_id: "d
 tunnel {action: "start", provider: "tailscale",  local_port: 12345, proxy_id: "dev"}
 ```
 
+### Control WebSocket origins
+
+The injected client opens `/__devtool_metrics` against whatever host the page
+was loaded from. The proxy accepts that upgrade only from three origins
+(`checkWSOrigin`, `internal/proxy/server.go`); anything else is refused with
+403 and the overlay stays silent:
+
+- same-origin on a loopback authority (`localhost`, `127.0.0.1`, `::1`);
+- the proxy's configured `public_url` (set by `tunnel start ... proxy_id`, or
+  `public-url` in `.agnt.kdl`);
+- same-origin on one of this node's own tailnet identities (MagicDNS name or
+  tailscale IP, read from `tailscale status --json` and cached for a minute).
+  This covers a proxy bound to `0.0.0.0` and opened directly at
+  `http://<node>.<tailnet>.ts.net:<port>` with no `tailscale serve`. Without a
+  logged-in tailscale binary this branch fails closed.
+
+The loopback-only rule for arbitrary hostnames is deliberate: a hostname an
+attacker rebinds to your listener would otherwise satisfy same-origin. A
+node's own tailnet identity is never attacker-controlled, so it is safe to
+trust.
+
 ### Bounds when you tunnel a listener
 
 Tunnelling a listener does not relax its caps — the same bounds hold in every
