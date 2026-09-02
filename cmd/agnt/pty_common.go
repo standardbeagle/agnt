@@ -1319,6 +1319,7 @@ func firstRunOrCoding(projectPath string, args []string,
 		args:        args,
 		launch:      launch,
 		reap:        reap,
+		notice:      func(msg string) { fmt.Fprintf(os.Stderr, "agnt: %s\n", msg) },
 	})
 }
 

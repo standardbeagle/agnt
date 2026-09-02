@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -84,6 +85,11 @@ type firstRunDeps struct {
 	args        []string                        // original argv, replayed verbatim into both phases
 	launch      func(setupPhase bool, args []string) (pgid int, err error)
 	reap        func(pgid int) // reap the setup child's pgid before phase 2
+	// notice surfaces a one-line user-facing message before any PTY starts.
+	// Used when the gate skips setup on a suppressed nudge with no config:
+	// the project will run with no scripts or proxies, and silence here
+	// left users guessing why nothing autostarted.
+	notice func(msg string)
 }
 
 // runFirstRunFlow drives the optional two-phase setup→relaunch for `agnt run`.
@@ -100,7 +106,11 @@ type firstRunDeps struct {
 // byte-identical to the original — no separate capture/quote round-trip.
 func runFirstRunFlow(d firstRunDeps) error {
 	marker, _ := d.readMarker()
-	if decideSetupGate(d.hasConfig(), marker, d.now, d.ttl) == skipSetup {
+	hasConfig := d.hasConfig()
+	if decideSetupGate(hasConfig, marker, d.now, d.ttl) == skipSetup {
+		if !hasConfig && d.notice != nil {
+			d.notice(unconfiguredNotice(marker, d.now, d.ttl))
+		}
 		_, err := d.launch(false, d.args)
 		return err
 	}
@@ -122,6 +132,19 @@ func runFirstRunFlow(d firstRunDeps) error {
 	}
 	_, err = d.launch(false, d.args)
 	return err
+}
+
+// unconfiguredNotice is the message shown when `agnt run` launches with no
+// .agnt.kdl because the setup nudge is suppressed by a marker. It names the
+// consequence (nothing autostarts) and both ways out.
+func unconfiguredNotice(marker *firstRunMarker, now time.Time, ttl time.Duration) string {
+	if marker != nil && !marker.Permanent {
+		if left := marker.LastNudge.Add(ttl).Sub(now); left > 0 {
+			return fmt.Sprintf("no %s in this project: no scripts or proxies will autostart. Setup was declined %s ago; run `agnt init` to configure now (nudge returns in %s).",
+				config.AgntConfigFileName, now.Sub(marker.LastNudge).Round(time.Hour), left.Round(time.Hour))
+		}
+	}
+	return fmt.Sprintf("no %s in this project: no scripts or proxies will autostart. Run `agnt init` to configure.", config.AgntConfigFileName)
 }
 
 // renudgeTTLForProject loads the re-nudge TTL from the project config, falling

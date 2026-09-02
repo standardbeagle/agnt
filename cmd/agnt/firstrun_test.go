@@ -162,6 +162,7 @@ type flowRec struct {
 	launchArg [][]string
 	written   []firstRunMarker
 	reaped    []int
+	notices   []string
 }
 
 // newFlowDeps builds a firstRunDeps wired to a flowRec. hasConfigSeq supplies
@@ -195,7 +196,45 @@ func newFlowDeps(rec *flowRec, args []string, hasConfigSeq []bool, setupPgid int
 			rec.events = append(rec.events, "reap")
 			rec.reaped = append(rec.reaped, pgid)
 		},
+		notice: func(msg string) { rec.notices = append(rec.notices, msg) },
 	}
+}
+
+// TestRunFirstRunFlow_SuppressedNudgeIsLoud pins that launching with no config
+// under a still-valid negative marker tells the user why nothing autostarts,
+// while a configured project and a permanent marker stay quiet.
+func TestRunFirstRunFlow_SuppressedNudgeIsLoud(t *testing.T) {
+	args := []string{"opencode"}
+	now := time.Date(2026, 5, 29, 10, 0, 0, 0, time.UTC)
+
+	t.Run("no config, declined within TTL", func(t *testing.T) {
+		rec := &flowRec{}
+		d := newFlowDeps(rec, args, []bool{false}, 0, nil)
+		d.readMarker = func() (*firstRunMarker, error) {
+			return &firstRunMarker{LastNudge: now.Add(-24 * time.Hour)}, nil
+		}
+		require.NoError(t, runFirstRunFlow(d))
+		assert.Equal(t, []string{"launch:coding"}, rec.events)
+		require.Len(t, rec.notices, 1)
+		assert.Contains(t, rec.notices[0], ".agnt.kdl")
+		assert.Contains(t, rec.notices[0], "agnt init")
+		assert.Contains(t, rec.notices[0], "24h0m0s ago")
+	})
+
+	t.Run("config present stays quiet", func(t *testing.T) {
+		rec := &flowRec{}
+		require.NoError(t, runFirstRunFlow(newFlowDeps(rec, args, []bool{true}, 0, nil)))
+		assert.Empty(t, rec.notices)
+	})
+
+	t.Run("no config, permanent marker", func(t *testing.T) {
+		rec := &flowRec{}
+		d := newFlowDeps(rec, args, []bool{false}, 0, nil)
+		d.readMarker = func() (*firstRunMarker, error) { return &firstRunMarker{Permanent: true}, nil }
+		require.NoError(t, runFirstRunFlow(d))
+		require.Len(t, rec.notices, 1, "a permanent marker with no config still means nothing autostarts")
+		assert.NotContains(t, rec.notices[0], "declined")
+	})
 }
 
 func TestRunFirstRunFlow(t *testing.T) {
