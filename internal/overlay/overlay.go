@@ -271,6 +271,13 @@ type Overlay struct {
 	// Overview notice banner: session-only dismissals of silent-failure notices
 	notices noticeDismissals
 
+	// Transient user notifications stacked above the status bar (see
+	// notify.go). notifyRows is the row count painted last time so an
+	// expired entry's row is cleared; notifyTimer drives TTL repaints.
+	notifications notifyStore
+	notifyRows    int         // under mu
+	notifyTimer   *time.Timer // under mu
+
 	// Overview global actions (summarize / reconnect)
 	summarizing      atomic.Bool  // AI summarize in flight (drives spinner + re-entrancy guard)
 	connecting       atomic.Bool  // daemon reconnect in flight (spinner + re-entrancy guard)
@@ -766,6 +773,13 @@ func (o *Overlay) draw() {
 	// screen. Drawing it last, in one place, guarantees consistent presence on
 	// the protected bottom row across all states (indicator and panel views).
 	o.renderer.DrawIndicator(status)
+
+	// Notifications stack on the child's rows just above the status bar, so
+	// they exist only on the main screen: a panel view owns the alt screen
+	// and returns to whatever the child repaints.
+	if state == StateIndicator {
+		o.drawNotificationsLocked()
+	}
 }
 
 // Redraw forces a redraw of the overlay.

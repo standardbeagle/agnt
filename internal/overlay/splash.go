@@ -42,6 +42,12 @@ type StartupSplash struct {
 	// interval overrides the message rotation interval when non-zero.
 	interval time.Duration
 
+	// yieldTo, when set and true, makes the splash skip its paint (clearing
+	// its row once) so another owner of the rows above the status bar — the
+	// notification stack — is not overwritten by the next tip rotation.
+	yieldTo func() bool
+	yielded bool
+
 	// state tracks whether the splash is active (0=inactive, 1=active).
 	active atomic.Int32
 
@@ -49,6 +55,13 @@ type StartupSplash struct {
 	mu     sync.Mutex
 	stopCh chan struct{}
 	wg     sync.WaitGroup
+}
+
+// YieldTo installs a predicate consulted before every paint; while it
+// returns true the splash stays off-screen. Call before Start.
+func (s *StartupSplash) YieldTo(fn func() bool) *StartupSplash {
+	s.yieldTo = fn
+	return s
 }
 
 // NewStartupSplash creates a new splash display. The caller must call Start
@@ -173,6 +186,15 @@ func (s *StartupSplash) render(msg string) {
 	if len(msg) > maxLen {
 		msg = msg[:maxLen-1] + "..."
 	}
+
+	if s.yieldTo != nil && s.yieldTo() {
+		if !s.yielded {
+			s.yielded = true
+			s.clear()
+		}
+		return
+	}
+	s.yielded = false
 
 	// Build the display line: dim color
 	line := fmt.Sprintf("%s%s%s", Dim, msg, Reset)

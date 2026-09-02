@@ -2242,14 +2242,10 @@ func (r *Renderer) DrawStatusBarMessage(message string) {
 	r.moveTo(r.height, 1)
 	r.write(ClearLine)
 
-	// Draw the message with status bar styling
+	// Draw the message with status bar styling, padded by display width
+	// (emoji and CJK are two cells; byte length would over-pad and wrap).
 	r.write(BgBrightBlack + FgWhite)
-	displayMsg := " " + message
-	// Pad to fill the status bar width
-	if len(displayMsg) < r.width {
-		displayMsg += strings.Repeat(" ", r.width-len(displayMsg))
-	}
-	r.write(displayMsg)
+	r.write(r.padToWidth(" "+message, r.width))
 	r.write(Reset)
 
 	r.write(CursorRestore + CursorShow)
@@ -2258,6 +2254,108 @@ func (r *Renderer) DrawStatusBarMessage(message string) {
 	r.buf = nil
 	r.mu.Unlock()
 	r.flushBuffer(buf)
+}
+
+// padToWidth truncates s to width display cells and pads it with spaces to
+// exactly width, so a coloured background fills the row and never wraps.
+func (r *Renderer) padToWidth(s string, width int) string {
+	if width <= 0 {
+		return ""
+	}
+	s = r.truncateANSI(s, width)
+	if n := r.estimateVisibleLength(s); n < width {
+		s += strings.Repeat(" ", width-n)
+	}
+	return s
+}
+
+// notificationStyle returns the glyph and colours for a stack row.
+func notificationStyle(l Level) (glyph, style string) {
+	switch l {
+	case LevelError:
+		return "✖", BgRed + FgBrightWhite
+	case LevelWarn:
+		return "▲", BgYellow + FgBlack
+	default:
+		return "●", BgBrightBlack + FgWhite
+	}
+}
+
+// DrawNotifications paints views as full-width rows directly above the
+// status bar, newest at the bottom, at most maxVisibleNotifications rows
+// with an "+N more" row when older ones are hidden. prevRows is the count
+// painted by the previous call; rows that are no longer used are cleared so
+// an expired notification leaves no residue. Returns the rows painted.
+// Cursor-safe: bracketed by save/hide and restore/show, one buffered write.
+func (r *Renderer) DrawNotifications(views []NotificationView, prevRows int) int {
+	r.mu.Lock()
+	r.beginBuffer()
+
+	lines := notificationLines(views)
+	if r.height-1 < len(lines) {
+		lines = lines[len(lines)-max(r.height-1, 0):]
+	}
+	rows := len(lines)
+
+	if rows > 0 || prevRows > 0 {
+		r.write(CursorSave + CursorHide)
+		// Clear rows the previous paint used that this one does not.
+		for i := rows; i < prevRows; i++ {
+			row := r.height - 1 - i
+			if row < 1 {
+				break
+			}
+			r.moveTo(row, 1)
+			r.write(ClearLine)
+		}
+		// Bottom-anchored: lines[last] sits at height-1.
+		for i, ln := range lines {
+			row := r.height - rows + i
+			r.moveTo(row, 1)
+			r.write(ln.style)
+			r.write(r.padToWidth(ln.text, r.width))
+			r.write(Reset)
+		}
+		r.write(CursorRestore + CursorShow)
+	}
+
+	buf := r.buf
+	r.buf = nil
+	r.mu.Unlock()
+	r.flushBuffer(buf)
+	return rows
+}
+
+type notificationLine struct {
+	text  string
+	style string
+}
+
+// notificationLines lays out views (oldest first) into the visible rows:
+// the newest maxVisibleNotifications entries, preceded by a "+N more" row
+// when older ones are hidden.
+func notificationLines(views []NotificationView) []notificationLine {
+	if len(views) == 0 {
+		return nil
+	}
+	hidden := len(views) - maxVisibleNotifications
+	var lines []notificationLine
+	if hidden > 0 {
+		lines = append(lines, notificationLine{
+			text:  fmt.Sprintf(" +%d more", hidden),
+			style: BgBrightBlack + FgWhite,
+		})
+		views = views[hidden:]
+	}
+	for _, v := range views {
+		glyph, style := notificationStyle(v.Level)
+		text := " " + glyph + " " + v.Text
+		if v.Count > 1 {
+			text += fmt.Sprintf(" (×%d)", v.Count)
+		}
+		lines = append(lines, notificationLine{text: text, style: style})
+	}
+	return lines
 }
 
 // ClearStatusBarMessage clears any message on the status bar.

@@ -41,6 +41,43 @@ Data flow = daemon→IPC→overlay (overlay can't import daemon):
 - Message rotation on 2.5s timer
 - Writes above protected status bar row, uses cursor save/restore to avoid disturbing child cursor
 
+## User Notifications (terminal toast stack)
+
+**Files**: `internal/overlay/notify.go`, `render.go` (`DrawNotifications`), `cmd/agnt/user_notify.go`
+
+One sink for every user-facing message in `cmd/agnt`: `notifyUser(level, fmt, ...)` /
+`notifyUserID(id, ...)`. The sink is swapped per phase so a message can never
+tear the screen:
+
+| Phase | Sink |
+|---|---|
+| before the PTY starts (first-run notice, auto-config, config errors) | plain `agnt: …` lines on stderr (`overlay.NewLineNotifier`) |
+| PTY session with the terminal overlay | `Overlay.Notify` — the stack below |
+| PTY session in raw passthrough | CRLF lines on stderr |
+| after `cleanupTerminal` | stderr lines again (`finishSession` restores it) |
+
+`Overlay.Notify(Notification{ID, Level, Text, TTL, Sticky})`:
+- **Levels** `Info` / `Warn` / `Error` pick the row style (grey / yellow / red) and the
+  default TTL (4s / 8s / 15s). `Sticky` pins until `ClearNotification(id)`.
+- **Dedup**: same `ID` (or same level+text when `ID` is empty) bumps a `(×N)` counter and
+  refreshes the TTL instead of stacking.
+- **Bounds**: store cap 8 (oldest non-sticky evicted), 3 visible rows plus one `+N more`
+  row; rows are full-width, padded by display cells (emoji/CJK are two).
+- **Placement**: bottom-anchored on the rows directly above the status bar, newest last.
+  Painted only in `StateIndicator` on the main screen (never over a child alt screen; a
+  panel view returns to whatever the child repaints). Every paint is one buffered write
+  bracketed by cursor save/hide and restore/show, like `DrawIndicator`.
+- **Expiry**: one `time.AfterFunc` armed for the earliest pending TTL on every paint; the
+  repaint clears rows it no longer uses. No per-notification goroutine, no ticker while idle.
+- **Splash arbitration**: the startup splash `YieldTo(overlay.HasNotifications)` and clears
+  its row while notifications are up.
+
+Trade-off, shared with the splash: the rows belong to the child, so a toast overwrites
+whatever the agent drew there until the agent repaints (interactive agents redraw their
+input box continuously, so this self-heals). `DrawStatusBarMessage` remains only for the
+panel transition spinner; the daemon→browser `PROXY TOAST` path is unrelated and never
+reaches the terminal.
+
 ## Animated Status Indicator
 
 **Renderer** (`internal/overlay/render.go`):
