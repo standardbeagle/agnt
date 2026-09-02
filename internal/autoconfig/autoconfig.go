@@ -117,6 +117,12 @@ func serverCommand(p *project.Project) *project.CommandDef {
 		}
 		return nil
 	case project.ProjectDotnet:
+		// `dotnet watch run` needs a project file in the cwd; at a
+		// solution-only root it fails with "couldn't find a project to run".
+		// Emitting it anyway would autostart a script we know cannot work.
+		if p.Metadata["project"] == "" {
+			return nil
+		}
 		return project.GetCommandByName(p, "dev")
 	case project.ProjectGo:
 		// Wails desktop apps serve a frontend via `wails dev`; plain Go does not.

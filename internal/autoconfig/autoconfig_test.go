@@ -68,7 +68,7 @@ func TestGenerate_Dotnet(t *testing.T) {
 		Type:     project.ProjectDotnet,
 		Name:     "Site",
 		Commands: project.DefaultDotnetCommands(),
-		Metadata: map[string]string{},
+		Metadata: map[string]string{"project": "Site.csproj"},
 	}
 	kdl, ok := Generate(p)
 	require.True(t, ok)
@@ -78,6 +78,26 @@ func TestGenerate_Dotnet(t *testing.T) {
 	assert.Equal(t, "dotnet watch run", cfg.Scripts["dev"].Run)
 	assert.True(t, cfg.Scripts["dev"].Autostart)
 	require.Contains(t, cfg.Proxies, "dev", "dotnet site gets a proxy")
+}
+
+// A solution-only root (projects under src/) cannot run `dotnet watch run`
+// from the cwd, so the generated config must not autostart a script that is
+// known to fail; test/build stay registered.
+func TestGenerate_DotnetSolutionOnlyRoot_NoDevScript(t *testing.T) {
+	p := &project.Project{
+		Type:     project.ProjectDotnet,
+		Name:     "Track",
+		Commands: project.DefaultDotnetCommands(),
+		Metadata: map[string]string{"solution": "Track.slnx"},
+	}
+	kdl, ok := Generate(p)
+	require.True(t, ok)
+
+	cfg := parseGenerated(t, kdl)
+	assert.NotContains(t, cfg.Scripts, "dev")
+	assert.Empty(t, cfg.Proxies)
+	assert.Contains(t, cfg.Scripts, "test")
+	assert.Contains(t, cfg.Scripts, "build")
 }
 
 func TestGenerate_Go_NoProxyButScripts(t *testing.T) {
