@@ -354,3 +354,80 @@ func GetCommandNames(proj *Project) []string {
 	}
 	return names
 }
+
+// DefaultRubyCommands returns the commands for a Bundler project. rspec
+// selects `bundle exec rspec` over `rake test`.
+func DefaultRubyCommands(rspec bool) []CommandDef {
+	test := CommandDef{Name: "test", Description: "Run the test suite", Command: "bundle", Args: []string{"exec", "rake", "test"}, Timeout: 600}
+	if rspec {
+		test.Args = []string{"exec", "rspec"}
+	}
+	return []CommandDef{
+		test,
+		{Name: "lint", Description: "Run rubocop", Command: "bundle", Args: []string{"exec", "rubocop"}, Timeout: 120},
+	}
+}
+
+// DefaultRailsCommands returns the commands for a Rails app.
+func DefaultRailsCommands(rspec bool) []CommandDef {
+	test := CommandDef{Name: "test", Description: "Run the Rails test suite", Command: "bin/rails", Args: []string{"test"}, Timeout: 600}
+	if rspec {
+		test = CommandDef{Name: "test", Description: "Run rspec", Command: "bundle", Args: []string{"exec", "rspec"}, Timeout: 600}
+	}
+	return []CommandDef{
+		test,
+		{Name: "lint", Description: "Run rubocop", Command: "bundle", Args: []string{"exec", "rubocop"}, Timeout: 120},
+	}
+}
+
+// DefaultJekyllCommands returns the commands for a Jekyll site.
+func DefaultJekyllCommands() []CommandDef {
+	return []CommandDef{
+		{Name: "build", Description: "Build the site", Command: "bundle", Args: []string{"exec", "jekyll", "build"}, Timeout: 300},
+	}
+}
+
+// DefaultPHPCommands returns the commands for a Composer project.
+func DefaultPHPCommands(pint bool) []CommandDef {
+	cmds := []CommandDef{
+		{Name: "test", Description: "Run phpunit", Command: "vendor/bin/phpunit", Timeout: 600},
+	}
+	if pint {
+		cmds = append(cmds, CommandDef{Name: "lint", Description: "Check formatting with pint", Command: "vendor/bin/pint", Args: []string{"--test"}, Timeout: 120})
+	}
+	return cmds
+}
+
+// DefaultLaravelCommands returns the commands for a Laravel app.
+func DefaultLaravelCommands(pint bool) []CommandDef {
+	cmds := []CommandDef{
+		{Name: "test", Description: "Run the Laravel test suite", Command: "php", Args: []string{"artisan", "test"}, Timeout: 600},
+	}
+	if pint {
+		cmds = append(cmds, CommandDef{Name: "lint", Description: "Check formatting with pint", Command: "vendor/bin/pint", Args: []string{"--test"}, Timeout: 120})
+	}
+	return cmds
+}
+
+// DefaultElixirCommands returns the commands for a Mix project.
+func DefaultElixirCommands() []CommandDef {
+	return []CommandDef{
+		{Name: "test", Description: "Run mix test", Command: "mix", Args: []string{"test"}, Timeout: 600},
+		{Name: "lint", Description: "Check formatting", Command: "mix", Args: []string{"format", "--check-formatted"}, Timeout: 120},
+		{Name: "build", Description: "Compile with warnings as errors", Command: "mix", Args: []string{"compile", "--warnings-as-errors"}, Timeout: 600},
+	}
+}
+
+// DefaultHugoCommands returns the commands for a Hugo site.
+func DefaultHugoCommands() []CommandDef {
+	return []CommandDef{
+		{Name: "build", Description: "Build the site", Command: "hugo", Timeout: 300},
+	}
+}
+
+// DefaultMkdocsCommands returns the commands for an mkdocs site.
+func DefaultMkdocsCommands() []CommandDef {
+	return []CommandDef{
+		{Name: "build", Description: "Build the site (strict)", Command: "mkdocs", Args: []string{"build", "--strict"}, Timeout: 300},
+	}
+}

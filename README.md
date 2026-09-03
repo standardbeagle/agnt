@@ -132,10 +132,34 @@ cd my-new-project        # no .agnt.kdl yet
 agnt run claude
 ```
 
-What happens:
+Most projects never reach the setup phase: agnt first tries a deterministic
+**auto-config** and writes `.agnt.kdl` itself when the project shape is
+unambiguous. Recognised out of the box:
+
+| Shape | Marker | Dev script and proxy |
+|---|---|---|
+| Node web app | `package.json` with a `dev`/`start` script | that script, proxy via URL detection |
+| Go (Wails) | `wails.json` | `wails dev` |
+| .NET web project | `*.csproj` with the Web SDK at the root, or under `src/*` / `*/` | `dotnet watch run` (per project, port from `launchSettings.json`) |
+| docker-compose | `compose.yaml` / `docker-compose.yml` | `docker compose up`, one proxy per service that publishes a host port |
+| Procfile | `Procfile.dev` / `Procfile` | one script per entry, proxy on `web` |
+| Django | `manage.py` | `python manage.py runserver` (8000) |
+| Rails | `bin/rails` | `bin/dev` or `bin/rails server` (3000) |
+| Laravel | `artisan` | `composer run dev` or `php artisan serve` (8000) |
+| Phoenix | `mix.exs` with `:phoenix` | `mix phx.server` (4000) |
+| Hugo / Jekyll / mkdocs | `hugo.toml` + `content/`, `_config.yml` + Gemfile, `mkdocs.yml` | `hugo server` (1313), `bundle exec jekyll serve` (4000), `mkdocs serve` (8000) |
+| Static site | `index.html` at the root | stdlib file server (8000) |
+
+Detection accumulates: a .NET solution with a compose file gets dotnet
+test/build plus the compose topology. Test, lint, and build commands for Go,
+Node, Python, Ruby, PHP, Elixir, and .NET are registered as on-demand scripts.
+Known ports are written as `fallback-port` so the proxy exists before the first
+request. Edit the generated file freely; changes apply live.
+
+Only when auto-config cannot decide does the setup phase run:
 
 1. **Setup phase** — Claude launches in setup mode and configures the project:
-   it detects the stack (Go / Node / Python / …), registers your dev-server
+   it detects the stack, registers your dev-server
    script(s) and a reverse proxy, and writes a `.agnt.kdl`. If the
    `agnt:setup-project` skill isn't installed, Claude tells you the exact
    install step (`/plugin marketplace add standardbeagle/agnt` then

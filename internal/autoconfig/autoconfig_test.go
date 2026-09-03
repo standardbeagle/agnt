@@ -182,3 +182,113 @@ func TestGenerate_HeaderIsCommentedAndParses(t *testing.T) {
 	assert.True(t, strings.HasPrefix(kdl, "//"), "starts with an editable header comment")
 	parseGenerated(t, kdl) // header must not break parsing
 }
+
+func writeFixture(t *testing.T, files map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for name, body := range files {
+		p := filepath.Join(dir, name)
+		require.NoError(t, os.MkdirAll(filepath.Dir(p), 0o755))
+		require.NoError(t, os.WriteFile(p, []byte(body), 0o644))
+	}
+	return dir
+}
+
+func detectAndGenerate(t *testing.T, dir string) *config.AgntConfig {
+	t.Helper()
+	p, err := project.Detect(dir)
+	require.NoError(t, err)
+	kdl, ok := Generate(p)
+	require.True(t, ok, "expected a generated config for %s", p.Type)
+	return parseGenerated(t, kdl)
+}
+
+// The Track shape: solution-only dotnet root with docker-compose. The
+// generated config autostarts compose and fronts each published service
+// with a fixed-port proxy, and keeps dotnet test/build on demand.
+func TestGenerate_ComposeOnDotnetRoot(t *testing.T) {
+	cfg := detectAndGenerate(t, writeFixture(t, map[string]string{
+		"Track.slnx": "<Solution/>",
+		"docker-compose.yml": `
+services:
+  db:
+    ports: ["127.0.0.1:${TRACK_DB_PORT:-5432}:5432"]
+  track-api:
+    ports: ["127.0.0.1:${TRACK_PORT:-5000}:8080"]
+  track-web:
+    ports: ["127.0.0.1:${TRACK_WEB_PORT:-5173}:80"]
+`,
+	}))
+	require.Contains(t, cfg.Scripts, "compose")
+	assert.Equal(t, "docker compose up", cfg.Scripts["compose"].Run)
+	assert.True(t, cfg.Scripts["compose"].Autostart)
+	assert.NotContains(t, cfg.Scripts, "dev", "no dotnet watch run at a solution-only root")
+	assert.Contains(t, cfg.Scripts, "test")
+	assert.Contains(t, cfg.Scripts, "build")
+	require.Len(t, cfg.Proxies, 3)
+	assert.Equal(t, 5173, cfg.Proxies["track-web"].Port)
+	assert.Equal(t, 5000, cfg.Proxies["track-api"].Port)
+	assert.Equal(t, 5432, cfg.Proxies["db"].Port)
+	assert.Empty(t, cfg.Proxies["track-web"].Script, "fixed-port proxies are not script-linked")
+}
+
+func TestGenerate_NestedDotnetApps(t *testing.T) {
+	cfg := detectAndGenerate(t, writeFixture(t, map[string]string{
+		"Track.slnx":                                   "<Solution/>",
+		"src/Track.Api/Track.Api.csproj":               `<Project Sdk="Microsoft.NET.Sdk.Web"></Project>`,
+		"src/Track.Api/Properties/launchSettings.json": `{"profiles":{"http":{"applicationUrl":"http://localhost:5000"}}}`,
+	}))
+	require.Contains(t, cfg.Scripts, "api")
+	assert.Equal(t, "dotnet watch run", cfg.Scripts["api"].Run)
+	assert.Equal(t, "src/Track.Api", cfg.Scripts["api"].Cwd)
+	assert.Equal(t, []int{5000}, cfg.Scripts["api"].Ports)
+	assert.True(t, cfg.Scripts["api"].Autostart)
+	require.Contains(t, cfg.Proxies, "api")
+	assert.Equal(t, "api", cfg.Proxies["api"].Script)
+	assert.Equal(t, 5000, cfg.Proxies["api"].FallbackPort)
+}
+
+func TestGenerate_FrameworkDefaultsCarryFallbackPort(t *testing.T) {
+	cases := []struct {
+		name  string
+		files map[string]string
+		run   string
+		port  int
+	}{
+		{"django", map[string]string{"manage.py": "", "requirements.txt": ""}, "python manage.py runserver", 8000},
+		{"rails", map[string]string{"Gemfile": "gem 'rails'", "bin/rails": ""}, "bin/rails server", 3000},
+		{"laravel", map[string]string{"composer.json": "{}", "artisan": ""}, "php artisan serve", 8000},
+		{"phoenix", map[string]string{"mix.exs": "{:phoenix, \"~> 1.7\"}"}, "mix phx.server", 4000},
+		{"hugo", map[string]string{"hugo.toml": "", "content/_index.md": ""}, "hugo server", 1313},
+		{"jekyll", map[string]string{"Gemfile": "gem 'jekyll'", "_config.yml": ""}, "bundle exec jekyll serve", 4000},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := detectAndGenerate(t, writeFixture(t, tc.files))
+			require.Contains(t, cfg.Scripts, "dev")
+			assert.Equal(t, tc.run, cfg.Scripts["dev"].Run)
+			assert.True(t, cfg.Scripts["dev"].Autostart)
+			require.Contains(t, cfg.Proxies, "dev")
+			assert.Equal(t, "dev", cfg.Proxies["dev"].Script)
+			assert.Equal(t, tc.port, cfg.Proxies["dev"].FallbackPort)
+		})
+	}
+	cfg := detectAndGenerate(t, writeFixture(t, map[string]string{"mkdocs.yml": ""}))
+	assert.Equal(t, 8000, cfg.Proxies["docs"].FallbackPort)
+}
+
+// A Procfile entry named like an on-demand command keeps its name; the
+// worker autostarts without a proxy; only web is proxied (port unknown,
+// left to URL detection).
+func TestGenerate_ProcfileEntries(t *testing.T) {
+	cfg := detectAndGenerate(t, writeFixture(t, map[string]string{
+		"go.mod":   "module x\n",
+		"Procfile": "web: go run ./cmd/web\nworker: go run ./cmd/worker\ntest: watchexec go test ./...\n",
+	}))
+	assert.Equal(t, "go run ./cmd/web", cfg.Scripts["web"].Run)
+	assert.True(t, cfg.Scripts["worker"].Autostart)
+	assert.Equal(t, "watchexec go test ./...", cfg.Scripts["test"].Run, "Procfile's test entry wins over the Go default")
+	require.Len(t, cfg.Proxies, 1)
+	assert.Equal(t, "web", cfg.Proxies["web"].Script)
+	assert.Zero(t, cfg.Proxies["web"].FallbackPort)
+}

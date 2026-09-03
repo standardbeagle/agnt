@@ -29,18 +29,32 @@ func Generate(p *project.Project) (string, bool) {
 	if isRootStaticSite(p) {
 		return generateStaticSiteConfig(p), true
 	}
-	if p.Type == project.ProjectUnknown {
+
+	// Servers come from the detectors/augmenters (framework defaults,
+	// compose, Procfile, nested apps); the legacy per-type guess fills in
+	// only when they found nothing.
+	servers := p.Servers
+	if len(servers) == 0 && len(p.Proxies) == 0 {
+		if legacy := serverCommand(p); legacy != nil {
+			servers = []project.Server{{Name: "dev", Run: shellString(legacy), Proxy: true}}
+		}
+	}
+	if p.Type == project.ProjectUnknown && len(servers) == 0 && len(p.Proxies) == 0 {
 		return "", false
 	}
 
-	server := serverCommand(p)
 	test := project.GetCommandByName(p, "test")
 	lint := project.GetCommandByName(p, "lint")
 	build := project.GetCommandByName(p, "build")
 
 	// Need at least one actionable thing to be worth generating a config.
-	if server == nil && test == nil && lint == nil {
+	if len(servers) == 0 && len(p.Proxies) == 0 && test == nil && lint == nil {
 		return "", false
+	}
+
+	taken := make(map[string]bool, len(servers))
+	for _, s := range servers {
+		taken[s.Name] = true
 	}
 
 	var b strings.Builder
@@ -48,33 +62,67 @@ func Generate(p *project.Project) (string, bool) {
 	b.WriteString("// changes are applied live (no restart). Add scripts/proxies as needed.\n\n")
 
 	b.WriteString("scripts {\n")
-	if server != nil {
-		writeScript(&b, "dev", shellString(server), true)
+	for _, s := range servers {
+		writeServerScript(&b, s)
 	}
 	// Non-server scripts are registered but not autostarted — they show up in
-	// the overlay as on-demand actions (lint/test/build checkboxes).
-	if test != nil {
+	// the overlay as on-demand actions (lint/test/build checkboxes). A server
+	// that already took the name (a Procfile "test" entry) keeps it.
+	if test != nil && !taken["test"] {
 		writeScript(&b, "test", shellString(test), false)
 	}
-	if lint != nil {
+	if lint != nil && !taken["lint"] {
 		writeScript(&b, "lint", shellString(lint), false)
 	}
-	if build != nil {
+	if build != nil && !taken["build"] {
 		writeScript(&b, "build", shellString(build), false)
 	}
 	b.WriteString("}\n")
 
-	// A reverse proxy in front of the dev server, linked to the dev script so
-	// it is created when the script reports its URL.
-	if server != nil {
+	// Reverse proxies: one per server that serves HTTP, linked to its script
+	// so it is created when the script reports its URL, with the known port
+	// as fallback so it exists even when the output prints no URL; plus one
+	// per fixed-port target (compose services).
+	var proxies strings.Builder
+	for _, s := range servers {
+		if !s.Proxy {
+			continue
+		}
+		fmt.Fprintf(&proxies, "    %s {\n        script %q\n", s.Name, s.Name)
+		if s.Port > 0 {
+			fmt.Fprintf(&proxies, "        fallback-port %d\n", s.Port)
+		}
+		proxies.WriteString("    }\n")
+	}
+	for _, px := range p.Proxies {
+		name := px.Name
+		if taken[name] {
+			name += "-proxy"
+		}
+		fmt.Fprintf(&proxies, "    %s {\n        port %d\n    }\n", name, px.Port)
+	}
+	if proxies.Len() > 0 {
 		b.WriteString("\nproxies {\n")
-		b.WriteString("    dev {\n")
-		b.WriteString("        script \"dev\"\n")
-		b.WriteString("    }\n")
+		b.WriteString(proxies.String())
 		b.WriteString("}\n")
 	}
 
 	return b.String(), true
+}
+
+// writeServerScript emits an autostart script block for a detected server,
+// with its working directory and known port when present.
+func writeServerScript(b *strings.Builder, s project.Server) {
+	fmt.Fprintf(b, "    %s {\n", s.Name)
+	fmt.Fprintf(b, "        run %q\n", s.Run)
+	if s.Cwd != "" {
+		fmt.Fprintf(b, "        cwd %q\n", s.Cwd)
+	}
+	if s.Port > 0 {
+		fmt.Fprintf(b, "        ports %d\n", s.Port)
+	}
+	b.WriteString("        autostart true\n")
+	b.WriteString("    }\n")
 }
 
 // isRootStaticSite recognizes the deliberately narrow zero-build case: an

@@ -20,6 +20,20 @@ const (
 	ProjectPython ProjectType = "python"
 	// ProjectDotnet is a .NET project (.csproj / .sln / .fsproj).
 	ProjectDotnet ProjectType = "dotnet"
+	// ProjectRuby is a Bundler project (Gemfile); Rails and Jekyll set
+	// Metadata["framework"].
+	ProjectRuby ProjectType = "ruby"
+	// ProjectPHP is a Composer project (composer.json); Laravel sets
+	// Metadata["framework"].
+	ProjectPHP ProjectType = "php"
+	// ProjectElixir is a Mix project (mix.exs); Phoenix sets Metadata["framework"].
+	ProjectElixir ProjectType = "elixir"
+	// ProjectHugo is a Hugo site with no other stack at the root.
+	ProjectHugo ProjectType = "hugo"
+	// ProjectMkdocs is an mkdocs site with no other stack at the root.
+	ProjectMkdocs ProjectType = "mkdocs"
+	// ProjectCompose is a docker-compose topology with no other stack at the root.
+	ProjectCompose ProjectType = "compose"
 	// ProjectUnknown is an unrecognized project type.
 	ProjectUnknown ProjectType = "unknown"
 )
@@ -38,6 +52,44 @@ type Project struct {
 	PackageManager string `json:"package_manager,omitempty"`
 	// Metadata holds additional project-specific info.
 	Metadata map[string]string `json:"metadata,omitempty"`
+	// Servers are the long-running dev processes worth autostarting and
+	// (when Proxy is set) fronting with a reverse proxy. Filled by the
+	// framework detectors and the augmenters (compose, Procfile, nested
+	// dotnet apps, Hugo, mkdocs); see augment.go for precedence.
+	Servers []Server `json:"servers,omitempty"`
+	// Proxies are standalone port targets that no script reports a URL
+	// for — compose services publishing a host port.
+	Proxies []PortProxy `json:"proxies,omitempty"`
+}
+
+// Server is one dev process the generated config autostarts.
+type Server struct {
+	// Name is the script (and proxy) name, e.g. "dev", "web", "api".
+	Name string `json:"name"`
+	// Run is the shell command string.
+	Run string `json:"run"`
+	// Cwd is the working directory relative to the project root; "" = root.
+	Cwd string `json:"cwd,omitempty"`
+	// Port is the port the server is known to bind (framework default or
+	// declared config), used as the proxy's fallback-port; 0 = unknown, rely
+	// on URL detection from the process output.
+	Port int `json:"port,omitempty"`
+	// Proxy requests a reverse proxy in front of this server. Off for
+	// non-HTTP processes (workers, compose orchestration).
+	Proxy bool `json:"proxy,omitempty"`
+}
+
+// PortProxy is a proxy to a fixed local port with no owning script.
+type PortProxy struct {
+	Name string `json:"name"`
+	Port int    `json:"port"`
+}
+
+// hasServer reports whether any server is already declared. Augmenters use
+// it so a less specific source (Procfile, nested app scan, docs site) never
+// overrides what a framework detector or compose already established.
+func (p *Project) hasServer() bool {
+	return len(p.Servers) > 0 || len(p.Proxies) > 0
 }
 
 // Detect examines the given path and returns project information.
@@ -57,30 +109,33 @@ func Detect(path string) (*Project, error) {
 		return nil, os.ErrInvalid
 	}
 
-	// Try each detector in priority order
-	if proj := detectGo(absPath); proj != nil {
-		return proj, nil
+	// The primary detectors decide Type and the test/lint/build commands;
+	// first match wins. dotnet is checked last: a .NET solution may carry a
+	// stray package.json for frontend tooling, in which case the Node
+	// detector (which is more specific about dev servers) should win.
+	primaries := []func(string) *Project{
+		detectGo, detectNode, detectPython, detectRuby, detectPHP, detectElixir, detectDotnet,
 	}
-	if proj := detectNode(absPath); proj != nil {
-		return proj, nil
+	var proj *Project
+	for _, detect := range primaries {
+		if proj = detect(absPath); proj != nil {
+			break
+		}
 	}
-	if proj := detectPython(absPath); proj != nil {
-		return proj, nil
-	}
-	// dotnet is checked last: a .NET solution may carry a stray package.json
-	// for frontend tooling, in which case the Node detector (which is more
-	// specific about dev servers) should win.
-	if proj := detectDotnet(absPath); proj != nil {
-		return proj, nil
+	if proj == nil {
+		proj = &Project{
+			Path:     absPath,
+			Type:     ProjectUnknown,
+			Name:     filepath.Base(absPath),
+			Commands: nil,
+			Metadata: make(map[string]string),
+		}
 	}
 
-	// Unknown project type
-	return &Project{
-		Path:     absPath,
-		Type:     ProjectUnknown,
-		Name:     filepath.Base(absPath),
-		Commands: nil,
-	}, nil
+	// Augmenters add dev servers the primary type alone cannot see; they
+	// accumulate rather than compete (a root can be dotnet + compose).
+	augment(proj)
+	return proj, nil
 }
 
 // detectGo checks for a Go project (including Wails desktop apps).
@@ -298,6 +353,99 @@ func detectPython(path string) *Project {
 		}
 	}
 
+	// Django: manage.py is the one deterministic marker, and runserver's
+	// default port is fixed.
+	if fileExists(filepath.Join(path, "manage.py")) {
+		proj.Metadata["framework"] = "django"
+		proj.Servers = append(proj.Servers, Server{Name: "dev", Run: "python manage.py runserver", Port: 8000, Proxy: true})
+	}
+
+	return proj
+}
+
+// detectRuby checks for a Bundler project. Rails (bin/rails or
+// config/application.rb) gets its server; a Jekyll site (Gemfile naming
+// jekyll plus _config.yml) gets `jekyll serve`.
+func detectRuby(path string) *Project {
+	gemfile := filepath.Join(path, "Gemfile")
+	if !fileExists(gemfile) {
+		return nil
+	}
+	proj := &Project{
+		Path:     path,
+		Type:     ProjectRuby,
+		Name:     filepath.Base(path),
+		Metadata: make(map[string]string),
+	}
+	switch {
+	case fileExists(filepath.Join(path, "bin", "rails")) || fileExists(filepath.Join(path, "config", "application.rb")):
+		proj.Metadata["framework"] = "rails"
+		proj.Commands = DefaultRailsCommands(dirExists(filepath.Join(path, "spec")))
+		run := "bin/rails server"
+		if fileExists(filepath.Join(path, "bin", "dev")) && fileExists(filepath.Join(path, "Procfile.dev")) {
+			run = "bin/dev"
+		}
+		proj.Servers = append(proj.Servers, Server{Name: "dev", Run: run, Port: 3000, Proxy: true})
+	case fileExists(filepath.Join(path, "_config.yml")) && containsString(gemfile, "jekyll"):
+		proj.Metadata["framework"] = "jekyll"
+		proj.Commands = DefaultJekyllCommands()
+		proj.Servers = append(proj.Servers, Server{Name: "dev", Run: "bundle exec jekyll serve", Port: 4000, Proxy: true})
+	default:
+		proj.Commands = DefaultRubyCommands(dirExists(filepath.Join(path, "spec")))
+	}
+	if fileExists(filepath.Join(path, ".rubocop.yml")) {
+		proj.Metadata["linter"] = "rubocop"
+	}
+	return proj
+}
+
+// detectPHP checks for a Composer project. Laravel (artisan) gets its
+// server: `composer run dev` when composer.json declares the script (Laravel
+// 11+ bundles server, queue, logs and vite), else `php artisan serve`.
+func detectPHP(path string) *Project {
+	composer := filepath.Join(path, "composer.json")
+	if !fileExists(composer) {
+		return nil
+	}
+	proj := &Project{
+		Path:     path,
+		Type:     ProjectPHP,
+		Name:     filepath.Base(path),
+		Metadata: make(map[string]string),
+	}
+	hasPint := fileExists(filepath.Join(path, "vendor", "bin", "pint")) || containsString(composer, "laravel/pint")
+	if fileExists(filepath.Join(path, "artisan")) {
+		proj.Metadata["framework"] = "laravel"
+		proj.Commands = DefaultLaravelCommands(hasPint)
+		run := "php artisan serve"
+		if composerHasScript(composer, "dev") {
+			run = "composer run dev"
+		}
+		proj.Servers = append(proj.Servers, Server{Name: "dev", Run: run, Port: 8000, Proxy: true})
+	} else {
+		proj.Commands = DefaultPHPCommands(hasPint)
+	}
+	return proj
+}
+
+// detectElixir checks for a Mix project; a Phoenix dependency gets
+// `mix phx.server` on its default port.
+func detectElixir(path string) *Project {
+	mix := filepath.Join(path, "mix.exs")
+	if !fileExists(mix) {
+		return nil
+	}
+	proj := &Project{
+		Path:     path,
+		Type:     ProjectElixir,
+		Name:     filepath.Base(path),
+		Commands: DefaultElixirCommands(),
+		Metadata: make(map[string]string),
+	}
+	if containsString(mix, ":phoenix") {
+		proj.Metadata["framework"] = "phoenix"
+		proj.Servers = append(proj.Servers, Server{Name: "dev", Run: "mix phx.server", Port: 4000, Proxy: true})
+	}
 	return proj
 }
 
