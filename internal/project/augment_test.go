@@ -57,8 +57,17 @@ func TestDetect_ComposeAccumulatesOntoDotnet(t *testing.T) {
 	if p.Metadata["compose"] != "docker-compose.yml" {
 		t.Fatalf("compose metadata = %q", p.Metadata["compose"])
 	}
-	if len(p.Servers) != 1 || p.Servers[0].Run != "docker compose up" || p.Servers[0].Proxy {
-		t.Fatalf("servers = %+v, want the single compose orchestration script without a proxy", p.Servers)
+	// Compose owns the topology and autostarts; the app it builds from is
+	// still detected, registered Manual so nothing double-binds port 5000.
+	if len(p.Servers) != 2 {
+		t.Fatalf("servers = %+v, want compose + the nested api", p.Servers)
+	}
+	compose, api := p.Servers[0], p.Servers[1]
+	if compose.Run != "docker compose up" || compose.Proxy || compose.Manual {
+		t.Errorf("compose server = %+v, want the autostarting orchestration script without a proxy", compose)
+	}
+	if api.Name != "api" || api.Cwd != "src/Track.Api" || api.Port != 5000 || !api.Manual {
+		t.Errorf("api server = %+v, want the nested app registered but not autostarted", api)
 	}
 	want := []PortProxy{{"db", 5432}, {"track-api", 5000}, {"track-web", 5173}}
 	if len(p.Proxies) != len(want) {
@@ -298,5 +307,86 @@ func TestLaunchSettingsPort(t *testing.T) {
 	}
 	if got := launchSettingsPort(filepath.Join(dir, "missing.json")); got != 0 {
 		t.Errorf("missing → 0, got %d", got)
+	}
+}
+
+// A solution root that also holds a front-end: the nested scan covers both
+// ecosystems, and each app is run with its own package manager.
+func TestDetect_NestedNodeApp(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"Track.slnx":                     "<Solution/>",
+		"src/Track.Api/Track.Api.csproj": `<Project Sdk="Microsoft.NET.Sdk.Web"></Project>`,
+		"src/Track.Web/package.json":     `{"name":"track-web","scripts":{"dev":"vite","build":"vite build"}}`,
+		"src/Track.Web/pnpm-lock.yaml":   "lockfileVersion: '9.0'\n",
+	})
+	p := mustDetect(t, dir)
+	if len(p.Servers) != 2 {
+		t.Fatalf("servers = %+v, want the api and the web app", p.Servers)
+	}
+	web := p.Servers[1]
+	if web.Name != "web" || web.Run != "pnpm dev" || web.Cwd != "src/Track.Web" || !web.Proxy {
+		t.Errorf("web server = %+v, want pnpm dev in src/Track.Web behind a proxy", web)
+	}
+	if web.Manual {
+		t.Errorf("nothing else declared a topology, so the app must autostart: %+v", web)
+	}
+}
+
+// A package that declares no dev or start script is a library, not a server.
+func TestDetect_NestedNodeSkipsLibraries(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"docker-compose.yml":       trackCompose,
+		"packages/ui/package.json": `{"name":"ui","scripts":{"build":"tsup","test":"vitest"}}`,
+		"apps/store/package.json":  `{"name":"store","scripts":{"start":"next start"}}`,
+	})
+	p := mustDetect(t, dir)
+	var names []string
+	for _, s := range p.Servers {
+		names = append(names, s.Name)
+	}
+	if len(p.Servers) != 2 || names[1] != "store" {
+		t.Fatalf("servers = %+v, want compose + the store app only (ui is a library)", p.Servers)
+	}
+	if p.Servers[1].Run != "npm run start" {
+		t.Errorf("store run = %q, want the start script via npm", p.Servers[1].Run)
+	}
+}
+
+// Two apps can share a directory name across monorepo roots; the second one
+// must not silently replace the first in the generated config.
+func TestDetect_NestedAppNamesStayUnique(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"apps/api/package.json":     `{"name":"edge","scripts":{"dev":"node server.js"}}`,
+		"services/api/package.json": `{"name":"core","scripts":{"dev":"node index.js"}}`,
+	})
+	p := mustDetect(t, dir)
+	if len(p.Servers) != 2 {
+		t.Fatalf("servers = %+v, want both apps", p.Servers)
+	}
+	if p.Servers[0].Name != "api" || p.Servers[1].Name != "api-2" {
+		t.Errorf("names = %q/%q, want api and api-2", p.Servers[0].Name, p.Servers[1].Name)
+	}
+}
+
+// The root is the application: a Go module with a documentation site beside
+// it must not autostart the docs site as if it were the project.
+func TestDetect_AppRootDoesNotScanNested(t *testing.T) {
+	cases := map[string]map[string]string{
+		"go module": {
+			"go.mod":                 "module example.com/tool\n",
+			"docs-site/package.json": `{"name":"docs","scripts":{"start":"docusaurus start"}}`,
+		},
+		"node app": {
+			"package.json":            `{"name":"site","scripts":{"dev":"next dev"}}`,
+			"apps/admin/package.json": `{"name":"admin","scripts":{"dev":"vite"}}`,
+		},
+	}
+	for name, files := range cases {
+		t.Run(name, func(t *testing.T) {
+			p := mustDetect(t, writeTree(t, files))
+			if len(p.Servers) != 0 {
+				t.Fatalf("servers = %+v, want none: the root owns its dev server", p.Servers)
+			}
+		})
 	}
 }

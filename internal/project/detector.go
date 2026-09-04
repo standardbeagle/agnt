@@ -77,6 +77,11 @@ type Server struct {
 	// Proxy requests a reverse proxy in front of this server. Off for
 	// non-HTTP processes (workers, compose orchestration).
 	Proxy bool `json:"proxy,omitempty"`
+	// Manual registers the server without autostarting it. Set when another
+	// source already declared the dev topology (a compose file publishing the
+	// same ports): starting both would double-bind, so the per-app server is
+	// written out ready to run and the developer turns it on.
+	Manual bool `json:"manual,omitempty"`
 }
 
 // PortProxy is a proxy to a fixed local port with no owning script.

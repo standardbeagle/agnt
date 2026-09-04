@@ -3,6 +3,7 @@ package project
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -12,18 +13,66 @@ import (
 
 // augment runs the cross-cutting detectors that add dev servers on top of
 // the primary type. Order is precedence: compose is the declared dev
-// topology and always wins; Procfile, the nested dotnet app scan, and the
-// docs-site generators only fill in when nothing declared a server yet, so
-// two sources never autostart the same port twice.
+// topology and always wins; Procfile and the docs-site generators only fill
+// in when nothing declared a server yet, so two sources never autostart the
+// same port twice.
+//
+// The nested app scans are the exception. A repository can hold both a
+// compose topology and the app sources it builds from, and a developer needs
+// the per-app servers to run one locally. They are always detected, but when
+// something already declared the topology they are marked Manual: written
+// into the config with the right command, directory and port, and left off
+// autostart so nothing double-binds a port compose already publishes.
 func augment(p *Project) {
 	if p.Metadata == nil {
 		p.Metadata = make(map[string]string)
 	}
 	augmentCompose(p)
 	augmentProcfile(p)
-	augmentNestedDotnet(p)
+	augmentNestedApps(p)
 	augmentHugo(p)
 	augmentMkdocs(p)
+}
+
+// nestedAppRoots are the glob prefixes searched for per-app sources under a
+// root that is a solution, a monorepo, or a compose topology. One level deep
+// only: deeper nesting is a build-system concern, not a dev-server one.
+var nestedAppRoots = []string{"*", "src/*", "apps/*", "services/*", "packages/*"}
+
+// nestedMatches returns the paths matching fileName under every nested app
+// root, sorted and de-duplicated (the globs overlap by design).
+func nestedMatches(root, fileName string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	for _, prefix := range nestedAppRoots {
+		matches, _ := filepath.Glob(filepath.Join(root, prefix, fileName))
+		for _, m := range matches {
+			if !seen[m] {
+				seen[m] = true
+				out = append(out, m)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+// augmentNestedApps finds the runnable applications inside a multi-project
+// root. Whether they autostart depends on what came before: with a topology
+// already declared they are registered Manual (see augment).
+func augmentNestedApps(p *Project) {
+	if !isMultiAppRoot(p) {
+		return
+	}
+	manual := p.hasServer()
+	before := len(p.Servers)
+	augmentNestedDotnet(p)
+	augmentNestedNode(p)
+	if manual {
+		for i := before; i < len(p.Servers); i++ {
+			p.Servers[i].Manual = true
+		}
+	}
 }
 
 // composeFiles are the names `docker compose` reads by default, in its own
@@ -104,39 +153,139 @@ func augmentProcfile(p *Project) {
 	}
 }
 
-// augmentNestedDotnet handles a solution-only root (projects under src/ or
-// one level down): each web project becomes `dotnet watch run` in its own
-// directory, with the port read from its launchSettings.json so the proxy
-// exists before the first request.
+// isMultiAppRoot reports whether the root is a container of applications
+// rather than an application itself. A Go module, a Python package or a Node
+// app at the root owns its own dev server, and scanning beneath it would
+// autostart a side artifact — a documentation site, an example app — as if it
+// were the project.
+func isMultiAppRoot(p *Project) bool {
+	switch p.Type {
+	case ProjectDotnet:
+		// A root .csproj is the app; only a solution root holds others.
+		return p.Metadata["project"] == ""
+	case ProjectNode:
+		// A workspace root declares no dev script of its own.
+		return !rootPackageServes(p.Path)
+	case ProjectCompose, ProjectUnknown:
+		return true
+	default:
+		return false
+	}
+}
+
+// augmentNestedDotnet handles a solution root: each nested web project becomes
+// `dotnet watch run` in its own directory, with the port read from its
+// launchSettings.json so the proxy exists before the first request. Running it
+// from the root instead is the failure this exists to prevent — with no
+// project file there, `dotnet watch` exits immediately.
 func augmentNestedDotnet(p *Project) {
-	if p.Type != ProjectDotnet || p.Metadata["project"] != "" || p.hasServer() {
+	if p.Type != ProjectDotnet {
 		return
 	}
-	var files []string
-	for _, pattern := range []string{"*/*.csproj", "src/*/*.csproj"} {
-		matches, _ := filepath.Glob(filepath.Join(p.Path, pattern))
-		files = append(files, matches...)
-	}
-	sort.Strings(files)
-	seen := make(map[string]bool)
-	for _, csproj := range files {
-		if seen[csproj] || !isDotnetWebProject(csproj) {
+	for _, csproj := range nestedMatches(p.Path, "*.csproj") {
+		if !isDotnetWebProject(csproj) {
 			continue
 		}
-		seen[csproj] = true
 		dir := filepath.Dir(csproj)
 		rel, err := filepath.Rel(p.Path, dir)
 		if err != nil {
 			continue
 		}
-		name := scriptNameFromProject(strings.TrimSuffix(filepath.Base(csproj), ".csproj"))
 		p.Servers = append(p.Servers, Server{
-			Name:  name,
+			Name:  uniqueServerName(p, scriptNameFromProject(strings.TrimSuffix(filepath.Base(csproj), ".csproj"))),
 			Run:   "dotnet watch run",
 			Cwd:   filepath.ToSlash(rel),
 			Port:  launchSettingsPort(filepath.Join(dir, "Properties", "launchSettings.json")),
 			Proxy: true,
 		})
+	}
+}
+
+// augmentNestedNode finds front-ends and Node services inside a multi-project
+// root: any nested package.json that declares a `dev` (or `start`) script
+// becomes a server run with that directory's own package manager. A library
+// package declares neither, so a monorepo's shared packages are skipped.
+//
+// Only a multi-app root is scanned (see isMultiAppRoot): a Next.js app with
+// an apps/ directory owns its own dev script and must not grow a second,
+// competing server.
+func augmentNestedNode(p *Project) {
+	for _, pkg := range nestedMatches(p.Path, "package.json") {
+		dir := filepath.Dir(pkg)
+		script := firstDeclaredScript(pkg, "dev", "start")
+		if script == "" {
+			continue
+		}
+		rel, err := filepath.Rel(p.Path, dir)
+		if err != nil {
+			continue
+		}
+		p.Servers = append(p.Servers, Server{
+			Name:  uniqueServerName(p, scriptNameFromProject(filepath.Base(dir))),
+			Run:   nodeRunCommand(detectPackageManager(dir), script),
+			Cwd:   filepath.ToSlash(rel),
+			Proxy: true,
+		})
+	}
+}
+
+// rootPackageServes reports whether the root package.json declares its own
+// dev/start script, making the root the application.
+func rootPackageServes(root string) bool {
+	return firstDeclaredScript(filepath.Join(root, "package.json"), "dev", "start") != ""
+}
+
+// firstDeclaredScript returns the first of names that package.json declares
+// with a non-empty command, or "" when the file declares none of them.
+func firstDeclaredScript(packageJSON string, names ...string) string {
+	data, err := os.ReadFile(packageJSON)
+	if err != nil {
+		return ""
+	}
+	var pkg struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	if err := json.Unmarshal(data, &pkg); err != nil {
+		return ""
+	}
+	for _, n := range names {
+		if strings.TrimSpace(pkg.Scripts[n]) != "" {
+			return n
+		}
+	}
+	return ""
+}
+
+// nodeRunCommand renders "run the named package script" for a package
+// manager. npm and bun need the `run` verb; pnpm and yarn take the script
+// name directly.
+func nodeRunCommand(packageManager, script string) string {
+	switch packageManager {
+	case "pnpm", "yarn":
+		return packageManager + " " + script
+	case "bun":
+		return "bun run " + script
+	default:
+		return "npm run " + script
+	}
+}
+
+// uniqueServerName keeps script names distinct: two nested apps can share a
+// directory name (services/api and apps/api), and a duplicate name would make
+// one script silently replace the other in the generated config.
+func uniqueServerName(p *Project, name string) string {
+	taken := make(map[string]bool, len(p.Servers))
+	for _, s := range p.Servers {
+		taken[s.Name] = true
+	}
+	if !taken[name] {
+		return name
+	}
+	for i := 2; ; i++ {
+		candidate := fmt.Sprintf("%s-%d", name, i)
+		if !taken[candidate] {
+			return candidate
+		}
 	}
 }
 

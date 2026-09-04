@@ -292,3 +292,62 @@ func TestGenerate_ProcfileEntries(t *testing.T) {
 	assert.Equal(t, "web", cfg.Proxies["web"].Script)
 	assert.Zero(t, cfg.Proxies["web"].FallbackPort)
 }
+
+// The Track shape: a solution root whose compose file already publishes the
+// ports its own apps bind. Compose autostarts; the apps are configured with
+// the working directory that makes them runnable, and left switched off.
+func TestGenerate_ManualAppsAreConfiguredButNotAutostarted(t *testing.T) {
+	p := &project.Project{
+		Type:     project.ProjectDotnet,
+		Name:     "Track",
+		Commands: project.DefaultDotnetCommands(),
+		Metadata: map[string]string{"solution": "Track.slnx", "compose": "docker-compose.yml"},
+		Servers: []project.Server{
+			{Name: "compose", Run: "docker compose up"},
+			{Name: "api", Run: "dotnet watch run", Cwd: "src/Track.Api", Port: 5000, Proxy: true, Manual: true},
+			{Name: "web", Run: "pnpm dev", Cwd: "src/Track.Web", Proxy: true, Manual: true},
+		},
+		Proxies: []project.PortProxy{{Name: "track-api", Port: 5000}},
+	}
+	kdl, ok := Generate(p)
+	require.True(t, ok)
+
+	cfg := parseGenerated(t, kdl)
+	assert.True(t, cfg.Scripts["compose"].Autostart, "the declared topology autostarts")
+
+	require.Contains(t, cfg.Scripts, "api")
+	assert.False(t, cfg.Scripts["api"].Autostart, "the app must not fight compose for port 5000")
+	assert.Equal(t, "src/Track.Api", cfg.Scripts["api"].Cwd, "the command needs its own directory to run at all")
+	assert.Equal(t, []int{5000}, cfg.Scripts["api"].Ports)
+	assert.False(t, cfg.Scripts["web"].Autostart)
+	assert.Equal(t, "src/Track.Web", cfg.Scripts["web"].Cwd)
+
+	// The file says why they are off, so the config does not read as broken.
+	assert.Contains(t, kdl, "docker-compose.yml already serves their ports")
+
+	// Each app keeps its proxy, created when the developer turns the script on.
+	assert.Equal(t, "api", cfg.Proxies["api"].Script)
+	assert.Equal(t, 5000, cfg.Proxies["api"].FallbackPort)
+	assert.Equal(t, 5000, cfg.Proxies["track-api"].Port, "the compose service keeps its own port proxy")
+}
+
+// A dotnet solution root with no compose file: the nested app is the dev
+// server, so it autostarts. Guards the regression that started this work —
+// `dotnet watch run` generated at a root that holds no project file.
+func TestGenerate_NestedAppAutostartsWithItsOwnDirectory(t *testing.T) {
+	p := &project.Project{
+		Type:     project.ProjectDotnet,
+		Name:     "Track",
+		Commands: project.DefaultDotnetCommands(),
+		Metadata: map[string]string{"solution": "Track.slnx"},
+		Servers:  []project.Server{{Name: "api", Run: "dotnet watch run", Cwd: "src/Track.Api", Port: 5000, Proxy: true}},
+	}
+	kdl, ok := Generate(p)
+	require.True(t, ok)
+
+	cfg := parseGenerated(t, kdl)
+	require.Contains(t, cfg.Scripts, "api")
+	assert.True(t, cfg.Scripts["api"].Autostart)
+	assert.Equal(t, "src/Track.Api", cfg.Scripts["api"].Cwd, "without a cwd the command fails: no project file at the root")
+	assert.NotContains(t, cfg.Scripts, "dev", "the solution root itself is not runnable")
+}

@@ -62,7 +62,12 @@ func Generate(p *project.Project) (string, bool) {
 	b.WriteString("// changes are applied live (no restart). Add scripts/proxies as needed.\n\n")
 
 	b.WriteString("scripts {\n")
+	manualNoted := false
 	for _, s := range servers {
+		if s.Manual && !manualNoted {
+			writeManualNote(&b, p)
+			manualNoted = true
+		}
 		writeServerScript(&b, s)
 	}
 	// Non-server scripts are registered but not autostarted — they show up in
@@ -110,8 +115,9 @@ func Generate(p *project.Project) (string, bool) {
 	return b.String(), true
 }
 
-// writeServerScript emits an autostart script block for a detected server,
-// with its working directory and known port when present.
+// writeServerScript emits a script block for a detected server, with its
+// working directory and known port when present. A Manual server is written
+// without autostart: it is ready to run, and the developer turns it on.
 func writeServerScript(b *strings.Builder, s project.Server) {
 	fmt.Fprintf(b, "    %s {\n", s.Name)
 	fmt.Fprintf(b, "        run %q\n", s.Run)
@@ -121,8 +127,26 @@ func writeServerScript(b *strings.Builder, s project.Server) {
 	if s.Port > 0 {
 		fmt.Fprintf(b, "        ports %d\n", s.Port)
 	}
-	b.WriteString("        autostart true\n")
+	if !s.Manual {
+		b.WriteString("        autostart true\n")
+	}
 	b.WriteString("    }\n")
+}
+
+// writeManualNote explains, in the file itself, why the per-app servers that
+// follow do not autostart. Without it the config reads as if agnt failed to
+// configure them.
+func writeManualNote(b *strings.Builder, p *project.Project) {
+	owner := "another script"
+	if f := p.Metadata["compose"]; f != "" {
+		owner = f
+	} else if f := p.Metadata["procfile"]; f != "" {
+		owner = f
+	}
+	b.WriteString("    // Below: the apps in this repository, ready to run but not\n")
+	fmt.Fprintf(b, "    // autostarted, because %s already serves their ports.\n", owner)
+	b.WriteString("    // Stop that service, then set autostart true here to develop\n")
+	b.WriteString("    // against the local process instead.\n")
 }
 
 // isRootStaticSite recognizes the deliberately narrow zero-build case: an
