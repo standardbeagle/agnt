@@ -247,8 +247,12 @@ func TestProtectedWriter_EnforceScrollRegion(t *testing.T) {
 
 	pw.EnforceScrollRegion()
 
-	// DECSC + DECSTBM + DECRC: save cursor, set scroll region, restore cursor
-	expected := "\x1b7\x1b[1;23r\x1b8"
+	// DECSTBM homes the cursor, so the child's position is re-established
+	// afterwards with an absolute CUP from the filter's own tracking — NOT
+	// with DECSC/DECRC, which xterm backs with the same single save slot the
+	// child TUI uses for its own repaints (see cursorpark.go). A fresh filter
+	// tracks the cursor at 1;1.
+	expected := "\x1b[1;23r\x1b[1;1H"
 	if buf.String() != expected {
 		t.Errorf("expected %q, got %q", expected, buf.String())
 	}

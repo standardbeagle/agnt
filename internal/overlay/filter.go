@@ -55,6 +55,11 @@ type ProtectedWriter struct {
 	// Alt screen tracking
 	inAltScreen atomic.Bool
 
+	// DECTCEM (mode 25) tracking. The overlay reads this so a status-bar
+	// draw restores the child's own cursor visibility instead of forcing
+	// the cursor visible on top of a TUI that deliberately hid it.
+	cursorVisible atomic.Bool
+
 	// UTF-8 accumulator for multi-byte character width detection
 	utf8Buf  [4]byte
 	utf8Len  int // bytes accumulated so far
@@ -105,6 +110,7 @@ func NewProtectedWriter(out io.Writer, width, height int, config FilterConfig) *
 	// Initialize cursor to top-left so scroll protection works immediately
 	pw.cursorRow.Store(1)
 	pw.cursorCol.Store(1)
+	pw.cursorVisible.Store(true)
 	pw.scrollTop = 1
 	pw.scrollBottom = height - config.ProtectBottomRows
 
@@ -575,6 +581,8 @@ func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 			switch pw.params[0] {
 			case 1049, 47, 1047: // Alternate screen buffer sequences
 				pw.inAltScreen.Store(final == 'h')
+			case 25: // DECTCEM - cursor visibility
+				pw.cursorVisible.Store(final == 'h')
 			}
 		}
 		// Pass through
@@ -639,14 +647,23 @@ func decodeUTF8(b []byte) rune {
 }
 
 // enforceScrollRegion writes the scroll region sequence to protect bottom rows.
-// DECSTBM resets cursor to (1,1), so we save/restore cursor around it.
+// DECSTBM homes the cursor, so the child's position has to be re-established
+// afterwards. We do that with an absolute CUP from our own cursor tracking
+// rather than DECSC/DECRC: xterm backs DECSC and CSI s with the same single
+// save slot, and the child TUI uses it for its own repaints — clobbering it
+// makes the child restore to the wrong origin (see cursorpark.go).
 func (pw *ProtectedWriter) enforceScrollRegion() {
 	bottom := pw.height - pw.config.ProtectBottomRows
 	if bottom < 1 {
 		bottom = 1
 	}
-	// \x1b7 = DECSC (save cursor), \x1b8 = DECRC (restore cursor)
-	fmt.Fprintf(pw.out, "\x1b7\x1b[1;%dr\x1b8", bottom)
+	row, col := int(pw.cursorRow.Load()), int(pw.cursorCol.Load())
+	if row < 1 || col < 1 {
+		// Position unknown: DECSC/DECRC is the only option left.
+		fmt.Fprintf(pw.out, "\x1b7\x1b[1;%dr\x1b8", bottom)
+		return
+	}
+	fmt.Fprintf(pw.out, "\x1b[1;%dr\x1b[%d;%dH", bottom, row, col)
 }
 
 // EnforceScrollRegion can be called externally to re-apply scroll region protection.
@@ -654,6 +671,14 @@ func (pw *ProtectedWriter) EnforceScrollRegion() {
 	pw.mu.Lock()
 	defer pw.mu.Unlock()
 	pw.enforceScrollRegion()
+}
+
+// ChildCursor reports the child's tracked cursor position (1-indexed) and
+// whether the child currently has the cursor visible. The overlay uses it to
+// restore the child's cursor after drawing, without touching the terminal's
+// single SCP/RCP save slot that the child TUI also uses.
+func (pw *ProtectedWriter) ChildCursor() (row, col int, visible bool) {
+	return int(pw.cursorRow.Load()), int(pw.cursorCol.Load()), pw.cursorVisible.Load()
 }
 
 // InAltScreen returns whether the child process is currently in the alternate screen buffer.
