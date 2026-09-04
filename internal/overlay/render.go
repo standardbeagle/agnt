@@ -399,7 +399,8 @@ func (r *Renderer) DrawIndicator(status Status) {
 	frame := int(r.animFrame.Add(1))
 
 	// Save cursor, hide it, move to bottom
-	r.write(CursorSave + CursorHide)
+	park, parked := parkCursor()
+	r.write(park)
 	r.moveTo(r.height, 1)
 	r.write(ClearLine)
 
@@ -552,7 +553,7 @@ func (r *Renderer) DrawIndicator(status Status) {
 	r.write(" " + Reset)
 
 	// Restore cursor
-	r.write(CursorRestore + CursorShow)
+	r.write(parked.restore())
 
 	buf := r.buf
 	r.buf = nil
@@ -734,10 +735,11 @@ func (r *Renderer) ClearIndicator() {
 	r.mu.Lock()
 	r.beginBuffer()
 
-	r.write(CursorSave + CursorHide)
+	park, parked := parkCursor()
+	r.write(park)
 	r.moveTo(r.height, 1)
 	r.write(ClearLine)
-	r.write(CursorRestore + CursorShow)
+	r.write(parked.restore())
 
 	buf := r.buf
 	r.buf = nil
@@ -2238,7 +2240,8 @@ func (r *Renderer) DrawStatusBarMessage(message string) {
 	r.mu.Lock()
 	r.beginBuffer()
 
-	r.write(CursorSave + CursorHide)
+	park, parked := parkCursor()
+	r.write(park)
 	r.moveTo(r.height, 1)
 	r.write(ClearLine)
 
@@ -2248,7 +2251,7 @@ func (r *Renderer) DrawStatusBarMessage(message string) {
 	r.write(r.padToWidth(" "+message, r.width))
 	r.write(Reset)
 
-	r.write(CursorRestore + CursorShow)
+	r.write(parked.restore())
 
 	buf := r.buf
 	r.buf = nil
@@ -2298,7 +2301,8 @@ func (r *Renderer) DrawNotifications(views []NotificationView, prevRows int) int
 	rows := len(lines)
 
 	if rows > 0 || prevRows > 0 {
-		r.write(CursorSave + CursorHide)
+		park, parked := parkCursor()
+		r.write(park)
 		// Clear rows the previous paint used that this one does not.
 		for i := rows; i < prevRows; i++ {
 			row := r.height - 1 - i
@@ -2316,7 +2320,7 @@ func (r *Renderer) DrawNotifications(views []NotificationView, prevRows int) int
 			r.write(r.padToWidth(ln.text, r.width))
 			r.write(Reset)
 		}
-		r.write(CursorRestore + CursorShow)
+		r.write(parked.restore())
 	}
 
 	buf := r.buf
@@ -2364,10 +2368,11 @@ func (r *Renderer) ClearStatusBarMessage() {
 	r.mu.Lock()
 	r.beginBuffer()
 
-	r.write(CursorSave + CursorHide)
+	park, parked := parkCursor()
+	r.write(park)
 	r.moveTo(r.height, 1)
 	r.write(ClearLine)
-	r.write(CursorRestore + CursorShow)
+	r.write(parked.restore())
 
 	buf := r.buf
 	r.buf = nil

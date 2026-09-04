@@ -99,7 +99,8 @@ func (sm *ScreenManager) RestoreRegion(name string) {
 	// Overwrite the region with spaces using default attributes.
 	// We use spaces instead of ECH because ECH leaves "blank" cells
 	// that some terminal emulators don't properly refresh on SIGWINCH.
-	sm.write(CursorSave + CursorHide + Reset)
+	park, parked := parkCursor()
+	sm.write(park + Reset)
 	spaces := strings.Repeat(" ", buf.Region.Width)
 	for row := buf.Region.Row; row < buf.Region.Row+buf.Region.Height; row++ {
 		if row > 0 && row <= sm.height {
@@ -107,7 +108,7 @@ func (sm *ScreenManager) RestoreRegion(name string) {
 			sm.write(spaces)
 		}
 	}
-	sm.write(CursorRestore + CursorShow)
+	sm.write(parked.restore())
 
 	delete(sm.savedRegs, name)
 }
@@ -117,14 +118,15 @@ func (sm *ScreenManager) ClearRegion(region ScreenRegion) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	sm.write(CursorSave + CursorHide)
+	park, parked := parkCursor()
+	sm.write(park)
 	for row := region.Row; row < region.Row+region.Height; row++ {
 		if row > 0 && row <= sm.height {
 			sm.moveTo(row, region.Col)
 			sm.write(fmt.Sprintf("\x1b[%dX", region.Width))
 		}
 	}
-	sm.write(CursorRestore + CursorShow)
+	sm.write(parked.restore())
 }
 
 // ForceRedraw sends a signal to force the underlying application to redraw.

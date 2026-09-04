@@ -207,13 +207,12 @@ func (s *StartupSplash) render(msg string) {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(CursorSave)
-	sb.WriteString(CursorHide)
+	park, parked := parkCursor()
+	sb.WriteString(park)
 	sb.WriteString(fmt.Sprintf(CursorToFormat, targetRow, 2))
 	sb.WriteString(ClearLine)
 	sb.WriteString(line)
-	sb.WriteString(CursorRestore)
-	sb.WriteString(CursorShow)
+	sb.WriteString(parked.restore())
 
 	s.out.Write([]byte(sb.String()))
 }
@@ -226,12 +225,11 @@ func (s *StartupSplash) clear() {
 	}
 
 	var sb strings.Builder
-	sb.WriteString(CursorSave)
-	sb.WriteString(CursorHide)
+	park, parked := parkCursor()
+	sb.WriteString(park)
 	sb.WriteString(fmt.Sprintf(CursorToFormat, targetRow, 1))
 	sb.WriteString(ClearLine)
-	sb.WriteString(CursorRestore)
-	sb.WriteString(CursorShow)
+	sb.WriteString(parked.restore())
 
 	s.out.Write([]byte(sb.String()))
 }

@@ -1948,6 +1948,11 @@ func setupTerminalOverlay(ctx context.Context, handle *ptyHandle, rt *pipelineRu
 		}
 		rt.outputFilter = overlay.NewProtectedWriter(rt.outputGate, handle.Width, handle.Height, filterCfg)
 		rt.termOverlay.SetAltScreenChecker(rt.outputFilter.InAltScreen)
+		// The filter tracks the child's cursor from its own output stream, so
+		// overlay draws can restore it with an absolute CUP. Without this the
+		// overlay uses the terminal's single SCP/RCP save slot, which the child
+		// TUI also uses — see internal/overlay/cursorpark.go.
+		overlay.SetChildCursorSource(rt.outputFilter.ChildCursor)
 	}
 
 	// Gate-unfreeze callback re-enforces the scroll region and on Unix
