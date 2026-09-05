@@ -1503,8 +1503,14 @@ type pipelineRuntime struct {
 	// StatusFetcher goroutine (queue-depth provider) and Stop(); an atomic
 	// pointer keeps those cross-goroutine accesses race-free.
 	alertScanner atomic.Pointer[overlay.AlertScanner]
-	daemonConn   *daemon.Conn
-	outputTap    *childOutputTap
+
+	// activityMon is assigned from the PTY-output goroutine and read from the
+	// overlay's draw path, which runs on the input goroutine. Same reason as
+	// alertScanner above: the monitor may not exist yet when the overlay is
+	// wired up.
+	activityMon atomic.Pointer[overlay.ActivityMonitor]
+	daemonConn  *daemon.Conn
+	outputTap   *childOutputTap
 	// launch records how the child was started so an abrupt exit can be
 	// explained in terms of what agnt actually ran.
 	launch agentLaunch
@@ -1701,7 +1707,14 @@ func runOverlayPipeline(
 		// snapshot wraps and repaints exactly as the child renders. Resize keeps
 		// it current on SIGWINCH (see the resize watcher).
 		activityCfg.InitialCols = handle.Width
+		// Child rows, not host rows: the indicator owns the bottom line, and
+		// the resize watcher already sizes the screen this way on SIGWINCH.
+		// Starting a row too tall let the model claim the status-bar row until
+		// the first resize corrected it.
 		activityCfg.InitialRows = handle.Height
+		if showIndicator && handle.Height > 1 {
+			activityCfg.InitialRows = handle.Height - 1
+		}
 		// Tap every output line so an abrupt agent exit can be explained in
 		// the agent's own words (see reportUnexpectedShutdown).
 		rt.outputTap = newChildOutputTap(10, 5)
@@ -1744,6 +1757,7 @@ func runOverlayPipeline(
 		}
 
 		rt.activityMonitor = overlay.NewActivityMonitor(outputDest, activityCfg)
+		rt.activityMon.Store(rt.activityMonitor)
 		_, _ = io.Copy(io.MultiWriter(newActivityPulse(outputPulse), rt.activityMonitor), handle.Backend)
 		close(rt.done)
 	}()
@@ -1953,6 +1967,19 @@ func setupTerminalOverlay(ctx context.Context, handle *ptyHandle, rt *pipelineRu
 		// overlay uses the terminal's single SCP/RCP save slot, which the child
 		// TUI also uses — see internal/overlay/cursorpark.go.
 		overlay.SetChildCursorSource(rt.outputFilter.ChildCursor)
+	}
+
+	// Repaint the child from our own model of its screen when a panel closes
+	// over a fullscreen TUI. Loaded lazily: the monitor is created by the
+	// PTY-output goroutine, which may not have run yet.
+	if rt.termOverlay != nil {
+		rt.termOverlay.SetChildScreenSource(func(maxRows int) []byte {
+			am := rt.activityMon.Load()
+			if am == nil {
+				return nil
+			}
+			return am.RenderScreen(maxRows)
+		})
 	}
 
 	// Gate-unfreeze callback re-enforces the scroll region and on Unix

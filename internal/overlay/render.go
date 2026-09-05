@@ -775,6 +775,18 @@ func (r *Renderer) ClearVisible() {
 	r.flushBuffer(buf)
 }
 
+// WriteFrame emits a prepared frame (see RenderScreenANSI) through the same
+// gated writer the overlay draws on, so it cannot interleave with PTY output.
+func (r *Renderer) WriteFrame(frame []byte) {
+	if len(frame) == 0 {
+		return
+	}
+	r.mu.Lock()
+	out := r.out
+	r.mu.Unlock()
+	out.Write(frame)
+}
+
 // EnterAltScreen switches to the alternate screen buffer.
 // The main screen content is preserved and restored when ExitAltScreen is called.
 func (r *Renderer) EnterAltScreen() {

@@ -300,6 +300,10 @@ type Overlay struct {
 	onBeforeUnfreeze func(panelID string) // Called before gate unfreeze with the active process panel ID
 	childInAltScreen func() bool
 
+	// childScreen renders the child's current screen as an ANSI repaint. Set
+	// by the run pipeline from the virtual screen the output monitor keeps.
+	childScreen func(maxRows int) []byte
+
 	// Whether alt screen is currently used for menu/viewer (per open/close cycle)
 	usingAltScreen bool
 
@@ -396,6 +400,15 @@ func (o *Overlay) SetBeforeUnfreezeCallback(fn func(panelID string)) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.onBeforeUnfreeze = fn
+}
+
+// SetChildScreenSource registers a renderer for the child's current screen.
+// With it, closing a panel over a fullscreen TUI repaints from our own model
+// of that screen instead of clearing and waiting for the child to redraw.
+func (o *Overlay) SetChildScreenSource(fn func(maxRows int) []byte) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.childScreen = fn
 }
 
 // SetAltScreenChecker sets a callback that reports whether the child process
@@ -666,10 +679,17 @@ func (o *Overlay) hideMenu() {
 	if o.usingAltScreen {
 		// Exit alt screen — terminal restores the previous main screen content.
 		o.renderer.ExitAltScreen()
+	} else if frame := o.renderChildScreenLocked(); len(frame) > 0 {
+		// Child is a fullscreen TUI. Our virtual screen is a complete model of
+		// what it last painted, so repaint from that. The alternative — clear
+		// the area and nudge the child with a winsize jiggle — is a race the
+		// child sometimes loses, and losing it leaves the user on a blank
+		// screen until the next keystroke.
+		o.renderer.ClearVisible()
+		o.renderer.WriteFrame(frame)
 	} else {
-		// Child is a fullscreen TUI — clear the visible area so menu artifacts
-		// are gone before the gate unfreezes and SIGWINCH triggers the child
-		// to redraw. Use ED 2 + cursor home (preserves scroll region).
+		// No model available: fall back to clearing and letting the child's
+		// own repaint fill the screen.
 		o.renderer.ClearVisible()
 	}
 
@@ -694,6 +714,15 @@ func (o *Overlay) hideMenu() {
 	if o.gate != nil {
 		o.gate.Unfreeze()
 	}
+}
+
+// renderChildScreenLocked renders the child's screen, or nil when no source is
+// registered. Must be called with mu held.
+func (o *Overlay) renderChildScreenLocked() []byte {
+	if o.childScreen == nil {
+		return nil
+	}
+	return o.childScreen(0)
 }
 
 // spinnerFrames are ASCII spinner characters compatible with all terminals.
