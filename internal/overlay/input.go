@@ -1538,45 +1538,107 @@ func parseInt(s string) int {
 // unicode character values and yielding them as individual bytes.
 // Buffer boundaries are handled internally - incomplete sequences at the end of
 // a read are held and combined with the next read.
+// win32PendingFlush bounds how long a trailing ESC may sit in the scanner's
+// remainder buffer. The parser holds a trailing ESC because a multi-byte
+// sequence can straddle a read boundary — but a lone Esc keypress arrives as a
+// one-byte read that looks exactly the same, and nothing follows it. Without a
+// deadline that byte is held until EOF: Esc never reaches the overlay (whose
+// own EscapeSequenceReader.Timeout disambiguation then can never run, since the
+// byte never arrives) and never reaches the wrapped TUI on the passthrough
+// path either. A real split sequence resumes in microseconds, so any wait this
+// long means the rest is not coming.
+const win32PendingFlush = 25 * time.Millisecond
+
 func ScanWin32Input(r io.Reader) iter.Seq[byte] {
+	return scanWin32Input(r, win32PendingFlush)
+}
+
+func scanWin32Input(r io.Reader, flushAfter time.Duration) iter.Seq[byte] {
 	return func(yield func(byte) bool) {
+		type readResult struct {
+			data []byte
+			err  error
+		}
+		reads := make(chan readResult, 1)
+		done := make(chan struct{})
+		defer close(done)
+
+		// Reads happen off the iterator goroutine so a held remainder can be
+		// released on a timer while the next Read is still blocked.
+		go func() {
+			for {
+				buf := make([]byte, 256)
+				n, err := r.Read(buf)
+				select {
+				case reads <- readResult{buf[:n], err}:
+				case <-done:
+					return
+				}
+				if err != nil {
+					return
+				}
+			}
+		}()
+
+		emit := func(bs []byte) bool {
+			for _, b := range bs {
+				if !yield(b) {
+					return false
+				}
+			}
+			return true
+		}
+
 		var pending []byte
-		buf := make([]byte, 256)
+		var timer *time.Timer
+		defer func() {
+			if timer != nil {
+				timer.Stop()
+			}
+		}()
 
 		for {
-			n, err := r.Read(buf)
-			if n > 0 {
-				// Combine pending bytes with new data
-				var data []byte
-				if len(pending) > 0 {
-					data = make([]byte, len(pending)+n)
-					copy(data, pending)
-					copy(data[len(pending):], buf[:n])
-				} else {
-					data = buf[:n]
+			var timerC <-chan time.Time
+			if len(pending) > 0 {
+				if timer == nil {
+					timer = time.NewTimer(flushAfter)
+				}
+				timerC = timer.C
+			}
+
+			select {
+			case <-timerC:
+				// The rest of the sequence never came. Release the bytes so
+				// the layer above can decide what they mean.
+				timer = nil
+				out := pending
+				pending = nil
+				if !emit(out) {
+					return
 				}
 
-				// Parse and yield bytes
-				parsed, remainder := parseWin32InputModeInternal(data)
-				pending = remainder
-
-				for _, b := range parsed {
-					if !yield(b) {
+			case rr := <-reads:
+				if timer != nil {
+					timer.Stop()
+					timer = nil
+				}
+				if len(rr.data) > 0 {
+					data := rr.data
+					if len(pending) > 0 {
+						data = append(append([]byte{}, pending...), rr.data...)
+					}
+					parsed, remainder := parseWin32InputModeInternal(data)
+					pending = remainder
+					if !emit(parsed) {
 						return
 					}
 				}
-			}
-
-			if err != nil {
-				// Yield any remaining pending bytes on EOF
-				if err == io.EOF && len(pending) > 0 {
-					for _, b := range pending {
-						if !yield(b) {
-							return
-						}
+				if rr.err != nil {
+					if rr.err == io.EOF && len(pending) > 0 {
+						emit(pending)
 					}
+					return
 				}
-				return
 			}
 		}
 	}
