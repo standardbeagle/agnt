@@ -79,7 +79,9 @@ func (t *State) handleSTR() {
 			if p != nil && *p == "?" {
 				t.oscColorResponse(int(DefaultFG), 10)
 			} else if err := t.setColorName(int(DefaultFG), p); err != nil {
-				t.logf("invalid foreground color: %s\n", maybe(p))
+				if t.DebugLogger != nil {
+					t.logf("invalid foreground color: %s\n", maybe(p))
+				}
 			} else {
 				// TODO: redraw
 			}
@@ -93,7 +95,9 @@ func (t *State) handleSTR() {
 			if p != nil && *p == "?" {
 				t.oscColorResponse(int(DefaultBG), 11)
 			} else if err := t.setColorName(int(DefaultBG), p); err != nil {
-				t.logf("invalid cursor color: %s\n", maybe(p))
+				if t.DebugLogger != nil {
+					t.logf("invalid cursor color: %s\n", maybe(p))
+				}
 			} else {
 				// TODO: redraw
 			}
@@ -128,13 +132,17 @@ func (t *State) handleSTR() {
 				t.osc4ColorResponse(j)
 			} else if err := t.setColorName(j, p); err != nil {
 				if !(d == 104 && len(s.args) <= 1) {
-					t.logf("invalid color j=%d, p=%s\n", j, maybe(p))
+					if t.DebugLogger != nil {
+						t.logf("invalid color j=%d, p=%s\n", j, maybe(p))
+					}
 				}
 			} else {
 				// TODO: redraw
 			}
 		default:
-			t.logf("unknown OSC command %d\n", d)
+			if t.DebugLogger != nil {
+				t.logf("unknown OSC command %d\n", d)
+			}
 			// TODO: s.dump()
 		}
 	case 'k': // old title set compatibility
@@ -148,7 +156,9 @@ func (t *State) handleSTR() {
 		// '_': // APC - application program command
 		// '^': // PM - privacy message
 
-		t.logf("unhandled STR sequence '%c'\n", s.typ)
+		if t.DebugLogger != nil {
+			t.logf("unhandled STR sequence '%c'\n", s.typ)
+		}
 		// t.str.dump()
 	}
 }
@@ -167,7 +177,7 @@ func (t *State) setColorName(j int, p *string) error {
 		if err != nil {
 			return err
 		}
-		t.colorOverride[Color(j)] = Color(r<<16 | g<<8 | b)
+		t.colorOverride[Color(j)] = RGB(uint8(r), uint8(g), uint8(b))
 	}
 
 	return nil
@@ -175,7 +185,9 @@ func (t *State) setColorName(j int, p *string) error {
 
 func (t *State) oscColorResponse(j, num int) {
 	if j < 0 {
-		t.logf("failed to fetch osc color %d\n", j)
+		if t.DebugLogger != nil {
+			t.logf("failed to fetch osc color %d\n", j)
+		}
 		return
 	}
 
@@ -190,7 +202,9 @@ func (t *State) oscColorResponse(j, num int) {
 
 func (t *State) osc4ColorResponse(j int) {
 	if j < 0 {
-		t.logf("failed to fetch osc4 color %d\n", j)
+		if t.DebugLogger != nil {
+			t.logf("failed to fetch osc4 color %d\n", j)
+		}
 		return
 	}
 

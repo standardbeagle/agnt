@@ -18,7 +18,6 @@ require (
 	github.com/google/jsonschema-go v0.4.2
 	github.com/google/uuid v1.6.0
 	github.com/gorilla/websocket v1.5.3
-	github.com/hinshun/vt10x v0.0.0-20220301184237-5011da428d02
 	github.com/hyperboloide/lk v0.0.0-20251220053519-b291812e3216
 	github.com/klauspost/compress v1.18.3
 	github.com/pkg/sftp v1.13.10
@@ -89,6 +88,7 @@ require (
 	github.com/segmentio/asm v1.1.3 // indirect
 	github.com/segmentio/encoding v0.5.4 // indirect
 	github.com/spf13/pflag v1.0.9 // indirect
+	github.com/standardbeagle/vt10x v0.1.0-agnt.1
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect

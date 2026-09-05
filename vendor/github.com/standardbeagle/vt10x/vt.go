@@ -42,6 +42,10 @@ type View interface {
 	// background color at position (x, y) relative to the top left of the terminal.
 	Cell(x, y int) Glyph
 
+	// Row appends row y to dst and returns it. Prefer it over Cell when
+	// reading whole rows: it costs one call per row instead of one per cell.
+	Row(y int, dst []Glyph) []Glyph
+
 	// Cursor returns the current position of the cursor.
 	Cursor() Cursor
 

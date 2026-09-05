@@ -2,8 +2,6 @@ package vt10x
 
 import (
 	"fmt"
-	"strconv"
-	"strings"
 )
 
 // CSI (Control Sequence Introducer)
@@ -36,21 +34,36 @@ func (c *csiEscape) parse() {
 	if len(c.buf) == 1 {
 		return
 	}
-	s := string(c.buf)
+	b := c.buf
 	c.args = c.args[:0]
-	if s[0] == '?' {
+	if b[0] == '?' {
 		c.priv = true
-		s = s[1:]
+		b = b[1:]
 	}
-	s = s[:len(s)-1]
-	ss := strings.Split(s, ";")
-	for _, p := range ss {
-		i, err := strconv.Atoi(p)
-		if err != nil {
-			//t.logf("invalid CSI arg '%s'\n", p)
-			break
+	b = b[:len(b)-1]
+	// Scan the arguments in place. The previous string(c.buf) + strings.Split
+	// allocated one string for the buffer and one more per argument, on every
+	// CSI sequence -- and a direct-colour SGR carries five. On a TUI repaint
+	// that was the bulk of the parser's garbage.
+	n, has := 0, false
+	for _, ch := range b {
+		switch {
+		case ch >= '0' && ch <= '9':
+			n = n*10 + int(ch-'0')
+			has = true
+		case ch == ';':
+			c.args = append(c.args, n)
+			n, has = 0, false
+		default:
+			// Anything else ends the list, matching the old Atoi error break.
+			if has {
+				c.args = append(c.args, n)
+			}
+			return
 		}
-		c.args = append(c.args, i)
+	}
+	if has {
+		c.args = append(c.args, n)
 	}
 }
 
@@ -184,6 +197,8 @@ func (t *State) handleCSI() {
 	}
 	return
 unknown: // TODO: get rid of this goto
-	t.logf("unknown CSI sequence '%c'\n", c.mode)
+	if t.DebugLogger != nil {
+		t.logf("unknown CSI sequence '%c'\n", c.mode)
+	}
 	// TODO: c.dump()
 }

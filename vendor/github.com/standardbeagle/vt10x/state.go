@@ -145,15 +145,44 @@ func (t *State) Unlock() {
 // background color at position (x, y) relative to the top left of the terminal.
 func (t *State) Cell(x, y int) Glyph {
 	cell := t.lines[y][x]
-	fg, ok := t.colorOverride[cell.FG]
-	if ok {
+	// The override map is empty unless the child sent an OSC 4 palette change,
+	// which almost nothing does. Two map probes per cell dominated whole-screen
+	// reads, so skip them outright when there is nothing to override.
+	if len(t.colorOverride) == 0 {
+		return cell
+	}
+	return t.applyOverride(cell)
+}
+
+func (t *State) applyOverride(cell Glyph) Glyph {
+	if fg, ok := t.colorOverride[cell.FG]; ok {
 		cell.FG = fg
 	}
-	bg, ok := t.colorOverride[cell.BG]
-	if ok {
+	if bg, ok := t.colorOverride[cell.BG]; ok {
 		cell.BG = bg
 	}
 	return cell
+}
+
+// Row appends row y to dst and returns it, so a caller reading the whole
+// screen pays one call and one bounds check per row instead of per cell.
+// Reading a screen a cell at a time is the dominant cost in a renderer that
+// mirrors this state to a real terminal or a remote viewer.
+//
+// The returned glyphs are copies; the caller may retain them. Hold Lock for
+// the duration of a consistent multi-row read.
+func (t *State) Row(y int, dst []Glyph) []Glyph {
+	if y < 0 || y >= len(t.lines) {
+		return dst
+	}
+	line := t.lines[y]
+	if len(t.colorOverride) == 0 {
+		return append(dst, line...)
+	}
+	for _, g := range line {
+		dst = append(dst, t.applyOverride(g))
+	}
+	return dst
 }
 
 // Cursor returns the current position of the cursor.
@@ -576,7 +605,9 @@ func (t *State) setMode(priv bool, set bool, args []int) {
 				// urxvt mangled mouse mode; incompatiblt and can be mistaken
 				// for other control codes
 			default:
-				t.logf("unknown private set/reset mode %d\n", a)
+				if t.DebugLogger != nil {
+					t.logf("unknown private set/reset mode %d\n", a)
+				}
 			}
 		}
 	} else {
@@ -587,17 +618,25 @@ func (t *State) setMode(priv bool, set bool, args []int) {
 				t.modMode(set, ModeKeyboardLock)
 			case 4: // IRM - insertion-replacement
 				t.modMode(set, ModeInsert)
-				t.logln("insert mode not implemented")
+				if t.DebugLogger != nil {
+					t.logln("insert mode not implemented")
+				}
 			case 12: // SRM - send/receive
 				t.modMode(set, ModeEcho)
 			case 20: // LNM - linefeed/newline
 				t.modMode(set, ModeCRLF)
 			case 34:
-				t.logln("right-to-left mode not implemented")
+				if t.DebugLogger != nil {
+					t.logln("right-to-left mode not implemented")
+				}
 			case 96:
-				t.logln("right-to-left copy mode not implemented")
+				if t.DebugLogger != nil {
+					t.logln("right-to-left copy mode not implemented")
+				}
 			default:
-				t.logf("unknown set/reset mode %d\n", a)
+				if t.DebugLogger != nil {
+					t.logf("unknown set/reset mode %d\n", a)
+				}
 			}
 		}
 	}
@@ -640,18 +679,24 @@ func (t *State) setAttr(attr []int) {
 				if between(attr[i], 0, 255) {
 					t.cur.Attr.FG = Color(attr[i])
 				} else {
-					t.logf("bad fgcolor %d\n", attr[i])
+					if t.DebugLogger != nil {
+						t.logf("bad fgcolor %d\n", attr[i])
+					}
 				}
 			} else if i+4 < len(attr) && attr[i+1] == 2 {
 				i += 4
 				r, g, b := attr[i-2], attr[i-1], attr[i]
 				if !between(r, 0, 255) || !between(g, 0, 255) || !between(b, 0, 255) {
-					t.logf("bad fg rgb color (%d,%d,%d)\n", r, g, b)
+					if t.DebugLogger != nil {
+						t.logf("bad fg rgb color (%d,%d,%d)\n", r, g, b)
+					}
 				} else {
-					t.cur.Attr.FG = Color(r<<16 | g<<8 | b)
+					t.cur.Attr.FG = RGB(uint8(r), uint8(g), uint8(b))
 				}
 			} else {
-				t.logf("gfx attr %d unknown\n", a)
+				if t.DebugLogger != nil {
+					t.logf("gfx attr %d unknown\n", a)
+				}
 			}
 		case 39:
 			t.cur.Attr.FG = DefaultFG
@@ -661,18 +706,24 @@ func (t *State) setAttr(attr []int) {
 				if between(attr[i], 0, 255) {
 					t.cur.Attr.BG = Color(attr[i])
 				} else {
-					t.logf("bad bgcolor %d\n", attr[i])
+					if t.DebugLogger != nil {
+						t.logf("bad bgcolor %d\n", attr[i])
+					}
 				}
 			} else if i+4 < len(attr) && attr[i+1] == 2 {
 				i += 4
 				r, g, b := attr[i-2], attr[i-1], attr[i]
 				if !between(r, 0, 255) || !between(g, 0, 255) || !between(b, 0, 255) {
-					t.logf("bad bg rgb color (%d,%d,%d)\n", r, g, b)
+					if t.DebugLogger != nil {
+						t.logf("bad bg rgb color (%d,%d,%d)\n", r, g, b)
+					}
 				} else {
-					t.cur.Attr.BG = Color(r<<16 | g<<8 | b)
+					t.cur.Attr.BG = RGB(uint8(r), uint8(g), uint8(b))
 				}
 			} else {
-				t.logf("gfx attr %d unknown\n", a)
+				if t.DebugLogger != nil {
+					t.logf("gfx attr %d unknown\n", a)
+				}
 			}
 		case 49:
 			t.cur.Attr.BG = DefaultBG
@@ -686,7 +737,9 @@ func (t *State) setAttr(attr []int) {
 			} else if between(a, 100, 107) {
 				t.cur.Attr.BG = Color(a - 100 + 8)
 			} else {
-				t.logf("gfx attr %d unknown\n", a)
+				if t.DebugLogger != nil {
+					t.logf("gfx attr %d unknown\n", a)
+				}
 			}
 		}
 	}

@@ -9,7 +9,7 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/hinshun/vt10x"
+	"github.com/standardbeagle/vt10x"
 )
 
 // ActivityState represents the current activity state.
@@ -380,6 +380,14 @@ func (am *ActivityMonitor) screenTail() []string {
 		out = out[len(out)-am.previewMaxLines:]
 	}
 	return out
+}
+
+// RenderScreen returns the child's screen as an absolute ANSI repaint. The
+// virtual screen is fed every byte the child writes — including while the
+// overlay has the gate frozen and those bytes are reaching no terminal — so it
+// can restore the child's display without asking the child to redraw.
+func (am *ActivityMonitor) RenderScreen(maxRows int) []byte {
+	return RenderScreenANSI(am.screen, maxRows)
 }
 
 // Resize updates the virtual screen dimensions. Call it whenever the child PTY
