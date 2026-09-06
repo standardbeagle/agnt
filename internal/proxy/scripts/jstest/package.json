@@ -1,0 +1,13 @@
+{
+  "name": "agnt-scripts-jstest",
+  "private": true,
+  "type": "module",
+  "description": "DOM tests for the shipped instrumentation scripts in internal/proxy/scripts",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "jsdom": "^30.0.1",
+    "vitest": "^5.0.0"
+  }
+}

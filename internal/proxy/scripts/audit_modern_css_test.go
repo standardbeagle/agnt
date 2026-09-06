@@ -1,9 +1,7 @@
 package scripts
 
 import (
-	"encoding/json"
 	"os"
-	"os/exec"
 	"strings"
 	"testing"
 )
@@ -27,6 +25,10 @@ var modernCSSFeatures = []string{
 // different times and one of them (max-content-sizing) is not interoperable
 // at all, so a recommendation without `baseline`/`fallback` would push a
 // caller into writing a declaration an engine silently drops.
+//
+// Detection behaviour itself is asserted against a real document by the
+// vitest + jsdom tier (`make test-js`, internal/proxy/scripts/jstest) — this
+// guard runs with no node install and covers the contract, not the matching.
 func TestModernCSS_AdvisoryContract(t *testing.T) {
 	if !strings.Contains(auditCssJS, "'modern-css-opportunities'") {
 		t.Error("audit-css.js must list modern-css-opportunities in checksRun")
@@ -58,60 +60,21 @@ func TestModernCSS_AdvisoryContract(t *testing.T) {
 	}
 }
 
-// TestModernCSS_DetectsHandRolledShapes drives the REAL auditCSS over a
-// synthetic stylesheet under node: each rule set is one hand-rolled shape a
-// newer primitive replaces, so every feature must fire exactly once.
-//
-// The page carries no inline styles, no !important and no z-index, so its
-// only findings are advisory — which makes `score == 100` a mutation guard:
-// wire the advisories into the score and this assertion fails.
-//
-//	AGNT_JS_RUNTIME_TESTS=1 go test ./internal/proxy/scripts/ -run TestModernCSS_DetectsHandRolledShapes
-func TestModernCSS_DetectsHandRolledShapes(t *testing.T) {
-	if os.Getenv("AGNT_JS_RUNTIME_TESTS") == "" {
-		t.Skip("SKIPPING js-runtime tier: set AGNT_JS_RUNTIME_TESTS=1 to drive audit-css.js under node (the always-on source guard in TestModernCSS_AdvisoryContract still ran)")
-	}
-	node, err := exec.LookPath("node")
+// TestModernCSS_EveryFeatureHasDOMCoverage keeps the two tiers from drifting.
+// The Go guard here cannot run the detection; the vitest suite can, and a new
+// entry in MODERN_CSS is worthless until something actually exercises it
+// against a document. Adding a feature therefore fails this test until its
+// case exists.
+func TestModernCSS_EveryFeatureHasDOMCoverage(t *testing.T) {
+	const suite = "jstest/audit-css-modern.test.js"
+	body, err := os.ReadFile(suite)
 	if err != nil {
-		t.Fatalf("AGNT_JS_RUNTIME_TESTS is set but node is not on PATH: %v", err)
-	}
-
-	cmd := exec.Command(node, "-e", modernCSSDriver())
-	raw, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("node driver failed: %v\n%s", err, raw)
-	}
-	var got struct {
-		Score         int `json:"score"`
-		Opportunities []struct {
-			Type     string `json:"type"`
-			Advisory bool   `json:"advisory"`
-			Baseline string `json:"baseline"`
-			Fallback string `json:"fallback"`
-			Fix      string `json:"fix"`
-		} `json:"opportunities"`
-	}
-	if err := json.Unmarshal(raw, &got); err != nil {
-		t.Fatalf("decode node output %q: %v", raw, err)
-	}
-
-	seen := map[string]int{}
-	for _, o := range got.Opportunities {
-		seen[o.Type]++
-		if !o.Advisory {
-			t.Errorf("%s finding is not marked advisory", o.Type)
-		}
-		if o.Baseline == "" || o.Fallback == "" || o.Fix == "" {
-			t.Errorf("%s finding is missing baseline/fallback/fix: %+v", o.Type, o)
-		}
+		t.Fatalf("the DOM tier for this scan is missing (%s): %v", suite, err)
 	}
 	for _, feature := range modernCSSFeatures {
-		if seen[feature] != 1 {
-			t.Errorf("%s fired %d times over a page built to trigger it once", feature, seen[feature])
+		if !strings.Contains(string(body), "'"+feature+"'") {
+			t.Errorf("%s has no case for %q — the feature ships with no behavioural coverage", suite, feature)
 		}
-	}
-	if got.Score != 100 {
-		t.Errorf("score is %d, want 100 — a page whose only findings are advisory must not be marked down for them", got.Score)
 	}
 }
 
@@ -128,61 +91,4 @@ func modernCSSEntry(t *testing.T, feature string) string {
 		t.Fatalf("the %q entry is unterminated", feature)
 	}
 	return auditCssJS[start : start+end]
-}
-
-// modernCSSDriver evaluates the real audit-utils.js and audit-css.js under a
-// minimal window/document stub and runs auditCSS over a synthetic stylesheet.
-// Nothing is reimplemented: the shapes below go through the shipped scan.
-func modernCSSDriver() string {
-	var b strings.Builder
-	b.WriteString(`
-globalThis.window = {};
-window.__devtool_utils = { isDevtoolElement: function () { return false; } };
-window.getComputedStyle = function () { return { zIndex: 'auto' }; };
-
-function rule(selectorText, decls) {
-  var props = Object.keys(decls);
-  var style = { length: props.length, getPropertyValue: function (p) { return decls[p] || ''; } };
-  props.forEach(function (p, i) { style[i] = p; });
-  return { selectorText: selectorText, style: style, cssText: selectorText + ' {}' };
-}
-
-var rules = [
-  // sibling-index(): one rule per position, breaks when an item is added.
-  rule('.ring li:nth-child(1)', { transform: 'rotate(0deg)' }),
-  rule('.ring li:nth-child(2)', { transform: 'rotate(90deg)' }),
-  rule('.ring li:nth-child(3)', { transform: 'rotate(180deg)' }),
-  rule('.ring li:nth-child(4)', { transform: 'rotate(270deg)' }),
-  // attr(): one rule per attribute value.
-  rule('.btn[data-size="sm"]', { padding: '4px' }),
-  rule('.btn[data-size="md"]', { padding: '8px' }),
-  rule('.btn[data-size="lg"]', { padding: '12px' }),
-  // alpha(): one base color repeated per opacity level.
-  rule('.card', { color: '#0b5fff' }),
-  rule('.card--muted', { color: 'rgba(11, 95, 255, 0.4)' }),
-  rule('.card--ghost', { color: 'rgba(11, 95, 255, 0.8)' }),
-  // progress(): manual normalisation in calc().
-  rule('.meter', { opacity: 'calc((var(--v) - var(--min)) / (var(--max) - var(--min)))' }),
-  // text-box-trim: half-leading compensated by hand.
-  rule('.chip', { 'line-height': '1.2', 'padding-top': '10px', 'padding-bottom': '8px' }),
-  // shrink-to-fit: a content-sized child a wrapper has to hug.
-  rule('.tag', { width: 'fit-content' })
-];
-
-globalThis.document = {
-  styleSheets: [{ cssRules: rules }],
-  querySelectorAll: function () { return []; }
-};
-`)
-	b.WriteString(auditUtilsJS)
-	b.WriteString("\n")
-	b.WriteString(auditCssJS)
-	b.WriteString(`
-var result = window.__devtool_audit_css.auditCSS();
-process.stdout.write(JSON.stringify({
-  score: result.score,
-  opportunities: result.modernCSS.opportunities
-}));
-`)
-	return b.String()
 }

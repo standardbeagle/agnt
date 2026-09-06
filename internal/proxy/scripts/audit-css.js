@@ -67,6 +67,11 @@
   // "no parens between the parens" pattern can never match. Requiring a
   // PARENTHESISED divisor keeps this off ordinary division such as
   // calc((100% - 2 * 10px) / 3).
+  //
+  // Limit worth knowing: an engine folds purely numeric calc() before any
+  // audit can read it, so only the var()-bearing form survives to be matched.
+  // That is the form worth reporting anyway — arithmetic over custom
+  // properties is exactly what progress() replaces.
   var PAREN_DIV_RE = /\)\s*\/\s*\(/;
   var SUBTRACT_RE = /\s-\s/g;
   function hasRatioShape(value) {

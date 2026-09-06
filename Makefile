@@ -1,4 +1,4 @@
-.PHONY: build release test test-unit test-integration test-browser test-e2e e2e-publish-browser test-chrome-e2e test-isolated test-ssh test-ssh-coverage test-flake check-dirty-tree clean clean-zombies install install-local install-windows install-hooks run lint test-webapp mockagent generate generate-check vendor cross-compile cross-compile-check demo demo-publish demo-check demo-engine-test demo-mux-check demo-inspect-check demo-assemble-check
+.PHONY: build release test test-unit test-integration test-browser test-e2e e2e-publish-browser test-chrome-e2e test-js test-isolated test-ssh test-ssh-coverage test-flake check-dirty-tree clean clean-zombies install install-local install-windows install-hooks run lint test-webapp mockagent generate generate-check vendor cross-compile cross-compile-check demo demo-publish demo-check demo-engine-test demo-mux-check demo-inspect-check demo-assemble-check
 
 # Binary names
 BINARY := devtool-mcp
@@ -186,6 +186,20 @@ test-e2e:
 # browser path actually executes.
 e2e-publish-browser:
 	go test -v -count=1 -tags=chromee2e -run 'TestE2E_PublicPlane_RealBrowser' ./internal/proxy/
+
+# DOM tier for the shipped instrumentation scripts: vitest + jsdom drives the
+# real audit JS over a real document (internal/proxy/scripts/jstest).
+#
+# Deliberately OUTSIDE `make test`: the Go suite must never depend on a node
+# install, so this target loud-skips when npm is absent rather than failing.
+# jsdom answers for stylesheets, attributes and computed styles; anything
+# needing layout or paint belongs to the chromee2e tier instead.
+test-js:
+	@if ! command -v npm >/dev/null 2>&1; then \
+		echo "SKIPPED: test-js requires npm (node) on PATH"; \
+		exit 0; \
+	fi
+	cd internal/proxy/scripts/jstest && npm ci --no-audit --no-fund && npm test
 
 # Build test webapp server
 test-webapp:
@@ -378,6 +392,7 @@ help:
 	@echo "  test-browser     - Run browser automation tests (requires Chrome)"
 	@echo "  test-e2e         - Run Playwright e2e tests (auto-installs Chromium)"
 	@echo "  test-coverage    - Run tests with coverage report"
+	@echo "  test-js          - DOM tests for the injected scripts (vitest + jsdom)"
 	@echo "  test-webapp      - Build test webapp server"
 	@echo "  mockagent        - Build mock agent for PTY testing"
 	@echo "  bench            - Run benchmarks"
