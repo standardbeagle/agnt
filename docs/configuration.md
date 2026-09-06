@@ -119,6 +119,44 @@ current active count never evicts a session already in use — it only refuses n
 `Create` calls until the count drops. Runtime enforcement lives in
 `internal/chromedp/manager.go` (`SessionManager.SetMaxSessions` / `Start`).
 
+## Proxy Display Address (`proxies.<id>.status-url` in `.agnt.kdl`)
+
+The overlay shows a proxy's loopback URL unless something better is known. When
+you reach a proxy over a tailnet or LAN name, `status-url` pins that address so
+it appears in the status bar and the proxy detail panel instead.
+
+```kdl
+proxies {
+    dev {
+        url "http://localhost:5173"
+        status-url "https://box.tail1234.ts.net"
+    }
+}
+```
+
+**Display order** in the status bar: a live tunnel's URL, then `status-url`,
+then loopback. The overlay also auto-detects this node's tailnet name and shows
+it in the proxy detail panel; that detection is never promoted into the status
+bar on its own, so the bar does not change under you merely for having tailscale
+installed. `:tailscale-url` in the overview palette writes the detected address
+into this key.
+
+**`status-url` is not `public-url`.** They look interchangeable and are not:
+
+| Key | Read by | Effect |
+|---|---|---|
+| `status-url` | the overlay renderer, and nothing else | changes what you are shown |
+| `public-url` | `proxy.getProxyHost` / `getProxyScheme`, `checkWSOrigin` | rewrites Location headers and absolute links to that host, and widens the WebSocket origin check |
+
+Pinning a tailnet address in `public-url` would rewrite links to that host for
+someone browsing on `127.0.0.1` too. Use `public-url` when the proxy really is
+served behind that address (a tunnel), and `status-url` when you only want to
+see it.
+
+Edits to `status-url` are applied to running proxies by the reconcile path, so
+`:config`, `:tailscale-url`, or an external edit followed by a reconcile all
+take effect without restarting the proxy.
+
 ## Alert Push Channels (`internal/config/agnt.go`, `alerts.push` in `.agnt.kdl`)
 
 Controls which incident-pinger channels push alerts to the AI client. The

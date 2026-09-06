@@ -10,7 +10,20 @@ Overview panel command input (`:` or `/`) = **filterable command palette**, not 
 
 **Routing invariant**: `handleMenuKey` (`internal/overlay/input.go`) routes ALL keys to `handleCommandInput` *first* when `commandInput` active. Must stay above global menu switch — else Enter/↑/↓/q/x/1-9 stolen by panel navigation (original bug: Enter selected script instead of running typed command).
 
-Commands: `start/stop/restart <script>`, `kill-port <port>`, `kill-orphans`, `restart-proxy <id>`, `stop-proxy <id>`, `stop-tunnel <id>`, `toggle-ports`, `dismiss <n>`, `dismiss-all`, `summarize`, `reconnect`, `run <shell…>`. Dispatch = `InputRouter.dispatchPaletteCommand` — summarize/reconnect/toggle-ports/dismiss/dismiss-all run with overlay lock held (no controller round-trip); the rest release it. `ScriptController` gained `KillPort`, `CleanOrphans`, `RestartProxy`, `StopProxy`, `StopTunnel` (`internal/overlay/status.go`); `kill-port` reuses `PROC CLEANUP-PORT`, `kill-orphans` issues `PORTS CLEAN-ORPHANS`, proxy/tunnel commands issue `PROXY RESTART/STOP` and `TUNNEL STOP`. Tunnel start omitted (needs multi-arg config; use MCP tunnel tool).
+Commands: `start/stop/restart <script>`, `kill-port <port>`, `kill-orphans`, `restart-proxy <id>`, `stop-proxy <id>`, `stop-tunnel <id>`, `toggle-ports`, `dismiss <n>`, `dismiss-all`, `summarize`, `reconnect`, `run <shell…>`. Dispatch = `InputRouter.dispatchPaletteCommand` — summarize/reconnect/toggle-ports/dismiss/dismiss-all run with overlay lock held (no controller round-trip); the rest release it. `ScriptController` gained `KillPort`, `CleanOrphans`, `RestartProxy`, `StopProxy`, `StopTunnel` (`internal/overlay/status.go`); `kill-port` reuses `PROC CLEANUP-PORT`, `kill-orphans` issues `PORTS CLEAN-ORPHANS`, proxy/tunnel commands issue `PROXY RESTART/STOP` and `TUNNEL STOP`. `tunnel <provider> [proxy]` starts one under the **proxy's** id — `PROXY LIST` attaches `tunnel_url` to a proxy row by matching tunnel id to proxy id, so any other id runs fine and never shows up next to its proxy — and points it at the **proxy's** listen port, never the backend's (that would bypass the instrumentation). `tailscale-url [proxy]` writes the auto-detected tailnet address into `proxies.<id>.status-url` (`config.SetProxyStatusURL`) and reconciles; the file is written before the live apply, so a reconcile failure reports which half landed. Both resolve the target proxy via `resolveProxy` — the only running proxy by default, otherwise a refusal that NAMES the candidates rather than guessing.
+
+## Config Editor Panel (`:config`)
+
+`:config` opens `.agnt.kdl` in an editable panel (`internal/overlay/config_editor.go`). The model (`ConfigEditor`) is pure — buffer, rune-based cursor, scroll, dirty flag — so the editing rules are tested without a terminal; the renderer (`drawConfigPanelContent`) and the key router (`handleConfigKey`) are thin wrappers.
+
+**Routing invariant** (same shape as the palette's): `handleMenuKey` routes keys to `handleConfigKey` before the global menu switch. Without it, typing a word containing `q` or `x` reaches the panel browser and closes the panel mid-edit.
+
+- **Save** is `^S`, which arrives as the raw byte `\x13` — the escape reader only names CSI-sequence keys. Backspace likewise arrives as `\x7f`.
+- **A buffer that does not parse is never written.** `config.SaveAgntConfigText` validates first and writes atomically, so a refused save leaves the file byte-identical; writing a broken config would take out every autostart script and proxy on the next reload. The footer shows `KDL: ok` / the parse error as you type, so the answer is visible before you reach for the save key.
+- A successful save also reconciles, since a saved config the daemon has not read is half the job.
+- **Escape with unsaved edits warns once** and discards on a second press; any other key re-arms the guard so an old Escape cannot satisfy the confirmation.
+- A project with no `.agnt.kdl` opens on the documented default template (`config.DefaultAgntConfigKDL`), not an empty buffer.
+- `buildPanelItems` re-asserts the panel, because panels are otherwise derived from daemon status and the next refresh would drop it mid-edit.
 
 ## Silent-Failure Notice Banner
 
