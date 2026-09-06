@@ -55,6 +55,43 @@ Instances on the current tree (`internal/proxy/scripts/`):
 All four are already env-gated with a paired guard as of ratification; no gate
 alignment was required.
 
+### 1a. DOM-shaped assertions belong in the vitest + jsdom tier, not a node driver
+
+Ratified 2026-09-06 (modern-CSS opportunity scan, `internal/proxy/scripts/audit-css.js`).
+
+The §1 pattern extracts a *function* and drives it under node. That works for a
+pure function (byte counting, cluster boundaries) and stops working the moment
+the thing under test reads a document: stylesheets, computed styles, attributes,
+element walks. Stubbing a `document` by hand to reach that code is a
+re-implementation of the browser wearing a test's clothes — it passes against a
+stub that behaves how the author *assumed* a browser behaves.
+
+The tier that owns those assertions is `internal/proxy/scripts/jstest`
+(vitest, `environment: 'jsdom'`, run with `make test-js`). Its rules:
+
+1. **Load the shipped bytes.** `load-audit.js` reads the real `.js` files and
+   evaluates them into the test's window. No module wrapper, no copy.
+2. **Still outside the Go suite.** `make test` must never need node, so
+   `make test-js` is a separate target that loud-skips without npm — the same
+   independence §1's env-gate buys, achieved with a target instead.
+3. **The always-on Go source guard stays.** It owns the *contract* (field
+   presence, advisory/scoring rules, caps); the JS tier owns the *behaviour*.
+   Say so in the Go guard's doc comment so a reader knows where matching is
+   proven, and keep a drift guard that fails when a feature ships with no case
+   in the JS tier (`TestModernCSS_EveryFeatureHasDOMCoverage`).
+4. **Pair every detection with its near-miss.** A scan that fires on everything
+   is as useless as one that fires on nothing, and only the negative case tells
+   them apart. Mutation-verify the negatives: a threshold or guard that can be
+   deleted with the suite still green is not being tested by it.
+5. **Assert the premise when jsdom's fidelity is load-bearing.** jsdom drops
+   declarations it cannot parse and folds numeric `calc()`, so a rule that never
+   made it into the sheet would make a negative pass for the wrong reason.
+   Where that matters, assert the value survived before asserting on the result.
+
+jsdom answers for the DOM and CSSOM. Layout, paint and renderer timing are not
+its job — those stay in the `chromee2e` tier, which is deliberately absent from
+the default suite (AGENTS.md § Testing).
+
 ## 2. A cross-package test harness is a plain `.go` file fenced by `*testing.T`
 
 A helper that must be importable from another package's `_test.go` but must

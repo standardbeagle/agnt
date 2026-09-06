@@ -461,7 +461,15 @@ shipping it behind `@supports`, and `fallback` for what to keep beside it.
 **Coverage limits (fail-honest)**: cross-origin stylesheets cannot be read at
 all, and the walk stops after 3000 rules so a huge sheet cannot stall the
 inspected page. Both cases append to the audit's `note` field rather than
-silently under-reporting.
+silently under-reporting. One further limit has no note because nothing is
+lost: an engine folds purely numeric `calc()` before an audit can read it, so
+`progress()` is only reported for the `var()`-bearing form — which is the form
+the primitive actually helps with.
+
+**Tests**: `internal/proxy/scripts/jstest` (vitest + jsdom, `make test-js`)
+runs the shipped audit over real documents — every detection paired with the
+near-miss that must stay silent. The Go side keeps an always-on contract guard
+that needs no node install.
 
 ### CSS layering & positioning introspection (agent-targeted)
 
