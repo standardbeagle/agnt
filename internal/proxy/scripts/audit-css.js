@@ -81,9 +81,22 @@
     return !!minus && minus.length >= 2;
   }
   var FIT_RE = /\b(fit|max|min)-content\b/;
+  // Every property that sizes THE BOX to its own content. Track sizing
+  // (grid-template-columns: max-content) is deliberately absent: it sizes a
+  // track, not a box, and max-content-sizing has nothing to say about it.
+  var FIT_SIZING_PROPS = {
+    'width': 1, 'height': 1, 'inline-size': 1, 'block-size': 1,
+    'min-width': 1, 'min-height': 1, 'min-inline-size': 1, 'min-block-size': 1,
+    'max-width': 1, 'max-height': 1, 'max-inline-size': 1, 'max-block-size': 1,
+    'flex-basis': 1
+  };
   var HEX_RE = /#([0-9a-f]{3,8})\b/gi;
   var FUNC_COLOR_RE = /\b(rgba?|hsla?)\(([^()]*)\)/gi;
-  var NTH_INT_RE = /:nth-child\((\d+)\)/g;
+  // All four positional pseudo-classes, not just :nth-child. A rule set that
+  // counts from the end, or within one element type, breaks on insertion in
+  // exactly the same way — the replacement expression differs, not the defect.
+  var NTH_INT_RE = /:(nth-child|nth-last-child|nth-of-type|nth-last-of-type)\((\d+)\)/g;
+  var NTH_KEY_RE = /:(nth-child|nth-last-child|nth-of-type|nth-last-of-type)\(\d+\)/g;
   var ATTR_SEL_SRC = '\\[\\s*([-\\w]+)\\s*([~^$*|]?=)\\s*("[^"]*"|\'[^\']*\'|[^\\]]*?)\\s*\\]';
   var ATTR_SEL_RE = new RegExp(ATTR_SEL_SRC, 'g');
   // Separate object: String.replace() with a /g regex resets that regex's
@@ -178,8 +191,7 @@
       });
     }
 
-    if ((prop === 'width' || prop === 'inline-size' || prop === 'height' || prop === 'block-size') &&
-        FIT_RE.test(value)) {
+    if (FIT_SIZING_PROPS[prop] === 1 && FIT_RE.test(value)) {
       state.fitContent++;
     }
   }
@@ -190,12 +202,19 @@
 
     NTH_INT_RE.lastIndex = 0;
     var indexes = [];
-    while ((m = NTH_INT_RE.exec(selectorText)) !== null) indexes.push(m[1]);
+    var pseudo = '';
+    while ((m = NTH_INT_RE.exec(selectorText)) !== null) {
+      if (!pseudo) pseudo = m[1];
+      indexes.push(m[2]);
+    }
     if (indexes.length > 0) {
-      var nthKey = selectorText.replace(/:nth-child\(\d+\)/g, ':nth-child(N)');
+      // The pseudo-class stays in the group key, so a :nth-child set and a
+      // :nth-of-type set over the same elements are never merged into one
+      // finding — they call for different replacement expressions.
+      var nthKey = selectorText.replace(NTH_KEY_RE, ':$1(N)');
       var nthGroup = state.nthGroups[nthKey];
       if (!nthGroup) {
-        nthGroup = state.nthGroups[nthKey] = { selector: selectorText, indexes: {} };
+        nthGroup = state.nthGroups[nthKey] = { selector: selectorText, pseudo: pseudo, indexes: {} };
       }
       for (var ni = 0; ni < indexes.length; ni++) nthGroup.indexes[indexes[ni]] = true;
     }
@@ -215,6 +234,30 @@
     }
   }
 
+  // The block-direction padding pair, whichever way the rule spells it. The
+  // physical and logical properties are separate entries in the CSSOM — a rule
+  // that sets padding-block leaves padding-top empty — so reading only the
+  // physical longhands misses every logical-property stylesheet.
+  function verticalPadding(style) {
+    var top = style.getPropertyValue('padding-top');
+    var bottom = style.getPropertyValue('padding-bottom');
+    if (top && bottom) {
+      return { top: top, bottom: bottom, spelling: 'padding-top/padding-bottom' };
+    }
+    var blockStart = style.getPropertyValue('padding-block-start');
+    var blockEnd = style.getPropertyValue('padding-block-end');
+    if (blockStart && blockEnd) {
+      return { top: blockStart, bottom: blockEnd, spelling: 'padding-block-start/padding-block-end' };
+    }
+    var block = style.getPropertyValue('padding-block');
+    if (block) {
+      var parts = block.trim().split(/\s+/);
+      if (parts.length === 1) return { top: parts[0], bottom: parts[0], spelling: 'padding-block' };
+      if (parts.length === 2) return { top: parts[0], bottom: parts[1], spelling: 'padding-block' };
+    }
+    return null;
+  }
+
   // Optical-centring tell: an explicit line-height paired with vertical padding
   // that differs top vs bottom is almost always compensation for the font's
   // half-leading, which text-box-trim removes at the source.
@@ -222,10 +265,14 @@
     if (state.textBox.length >= MODERN_FINDING_CAP) return;
     var lineHeight = style.getPropertyValue('line-height');
     if (!lineHeight || lineHeight === 'normal') return;
-    var top = style.getPropertyValue('padding-top');
-    var bottom = style.getPropertyValue('padding-bottom');
-    if (!top || !bottom || top === bottom) return;
-    state.textBox.push({ selector: selectorText, top: top, bottom: bottom });
+    var padding = verticalPadding(style);
+    if (!padding || padding.top === padding.bottom) return;
+    state.textBox.push({
+      selector: selectorText,
+      top: padding.top,
+      bottom: padding.bottom,
+      spelling: padding.spelling
+    });
   }
 
   function modernFinding(kind, selector, message, fix, extra) {
@@ -250,6 +297,22 @@
       }
     }
     return finding;
+  }
+
+  // The replacement expression is not the same for all four positional
+  // pseudo-classes, and handing over the wrong one is worse than handing over
+  // nothing: sibling-index() counts every sibling from the start, so a
+  // counts-from-the-end or per-element-type rule set needs the difference
+  // spelled out rather than glossed over.
+  function siblingIndexFix(pseudo) {
+    var base = 'one rule covers any count: calc(360deg * sibling-index() / sibling-count()), no JS index pass and no per-position rule';
+    if (pseudo === 'nth-last-child') {
+      return 'one rule covers any count — count from the end with sibling-count() - sibling-index() + 1, no per-position rule';
+    }
+    if (pseudo === 'nth-of-type' || pseudo === 'nth-last-of-type') {
+      return base + '. Note sibling-index() counts EVERY sibling, so this maps directly only where the siblings are all the same element type';
+    }
+    return base;
   }
 
   function buildModernFindings(state) {
@@ -306,9 +369,9 @@
       var ng = state.nthGroups[nthKeys[i]];
       var idxCount = Object.keys(ng.indexes).length;
       out.push(modernFinding('sibling-index', ng.selector,
-        idxCount + ' :nth-child() rules differ only by index — the set breaks when an item is added',
-        'one rule covers any count: calc(360deg * sibling-index() / sibling-count()), no JS index pass and no per-position rule',
-        { indexCount: idxCount }));
+        idxCount + ' :' + ng.pseudo + '() rules differ only by index — the set breaks when an item is added',
+        siblingIndexFix(ng.pseudo),
+        { indexCount: idxCount, pseudo: ng.pseudo }));
     }
 
     // text-box-trim: font-metric compensation done by hand.
@@ -317,7 +380,7 @@
       out.push(modernFinding('text-box-trim', tb.selector,
         'line-height with asymmetric vertical padding (' + tb.top + ' / ' + tb.bottom + ') — the shape of half-leading compensation',
         'trim the leading at the source: text-box-trim: trim-both; text-box-edge: cap alphabetic — then equal padding centres the text',
-        { paddingTop: tb.top, paddingBottom: tb.bottom }));
+        { paddingTop: tb.top, paddingBottom: tb.bottom, spelling: tb.spelling }));
     }
 
     // shrink-to-fit: a fit-content child inside a full-width wrapper.
@@ -676,7 +739,10 @@
         if (depth === 0 && rule.cssText && rule.cssText.indexOf('!important') !== -1) {
           metrics.importantCount++;
         }
-        if (rule.selectorText && rule.style) {
+        // A rule that declares nothing is skipped outright: there is no
+        // value to read through attr(), and nothing an index rule could be
+        // collapsing. Reporting one would be advice with no edit attached.
+        if (rule.selectorText && rule.style && rule.style.length > 0) {
           modern.rulesScanned++;
           modernScanSelector(modern, rule.selectorText);
           modernScanTextBox(modern, rule.style, rule.selectorText);
