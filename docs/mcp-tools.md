@@ -420,6 +420,49 @@ Returns shell command string for streaming daemon events via `agnt monitor` CLI.
 
 **Scored audits (8)**: `auditAll` aggregates eight scored audits into a weighted overall grade — DOM, CSS, performance, security, SEO, accessibility, **API efficiency** (`__devtool_audit_api.auditAPIEfficiency`), and **loading/spinner** (`__devtool_audit_loading.auditLoading`). Weights: security 1.5, accessibility 1.3, performance 1.2, api 1.1, loading 1.1, seo 1.0, dom 0.8, css 0.7. Both new audits are guarded — `auditAll` degrades cleanly when a module is absent. The API + loading audits are temporal: they read the fetch/XHR buffer and spinner timeline, so they need a fresh page load to populate.
 
+### Modern-CSS opportunities (advisory, inside `auditCSS`)
+
+`auditCSS` runs one extra check, `modern-css-opportunities`, alongside its
+hygiene checks. It answers a different question — *what does this page
+hand-roll that CSS now has a primitive for* — and reports it under
+`modernCSS.opportunities` (AI shape) / `modernCSS` (raw shape).
+
+These findings are **advisory**: `severity: "info"`, `advisory: true`, and they
+never move the CSS score. A page written before a primitive shipped is not
+defective, so scoring it would mark down correct work.
+
+| Detected shape | Suggested primitive | Support as of 2026-09 |
+|---|---|---|
+| one base color repeated once per opacity level | `alpha(var(--brand) / 60%)` relative color | Chrome 151+, Safari 27+, Firefox nightly |
+| `calc((v - a) / (b - a))` normalisation | `progress(v, a, b)` (accepts mixed units) | Chrome/Edge/Safari; Firefox intent-to-ship |
+| ≥3 rules differing only by an attribute value | `attr(data-size type(<length>), 1rem)` | Chrome/Edge/Safari; Firefox intent-to-ship |
+| ≥3 `:nth-child(N)` rules differing only by index | `sibling-index()` / `sibling-count()` | interoperable (Chrome, Safari 26.2+, Firefox) |
+| `line-height` plus asymmetric vertical padding | `text-box-trim: trim-both; text-box-edge: cap alphabetic` | Chrome (2025-02), Safari; Firefox intent-to-prototype |
+| `width: fit-content` a wrapper must also hug | `max-content-sizing: shrink-to-fit` on the wrapper | newest of the set, not yet interoperable |
+
+Every finding carries `baseline` and `fallback` for exactly one reason: these
+primitives shipped at different times and one of them is interoperable
+nowhere. A suggestion without its support reality invites a declaration the
+engine drops on the floor — silent failure, which this project treats as worse
+than no suggestion. Read `baseline` to decide between shipping it outright and
+shipping it behind `@supports`, and `fallback` for what to keep beside it.
+
+**Not detected, and deliberately so:**
+
+- **`Promise.allKeyed({...})`** — the object-keyed sibling of `Promise.all`,
+  which drops the positional-array dance (`const [user, posts] = await
+  Promise.all([...])`). It is a JS-source pattern; the audits answer for the
+  rendered page, not for source, so this one is guidance here rather than a
+  finding.
+- **`<camera>` / `<microphone>`** — prototype stage, no declarative benefit
+  over `getUserMedia()` yet (you still wire up permission and stream events in
+  JS). Do not recommend them in generated code.
+
+**Coverage limits (fail-honest)**: cross-origin stylesheets cannot be read at
+all, and the walk stops after 3000 rules so a huge sheet cannot stall the
+inspected page. Both cases append to the audit's `note` field rather than
+silently under-reporting.
+
 ### CSS layering & positioning introspection (agent-targeted)
 
 The hardest CSS bugs are non-textual: the decisive evidence is *computed*
