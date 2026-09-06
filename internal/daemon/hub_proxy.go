@@ -303,6 +303,11 @@ func (d *Daemon) hubHandleProxyList(conn *hubpkg.Connection, cmd *hubproto.Comma
 			entry["tunnel_url"] = t.PublicURL
 			entry["tunnel_running"] = t.State == "connected"
 		}
+		// Display-only address from .agnt.kdl (status-url). A live tunnel
+		// still wins: that URL is the one currently serving traffic.
+		if statusURL := p.GetStatusURL(); statusURL != "" {
+			entry["status_url"] = statusURL
+		}
 		result = append(result, entry)
 	}
 

@@ -174,6 +174,21 @@ func (ps *ProxyServer) GetPublicURL() string {
 	return ""
 }
 
+// SetStatusURL sets the display-only address the overlay shows for this
+// proxy. Deliberately NOT wired into the URL rewriter or the origin check —
+// see ProxyConfig.StatusURL for why that separation exists.
+func (ps *ProxyServer) SetStatusURL(statusURL string) {
+	ps.statusURL.Store(&statusURL)
+}
+
+// GetStatusURL returns the display-only address, or "" if unset.
+func (ps *ProxyServer) GetStatusURL() string {
+	if p := ps.statusURL.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
 // SetSessionClientFactory sets the factory for creating session clients.
 // This is used by the browser session API to communicate with the daemon.
 func (ps *ProxyServer) SetSessionClientFactory(factory SessionClientFactory) {
@@ -312,6 +327,7 @@ func (ps *ProxyServer) Stats() ProxyStats {
 		Path:          ps.Path,
 		BindAddress:   ps.BindAddress,
 		PublicURL:     ps.GetPublicURL(),
+		StatusURL:     ps.GetStatusURL(),
 		Running:       ps.running.Load(),
 		Uptime:        time.Since(ps.startTime),
 		TotalRequests: ps.requestSeq.Load(),
@@ -369,6 +385,7 @@ type ProxyStats struct {
 	Path          string        `json:"path,omitempty"`         // Working directory where proxy was created
 	BindAddress   string        `json:"bind_address,omitempty"` // Bind address (127.0.0.1 or 0.0.0.0)
 	PublicURL     string        `json:"public_url,omitempty"`   // Public URL for tunnels
+	StatusURL     string        `json:"status_url,omitempty"`   // Display-only address shown in the overlay
 	Running       bool          `json:"running"`
 	Uptime        time.Duration `json:"uptime"`
 	TotalRequests int64         `json:"total_requests"`

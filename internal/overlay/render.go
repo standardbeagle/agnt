@@ -447,10 +447,20 @@ func (r *Renderer) DrawIndicator(status Status) {
 		if p.HasErrors {
 			errorProxyCount++
 		}
+		// Preference order is "what is actually serving this proxy right
+		// now, as far as the developer is concerned": a live tunnel first,
+		// then the address .agnt.kdl pins for display, then loopback. The
+		// auto-detected tailnet URL is NOT promoted here — it appears in the
+		// proxy detail panel, and only becomes a status URL when the
+		// developer pins it (`:tailscale-url`), so the bar never changes
+		// under someone merely for having tailscale installed.
 		displayURL := p.TunnelURL
 		urlColor := FgBrightCyan
 		if displayURL != "" {
 			urlColor = FgBrightMagenta
+		} else if p.StatusURL != "" {
+			displayURL = p.StatusURL
+			urlColor = FgMagenta
 		} else if p.ListenAddr != "" {
 			displayURL = "http://" + NormalizeListenAddr(p.ListenAddr)
 		}
@@ -1909,7 +1919,15 @@ func (r *Renderer) drawProxyPanelContent(startRow, col, width, maxRows int, pane
 	r.write(FgBrightCyan + Underline + proxyURL + Reset)
 	row++
 
-	if proxy.TailscaleURL != "" {
+	// Pinned display address (status-url) first, then the auto-detected
+	// tailnet one — showing both is the point: one is what the config says,
+	// the other is what this machine currently answers to.
+	if proxy.StatusURL != "" {
+		r.moveTo(row, col)
+		r.write(FgMagenta + Underline + proxy.StatusURL + Reset)
+		row++
+	}
+	if proxy.TailscaleURL != "" && proxy.TailscaleURL != proxy.StatusURL {
 		r.moveTo(row, col)
 		r.write(FgMagenta + Underline + proxy.TailscaleURL + Reset)
 		row++

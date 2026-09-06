@@ -41,6 +41,7 @@ func buildProxyServerConfig(id, targetURL, projectPath string, cfg *config.Proxy
 		skipTLSVerify bool
 		allowExternal bool
 		publicURL     string
+		statusURL     string
 	)
 	if cfg != nil {
 		maxLog = cfg.MaxLogSize
@@ -48,6 +49,7 @@ func buildProxyServerConfig(id, targetURL, projectPath string, cfg *config.Proxy
 		skipTLSVerify = cfg.SkipTLSVerify
 		allowExternal = cfg.AllowExternal
 		publicURL = cfg.PublicURL
+		statusURL = cfg.StatusURL
 	}
 	return proxy.ProxyConfig{
 		ID:               id,
@@ -61,6 +63,7 @@ func buildProxyServerConfig(id, targetURL, projectPath string, cfg *config.Proxy
 		SkipTLSVerify:    skipTLSVerify,
 		AllowExternal:    allowExternal,
 		PublicURL:        publicURL,
+		StatusURL:        statusURL,
 	}
 }
 

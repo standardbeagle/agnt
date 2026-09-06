@@ -49,6 +49,10 @@ type ProxyServer struct {
 	// races request-path readers (checkWSOrigin, URL rewriting, Stats) —
 	// hence atomic. Access via GetPublicURL/SetPublicURL only.
 	publicURL atomic.Pointer[string]
+	// statusURL is the display-only address (see ProxyConfig.StatusURL).
+	// Atomic for the same reason as publicURL: the overlay reads it from
+	// the Stats path while a palette command may be setting it.
+	statusURL atomic.Pointer[string]
 	// tailnetIdentities resolves the authorities (MagicDNS name, tailscale
 	// IPs) this node answers under on its tailnet, for checkWSOrigin. The
 	// zero value is the production path (platform.TailscaleSelfIdentities);
@@ -181,16 +185,20 @@ func (ps *ProxyServer) DeliverSecret(name, value string) error {
 
 // ProxyConfig holds configuration for creating a proxy server.
 type ProxyConfig struct {
-	ID            string
-	TargetURL     string
-	ListenPort    int
-	MaxLogSize    int
-	AutoRestart   bool   // Enable automatic restart on crash (default: true)
-	Path          string // Working directory where proxy was created
-	BindAddress   string // Bind address: "127.0.0.1" (default, localhost only) or "0.0.0.0" (all interfaces)
-	PublicURL     string // Optional public URL for tunnel services (e.g., "https://abc123.trycloudflare.com")
-	AllowExternal bool   // Allow binding to non-localhost addresses (0.0.0.0, ::). Requires explicit opt-in for security.
-	SkipTLSVerify bool   // Skip TLS certificate verification (default: false, verifies certs). Set true for self-signed/expired certs in dev.
+	ID          string
+	TargetURL   string
+	ListenPort  int
+	MaxLogSize  int
+	AutoRestart bool   // Enable automatic restart on crash (default: true)
+	Path        string // Working directory where proxy was created
+	BindAddress string // Bind address: "127.0.0.1" (default, localhost only) or "0.0.0.0" (all interfaces)
+	PublicURL   string // Optional public URL for tunnel services (e.g., "https://abc123.trycloudflare.com")
+	// StatusURL is a display-only address surfaced to the overlay. Unlike
+	// PublicURL it is never consulted by the URL rewriter or the origin
+	// check — it changes what the developer is shown, not what is served.
+	StatusURL     string
+	AllowExternal bool // Allow binding to non-localhost addresses (0.0.0.0, ::). Requires explicit opt-in for security.
+	SkipTLSVerify bool // Skip TLS certificate verification (default: false, verifies certs). Set true for self-signed/expired certs in dev.
 	// StrictListenPort disables the silent :0 auto-assign fallback when
 	// ListenPort is already in use. When true, a bind conflict surfaces
 	// as a hard error from Start(). Used by autostart when a user
@@ -335,6 +343,7 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 	ps.wsUpgrader = websocket.Upgrader{CheckOrigin: ps.checkWSOrigin}
 
 	ps.SetPublicURL(config.PublicURL)
+	ps.SetStatusURL(config.StatusURL)
 
 	ps.authBreakout.Store(config.AuthBreakout)
 

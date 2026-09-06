@@ -695,3 +695,38 @@ func (c *DaemonScriptController) StopTunnel(id string) error {
 	_, err := c.conn.RequestJSON(protocol.VerbTunnel, map[string]interface{}{"directory": c.projectPath}, protocol.SubVerbStop, id)
 	return err
 }
+
+// StartTunnel opens a tunnel in front of a proxy and returns its public URL.
+//
+// The tunnel is started under the PROXY's id, not a fresh one, because that is
+// the binding PROXY LIST uses to attach `tunnel_url` to a proxy row — a tunnel
+// started under any other id runs correctly and then never appears next to the
+// proxy it fronts. proxy_id is passed as well so the daemon points the proxy's
+// URL rewriting at the tunnel host.
+func (c *DaemonScriptController) StartTunnel(provider, proxyID string, localPort int) (string, error) {
+	result, err := c.conn.RequestJSON(protocol.VerbTunnel, map[string]interface{}{
+		"directory":  c.projectPath,
+		"provider":   provider,
+		"local_port": localPort,
+		"proxy_id":   proxyID,
+	}, protocol.SubVerbStart, proxyID)
+	if err != nil {
+		return "", err
+	}
+	if url, ok := result["public_url"].(string); ok {
+		return url, nil
+	}
+	return "", nil
+}
+
+// ReconcileConfig asks the daemon to live-apply the current .agnt.kdl. Called
+// after an overlay-side config edit so the change lands without a restart.
+func (c *DaemonScriptController) ReconcileConfig() error {
+	_, err := c.conn.RequestJSON(protocol.VerbAutostart, map[string]interface{}{"directory": c.projectPath}, protocol.SubVerbReconcile, c.projectPath)
+	return err
+}
+
+// ProjectPath returns the directory whose .agnt.kdl this controller edits.
+func (c *DaemonScriptController) ProjectPath() string {
+	return c.projectPath
+}

@@ -545,6 +545,18 @@ type ProxyConfig struct {
 	// tool JSON (`public_url`) and KDL (`public-url`).
 	PublicURL string `kdl:"public-url"`
 
+	// StatusURL is a display-only address for this proxy: the overlay
+	// status bar and ports panel show it in place of the loopback URL,
+	// and nothing else reads it. It exists because PublicURL is NOT
+	// display-only — that one drives Location-header and absolute-link
+	// rewriting (proxy.getProxyHost / getProxyScheme) and widens the
+	// WebSocket origin check, so pinning a tailnet address there would
+	// rewrite links to that host for local browsing too. Set this when
+	// you reach the proxy over a tailnet or LAN name and want the
+	// overlay to show you that address, without changing what the proxy
+	// serves. A live tunnel's URL still wins over it.
+	StatusURL string `kdl:"status-url"`
+
 	// Websocket enables WebSocket proxying
 	Websocket bool `kdl:"websocket"`
 

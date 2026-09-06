@@ -7,6 +7,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/scope"
 	"github.com/standardbeagle/go-cli-server/script"
 )
 
@@ -85,7 +86,30 @@ func (d *Daemon) ReconcileProjectConfig(ctx context.Context, projectPath string)
 	// materialization to the autostart path. Idempotent for unchanged running
 	// scripts (StartScriptExplicit skips them).
 	d.RunAutostart(ctx, projectPath)
+	d.applyProxyDisplayConfig(projectPath, cfg)
 	return plan, nil
+}
+
+// applyProxyDisplayConfig pushes display-only proxy settings onto proxies that
+// are already running. Autostart materialization is idempotent, so an existing
+// proxy never picks up an edited `status-url` on its own — without this the key
+// would parse and then do nothing until the proxy was restarted, which is the
+// parsed-but-unacted-on shape .claude/rules/daemon-architecture.md § Config
+// Authority calls a bug. Display-only by construction: nothing here can change
+// what the proxy serves, so applying it live cannot disturb in-flight traffic.
+func (d *Daemon) applyProxyDisplayConfig(projectPath string, cfg *config.AgntConfig) {
+	if cfg == nil {
+		return
+	}
+	for _, p := range d.proxym.ListScoped(scope.Project(projectPath)) {
+		pc, ok := cfg.Proxies[p.ID]
+		if !ok || pc == nil {
+			continue
+		}
+		if p.GetStatusURL() != pc.StatusURL {
+			p.SetStatusURL(pc.StatusURL)
+		}
+	}
 }
 
 // stopReconcileScript stops the managed process for a script and clears its

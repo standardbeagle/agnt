@@ -53,13 +53,17 @@ type ProcessInfo struct {
 
 // ProxyInfo holds information about a running proxy.
 type ProxyInfo struct {
-	ID              string
-	TargetURL       string
-	ListenAddr      string
-	HasErrors       bool
-	ErrorCount      int
-	TunnelURL       string
-	TunnelRunning   bool
+	ID            string
+	TargetURL     string
+	ListenAddr    string
+	HasErrors     bool
+	ErrorCount    int
+	TunnelURL     string
+	TunnelRunning bool
+	// StatusURL is the address .agnt.kdl pins for display (status-url). It
+	// replaces the loopback URL in the status bar so the developer sees the
+	// address they actually reach the proxy on. A live tunnel still wins.
+	StatusURL       string
 	LinkedProcessID string // ID of process this proxy targets (if any)
 	TailscaleURL    string // Tailscale DNS URL if available (e.g., http://machine.tailnet.ts.net:port)
 

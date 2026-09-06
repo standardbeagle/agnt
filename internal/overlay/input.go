@@ -76,6 +76,12 @@ type ScriptController interface {
 	StopProxy(id string) error
 	// StopTunnel stops a tunnel by ID.
 	StopTunnel(id string) error
+	// StartTunnel opens a tunnel in front of a proxy, returning its public URL.
+	StartTunnel(provider, proxyID string, localPort int) (string, error)
+	// ReconcileConfig live-applies the project's .agnt.kdl.
+	ReconcileConfig() error
+	// ProjectPath is the directory holding the project's .agnt.kdl.
+	ProjectPath() string
 }
 
 // StatusSummarizer is an interface for summarizing system status.
