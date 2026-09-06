@@ -234,3 +234,24 @@ func writeFileAtomic(path, content string) error {
 	}
 	return nil
 }
+
+// SaveAgntConfigText writes replacement text for a .agnt.kdl file, refusing
+// anything the daemon could not load. The overlay's editor is the caller: a
+// developer typing directly into the config can produce a file that does not
+// parse, and writing it would take out every autostart script and proxy on the
+// next reload. Validation happens before the write, and the write is atomic, so
+// a rejected save leaves the file exactly as it was.
+func SaveAgntConfigText(path, text string) error {
+	if _, err := ParseAgntConfig(text); err != nil {
+		return fmt.Errorf("not saved — config does not parse: %w", err)
+	}
+	return writeFileAtomic(path, text)
+}
+
+// ValidateAgntConfigText reports whether text would load, without writing
+// anything. The editor calls it as you type so the error is visible before you
+// reach for the save key.
+func ValidateAgntConfigText(text string) error {
+	_, err := ParseAgntConfig(text)
+	return err
+}

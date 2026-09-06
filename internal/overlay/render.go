@@ -866,6 +866,8 @@ func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Sta
 		// title is the label ("overview" / "summary")
 	case "log":
 		title = "session log"
+	case "config":
+		title = ".agnt.kdl"
 	default:
 		title = active.Type + ": " + active.ID
 	}
@@ -884,6 +886,8 @@ func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Sta
 		r.drawProxyPanelContent(contentRow, panelCol+2, contentWidth, panelHeight-2, active, status)
 	case "log", "summary":
 		r.drawScrollableContent(contentRow, panelCol+2, contentWidth, panelHeight-2, active)
+	case "config":
+		r.drawConfigPanelContent(contentRow, panelCol+2, contentWidth, panelHeight-2, actions.ConfigEditor)
 	}
 
 	// === FOOTER ===
@@ -909,6 +913,11 @@ func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Sta
 		}
 		parts = append(parts, "Ctrl+→ Panels", "Esc Exit")
 		hint = fmt.Sprintf(" %s  (%d/%d) ", strings.Join(parts, "  "), activeIndex+1, len(panels))
+	} else if active.Type == "config" {
+		// The editor swallows every key it can use, so its hint lists what it
+		// does with them rather than the panel-browser bindings that no longer
+		// apply while typing.
+		hint = fmt.Sprintf(" ^S Save  Esc Close  ↑↓←→ Move  (%d/%d) ", activeIndex+1, len(panels))
 	} else {
 		hint = fmt.Sprintf(" Tab Navigate  ↑↓ Scroll  1-9 Jump  x Close stopped  Esc Exit  (%d/%d) ", activeIndex+1, len(panels))
 	}
@@ -2408,4 +2417,95 @@ func (r *Renderer) ClearStatusBarMessage() {
 	r.buf = nil
 	r.mu.Unlock()
 	r.flushBuffer(buf)
+}
+
+// drawConfigPanelContent renders the .agnt.kdl editor: the buffer with a block
+// cursor, and a footer line that answers "would this save?" before the
+// developer reaches for the save key.
+func (r *Renderer) drawConfigPanelContent(startRow, col, width, maxRows int, editor *ConfigEditor) {
+	if editor == nil {
+		r.moveTo(startRow, col)
+		r.write(FgBrightBlack + "no config loaded" + Reset)
+		return
+	}
+
+	// One row is reserved for the status line, so the buffer viewport is one
+	// shorter than the panel — scrolling has to agree with that or the cursor
+	// line can sit under the status line and look lost.
+	viewport := maxRows - 1
+	if viewport < 1 {
+		viewport = 1
+	}
+	editor.EnsureVisible(viewport)
+
+	lines := editor.Lines()
+	cursorLine, cursorCol := editor.Cursor()
+	scroll := editor.Scroll()
+
+	row := startRow
+	for i := scroll; i < len(lines) && row < startRow+viewport; i++ {
+		r.moveTo(row, col)
+		gutter := fmt.Sprintf("%s%4d %s", FgBrightBlack, i+1, Reset)
+		r.write(gutter)
+		r.write(renderConfigLine(lines[i], width-5, i == cursorLine, cursorCol))
+		row++
+	}
+
+	// Status line: dirty marker, parse state, and the last save message.
+	r.moveTo(startRow+viewport, col)
+	var parts []string
+	if editor.Dirty() {
+		parts = append(parts, FgYellow+"edited"+Reset)
+	} else {
+		parts = append(parts, FgBrightBlack+"saved"+Reset)
+	}
+	if err := editor.ParseError(); err != nil {
+		parts = append(parts, FgRed+"KDL: "+truncateLine(err.Error(), width/2)+Reset)
+	} else {
+		parts = append(parts, FgGreen+"KDL: ok"+Reset)
+	}
+	if msg := editor.Status(); msg != "" {
+		parts = append(parts, FgBrightBlack+truncateLine(msg, width/2)+Reset)
+	}
+	r.write(strings.Join(parts, FgBrightBlack+" · "+Reset))
+}
+
+// renderConfigLine draws one buffer line, inverting the cell under the cursor.
+// The cursor is drawn rather than positioned with the terminal's own cursor
+// because the overlay hides that one while a panel is up.
+func renderConfigLine(line string, width int, hasCursor bool, cursorCol int) string {
+	runes := []rune(line)
+	if width < 1 {
+		width = 1
+	}
+	if len(runes) > width {
+		runes = runes[:width]
+	}
+	if !hasCursor {
+		return string(runes)
+	}
+	if cursorCol > len(runes) {
+		cursorCol = len(runes)
+	}
+	under := " "
+	if cursorCol < len(runes) {
+		under = string(runes[cursorCol])
+	}
+	tail := ""
+	if cursorCol < len(runes) {
+		tail = string(runes[cursorCol+1:])
+	}
+	return string(runes[:cursorCol]) + Reverse + under + Reset + tail
+}
+
+// truncateLine keeps a message inside the panel without wrapping it.
+func truncateLine(s string, max int) string {
+	if max < 4 {
+		max = 4
+	}
+	runes := []rune(strings.ReplaceAll(s, "\n", " "))
+	if len(runes) <= max {
+		return string(runes)
+	}
+	return string(runes[:max-1]) + "…"
 }

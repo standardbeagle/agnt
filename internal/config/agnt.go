@@ -1497,6 +1497,14 @@ func validateChannelConfig(cfg *ChannelConfig) error {
 
 // WriteDefaultAgntConfig writes a default configuration file with documentation.
 func WriteDefaultAgntConfig(path string) error {
+	return os.WriteFile(path, []byte(DefaultAgntConfigKDL()), 0644)
+}
+
+// DefaultAgntConfigKDL returns the documented default config as text. Exposed
+// so the overlay's editor can open a project that has no .agnt.kdl yet on the
+// same commented template `agnt init` would have written, rather than on an
+// empty buffer that tells the developer nothing about the available keys.
+func DefaultAgntConfigKDL() string {
 	defaultKDL := `// Agnt Configuration
 // This file configures scripts and proxies to auto-start with agnt run
 // Uses standard KDL format: https://kdl.dev
@@ -1636,5 +1644,5 @@ toast {
 //     // append-system-prompt "Additional context for this project..."
 // }
 `
-	return os.WriteFile(path, []byte(defaultKDL), 0644)
+	return defaultKDL
 }

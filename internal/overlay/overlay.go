@@ -259,7 +259,12 @@ type Overlay struct {
 	// Panel navigation (niri-style horizontal panels)
 	panelIndex int         // Current panel index (0 = overview)
 	panelItems []PanelItem // Available panels built from status
-	panelMode  bool        // Whether in panel view (vs indicator)
+
+	// configEditor backs the "config" panel. Guarded by mu like the rest of
+	// the panel state: the input router mutates it while the draw path reads
+	// it.
+	configEditor *ConfigEditor
+	panelMode    bool // Whether in panel view (vs indicator)
 
 	// Overview panel: interactive script selection
 	overviewSelectedIdx int // Selected script row in overview (0-based)
@@ -602,6 +607,22 @@ func (o *Overlay) buildPanelItems() {
 		}
 	}
 
+	// The config panel is not derived from daemon status like the others, so
+	// the rebuild has to re-assert it — otherwise the next status refresh
+	// would drop the panel out from under someone mid-edit.
+	if o.configEditor != nil {
+		found := false
+		for _, p := range o.panelItems {
+			if p.Type == "config" {
+				found = true
+				break
+			}
+		}
+		if !found {
+			o.panelItems = append(o.panelItems, PanelItem{Type: "config", ID: "__config", Label: "config"})
+		}
+	}
+
 	// Ensure log panel exists as the last panel and update its content
 	logIdx := -1
 	for i, p := range o.panelItems {
@@ -831,6 +852,12 @@ type OverviewActions struct {
 	Connecting       bool   // reconnect in flight (spinner on the connection line)
 	ConnectErr       string // last reconnect error
 	SpinnerFrame     int    // current spinner frame index
+
+	// ConfigEditor is the .agnt.kdl buffer behind the config panel, or nil
+	// when it has not been opened. Passed through the draw path rather than
+	// read from the Overlay directly so the renderer keeps taking a snapshot
+	// instead of reaching into live state under the draw lock.
+	ConfigEditor *ConfigEditor
 }
 
 // overviewActionsLocked snapshots the overview action state. Must be called
@@ -843,6 +870,7 @@ func (o *Overlay) overviewActionsLocked() OverviewActions {
 		Connecting:       o.connecting.Load(),
 		ConnectErr:       o.connectErr,
 		SpinnerFrame:     int(o.spinnerTick.Load()),
+		ConfigEditor:     o.configEditor,
 	}
 }
 

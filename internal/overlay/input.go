@@ -110,6 +110,11 @@ type InputRouter struct {
 	statusFetcher    *StatusFetcher
 	summarizer       StatusSummarizer
 
+	// configDiscardArmed is set when Escape found unsaved config edits. The
+	// next Escape discards them; anything else disarms it, so a confirmation
+	// can never be satisfied by a keypress from minutes earlier.
+	configDiscardArmed bool
+
 	// Process viewer state
 	viewerActive         bool
 	viewerUsingAltScreen bool
@@ -383,6 +388,13 @@ func (r *InputRouter) handleMenuKey(key string) {
 		return
 	}
 
+	// The config editor captures keys the same way and for the same reason:
+	// without this, typing a word containing 'q' or 'x' in the buffer would be
+	// read as a panel-browser command and close the panel mid-edit.
+	if r.isConfigPanel() && r.handleConfigKey(key) {
+		return
+	}
+
 	// Handle "Escape+X" keys (when Escape is followed quickly by another key)
 	if strings.HasPrefix(key, "Escape+") {
 		// Treat as Escape - close the panel view
@@ -644,6 +656,14 @@ func (r *InputRouter) isOverviewPanel() bool {
 		return false
 	}
 	return len(r.overlay.panelItems) > 0 && r.overlay.panelItems[0].Type == "overview"
+}
+
+// isConfigPanel reports whether the .agnt.kdl editor is the active panel.
+func (r *InputRouter) isConfigPanel() bool {
+	if !r.overlay.panelMode || r.overlay.panelIndex >= len(r.overlay.panelItems) {
+		return false
+	}
+	return r.overlay.panelItems[r.overlay.panelIndex].Type == "config"
 }
 
 // startSummarize kicks off an async AI status summarize. The result is shown in
@@ -919,6 +939,10 @@ func (r *InputRouter) dispatchPaletteCommand(c PaletteCommand, args string) {
 	case "tailscale-url":
 		if err := r.runTailscaleURLCommand(args); err != nil {
 			fail("tailscale-url", err)
+		}
+	case "config":
+		if err := r.openConfigPanel(); err != nil {
+			fail("config", err)
 		}
 	case "run":
 		if args != "" {
