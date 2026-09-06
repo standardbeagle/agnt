@@ -16,6 +16,316 @@
     window.__devtool_audit_utils.registerFinding(id, selector);
   }
 
+  // --- Modern-CSS opportunity scan ---------------------------------------
+  // The hygiene checks above answer "what is wrong on this page". This scan
+  // answers a different question: "what does this page hand-roll that CSS now
+  // has a primitive for". Findings are ADVISORY and never move the score — a
+  // page written before a primitive shipped is not defective.
+  //
+  // Every finding carries `baseline` and `fallback` because these primitives
+  // landed at different times: some are interoperable today, some still drop
+  // on the floor in one engine. Emitting the suggestion without the support
+  // reality would push callers into shipping a value that silently does
+  // nothing, which is the failure mode this project treats as worse than no
+  // suggestion at all.
+  var MODERN_CSS = {
+    'alpha-shorthand': {
+      feature: 'alpha() relative color',
+      baseline: 'Chrome 151+, Safari 27+, Firefox nightly (as of 2026-09)',
+      fallback: 'keep the rgba()/hsla() literal and layer alpha() behind @supports (color: alpha(red / 50%))'
+    },
+    'progress-function': {
+      feature: 'progress()',
+      baseline: 'Chrome, Edge, Safari; Firefox intent-to-ship (as of 2026-09)',
+      fallback: 'keep the calc() form behind @supports (width: progress(1px, 0px, 2px))'
+    },
+    'typed-attr': {
+      feature: 'attr() with a type — attr(data-x type(<length>))',
+      baseline: 'Chrome, Edge, Safari; Firefox intent-to-ship (as of 2026-09)',
+      fallback: 'keep the per-value rules, or pass the value in as a custom property (style="--size: 12px")'
+    },
+    'sibling-index': {
+      feature: 'sibling-index() / sibling-count()',
+      baseline: 'Chrome, Safari 26.2+, Firefox — interoperable as of 2026-09',
+      fallback: 'none needed'
+    },
+    'text-box-trim': {
+      feature: 'text-box-trim / text-box-edge',
+      baseline: 'Chrome (since 2025-02), Safari; Firefox intent-to-prototype (as of 2026-09)',
+      fallback: 'safe to add unconditionally — an engine without it renders exactly what the page renders today'
+    },
+    'shrink-to-fit': {
+      feature: 'max-content-sizing: shrink-to-fit',
+      baseline: 'newest of the set, not yet interoperable (as of 2026-09)',
+      fallback: 'gate on @supports (max-content-sizing: shrink-to-fit) and keep the current wrapper sizing'
+    }
+  };
+
+  // Ratio-of-differences: calc((v - a) / (b - a)) — the manual normalisation
+  // progress() replaces. Matched structurally rather than with one regex,
+  // because the real-world form nests var() inside both differences, which a
+  // "no parens between the parens" pattern can never match. Requiring a
+  // PARENTHESISED divisor keeps this off ordinary division such as
+  // calc((100% - 2 * 10px) / 3).
+  var PAREN_DIV_RE = /\)\s*\/\s*\(/;
+  var SUBTRACT_RE = /\s-\s/g;
+  function hasRatioShape(value) {
+    if (value.indexOf('calc(') === -1) return false;
+    if (!PAREN_DIV_RE.test(value)) return false;
+    var minus = value.match(SUBTRACT_RE);
+    return !!minus && minus.length >= 2;
+  }
+  var FIT_RE = /\b(fit|max|min)-content\b/;
+  var HEX_RE = /#([0-9a-f]{3,8})\b/gi;
+  var FUNC_COLOR_RE = /\b(rgba?|hsla?)\(([^()]*)\)/gi;
+  var NTH_INT_RE = /:nth-child\((\d+)\)/g;
+  var ATTR_SEL_SRC = '\\[\\s*([-\\w]+)\\s*([~^$*|]?=)\\s*("[^"]*"|\'[^\']*\'|[^\\]]*?)\\s*\\]';
+  var ATTR_SEL_RE = new RegExp(ATTR_SEL_SRC, 'g');
+  // Separate object: String.replace() with a /g regex resets that regex's
+  // lastIndex, so stripping with the same matcher we are iterating would
+  // restart the walk forever.
+  var ATTR_SEL_STRIP_RE = new RegExp(ATTR_SEL_SRC, 'g');
+
+  var MODERN_RULE_CAP = 3000;   // bounded walk: a huge sheet must not stall the page
+  var MODERN_FINDING_CAP = 3;   // per feature
+
+  function newModernState() {
+    return {
+      colors: {},        // colorKey -> { opaque, alphas, sample }
+      attrGroups: {},    // base|attr -> { base, attr, values }
+      nthGroups: {},     // normalized selector -> { selector, indexes }
+      progress: [],      // { selector, snippet }
+      textBox: [],       // { selector, top, bottom }
+      fitContent: 0,
+      rulesScanned: 0,
+      truncated: false
+    };
+  }
+
+  function alphaToken(token) {
+    if (!token) return 1;
+    var n = parseFloat(token);
+    if (isNaN(n)) return 1;
+    return token.charAt(token.length - 1) === '%' ? n / 100 : n;
+  }
+
+  // Normalize one color literal to { key, alpha }. Hex and rgb()/rgba() share
+  // an 'rgb:' key space so "#0b5fff" and "rgba(11,95,255,.4)" collapse onto
+  // the same base color; hsl() keeps its own space rather than guessing a
+  // conversion the page never asked for.
+  function colorEntry(space, channels, alpha) {
+    return { key: space + ':' + channels.join(','), alpha: alpha };
+  }
+
+  function parseColorsIn(value, out) {
+    var m;
+    HEX_RE.lastIndex = 0;
+    while ((m = HEX_RE.exec(value)) !== null) {
+      var hex = m[1].toLowerCase();
+      var r, g, b, a = 1;
+      if (hex.length === 3 || hex.length === 4) {
+        r = String(parseInt(hex[0] + hex[0], 16));
+        g = String(parseInt(hex[1] + hex[1], 16));
+        b = String(parseInt(hex[2] + hex[2], 16));
+        if (hex.length === 4) a = parseInt(hex[3] + hex[3], 16) / 255;
+      } else if (hex.length === 6 || hex.length === 8) {
+        r = String(parseInt(hex.substring(0, 2), 16));
+        g = String(parseInt(hex.substring(2, 4), 16));
+        b = String(parseInt(hex.substring(4, 6), 16));
+        if (hex.length === 8) a = parseInt(hex.substring(6, 8), 16) / 255;
+      } else {
+        continue; // 5- and 7-digit hex is not a color
+      }
+      out.push({ entry: colorEntry('rgb', [r, g, b], a), raw: m[0] });
+    }
+    FUNC_COLOR_RE.lastIndex = 0;
+    while ((m = FUNC_COLOR_RE.exec(value)) !== null) {
+      var fn = m[1].toLowerCase();
+      var parts = m[2].split(/[\s,\/]+/).filter(function(p) { return p !== ''; });
+      if (parts.length < 3) continue;
+      var space = fn.charAt(0) === 'r' ? 'rgb' : 'hsl';
+      var channels = [parts[0], parts[1], parts[2]].map(function(p) { return p.toLowerCase(); });
+      out.push({ entry: colorEntry(space, channels, alphaToken(parts[3])), raw: m[0] });
+    }
+  }
+
+  // Declaration-level scan, shared by the inline-style pass and the rule walk.
+  function modernScanDeclaration(state, prop, value, selector) {
+    if (!value) return;
+
+    var colors = [];
+    parseColorsIn(value, colors);
+    for (var ci = 0; ci < colors.length; ci++) {
+      var key = colors[ci].entry.key;
+      var alpha = colors[ci].entry.alpha;
+      var bucket = state.colors[key];
+      if (!bucket) {
+        bucket = state.colors[key] = { opaque: 0, alphas: {}, sample: colors[ci].raw };
+      }
+      if (alpha >= 1) bucket.opaque++;
+      else bucket.alphas[String(alpha)] = (bucket.alphas[String(alpha)] || 0) + 1;
+    }
+
+    if (state.progress.length < MODERN_FINDING_CAP && hasRatioShape(value)) {
+      state.progress.push({
+        selector: selector,
+        snippet: (prop + ': ' + value).substring(0, 80)
+      });
+    }
+
+    if ((prop === 'width' || prop === 'inline-size' || prop === 'height' || prop === 'block-size') &&
+        FIT_RE.test(value)) {
+      state.fitContent++;
+    }
+  }
+
+  // Selector-level scan: the two shapes that only exist in a stylesheet.
+  function modernScanSelector(state, selectorText) {
+    var m;
+
+    NTH_INT_RE.lastIndex = 0;
+    var indexes = [];
+    while ((m = NTH_INT_RE.exec(selectorText)) !== null) indexes.push(m[1]);
+    if (indexes.length > 0) {
+      var nthKey = selectorText.replace(/:nth-child\(\d+\)/g, ':nth-child(N)');
+      var nthGroup = state.nthGroups[nthKey];
+      if (!nthGroup) {
+        nthGroup = state.nthGroups[nthKey] = { selector: selectorText, indexes: {} };
+      }
+      for (var ni = 0; ni < indexes.length; ni++) nthGroup.indexes[indexes[ni]] = true;
+    }
+
+    ATTR_SEL_RE.lastIndex = 0;
+    while ((m = ATTR_SEL_RE.exec(selectorText)) !== null) {
+      var attr = m[1].toLowerCase();
+      var val = m[3].replace(/^["']|["']$/g, '');
+      if (!val) continue; // presence selectors carry no value to hand to attr()
+      var base = selectorText.replace(ATTR_SEL_STRIP_RE, '').trim() || '*';
+      var attrKey = base + '|' + attr;
+      var attrGroup = state.attrGroups[attrKey];
+      if (!attrGroup) {
+        attrGroup = state.attrGroups[attrKey] = { base: base, attr: attr, sample: selectorText, values: {} };
+      }
+      attrGroup.values[val] = true;
+    }
+  }
+
+  // Optical-centring tell: an explicit line-height paired with vertical padding
+  // that differs top vs bottom is almost always compensation for the font's
+  // half-leading, which text-box-trim removes at the source.
+  function modernScanTextBox(state, style, selectorText) {
+    if (state.textBox.length >= MODERN_FINDING_CAP) return;
+    var lineHeight = style.getPropertyValue('line-height');
+    if (!lineHeight || lineHeight === 'normal') return;
+    var top = style.getPropertyValue('padding-top');
+    var bottom = style.getPropertyValue('padding-bottom');
+    if (!top || !bottom || top === bottom) return;
+    state.textBox.push({ selector: selectorText, top: top, bottom: bottom });
+  }
+
+  function modernFinding(kind, selector, message, fix, extra) {
+    var meta = MODERN_CSS[kind];
+    var id = computeFindingID(kind, selector || meta.feature, message);
+    if (selector) registerFinding(id, selector);
+    var finding = {
+      id: id,
+      type: kind,
+      severity: 'info',
+      advisory: true,          // opportunity, not a defect — never scored
+      feature: meta.feature,
+      message: message,
+      fix: fix,
+      baseline: meta.baseline,
+      fallback: meta.fallback
+    };
+    if (selector) finding.selector = selector;
+    if (extra) {
+      for (var k in extra) {
+        if (extra.hasOwnProperty(k)) finding[k] = extra[k];
+      }
+    }
+    return finding;
+  }
+
+  function buildModernFindings(state) {
+    var out = [];
+    var i;
+
+    // alpha(): the same base color repeated once per opacity level.
+    var colorKeys = Object.keys(state.colors).filter(function(k) {
+      var b = state.colors[k];
+      var alphaCount = Object.keys(b.alphas).length;
+      return (b.opaque > 0 && alphaCount > 0) || alphaCount >= 2;
+    }).sort(function(a, b) {
+      return Object.keys(state.colors[b].alphas).length - Object.keys(state.colors[a].alphas).length;
+    }).slice(0, MODERN_FINDING_CAP);
+    for (i = 0; i < colorKeys.length; i++) {
+      var bucket = state.colors[colorKeys[i]];
+      var levels = Object.keys(bucket.alphas).length + (bucket.opaque > 0 ? 1 : 0);
+      out.push(modernFinding('alpha-shorthand', null,
+        bucket.sample + ' is declared at ' + levels + ' opacity levels as separate literals',
+        'derive the translucent variants from the one token — alpha(var(--brand) / 60%) — so a color change lands in one place',
+        { color: bucket.sample, opacityLevels: levels }));
+    }
+
+    // progress(): hand-rolled normalisation in calc().
+    for (i = 0; i < state.progress.length; i++) {
+      out.push(modernFinding('progress-function', state.progress[i].selector,
+        'manual ratio math in calc(): ' + state.progress[i].snippet,
+        'progress(<value>, <from>, <to>) returns the same unitless ratio and accepts mixed units on either end',
+        { snippet: state.progress[i].snippet }));
+    }
+
+    // attr(): one rule per attribute value.
+    var attrKeys = Object.keys(state.attrGroups).filter(function(k) {
+      return Object.keys(state.attrGroups[k].values).length >= 3;
+    }).sort(function(a, b) {
+      return Object.keys(state.attrGroups[b].values).length - Object.keys(state.attrGroups[a].values).length;
+    }).slice(0, MODERN_FINDING_CAP);
+    for (i = 0; i < attrKeys.length; i++) {
+      var g = state.attrGroups[attrKeys[i]];
+      var valueCount = Object.keys(g.values).length;
+      out.push(modernFinding('typed-attr', g.sample,
+        valueCount + ' rules differ only by the [' + g.attr + '] value',
+        'read the attribute as a typed value instead — e.g. padding: attr(' + g.attr + ' type(<length>), 1rem) — so a new value needs no new rule',
+        { attribute: g.attr, valueCount: valueCount }));
+    }
+
+    // sibling-index()/sibling-count(): a rule per position.
+    var nthKeys = Object.keys(state.nthGroups).filter(function(k) {
+      return Object.keys(state.nthGroups[k].indexes).length >= 3;
+    }).sort(function(a, b) {
+      return Object.keys(state.nthGroups[b].indexes).length - Object.keys(state.nthGroups[a].indexes).length;
+    }).slice(0, MODERN_FINDING_CAP);
+    for (i = 0; i < nthKeys.length; i++) {
+      var ng = state.nthGroups[nthKeys[i]];
+      var idxCount = Object.keys(ng.indexes).length;
+      out.push(modernFinding('sibling-index', ng.selector,
+        idxCount + ' :nth-child() rules differ only by index — the set breaks when an item is added',
+        'one rule covers any count: calc(360deg * sibling-index() / sibling-count()), no JS index pass and no per-position rule',
+        { indexCount: idxCount }));
+    }
+
+    // text-box-trim: font-metric compensation done by hand.
+    for (i = 0; i < state.textBox.length; i++) {
+      var tb = state.textBox[i];
+      out.push(modernFinding('text-box-trim', tb.selector,
+        'line-height with asymmetric vertical padding (' + tb.top + ' / ' + tb.bottom + ') — the shape of half-leading compensation',
+        'trim the leading at the source: text-box-trim: trim-both; text-box-edge: cap alphabetic — then equal padding centres the text',
+        { paddingTop: tb.top, paddingBottom: tb.bottom }));
+    }
+
+    // shrink-to-fit: a fit-content child inside a full-width wrapper.
+    if (state.fitContent > 0) {
+      out.push(modernFinding('shrink-to-fit', null,
+        state.fitContent + ' declaration(s) size an element to its content',
+        'a wrapper that must hug such a child can do it directly with max-content-sizing: shrink-to-fit, instead of float/inline-block',
+        { declarations: state.fitContent }));
+    }
+
+    return out;
+  }
+
   // Default detection thresholds; override per-call via options.thresholds.
   var DEFAULT_THRESHOLDS = {
     zIndex: 100,      // computed z-index above this -> z-index-inflation
@@ -43,7 +353,8 @@
       'z-index-inflation',
       'layout-issues',
       'css-variables',
-      'vendor-prefixes'
+      'vendor-prefixes',
+      'modern-css-opportunities'
     ];
 
     // Metrics tracking
@@ -174,6 +485,7 @@
     // inline-style pattern extraction, hardcoded color collection, fixed
     // dimension (layout) checks, and the computed z-index inflation scan.
 
+    var modern = newModernState();
     var stylePatterns = {};
     var elementsByPattern = {};
     var colorPatterns = {};
@@ -203,9 +515,11 @@
 
           // Categorize properties + collect color/size/variable metrics
           var props = parseInlineStyle(styleAttr);
+          var inlineSel = shortSelector(elem);
           for (var prop in props) {
             if (!props.hasOwnProperty(prop)) continue;
             var value = props[prop];
+            modernScanDeclaration(modern, prop, value, inlineSel);
             var category = categorizeProperty(prop);
             if (category !== 'other') {
               categoryBreakdown[category]++;
@@ -342,14 +656,39 @@
 
     // --- Analysis: !important declarations ---
 
-    for (var si = 0; si < document.styleSheets.length; si++) {
-      try {
-        var rules = document.styleSheets[si].cssRules || [];
-        for (var ri = 0; ri < rules.length; ri++) {
-          if (rules[ri].cssText && rules[ri].cssText.indexOf('!important') !== -1) {
-            metrics.importantCount++;
+    // One walk over the accessible rules feeds two checks. The !important
+    // count stays top-level-only so its number keeps the meaning it always
+    // had (a grouping rule's cssText already contains its children), while
+    // the modern-CSS scan descends — the shapes it looks for routinely live
+    // inside @media and nested rules.
+    function walkRules(rules, depth) {
+      for (var ri = 0; ri < rules.length; ri++) {
+        if (modern.rulesScanned >= MODERN_RULE_CAP) {
+          modern.truncated = true;
+          return;
+        }
+        var rule = rules[ri];
+        if (depth === 0 && rule.cssText && rule.cssText.indexOf('!important') !== -1) {
+          metrics.importantCount++;
+        }
+        if (rule.selectorText && rule.style) {
+          modern.rulesScanned++;
+          modernScanSelector(modern, rule.selectorText);
+          modernScanTextBox(modern, rule.style, rule.selectorText);
+          for (var pi = 0; pi < rule.style.length; pi++) {
+            var ruleProp = rule.style[pi];
+            modernScanDeclaration(modern, ruleProp, rule.style.getPropertyValue(ruleProp), rule.selectorText);
           }
         }
+        if (rule.cssRules) {
+          walkRules(rule.cssRules, depth + 1);
+        }
+      }
+    }
+
+    for (var si = 0; si < document.styleSheets.length; si++) {
+      try {
+        walkRules(document.styleSheets[si].cssRules || [], 0);
       } catch (e) {
         // Cross-origin stylesheets can't be accessed — count instead of
         // silently swallowing so the report is honest about coverage.
@@ -357,10 +696,20 @@
       }
     }
 
+    var modernFindings = buildModernFindings(modern);
+    for (var mi = 0; mi < modernFindings.length; mi++) {
+      informational.push(modernFindings[mi]);
+    }
+
     var coverageNote = null;
     if (metrics.inaccessibleStylesheets > 0) {
       coverageNote = metrics.inaccessibleStylesheets + ' of ' + metrics.stylesheetCount +
         ' stylesheets are cross-origin and could not be inspected — !important and rule-level checks cover accessible sheets only';
+    }
+    if (modern.truncated) {
+      var truncNote = 'modern-CSS scan stopped after ' + MODERN_RULE_CAP +
+        ' rules — opportunities in later rules are not reported';
+      coverageNote = coverageNote ? coverageNote + '; ' + truncNote : truncNote;
     }
 
     if (metrics.importantCount > 0) {
@@ -516,6 +865,13 @@
             return { selector: f.selector, width: f.width, height: f.height };
           })
         },
+        // Advisory: hand-rolled shapes a newer CSS primitive expresses
+        // directly. Each carries its own support reality — read `baseline`
+        // before adopting, and `fallback` for what to keep alongside it.
+        modernCSS: {
+          rulesScanned: modern.rulesScanned,
+          opportunities: modernFindings
+        },
         // Hints for AI - what to look for in codebase
         automationHints: {
           lookFor: [
@@ -527,7 +883,8 @@
           suggestionsNeeded: [
             patternData.length > 0 ? 'utility classes for ' + patternData.length + ' repeated patterns' : null,
             colorData.length > 0 ? 'CSS variable names for ' + colorData.length + ' colors' : null,
-            zIndexData.length > 0 ? 'z-index layer system for ' + zIndexData.length + ' elevated elements' : null
+            zIndexData.length > 0 ? 'z-index layer system for ' + zIndexData.length + ' elevated elements' : null,
+            modernFindings.length > 0 ? 'adopt ' + modernFindings.length + ' modern-CSS primitive(s), each gated on its own baseline field' : null
           ].filter(Boolean)
         }
       };
@@ -547,6 +904,7 @@
       fixable: fixable.slice(0, maxIssues),
       informational: informational,
       patterns: patterns.slice(0, 10),
+      modernCSS: modernFindings,
       categoryBreakdown: categoryBreakdown,
       actions: actions,
       stats: stats
