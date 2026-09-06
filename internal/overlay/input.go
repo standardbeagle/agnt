@@ -906,11 +906,19 @@ func (r *InputRouter) dispatchPaletteCommand(c PaletteCommand, args string) {
 				fail("stop-proxy "+args, err)
 			}
 		}
+	case "tunnel":
+		if err := r.runTunnelCommand(args); err != nil {
+			fail("tunnel", err)
+		}
 	case "stop-tunnel":
 		if args != "" {
 			if err := r.scriptController.StopTunnel(args); err != nil {
 				fail("stop-tunnel "+args, err)
 			}
+		}
+	case "tailscale-url":
+		if err := r.runTailscaleURLCommand(args); err != nil {
+			fail("tailscale-url", err)
 		}
 	case "run":
 		if args != "" {
