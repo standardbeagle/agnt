@@ -9,6 +9,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/require"
 )
 
 func TestProxy_PageTracking_Integration(t *testing.T) {
@@ -119,14 +121,12 @@ func TestProxy_PageTracking_Integration(t *testing.T) {
 	t.Logf("JS response status: %d", resp.StatusCode)
 	t.Logf("JS response Content-Type: %s", resp.Header.Get("Content-Type"))
 
-	// Check that the JS request was added to the session
-	sessions = ps.PageTracker().GetActiveSessions()
-	if len(sessions) > 0 {
-		t.Logf("Page session resources: %d", len(sessions[0].Resources))
-		if len(sessions[0].Resources) != 1 {
-			t.Errorf("Expected 1 resource in session, got %d", len(sessions[0].Resources))
-		}
-	}
+	// The client can receive the response before ServeHTTP records it in the
+	// page tracker. Wait for that observable result, as for the document above.
+	require.Eventually(t, func() bool {
+		sessions = ps.PageTracker().GetActiveSessions()
+		return len(sessions) == 1 && len(sessions[0].Resources) == 1
+	}, time.Second, time.Millisecond, "expected the JavaScript resource in the page session")
 
 	// Make a request for an API endpoint (should NOT create a new session)
 	resp, err = http.Get(proxyURL + "/api/data")
