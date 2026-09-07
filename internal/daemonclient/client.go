@@ -496,7 +496,7 @@ func (c *Client) BroadcastOutputPreview(lines []string, throbber string, proxyID
 
 // TunnelStart starts a tunnel for a local port.
 func (c *Client) TunnelStart(config protocol.TunnelStartConfig) (map[string]interface{}, error) {
-	return c.conn.Request(protocol.VerbTunnel, protocol.SubVerbStart).WithJSON(config).JSON()
+	return c.conn.Request(protocol.VerbTunnel, protocol.SubVerbStart, config.ID).WithJSON(config).JSON()
 }
 
 // TunnelStop stops a running tunnel.
