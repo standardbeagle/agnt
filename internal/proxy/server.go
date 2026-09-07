@@ -191,8 +191,14 @@ type ProxyConfig struct {
 	MaxLogSize  int
 	AutoRestart bool   // Enable automatic restart on crash (default: true)
 	Path        string // Working directory where proxy was created
-	BindAddress string // Bind address: "127.0.0.1" (default, localhost only) or "0.0.0.0" (all interfaces)
-	PublicURL   string // Optional public URL for tunnel services (e.g., "https://abc123.trycloudflare.com")
+	BindAddress string // Bind address: "127.0.0.1" (default, localhost only), "0.0.0.0" (all interfaces), or BindTailscale
+	// TailnetIP resolves this node's tailnet address when BindAddress is
+	// BindTailscale. The zero value is the production path
+	// (platform.TailscaleIP); tests inject a stub. The resolved address is
+	// re-checked against the tailnet range either way, so a stub cannot hand
+	// the proxy a posture the real lookup would refuse.
+	TailnetIP func(context.Context) string
+	PublicURL string // Optional public URL for tunnel services (e.g., "https://abc123.trycloudflare.com")
 	// StatusURL is a display-only address surfaced to the overlay. Unlike
 	// PublicURL it is never consulted by the URL rewriter or the origin
 	// check — it changes what the developer is shown, not what is served.
@@ -230,6 +236,32 @@ func (ps *ProxyServer) SetAuthBreakout(ab *AuthBreakout) {
 // AuthBreakoutRules returns the active OAuth-breakout rules, or nil.
 func (ps *ProxyServer) AuthBreakoutRules() *AuthBreakout {
 	return ps.authBreakout.Load()
+}
+
+// BindTailscale is the symbolic bind address that resolves to this node's
+// tailnet IPv4 at proxy construction. It is written into .agnt.kdl instead of
+// a literal address because that file is shared across machines and every
+// machine's tailnet address is its own.
+const BindTailscale = "tailscale"
+
+// resolveTailnetBind turns BindTailscale into this node's tailnet address.
+//
+// The result is re-checked against the tailnet range rather than trusted from
+// the resolver, because this address is exempt from the allow-external gate:
+// the exemption belongs to tailnet addresses, not to the token that asked for
+// one. A resolver returning a LAN or public address is refused here.
+func resolveTailnetBind(resolve func(context.Context) string) (string, error) {
+	if resolve == nil {
+		resolve = platform.TailscaleIP
+	}
+	addr := resolve(context.Background())
+	if addr == "" {
+		return "", fmt.Errorf(`bind %q: this node has no tailnet address — is tailscale running and logged in?`, BindTailscale)
+	}
+	if !platform.IsTailnetAddress(addr) {
+		return "", fmt.Errorf("bind %q: resolved %q, which is not a tailnet address", BindTailscale, addr)
+	}
+	return addr, nil
 }
 
 // isExternalBindAddress returns true if the address would expose the proxy
@@ -286,8 +318,21 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 		bindAddress = "127.0.0.1"
 	}
 
+	// A tailnet bind is its own posture: reachable only from this tailnet,
+	// authenticated and device-scoped, and never from the LAN. It is granted
+	// by writing bind "tailscale", so it does not also need allow-external,
+	// which exists to gate the far broader 0.0.0.0.
+	tailnetBind := false
+	if bindAddress == BindTailscale {
+		resolved, err := resolveTailnetBind(config.TailnetIP)
+		if err != nil {
+			return nil, err
+		}
+		bindAddress, tailnetBind = resolved, true
+	}
+
 	// Reject non-localhost bind addresses unless explicitly allowed
-	if isExternalBindAddress(bindAddress) {
+	if isExternalBindAddress(bindAddress) && !tailnetBind {
 		if !config.AllowExternal {
 			return nil, fmt.Errorf("binding to %s exposes the proxy to the network; set allow_external: true to confirm", bindAddress)
 		}

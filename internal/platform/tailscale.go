@@ -58,6 +58,15 @@ func TailscaleIP(ctx context.Context) string {
 	return parseTailscaleIP(output)
 }
 
+// IsTailnetAddress reports whether addr is an IPv4 address inside the tailnet
+// range. Callers that grant a tailnet address a posture a LAN address does not
+// get must check the address itself, so the grant cannot be widened by whatever
+// produced it.
+func IsTailnetAddress(addr string) bool {
+	parsed, err := netip.ParseAddr(addr)
+	return err == nil && parsed.Is4() && tailnetRange.Contains(parsed)
+}
+
 // parseTailscaleIP extracts the first Self.TailscaleIPs entry that is an IPv4
 // address inside the tailnet range. Returns "" on parse failure or no match.
 //
@@ -68,11 +77,9 @@ func parseTailscaleIP(output []byte) string {
 		return ""
 	}
 	for _, raw := range status.Self.TailscaleIPs {
-		addr, err := netip.ParseAddr(raw)
-		if err != nil || !addr.Is4() || !tailnetRange.Contains(addr) {
-			continue
+		if IsTailnetAddress(raw) {
+			return raw
 		}
-		return addr.String()
 	}
 	return ""
 }
