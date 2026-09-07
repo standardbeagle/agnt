@@ -163,13 +163,52 @@ func (ps *ProxyServer) HasOverlayEndpoint() bool {
 // This URL is used for URL rewriting when behind a tunnel.
 // Example: "https://abc123.trycloudflare.com"
 func (ps *ProxyServer) SetPublicURL(publicURL string) {
-	ps.publicURL.Store(&publicURL)
+	ps.publicURL.Store(&publicURLBinding{url: publicURL})
+}
+
+// publicURLBinding is immutable. A tunnel binding expires with its process,
+// restoring the previous live binding without a cleanup goroutine.
+type publicURLBinding struct {
+	url      string
+	done     <-chan struct{}
+	previous *publicURLBinding
+}
+
+// SetTunnelURL binds URL rewriting to the lifetime of a tunnel.
+func (ps *ProxyServer) SetTunnelURL(url string, done <-chan struct{}) {
+	for {
+		previous := ps.activePublicURL()
+		binding := &publicURLBinding{url: url, done: done, previous: previous}
+		if ps.publicURL.CompareAndSwap(previous, binding) {
+			return
+		}
+	}
+}
+
+func (ps *ProxyServer) activePublicURL() *publicURLBinding {
+	for {
+		binding := ps.publicURL.Load()
+		if binding == nil || binding.done == nil {
+			return binding
+		}
+		select {
+		case <-binding.done:
+			ps.publicURL.CompareAndSwap(binding, binding.previous)
+		default:
+			return binding
+		}
+	}
+}
+
+// CopyPublicURLFrom preserves tunnel lifetimes across a proxy restart.
+func (ps *ProxyServer) CopyPublicURLFrom(previous *ProxyServer) {
+	ps.publicURL.Store(previous.activePublicURL())
 }
 
 // GetPublicURL returns the public URL for tunnel services, or "" if unset.
 func (ps *ProxyServer) GetPublicURL() string {
-	if p := ps.publicURL.Load(); p != nil {
-		return *p
+	if p := ps.activePublicURL(); p != nil {
+		return p.url
 	}
 	return ""
 }

@@ -540,6 +540,7 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 	}
 
 	d.registerIncidentProxyOwner(newProxy.ID, conn.SessionCode())
+	newProxy.CopyPublicURLFrom(p)
 	if configured {
 		d.proxyConfigs.Store(newProxy.ID, configSnapshot)
 	}

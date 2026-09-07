@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -29,6 +30,76 @@ func TestNewTunnelManager(t *testing.T) {
 	}
 	if tm.PublicURL() != "" {
 		t.Errorf("expected empty PublicURL initially, got %s", tm.PublicURL())
+	}
+}
+
+func TestTunnelURLRestoresRewritingOnExit(t *testing.T) {
+	p := &ProxyServer{ListenAddr: "127.0.0.1:8081"}
+	done := make(chan struct{})
+	p.SetTunnelURL("https://test.example", done)
+	if p.getProxyHost() != "test.example" || p.getProxyScheme() != "https" {
+		t.Fatal("tunnel URL was not applied")
+	}
+	close(done)
+	if p.GetPublicURL() != "" || p.getProxyHost() != "localhost:8081" || p.getProxyScheme() != "http" {
+		t.Fatal("rewriting retained the stopped tunnel")
+	}
+}
+
+func TestTunnelURLRestoresPreviousLiveBinding(t *testing.T) {
+	p := &ProxyServer{}
+	p.SetPublicURL("https://configured.example")
+	first, second := make(chan struct{}), make(chan struct{})
+	p.SetTunnelURL("https://first.example", first)
+	p.SetTunnelURL("https://second.example", second)
+	restarted := &ProxyServer{}
+	restarted.CopyPublicURLFrom(p)
+	close(second)
+	if got := restarted.GetPublicURL(); got != "https://first.example" {
+		t.Fatalf("got %s", got)
+	}
+	close(first)
+	if got := restarted.GetPublicURL(); got != "https://configured.example" {
+		t.Fatalf("got %s", got)
+	}
+}
+
+func TestTunnelExitDoesNotOverwriteNewPublicURL(t *testing.T) {
+	p := &ProxyServer{}
+	done := make(chan struct{})
+	p.SetTunnelURL("https://tunnel.example", done)
+	p.SetPublicURL("https://replacement.example")
+	close(done)
+	if got := p.GetPublicURL(); got != "https://replacement.example" {
+		t.Fatalf("got %s", got)
+	}
+}
+
+func TestTunnelURLConcurrentReadersAndExit(t *testing.T) {
+	p := &ProxyServer{}
+	p.SetPublicURL("https://configured.example")
+	var readers sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		readers.Add(1)
+		go func() {
+			defer readers.Done()
+			for j := 0; j < 1000; j++ {
+				url := p.GetPublicURL()
+				if url != "https://configured.example" && url != "https://tunnel.example" {
+					t.Errorf("unexpected URL %q", url)
+					return
+				}
+			}
+		}()
+	}
+	for i := 0; i < 100; i++ {
+		done := make(chan struct{})
+		p.SetTunnelURL("https://tunnel.example", done)
+		close(done)
+	}
+	readers.Wait()
+	if got := p.GetPublicURL(); got != "https://configured.example" {
+		t.Fatalf("got %s", got)
 	}
 }
 

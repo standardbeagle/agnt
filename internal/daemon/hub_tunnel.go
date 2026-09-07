@@ -83,7 +83,7 @@ func (d *Daemon) hubHandleTunnelStart(ctx context.Context, conn *hubpkg.Connecti
 	// Update proxy public URL if proxy_id specified
 	if config.ProxyID != "" {
 		if p, err := getSessionScoped(d, conn, config.ProxyID, d.proxym.GetWithPathFilter); err == nil {
-			p.SetPublicURL(publicURL)
+			p.SetTunnelURL(publicURL, t.Done())
 		}
 	}
 

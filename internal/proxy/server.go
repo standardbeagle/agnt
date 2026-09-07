@@ -48,7 +48,7 @@ type ProxyServer struct {
 	// resolve their URL after the proxy is already serving, so SetPublicURL
 	// races request-path readers (checkWSOrigin, URL rewriting, Stats) —
 	// hence atomic. Access via GetPublicURL/SetPublicURL only.
-	publicURL atomic.Pointer[string]
+	publicURL atomic.Pointer[publicURLBinding]
 	// statusURL is the display-only address (see ProxyConfig.StatusURL).
 	// Atomic for the same reason as publicURL: the overlay reads it from
 	// the Stats path while a palette command may be setting it.
