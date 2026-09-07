@@ -194,6 +194,30 @@ func shareFor(t *testing.T, shares []publishedShare, file string) publishedShare
 // dir of walkthroughs (one naming a fake upstream origin) is loaded, validated,
 // published, and reachable at a FULL public URL; an edit keeps the same token and
 // URL while serving the new revision; a delete revokes.
+func TestPublishServeDetectsEditBeforeWatcherStarts(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, dir, "demo.json", walkthroughJSON(t, "demo", "Before", ""))
+	updated := walkthroughJSON(t, "demo", "After", "")
+	h := startServeConfigured(t, dir, func(opts *publishServeOptions) {
+		onListen := opts.OnListen
+		opts.OnListen = func(addr string) {
+			// OnListen runs after the boot publish pass, before watch starts.
+			if err := os.WriteFile(filepath.Join(dir, "demo.json"), updated, 0600); err != nil {
+				t.Errorf("edit before watcher startup: %v", err)
+			}
+			onListen(addr)
+		}
+	})
+	first := h.nextPass()
+	if shareFor(t, first.shares, "demo.json").Title != "Before" {
+		t.Fatal("unexpected initial revision")
+	}
+	next := h.nextPass()
+	if shareFor(t, next.shares, "demo.json").Title != "After" {
+		t.Fatal("startup edit was not published")
+	}
+}
+
 func TestPublishServeIntegration(t *testing.T) {
 	dir := t.TempDir()
 	// A fake upstream: publish-time validation only requires an https origin, and

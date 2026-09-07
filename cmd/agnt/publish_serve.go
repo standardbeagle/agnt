@@ -557,6 +557,14 @@ func runPublishServe(ctx context.Context, opts publishServeOptions) error {
 	// only pointer to where shares and viewer feedback actually live.
 	fmt.Fprintf(opts.Out, "publish serve: share store %s\n", filepath.Join(storeDir, "shares"))
 	fmt.Fprintf(opts.Out, "publish serve: feedback store %s (read it with: agnt publish feedback --dir %s)\n", filepath.Join(storeDir, "feedback"), dir)
+	// Capture the baseline before publishing. A later baseline could include
+	// an edit that happened after publication but before the watcher started,
+	// causing both notifications and polling to miss that edit permanently.
+	fingerprint, err := dirFingerprint(dir)
+	if err != nil {
+		ln.Close()
+		return fmt.Errorf("publish serve: fingerprint %s: %w", dir, err)
+	}
 	if _, err := srv.publishPass(); err != nil {
 		ln.Close()
 		return fmt.Errorf("publish serve: %w", err)
@@ -632,7 +640,7 @@ func runPublishServe(ctx context.Context, opts publishServeOptions) error {
 	}
 
 	watchErr := make(chan error, 1)
-	go func() { watchErr <- srv.watch(ctx, opts.PollInterval) }()
+	go func() { watchErr <- srv.watch(ctx, opts.PollInterval, fingerprint) }()
 
 	select {
 	case <-ctx.Done():
@@ -653,7 +661,7 @@ func runPublishServe(ctx context.Context, opts publishServeOptions) error {
 // serving; the fingerprint is deliberately not advanced, so the next tick
 // retries once the publisher fixes the file. A failing pass never reconciles —
 // see loadWalkthroughDir.
-func (s *publishServer) watch(ctx context.Context, pollInterval time.Duration) error {
+func (s *publishServer) watch(ctx context.Context, pollInterval time.Duration, last string) error {
 	if pollInterval <= 0 {
 		pollInterval = publishServePollLocal
 		if isDrvFSPath(s.dir) {
@@ -672,11 +680,8 @@ func (s *publishServer) watch(ctx context.Context, pollInterval time.Duration) e
 	ticker := time.NewTicker(pollInterval)
 	defer ticker.Stop()
 
-	last, err := dirFingerprint(s.dir)
-	if err != nil {
-		return fmt.Errorf("publish serve: fingerprint %s: %w", s.dir, err)
-	}
 	recheck := func() { last = s.recheckOnce(last) }
+	recheck()
 
 	for {
 		select {
