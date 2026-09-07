@@ -451,7 +451,7 @@ func (r *Renderer) DrawIndicator(status Status) {
 		// then the address .agnt.kdl pins for display, then loopback. The
 		// auto-detected tailnet URL is NOT promoted here — it appears in the
 		// proxy detail panel, and only becomes a status URL when the
-		// developer pins it (`:tailscale-url`), so the bar never changes
+		// developer pins it (`:tailscale`), so the bar never changes
 		// under someone merely for having tailscale installed.
 		displayURL := p.TunnelURL
 		urlColor := FgBrightCyan

@@ -7,10 +7,11 @@ import (
 	"strings"
 
 	"github.com/standardbeagle/agnt/internal/config"
+	proxypkg "github.com/standardbeagle/agnt/internal/proxy"
 )
 
 // Overview palette commands that act on a proxy: opening a tunnel in front of
-// one, and pinning this node's tailnet address as its status URL.
+// one, and moving one onto this node's tailnet address.
 
 // resolveProxy picks the proxy a command should act on. With no id given it
 // resolves to the only proxy when there is exactly one — the common case, and
@@ -127,45 +128,59 @@ func (r *InputRouter) runTunnelCommand(args string) error {
 	return nil
 }
 
-// runTailscaleURLCommand handles `:tailscale-url [proxy]`: take the tailnet
-// address this node already resolves to, write it into .agnt.kdl as the
-// proxy's status-url, and live-apply it.
+// runTailscaleCommand handles `:tailscale [proxy]`: serve the proxy on this
+// node's tailnet address instead of loopback, and advertise it under the
+// node's MagicDNS name.
 //
-// Writing the config is the point of the command. Setting it only in memory
-// would look identical on screen and evaporate on the next daemon restart,
-// which is exactly the kind of state a developer would then have to rediscover.
-func (r *InputRouter) runTailscaleURLCommand(args string) error {
-	proxy, err := resolveProxy(r.overlay.GetStatus().Proxies, strings.TrimSpace(args))
+// Both halves are needed. A proxy binds to 127.0.0.1 by default and answers
+// nothing on the tailnet, so advertising the tailnet address alone would hand
+// the developer a URL no other device can reach -- which is what this command
+// used to do. The bind is written as the symbolic "tailscale" rather than the
+// literal address because .agnt.kdl is shared across machines.
+//
+// Writing the config is how the rebind happens, not a side effect of it: the
+// proxy's bind is part of its reconcile signature, so applying the file stops
+// the loopback listener and starts the proxy on the tailnet address, down the
+// same path any other proxy config change takes. That also means the change
+// survives a daemon restart, which a live-only rebind would not.
+func (r *InputRouter) runTailscaleCommand(args string) error {
+	target, err := resolveProxy(r.overlay.GetStatus().Proxies, strings.TrimSpace(args))
 	if err != nil {
 		return err
 	}
-	if proxy.TailscaleURL == "" {
+	if target.TailscaleURL == "" {
 		// getTailscaleDNS caches asynchronously, so an empty value means either
 		// no tailscale on this machine or a first call that has not resolved
 		// yet. Both are worth distinguishing from "pinned nothing".
-		return fmt.Errorf("no tailnet address for %s yet — is tailscale running on this machine?", proxy.ID)
+		return fmt.Errorf("no tailnet address for %s yet — is tailscale running on this machine?", target.ID)
+	}
+	if target.ConfigName == "" {
+		// A proxy started through the tool path has no config node, and config
+		// reconcile deliberately leaves it alone. Writing the keys anyway would
+		// create a node nothing starts and report success for a rebind that
+		// never happens.
+		return fmt.Errorf("%s was started by hand, not declared in %s — there is no config node to rebind", target.ID, config.AgntConfigFileName)
 	}
 
 	projectPath := r.scriptController.ProjectPath()
 	if projectPath == "" {
-		return fmt.Errorf("no project directory to write .agnt.kdl into")
+		return fmt.Errorf("no project directory to write %s into", config.AgntConfigFileName)
 	}
 	configPath := filepath.Join(projectPath, config.AgntConfigFileName)
-	configName := proxy.ConfigName
-	if configName == "" {
-		configName = proxy.ID
-	}
-	if err := config.SetProxyStatusURL(configPath, configName, proxy.TailscaleURL); err != nil {
+	if err := config.SetProxyProperties(configPath, target.ConfigName, [][2]string{
+		{"bind", proxypkg.BindTailscale},
+		{"status-url", target.TailscaleURL},
+	}); err != nil {
 		return err
 	}
 	if err := r.scriptController.ReconcileConfig(); err != nil {
-		// The file is already written, so the pin survives a restart either
-		// way; only the live update failed. Say which half happened.
-		return fmt.Errorf("wrote status-url to .agnt.kdl but could not apply it live: %w", err)
+		// The file is already written, so the change survives a restart either
+		// way; only the live rebind failed. Say which half happened.
+		return fmt.Errorf("wrote the tailnet bind to %s but could not apply it live: %w", config.AgntConfigFileName, err)
 	}
 	r.overlay.Notify(Notification{
 		Level: LevelInfo,
-		Text:  fmt.Sprintf("pinned %s as the status URL for %s", proxy.TailscaleURL, proxy.ID),
+		Text:  fmt.Sprintf("%s now serves on %s", target.ID, target.TailscaleURL),
 	})
 	return nil
 }

@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/standardbeagle/agnt/internal/config"
+	"github.com/standardbeagle/agnt/internal/proxy"
 )
 
 // fakeProxyController records what a palette command asked the daemon to do.
@@ -107,7 +108,7 @@ func TestResolveProxyLocalNames(t *testing.T) {
 	}
 }
 
-func TestTailscaleURLCommandSavesConfigName(t *testing.T) {
+func TestTailscaleCommandSavesConfigName(t *testing.T) {
 	for _, named := range []bool{false, true} {
 		t.Run(fmt.Sprintf("named=%t", named), func(t *testing.T) {
 			dir := t.TempDir()
@@ -130,7 +131,7 @@ func TestTailscaleURLCommandSavesConfigName(t *testing.T) {
 				proxies = append(proxies, ProxyInfo{ID: "project-1234:api", ConfigName: "api"})
 			}
 			ctrl := &fakeProxyController{projectPath: dir}
-			if err := routerWithProxies(t, ctrl, proxies...).runTailscaleURLCommand(name); err != nil {
+			if err := routerWithProxies(t, ctrl, proxies...).runTailscaleCommand(name); err != nil {
 				t.Fatal(err)
 			}
 			cfg, err := config.LoadAgntConfigFile(path)
@@ -227,7 +228,7 @@ func TestTunnelCommand_EmptyURLIsAFailure(t *testing.T) {
 	}
 }
 
-func TestTailscaleURLCommand_WritesConfigAndAppliesIt(t *testing.T) {
+func TestTailscaleCommand_WritesConfigAndAppliesIt(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, config.AgntConfigFileName)
 	if err := os.WriteFile(configPath, []byte("proxies {\n    dev {\n        url \"http://localhost:5173\"\n    }\n}\n"), 0o644); err != nil {
@@ -236,12 +237,13 @@ func TestTailscaleURLCommand_WritesConfigAndAppliesIt(t *testing.T) {
 	ctrl := &fakeProxyController{projectPath: dir}
 	r := routerWithProxies(t, ctrl, ProxyInfo{
 		ID:           "dev",
+		ConfigName:   "dev",
 		ListenAddr:   "127.0.0.1:19191",
 		TailscaleURL: "http://box.tail1234.ts.net:19191",
 	})
 
-	if err := r.runTailscaleURLCommand(""); err != nil {
-		t.Fatalf("runTailscaleURLCommand: %v", err)
+	if err := r.runTailscaleCommand(""); err != nil {
+		t.Fatalf("runTailscaleCommand: %v", err)
 	}
 
 	cfg, err := config.LoadAgntConfigFile(configPath)
@@ -258,11 +260,11 @@ func TestTailscaleURLCommand_WritesConfigAndAppliesIt(t *testing.T) {
 	}
 }
 
-func TestTailscaleURLCommand_NoTailnetAddressIsLoud(t *testing.T) {
+func TestTailscaleCommand_NoTailnetAddressIsLoud(t *testing.T) {
 	ctrl := &fakeProxyController{projectPath: t.TempDir()}
-	r := routerWithProxies(t, ctrl, ProxyInfo{ID: "dev", ListenAddr: "127.0.0.1:19191"})
+	r := routerWithProxies(t, ctrl, ProxyInfo{ID: "dev", ConfigName: "dev", ListenAddr: "127.0.0.1:19191"})
 
-	err := r.runTailscaleURLCommand("")
+	err := r.runTailscaleCommand("")
 	if err == nil {
 		t.Fatal("pinning an empty address was accepted")
 	}
@@ -271,26 +273,78 @@ func TestTailscaleURLCommand_NoTailnetAddressIsLoud(t *testing.T) {
 	}
 }
 
-// TestTailscaleURLCommand_ReportsWhichHalfFailed: the file is written before
+// TestTailscaleCommand_ReportsWhichHalfFailed: the file is written before
 // the live apply, so a reconcile failure must not read as "nothing happened".
-func TestTailscaleURLCommand_ReportsWhichHalfFailed(t *testing.T) {
+func TestTailscaleCommand_ReportsWhichHalfFailed(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, config.AgntConfigFileName)
 	if err := os.WriteFile(configPath, []byte("proxies {\n    dev {\n        url \"http://localhost:5173\"\n    }\n}\n"), 0o644); err != nil {
 		t.Fatalf("fixture: %v", err)
 	}
 	ctrl := &fakeProxyController{projectPath: dir, reconcile: fmt.Errorf("daemon is gone")}
-	r := routerWithProxies(t, ctrl, ProxyInfo{ID: "dev", TailscaleURL: "http://box.ts.net:19191"})
+	r := routerWithProxies(t, ctrl, ProxyInfo{ID: "dev", ConfigName: "dev", TailscaleURL: "http://box.ts.net:19191"})
 
-	err := r.runTailscaleURLCommand("")
+	err := r.runTailscaleCommand("")
 	if err == nil {
 		t.Fatal("a failed live-apply was reported as success")
 	}
-	if !strings.Contains(err.Error(), "wrote status-url") {
+	if !strings.Contains(err.Error(), "wrote") {
 		t.Errorf("error hides that the file was already written: %v", err)
 	}
 	cfg, cerr := config.LoadAgntConfigFile(configPath)
 	if cerr != nil || cfg.Proxies["dev"].StatusURL == "" {
 		t.Error("the write half should have survived the apply failure")
+	}
+}
+
+// The point of the command is the rebind: pinning the address without binding
+// there hands the developer a URL no other device can reach.
+func TestTailscaleCommand_BindsTheProxyToTheTailnet(t *testing.T) {
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, config.AgntConfigFileName)
+	if err := os.WriteFile(configPath, []byte("proxies {\n    dev {\n        url \"http://localhost:5173\"\n    }\n}\n"), 0o644); err != nil {
+		t.Fatalf("fixture: %v", err)
+	}
+	ctrl := &fakeProxyController{projectPath: dir}
+	r := routerWithProxies(t, ctrl, ProxyInfo{
+		ID:           "dev",
+		ConfigName:   "dev",
+		ListenAddr:   "127.0.0.1:19191",
+		TailscaleURL: "http://box.tail1234.ts.net:19191",
+	})
+
+	if err := r.runTailscaleCommand(""); err != nil {
+		t.Fatalf("runTailscaleCommand: %v", err)
+	}
+
+	cfg, err := config.LoadAgntConfigFile(configPath)
+	if err != nil {
+		t.Fatalf("config no longer parses: %v", err)
+	}
+	if got := cfg.Proxies["dev"].Bind; got != proxy.BindTailscale {
+		t.Errorf("bind = %q, want %q — without it the proxy stays on loopback", got, proxy.BindTailscale)
+	}
+}
+
+// A proxy started by hand has no .agnt.kdl node, so a config reconcile has
+// nothing to rebind. Writing the keys anyway would look like it worked.
+func TestTailscaleCommand_RefusesAProxyThatIsNotInTheConfig(t *testing.T) {
+	dir := t.TempDir()
+	ctrl := &fakeProxyController{projectPath: dir}
+	r := routerWithProxies(t, ctrl, ProxyInfo{
+		ID:           "manual",
+		ListenAddr:   "127.0.0.1:19191",
+		TailscaleURL: "http://box.tail1234.ts.net:19191",
+	})
+
+	err := r.runTailscaleCommand("")
+	if err == nil {
+		t.Fatal("a proxy with no config node was accepted")
+	}
+	if ctrl.reconciled {
+		t.Error("a refused command still asked the daemon to reconcile")
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, config.AgntConfigFileName)); statErr == nil {
+		t.Error("a refused command still wrote a config file")
 	}
 }

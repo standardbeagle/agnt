@@ -936,9 +936,9 @@ func (r *InputRouter) dispatchPaletteCommand(c PaletteCommand, args string) {
 				fail("stop-tunnel "+args, err)
 			}
 		}
-	case "tailscale-url":
-		if err := r.runTailscaleURLCommand(args); err != nil {
-			fail("tailscale-url", err)
+	case "tailscale":
+		if err := r.runTailscaleCommand(args); err != nil {
+			fail("tailscale", err)
 		}
 	case "config":
 		if err := r.openConfigPanel(); err != nil {
