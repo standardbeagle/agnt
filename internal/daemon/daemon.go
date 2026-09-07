@@ -306,7 +306,7 @@ type Daemon struct {
 	// feedbackStore is the durable public-plane feedback sink (P8): anonymous
 	// viewer feedback rows, rate-limited and retention-bounded. Like publishStore
 	// its on-disk record is the source of truth. Constructed in bootstrap(); nil
-	// (public feedback POST accept-and-drops, control read is empty) if it failed
+	// (public feedback POST returns 503, control read is empty) if it failed
 	// to load loud on boot.
 	feedbackStore *publish.FeedbackStore
 

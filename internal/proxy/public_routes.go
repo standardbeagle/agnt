@@ -98,8 +98,8 @@ type PublicTokenVerifier interface {
 // FeedbackSink accepts a validated, size-capped, anonymous feedback body and
 // hands it off for persistence. P7 owns the route-level guards (method,
 // content-type, body cap); P8 fills the durable, rate-limited, retention-bounded
-// sink. A nil sink makes the feedback route a SAFE stub: it still enforces every
-// P7 guard and accepts the body, then drops it (no persistence yet).
+// sink. A nil sink makes feedback unavailable: the route returns 503 instead
+// of acknowledging a submission that cannot be stored.
 //
 // The signature carries the data the P8 sink needs WITHOUT reaching into the
 // daemon: shareID + revisionID come from the already-verified share the handler
@@ -144,7 +144,7 @@ type upstreamDocFetcher interface {
 // references.
 type PublicHandler struct {
 	verifier PublicTokenVerifier
-	feedback FeedbackSink // nil = safe accept-and-drop stub (P8 fills persistence)
+	feedback FeedbackSink // nil = feedback unavailable
 
 	maxFeedbackBody int64 // configured feedback POST cap (config.FeedbackConfig.MaxBodyBytes)
 
@@ -179,7 +179,7 @@ type PublicHandler struct {
 }
 
 // NewPublicHandler builds the public plane over a token verifier and an optional
-// feedback sink. A nil sink yields the safe stub described on FeedbackSink.
+// feedback sink. A nil sink returns 503 for feedback submissions.
 // maxBodyBytes is the configured feedback POST cap (config.FeedbackConfig
 // .MaxBodyBytes); a non-positive value falls back to the spec §5 default so an
 // unconfigured handler still enforces the guard.
@@ -704,7 +704,7 @@ func (h *PublicHandler) serveWalkthrough(w http.ResponseWriter, r *http.Request,
 
 // serveFeedback is the anonymous feedback WRITE route (spec §2b/§7). P7 enforces
 // the route-level guards: POST only, application/json only, 4096-byte cap. The
-// body is handed to the sink (or dropped by the safe stub). Persistence, rate
+// body is handed to the sink (or rejected when unavailable). Persistence, rate
 // limiting, and retention are P8. The body is never read back into the public
 // artifact (INV-7 — no reflection).
 func (h *PublicHandler) serveFeedback(w http.ResponseWriter, r *http.Request, rev *publish.PublishedWalkthrough, shareID string) {
@@ -728,16 +728,17 @@ func (h *PublicHandler) serveFeedback(w http.ResponseWriter, r *http.Request, re
 		http.Error(w, "feedback too large", http.StatusRequestEntityTooLarge)
 		return
 	}
-	if h.feedback != nil {
-		// revisionID is the immutable revision digest threaded from the verified
-		// share (no daemon reach). r.RemoteAddr is the REAL peer the limiter keys
-		// on — never a client X-Forwarded-For header (INV-7 anti-spoof).
-		revDigest := revisionDigest(rev)
-		if err := h.feedback.Accept(shareID, revDigest, r.RemoteAddr, body); err != nil {
-			h.writeHeaders(w.Header(), kindFeedback, "")
-			http.Error(w, feedbackErrorMessage(err), feedbackErrorStatus(err))
-			return
-		}
+	if h.feedback == nil {
+		h.writeHeaders(w.Header(), kindFeedback, "")
+		http.Error(w, "feedback unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	// The verified revision and connection peer identify the submission.
+	revDigest := revisionDigest(rev)
+	if err := h.feedback.Accept(shareID, revDigest, r.RemoteAddr, body); err != nil {
+		h.writeHeaders(w.Header(), kindFeedback, "")
+		http.Error(w, feedbackErrorMessage(err), feedbackErrorStatus(err))
+		return
 	}
 	h.writeHeaders(w.Header(), kindFeedback, "")
 	w.WriteHeader(http.StatusAccepted)

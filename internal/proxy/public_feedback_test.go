@@ -13,6 +13,20 @@ import (
 // errSink returns a fixed error, to prove the handler's status mapping.
 type errSink struct{ err error }
 
+func TestFeedbackUnavailableRejectsSubmission(t *testing.T) {
+	h := newTestHandler(nil)
+	w := do(h, http.MethodPost, sharePrefix+validToken+"/feedback", `{"message":"keep this"}`, map[string]string{"Content-Type": "application/json"})
+	if w.Code != http.StatusServiceUnavailable {
+		t.Fatalf("got %d, want 503", w.Code)
+	}
+	if w.Header().Get("Cache-Control") != "no-store" {
+		t.Fatal("unavailable response must not be cached")
+	}
+	if w := do(h, http.MethodGet, sharePrefix+validToken, "", nil); w.Code != http.StatusOK {
+		t.Fatalf("artifact unavailable: %d", w.Code)
+	}
+}
+
 func (s errSink) Accept(shareID string, revisionDigest publish.RevisionDigest, remoteAddr string, body []byte) error {
 	return s.err
 }

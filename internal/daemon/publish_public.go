@@ -65,8 +65,7 @@ func (s *feedbackArrivalSink) Accept(shareID string, revisionDigest publish.Revi
 // buildPublicPlane constructs the feedback store and the public handler. It is
 // called from bootstrap after the publish store is opened. A feedback-store load
 // failure is surfaced loud (Silent Failure Prohibition) and leaves feedbackStore
-// nil — the public handler then runs P7's safe accept-and-drop stub and the
-// control read returns empty, rather than silently serving a half-loaded store.
+// nil — the public handler rejects feedback with 503 until storage is available.
 func (d *Daemon) buildPublicPlane() {
 	feedbackDir := d.config.FeedbackDir
 	if feedbackDir == "" {
@@ -76,14 +75,14 @@ func (d *Daemon) buildPublicPlane() {
 
 	if store, err := publish.NewFeedbackStore(feedbackDir, limits, nil); err != nil {
 		d.daemonStartupLog("error", "feedback_store_load_failed",
-			fmt.Sprintf("feedback store failed to load (public feedback drops until resolved): %v", err))
+			fmt.Sprintf("feedback store failed to load (public feedback unavailable until resolved): %v", err))
 	} else {
 		d.feedbackStore = store
 		d.daemonStartupLog("info", "feedback_store_loaded", "feedback store loaded")
 	}
 
 	// The token verifier is always the publish store (nil until it loads). The
-	// public handler tolerates a nil sink (safe accept-and-drop); it does NOT
+	// public handler rejects writes with a nil sink; it does NOT
 	// tolerate a nil verifier, so skip the handler when the publish store failed
 	// to load — there is nothing to verify tokens against.
 	if d.publishStore == nil {
