@@ -187,3 +187,56 @@ func TestSetProxyStatusURL_RefusesMultipleNodesOnOneLine(t *testing.T) {
 		})
 	}
 }
+
+func TestSetProxyProperties_WritesEveryPropertyInOnePass(t *testing.T) {
+	path := writeConfig(t, `proxies {
+    dev {
+        url "http://localhost:5173"
+    }
+}
+`)
+	err := SetProxyProperties(path, "dev", [][2]string{
+		{"bind", "tailscale"},
+		{"status-url", "https://box.tail1234.ts.net:19191"},
+	})
+	if err != nil {
+		t.Fatalf("SetProxyProperties: %v", err)
+	}
+
+	cfg, err := LoadAgntConfigFile(path)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	pc := cfg.Proxies["dev"]
+	if pc == nil {
+		t.Fatal("proxy dev missing after edit")
+	}
+	if pc.Bind != "tailscale" {
+		t.Errorf("Bind = %q, want %q", pc.Bind, "tailscale")
+	}
+	if pc.StatusURL != "https://box.tail1234.ts.net:19191" {
+		t.Errorf("StatusURL = %q", pc.StatusURL)
+	}
+}
+
+// A refused property must leave the file exactly as it was: a partial write
+// would leave the proxy bound somewhere the developer never asked for.
+func TestSetProxyProperties_RefusesAnUnknownPropertyWithoutWriting(t *testing.T) {
+	body := `proxies {
+    dev {
+        url "http://localhost:5173"
+    }
+}
+`
+	path := writeConfig(t, body)
+	err := SetProxyProperties(path, "dev", [][2]string{
+		{"bind", "tailscale"},
+		{"not-a-real-key", "x"},
+	})
+	if err == nil {
+		t.Fatal("expected an unknown property to be refused")
+	}
+	if got := readConfig(t, path); got != body {
+		t.Errorf("file was modified by a refused edit:\n%s", got)
+	}
+}

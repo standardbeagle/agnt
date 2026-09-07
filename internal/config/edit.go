@@ -21,21 +21,52 @@ import (
 // and written atomically. An edit that would produce a file the daemon cannot
 // load is refused, leaving the original untouched.
 
+// proxyPropertyReaders names the proxy properties these edits may write, and
+// reads each one back off the parsed config. An edit is verified through the
+// same field the daemon consumes, so a key the parser ignores cannot be
+// written and left looking configured.
+var proxyPropertyReaders = map[string]func(*ProxyConfig) string{
+	"bind":       func(p *ProxyConfig) string { return p.Bind },
+	"status-url": func(p *ProxyConfig) string { return p.StatusURL },
+}
+
 // SetProxyStatusURL sets the display-only `status-url` of one proxy. An empty
-// url removes the key. The proxies block and the proxy's own block are created
-// when absent, so this works on a config that has never declared the proxy.
+// url removes the key.
 func SetProxyStatusURL(path, proxyID, statusURL string) error {
+	return SetProxyProperties(path, proxyID, [][2]string{{"status-url", statusURL}})
+}
+
+// SetProxyProperties sets several properties of one proxy in a single atomic
+// write. An empty value removes that key. The proxies block and the proxy's
+// own block are created when absent, so this works on a config that has never
+// declared the proxy.
+//
+// One write, not one per property: a caller changing where a proxy binds and
+// what address it advertises is describing a single state, and a crash between
+// two writes would leave the proxy bound somewhere it never advertises.
+func SetProxyProperties(path, proxyID string, props [][2]string) error {
 	if proxyID == "" {
 		return fmt.Errorf("proxy id is required")
 	}
+	if len(props) == 0 {
+		return fmt.Errorf("no properties given")
+	}
+	for _, kv := range props {
+		if _, ok := proxyPropertyReaders[kv[0]]; !ok {
+			return fmt.Errorf("cannot set unknown proxy property %q (not written)", kv[0])
+		}
+	}
+
 	original, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read %s: %w", path, err)
 	}
 
-	edited, err := setNestedProperty(string(original), []string{"proxies", proxyID}, "status-url", statusURL)
-	if err != nil {
-		return err
+	edited := string(original)
+	for _, kv := range props {
+		if edited, err = setNestedProperty(edited, []string{"proxies", proxyID}, kv[0], kv[1]); err != nil {
+			return err
+		}
 	}
 
 	// Validate before writing: the file the daemon reads must always parse.
@@ -43,8 +74,14 @@ func SetProxyStatusURL(path, proxyID, statusURL string) error {
 	if err != nil {
 		return fmt.Errorf("edit would produce an unparseable config (not written): %w", err)
 	}
-	if pc := cfg.Proxies[proxyID]; statusURL != "" && (pc == nil || pc.StatusURL != statusURL) {
-		return fmt.Errorf("edit did not take effect for proxy %q (not written)", proxyID)
+	pc := cfg.Proxies[proxyID]
+	for _, kv := range props {
+		if kv[1] == "" {
+			continue
+		}
+		if pc == nil || proxyPropertyReaders[kv[0]](pc) != kv[1] {
+			return fmt.Errorf("edit did not take effect for proxy %q property %q (not written)", proxyID, kv[0])
+		}
 	}
 
 	return writeFileAtomic(path, edited)
