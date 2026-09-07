@@ -3,6 +3,7 @@ package platform
 import (
 	"context"
 	"encoding/json"
+	"net/netip"
 	"os/exec"
 	"strings"
 	"time"
@@ -36,6 +37,44 @@ func TailscaleSelfIdentities(ctx context.Context) []string {
 		return nil
 	}
 	return parseTailscaleSelfIdentities(output)
+}
+
+// tailnetRange is the CGNAT block tailscale assigns node addresses from.
+// TailscaleIP refuses anything outside it, so an address it returns can only
+// ever be a tailnet interface -- never a LAN or public one.
+var tailnetRange = netip.MustParsePrefix("100.64.0.0/10")
+
+// TailscaleIP returns this node's tailnet IPv4 address, e.g. "100.101.102.103".
+// Returns "" if tailscale is unavailable, not logged in, the lookup times out,
+// or the node has no address inside the tailnet range.
+//
+// IPv4 only: a bind address is joined to a port as host:port, and an IPv6
+// literal there needs brackets. Every tailscale node has a 100.x address.
+func TailscaleIP(ctx context.Context) string {
+	output := tailscaleStatusJSON(ctx)
+	if output == nil {
+		return ""
+	}
+	return parseTailscaleIP(output)
+}
+
+// parseTailscaleIP extracts the first Self.TailscaleIPs entry that is an IPv4
+// address inside the tailnet range. Returns "" on parse failure or no match.
+//
+// Split out for testability without spawning the binary.
+func parseTailscaleIP(output []byte) string {
+	var status tailscaleStatus
+	if err := json.Unmarshal(output, &status); err != nil {
+		return ""
+	}
+	for _, raw := range status.Self.TailscaleIPs {
+		addr, err := netip.ParseAddr(raw)
+		if err != nil || !addr.Is4() || !tailnetRange.Contains(addr) {
+			continue
+		}
+		return addr.String()
+	}
+	return ""
 }
 
 func tailscaleStatusJSON(ctx context.Context) []byte {

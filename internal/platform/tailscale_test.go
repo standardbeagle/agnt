@@ -96,3 +96,39 @@ func TestParseTailscaleSelfIdentities(t *testing.T) {
 		})
 	}
 }
+
+func TestParseTailscaleIP(t *testing.T) {
+	tests := []struct {
+		name   string
+		output string
+		want   string
+	}{
+		{
+			name:   "tailnet IPv4",
+			output: `{"Self":{"DNSName":"host.tail1234.ts.net.","TailscaleIPs":["100.101.102.103","fd7a:115c:a1e0::1"]}}`,
+			want:   "100.101.102.103",
+		},
+		{
+			name:   "IPv6 first still yields the IPv4",
+			output: `{"Self":{"TailscaleIPs":["fd7a:115c:a1e0::1","100.64.0.1"]}}`,
+			want:   "100.64.0.1",
+		},
+		{
+			// A bind resolved from this helper must never be a LAN or public
+			// address, so an address outside 100.64.0.0/10 is refused even
+			// when tailscale reports it as our own.
+			name:   "address outside the tailnet range is refused",
+			output: `{"Self":{"TailscaleIPs":["192.168.1.10","8.8.8.8","100.63.255.255","100.128.0.0"]}}`,
+			want:   "",
+		},
+		{name: "no addresses", output: `{"Self":{"DNSName":"host.ts.net."}}`, want: ""},
+		{name: "unparseable", output: `not json`, want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := parseTailscaleIP([]byte(tt.output)); got != tt.want {
+				t.Errorf("parseTailscaleIP() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
