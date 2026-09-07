@@ -28,6 +28,20 @@ func (d *Daemon) restoreProxies() {
 	// Removed startup log: restoring %d proxies from state
 
 	for _, pc := range proxies {
+		if pc.ConfigName != "" {
+			cfg, err := config.LoadAgntConfig(pc.Path)
+			if err != nil {
+				d.startupLog(pc.Path).Error(pc.ConfigName, "proxy_creation_failed", fmt.Sprintf("cannot restore proxy config: %v", err))
+				continue
+			}
+			source := cfg.Proxies[pc.ConfigName]
+			if source == nil || !source.ShouldAutostart() {
+				d.stateMgr.RemoveProxy(pc.ID)
+				continue
+			}
+			d.handleExplicitStart(ProxyEvent{Type: ExplicitStart, ProxyID: pc.ID, ProxyName: pc.ConfigName, Config: source, Path: pc.Path})
+			continue
+		}
 		config := proxy.ProxyConfig{
 			ID:          pc.ID,
 			TargetURL:   pc.TargetURL,

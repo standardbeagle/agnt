@@ -938,10 +938,11 @@ func (d *Daemon) autostartProxy(ctx context.Context, name string, proxyConfig *c
 	// Send ExplicitStart event to create the proxy
 	select {
 	case d.proxyEvents <- ProxyEvent{
-		Type:    ExplicitStart,
-		ProxyID: proxyID,
-		Config:  proxyConfig,
-		Path:    projectPath,
+		Type:      ExplicitStart,
+		ProxyID:   proxyID,
+		ProxyName: name,
+		Config:    proxyConfig,
+		Path:      projectPath,
 	}:
 		debug.Log("daemon", "Queued explicit proxy %s for auto-start", name)
 		d.startupLog(projectPath).Info(name, "proxy_starting", fmt.Sprintf("starting proxy %q → %s", name, targetURL))

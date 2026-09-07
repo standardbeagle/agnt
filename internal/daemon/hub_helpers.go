@@ -385,6 +385,8 @@ func (d *Daemon) registerIncidentProcessOwner(processID, sessionCode string) {
 // stamp and the event-hub path mapping. Both are keyed by proxyID and die
 // with the proxy, so they are retired together at every proxy-stop site.
 func (d *Daemon) retireIncidentProxyOwner(proxyID string) {
+	d.proxyConfigs.Delete(proxyID)
+	d.untrackScriptProxy(proxyID)
 	d.incidentProxyOwner.Delete(proxyID)
 	if d.eventHub != nil {
 		d.eventHub.UnregisterProxyPath(proxyID)

@@ -51,6 +51,9 @@ func (d *Daemon) hubHandleAutostartReconcile(ctx context.Context, conn *hubpkg.C
 		"start_scripts":   plan.StartScripts,
 		"stop_scripts":    plan.StopScripts,
 		"restart_scripts": plan.RestartScripts,
+		"start_proxies":   plan.StartProxies,
+		"stop_proxies":    plan.StopProxies,
+		"restart_proxies": plan.RestartProxies,
 		"success":         true,
 	})
 	return conn.WriteJSON(data)

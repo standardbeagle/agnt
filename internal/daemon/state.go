@@ -20,6 +20,7 @@ type PersistentProxyConfig struct {
 	MaxLogSize int    `json:"max_log_size"`
 	Path       string `json:"path"`
 	CreatedAt  string `json:"created_at"`
+	ConfigName string `json:"config_name,omitempty"` // .agnt.kdl node; empty for manual proxies
 }
 
 // PersistentState stores daemon state that should survive restarts.

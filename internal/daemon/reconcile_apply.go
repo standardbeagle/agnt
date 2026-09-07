@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
@@ -11,20 +12,17 @@ import (
 	"github.com/standardbeagle/go-cli-server/script"
 )
 
-// ReconcileProjectConfig brings the running scripts for projectPath in line
-// with the freshly loaded `.agnt.kdl`, WITHOUT restarting the daemon or the AI
-// session. This is the live-edit path: setup (or a hand edit) writes config,
-// and the dev servers it declares come up — or torn-down ones go away, or
-// changed ones relaunch — in place.
-//
-// Division of labor: the reconcile-specific work is only the STOPS (removed and
-// changed scripts). Starting is delegated to the heavily-tested RunAutostart
-// path, which re-registers every declared script with its new config, prunes
-// stale registry entries, starts adds + the just-stopped changed scripts in
-// dependency order, skips still-running unchanged scripts, and materializes
-// declared proxies. Piece C hardened the stop→start primitives this relies on.
-//
-// Returns the computed plan (what it decided to do) so callers can report it.
+// configuredProxy identifies the .agnt.kdl node that created a live proxy.
+// Manual proxies have no snapshot and are not stopped by config reconciliation.
+type configuredProxy struct {
+	name      string
+	signature string
+}
+
+// ReconcileProjectConfig applies .agnt.kdl changes to configured scripts and
+// proxies. Manual proxies retain their independent lifecycle. Autostart handles
+// process dependencies; cached URLs let existing scripts create new proxies
+// without printing their startup output again.
 func (d *Daemon) ReconcileProjectConfig(ctx context.Context, projectPath string) (ReconcilePlan, error) {
 	if projectPath == "" {
 		return ReconcilePlan{}, nil
@@ -63,18 +61,63 @@ func (d *Daemon) ReconcileProjectConfig(ctx context.Context, projectPath string)
 		}
 	}
 
-	plan := computeReconcile(desired, running, nil, nil)
+	desiredProxies := make(map[string]string)
+	for name, pc := range cfg.Proxies {
+		if pc.ShouldAutostart() || pc.Script != "" {
+			desiredProxies[name] = proxySignature(pc)
+		}
+	}
+	runningProxies := make(map[string]string)
+	for _, p := range d.proxym.ListScoped(scope.Project(projectPath)) {
+		if value, ok := d.proxyConfigs.Load(p.ID); ok {
+			snapshot := value.(configuredProxy)
+			// Several detected URLs can belong to one config node. Any stale
+			// instance requires replacement of that node's proxies.
+			if runningProxies[snapshot.name] != "\x00changed" {
+				if want, ok := desiredProxies[snapshot.name]; ok && want != snapshot.signature {
+					runningProxies[snapshot.name] = "\x00changed"
+				} else {
+					runningProxies[snapshot.name] = snapshot.signature
+				}
+			}
+		}
+	}
+	plan := computeReconcile(desired, running, desiredProxies, runningProxies)
+	d.applyProxyDisplayConfig(projectPath, cfg)
 
 	log := d.startupLog(projectPath)
 	if plan.IsEmpty() {
 		log.Info("", "reconcile", "config reconcile: no changes")
 		return plan, nil
 	}
-	log.Info("", "reconcile", fmt.Sprintf("config reconcile: start=%v stop=%v restart=%v",
-		plan.StartScripts, plan.StopScripts, plan.RestartScripts))
+	log.Info("", "reconcile", fmt.Sprintf("config reconcile: scripts start=%v stop=%v restart=%v; proxies start=%v stop=%v restart=%v",
+		plan.StartScripts, plan.StopScripts, plan.RestartScripts, plan.StartProxies, plan.StopProxies, plan.RestartProxies))
 
-	// Stop removed scripts (prune their registry/config), then stop changed
-	// scripts (leave the entry so RunAutostart restarts them with new config).
+	stopProxies := make(map[string]bool)
+	for _, name := range plan.StopProxies {
+		stopProxies[name] = true
+	}
+	for _, name := range plan.RestartProxies {
+		stopProxies[name] = true
+	}
+	for _, p := range d.proxym.ListScoped(scope.Project(projectPath)) {
+		value, ok := d.proxyConfigs.Load(p.ID)
+		if !ok || !stopProxies[value.(configuredProxy).name] {
+			continue
+		}
+		if err := d.proxym.Stop(ctx, p.ID); err != nil {
+			return plan, fmt.Errorf("stop proxy %s: %w", p.ID, err)
+		}
+		d.retireIncidentProxyOwner(p.ID)
+		if d.stateMgr != nil {
+			d.stateMgr.RemoveProxy(p.ID)
+		}
+		if d.proxyEntries != nil {
+			d.proxyEntries.Remove(projectPath, value.(configuredProxy).name)
+		}
+	}
+	// Retire proxy associations first, before script-stop events can try to
+	// remove the same proxies.
 	for _, name := range plan.StopScripts {
 		d.stopReconcileScript(ctx, name, projectPath, true)
 	}
@@ -85,7 +128,25 @@ func (d *Daemon) ReconcileProjectConfig(ctx context.Context, projectPath string)
 	// Delegate all starts (adds + just-stopped changed) and proxy
 	// materialization to the autostart path. Idempotent for unchanged running
 	// scripts (StartScriptExplicit skips them).
-	d.RunAutostart(ctx, projectPath)
+	result := d.RunAutostart(ctx, projectPath)
+	if len(result.Errors) != 0 {
+		return plan, fmt.Errorf("config reconcile: %s", strings.Join(result.Errors, "; "))
+	}
+	// A running script need not print its URL again after a config edit.
+	// Replay its known URLs so new or changed script-linked proxies can start.
+	if d.urlTracker != nil {
+		seen := make(map[string]bool)
+		for _, pc := range cfg.Proxies {
+			if pc.Script == "" || seen[pc.Script] {
+				continue
+			}
+			seen[pc.Script] = true
+			id := makeProcessID(projectPath, pc.Script)
+			for _, url := range d.urlTracker.GetURLs(id) {
+				d.handleURLDetected(ProxyEvent{Type: URLDetected, ScriptID: id, URL: url, Path: projectPath})
+			}
+		}
+	}
 	d.applyProxyDisplayConfig(projectPath, cfg)
 	return plan, nil
 }
@@ -102,7 +163,11 @@ func (d *Daemon) applyProxyDisplayConfig(projectPath string, cfg *config.AgntCon
 		return
 	}
 	for _, p := range d.proxym.ListScoped(scope.Project(projectPath)) {
-		pc, ok := cfg.Proxies[p.ID]
+		name := stripProcessPrefix(p.ID)
+		if value, ok := d.proxyConfigs.Load(p.ID); ok {
+			name = value.(configuredProxy).name
+		}
+		pc, ok := cfg.Proxies[name]
 		if !ok || pc == nil {
 			continue
 		}

@@ -299,6 +299,9 @@ func (d *Daemon) hubHandleProxyList(conn *hubpkg.Connection, cmd *hubproto.Comma
 		if !stats.ReadyForForwarding {
 			entry["waiting_for"] = stats.WaitingFor
 		}
+		if value, ok := d.proxyConfigs.Load(p.ID); ok {
+			entry["config_name"] = value.(configuredProxy).name
+		}
 		if t, ok := tunnelsByID[p.ID]; ok {
 			entry["tunnel_url"] = t.PublicURL
 			entry["tunnel_running"] = t.State == "connected"
@@ -492,6 +495,7 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 	// on the new server. A ready proxy has none (empty), and coming back ready
 	// is correct; a still-gated proxy keeps waiting on the same deps.
 	pendingDeps := p.PendingDependencies()
+	configSnapshot, configured := d.proxyConfigs.Load(p.ID)
 
 	// Stop the proxy
 	if err := d.proxym.Stop(ctx, proxyID); err != nil {
@@ -536,6 +540,9 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 	}
 
 	d.registerIncidentProxyOwner(newProxy.ID, conn.SessionCode())
+	if configured {
+		d.proxyConfigs.Store(newProxy.ID, configSnapshot)
+	}
 	d.wireProxyLogger(newProxy)
 
 	// Re-bind the owning session's overlay endpoint so browser→agent messages
@@ -559,8 +566,13 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 	// grabbed it during the restart window; persisting the requested port would
 	// record a stale value the restore path could not honor.
 	if d.stateMgr != nil {
+		configName := ""
+		if configured {
+			configName = configSnapshot.(configuredProxy).name
+		}
 		d.stateMgr.AddProxy(PersistentProxyConfig{
 			ID:         proxyID,
+			ConfigName: configName,
 			TargetURL:  targetURL,
 			Port:       newProxy.BoundPort(),
 			MaxLogSize: maxLogSize,

@@ -134,5 +134,12 @@ func proxySignature(p *config.ProxyConfig) string {
 		strconv.Itoa(p.ListenPort),
 		p.Bind,
 		p.Script,
+		p.URLPattern,
+		strconv.Itoa(p.FallbackPort),
+		strconv.Itoa(p.MaxLogSize),
+		strconv.FormatBool(p.SkipTLSVerify),
+		strconv.FormatBool(p.AllowExternal),
+		p.PublicURL,
+		strings.Join(p.WaitFor, "\x00"),
 	}, "\x1f")
 }

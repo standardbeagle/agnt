@@ -188,6 +188,7 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 		if owner, ok := d.incidentProcessOwner.Load(event.ScriptID); ok {
 			d.registerIncidentProxyResourceOwner(server.ID, ownerAsIncidentResource(owner))
 		}
+		d.proxyConfigs.Store(server.ID, configuredProxy{name: proxyName, signature: proxySignature(proxyConfig)})
 		d.wireProxyLogger(server)
 
 		// Bind to the overlay of the session that owns this project. Fail
@@ -259,9 +260,13 @@ func (d *Daemon) handleExplicitStart(event ProxyEvent) {
 	// idempotent by ID (AddProxy updates existing entries) so a later
 	// refactor that routes the tool path through handleExplicitStart won't
 	// introduce a duplicate-write concern.
+	if event.ProxyName != "" {
+		d.proxyConfigs.Store(server.ID, configuredProxy{name: event.ProxyName, signature: proxySignature(event.Config)})
+	}
 	if d.stateMgr != nil {
 		d.stateMgr.AddProxy(PersistentProxyConfig{
 			ID:         server.ID,
+			ConfigName: event.ProxyName,
 			TargetURL:  server.TargetURL.String(),
 			Port:       proxyServerConfig.ListenPort,
 			MaxLogSize: proxyServerConfig.MaxLogSize,
@@ -422,6 +427,7 @@ func (d *Daemon) handleFallbackPortCheck(event ProxyEvent) {
 		return
 	}
 
+	d.proxyConfigs.Store(server.ID, configuredProxy{name: event.ProxyName, signature: proxySignature(event.Config)})
 	if owner, ok := d.incidentProcessOwner.Load(event.ScriptID); ok {
 		d.registerIncidentProxyResourceOwner(server.ID, ownerAsIncidentResource(owner))
 	}
@@ -545,6 +551,30 @@ func (d *Daemon) linkedScriptForProxy(proxyID string) string {
 		return ""
 	}
 	return d.proxyToScript[proxyID]
+}
+
+func (d *Daemon) untrackScriptProxy(proxyID string) {
+	d.scriptProxyMu.Lock()
+	defer d.scriptProxyMu.Unlock()
+	scriptID, ok := d.proxyToScript[proxyID]
+	if !ok {
+		return
+	}
+	delete(d.proxyToScript, proxyID)
+	ids := d.scriptProxies[scriptID]
+	// Readers retain snapshots after releasing the lock; do not mutate their
+	// backing array while removing an association.
+	kept := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if id != proxyID {
+			kept = append(kept, id)
+		}
+	}
+	if len(kept) == 0 {
+		delete(d.scriptProxies, scriptID)
+	} else {
+		d.scriptProxies[scriptID] = kept
+	}
 }
 
 // getProxiesForScript returns all proxy IDs for a script.

@@ -276,6 +276,7 @@ type Daemon struct {
 	swallowSweeperStarted atomic.Bool
 	scriptRegistry        *script.Registry // Per-script state that persists across process restarts
 	scriptConfigs         sync.Map         // processID -> *config.ScriptConfig (agnt-specific config)
+	proxyConfigs          sync.Map         // proxyID -> configuredProxy (launch snapshot)
 
 	// Session and scheduling (agnt-specific extensions)
 	sessionRegistry   *SessionRegistry
