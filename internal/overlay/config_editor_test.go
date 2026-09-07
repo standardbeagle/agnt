@@ -22,6 +22,56 @@ func editorOn(t *testing.T, body string) (*ConfigEditor, string) {
 	return e, path
 }
 
+func TestConfigEditor_RefusesExternalChanges(t *testing.T) {
+	for _, change := range []string{"replace", "delete", "create"} {
+		t.Run(change, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), config.AgntConfigFileName)
+			if change != "create" {
+				if err := os.WriteFile(path, []byte("// original\r\n"), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			e, err := NewConfigEditor(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			e.Insert("// editor change\n")
+			if change == "delete" {
+				err = os.Remove(path)
+			} else {
+				err = os.WriteFile(path, []byte("// external change\n"), 0600)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := e.Save(); err == nil {
+				t.Fatal("external change was overwritten")
+			}
+			if !e.Dirty() {
+				t.Fatal("refused save cleared dirty state")
+			}
+			body, err := os.ReadFile(path)
+			if change == "delete" {
+				if !os.IsNotExist(err) {
+					t.Fatalf("deleted file was recreated: %v", err)
+				}
+			} else if err != nil || string(body) != "// external change\n" {
+				t.Fatalf("external content changed: %q, %v", body, err)
+			}
+		})
+	}
+}
+
+func TestConfigEditor_RepeatedSaveUpdatesOriginal(t *testing.T) {
+	e, _ := editorOn(t, "// original\r\n")
+	for i := 0; i < 2; i++ {
+		e.Insert("// edit\n")
+		if err := e.Save(); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
 func TestConfigEditor_OpensMissingFileOnTheDocumentedTemplate(t *testing.T) {
 	// An empty buffer would tell the developer nothing about which keys exist,
 	// so a project with no config opens on the same template `agnt init` writes.

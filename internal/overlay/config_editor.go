@@ -39,6 +39,8 @@ type ConfigEditor struct {
 	// existed records whether the file was on disk when the editor opened, so
 	// the footer can say the save will create it.
 	existed bool
+	// original is the exact disk content, before newline normalization.
+	original string
 }
 
 // NewConfigEditor loads path for editing. A project with no .agnt.kdl opens on
@@ -51,6 +53,7 @@ func NewConfigEditor(path string) (*ConfigEditor, error) {
 	switch {
 	case err == nil:
 		e.existed = true
+		e.original = string(body)
 		e.lines = strings.Split(strings.ReplaceAll(string(body), "\r\n", "\n"), "\n")
 	case os.IsNotExist(err):
 		e.lines = strings.Split(config.DefaultAgntConfigKDL(), "\n")
@@ -238,12 +241,22 @@ func (e *ConfigEditor) EnsureVisible(height int) {
 // refused with the parse error, leaving the file untouched: writing it would
 // take out every autostart script and proxy on the next reload.
 func (e *ConfigEditor) Save() error {
+	body, err := os.ReadFile(e.path)
+	if err != nil && !os.IsNotExist(err) {
+		e.status = fmt.Sprintf("not saved: read config: %v", err)
+		return fmt.Errorf("%s", e.status)
+	}
+	if (err == nil) != e.existed || (err == nil && string(body) != e.original) {
+		e.status = "not saved: config changed on disk; reopen the editor before saving"
+		return fmt.Errorf("%s", e.status)
+	}
 	if err := config.SaveAgntConfigText(e.path, e.Text()); err != nil {
 		e.status = err.Error()
 		return err
 	}
 	e.dirty = false
 	e.existed = true
+	e.original = e.Text()
 	e.status = "saved " + e.path
 	return nil
 }
