@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/sblinch/kdl-go"
 )
 
 // Surgical .agnt.kdl edits.
@@ -80,6 +82,12 @@ func setNestedProperty(text string, names []string, key, value string) (string, 
 	// the block's first entry so it lands next to its siblings.
 	for i := start; i < end; i++ {
 		if propertyKeyOf(lines[i]) == key {
+			// A KDL line can contain several nodes. This line-based editor
+			// must refuse that form rather than erase a sibling setting.
+			doc, err := kdl.Parse(strings.NewReader(lines[i] + "\n"))
+			if err != nil || len(doc.Nodes) != 1 || len(doc.Nodes[0].Children) != 0 {
+				return "", fmt.Errorf("cannot edit %s on line %d: put the setting on its own line (not written)", key, i+1)
+			}
 			if value == "" {
 				return strings.Join(append(append([]string{}, lines[:i]...), lines[i+1:]...), "\n"), nil
 			}

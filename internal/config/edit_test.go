@@ -116,6 +116,7 @@ func TestSetProxyStatusURL_EmptyValueRemovesKey(t *testing.T) {
         status-url "https://box.tail1234.ts.net"
     }
 }
+
 `)
 	if err := SetProxyStatusURL(path, "dev", ""); err != nil {
 		t.Fatalf("SetProxyStatusURL: %v", err)
@@ -169,5 +170,20 @@ func TestSetProxyStatusURL_QuotesAreEscaped(t *testing.T) {
 	}
 	if cfg.Proxies["dev"].StatusURL != `https://box.ts.net/"odd"` {
 		t.Errorf("round trip lost the quotes: %q", cfg.Proxies["dev"].StatusURL)
+	}
+}
+
+func TestSetProxyStatusURL_RefusesMultipleNodesOnOneLine(t *testing.T) {
+	for _, value := range []string{"https://new.example.test", ""} {
+		t.Run(value, func(t *testing.T) {
+			body := "proxies {\n    dev {\n        status-url \"https://old.example.test\"; listen-port 19191\n    }\n}\n"
+			path := writeConfig(t, body)
+			if err := SetProxyStatusURL(path, "dev", value); err == nil {
+				t.Fatal("expected refusal to overwrite a line with multiple nodes")
+			}
+			if got := readConfig(t, path); got != body {
+				t.Fatalf("refused edit changed the file: %s", got)
+			}
+		})
 	}
 }
