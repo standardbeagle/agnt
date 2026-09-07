@@ -54,6 +54,7 @@ type ProcessInfo struct {
 // ProxyInfo holds information about a running proxy.
 type ProxyInfo struct {
 	ID            string
+	ConfigName    string // Original proxy name in .agnt.kdl; empty for manual proxies.
 	TargetURL     string
 	ListenAddr    string
 	HasErrors     bool

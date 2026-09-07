@@ -79,6 +79,7 @@ func (d processDTO) toInfo() ProcessInfo {
 
 type proxyDTO struct {
 	ID            string   `json:"id"`
+	ConfigName    string   `json:"config_name"`
 	TargetURL     string   `json:"target_url"`
 	ListenAddr    string   `json:"listen_addr"`
 	Status        string   `json:"status"`
@@ -96,6 +97,7 @@ type proxyDTO struct {
 func (d proxyDTO) toInfo() ProxyInfo {
 	return ProxyInfo{
 		ID:            d.ID,
+		ConfigName:    d.ConfigName,
 		TargetURL:     d.TargetURL,
 		ListenAddr:    d.ListenAddr,
 		State:         d.Status,

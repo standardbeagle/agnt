@@ -27,6 +27,19 @@ func resolveProxy(proxies []ProxyInfo, id string) (ProxyInfo, error) {
 				return p, nil
 			}
 		}
+		var matches []ProxyInfo
+		for _, p := range proxies {
+			_, localID, scoped := strings.Cut(p.ID, ":")
+			if p.ConfigName == id || (scoped && localID == id) {
+				matches = append(matches, p)
+			}
+		}
+		if len(matches) == 1 {
+			return matches[0], nil
+		}
+		if len(matches) > 1 {
+			return ProxyInfo{}, fmt.Errorf("several proxies match %q — use one of: %s", id, proxyIDList(matches))
+		}
 		return ProxyInfo{}, fmt.Errorf("no proxy %q (running: %s)", id, proxyIDList(proxies))
 	}
 	if len(proxies) == 1 {
@@ -138,7 +151,11 @@ func (r *InputRouter) runTailscaleURLCommand(args string) error {
 		return fmt.Errorf("no project directory to write .agnt.kdl into")
 	}
 	configPath := filepath.Join(projectPath, config.AgntConfigFileName)
-	if err := config.SetProxyStatusURL(configPath, proxy.ID, proxy.TailscaleURL); err != nil {
+	configName := proxy.ConfigName
+	if configName == "" {
+		configName = proxy.ID
+	}
+	if err := config.SetProxyStatusURL(configPath, configName, proxy.TailscaleURL); err != nil {
 		return err
 	}
 	if err := r.scriptController.ReconcileConfig(); err != nil {

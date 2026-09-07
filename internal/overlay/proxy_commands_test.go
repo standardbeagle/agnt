@@ -1,6 +1,7 @@
 package overlay
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -83,6 +84,72 @@ func TestResolveProxy(t *testing.T) {
 	}
 	if _, err := resolveProxy(nil, ""); err == nil {
 		t.Error("no proxies at all was accepted")
+	}
+}
+
+func TestResolveProxyLocalNames(t *testing.T) {
+	proxies := []ProxyInfo{
+		{ID: "project-1234:api", ConfigName: "api"},
+		{ID: "project-1234:web:localhost-5173", ConfigName: "web"},
+	}
+	for _, name := range []string{"web", "web:localhost-5173", proxies[1].ID} {
+		got, err := resolveProxy(proxies, name)
+		if err != nil || got.ID != proxies[1].ID {
+			t.Fatalf("resolve %q: got %+v, %v", name, got, err)
+		}
+	}
+	proxies = append(proxies, ProxyInfo{ID: "project-1234:web:localhost-5174", ConfigName: "web"})
+	if _, err := resolveProxy(proxies, "web"); err == nil || !strings.Contains(err.Error(), proxies[2].ID) {
+		t.Fatalf("ambiguous config name must list choices: %v", err)
+	}
+	if got, err := resolveProxy(proxies, proxies[1].ID); err != nil || got.ID != proxies[1].ID {
+		t.Fatalf("full ID must disambiguate: %+v, %v", got, err)
+	}
+}
+
+func TestTailscaleURLCommandSavesConfigName(t *testing.T) {
+	for _, named := range []bool{false, true} {
+		t.Run(fmt.Sprintf("named=%t", named), func(t *testing.T) {
+			dir := t.TempDir()
+			path := filepath.Join(dir, config.AgntConfigFileName)
+			if err := os.WriteFile(path, []byte("proxies {\n    web {\n        port 5173\n    }\n}\n"), 0600); err != nil {
+				t.Fatal(err)
+			}
+			var dto proxyDTO
+			if !decodeResult(map[string]interface{}{
+				"id": "project-1234:web", "config_name": "web", "listen_addr": "127.0.0.1:19191",
+			}, &dto) {
+				t.Fatal("decode proxy list entry")
+			}
+			web := dto.toInfo()
+			web.TailscaleURL = "http://box.tail1234.ts.net:19191"
+			proxies := []ProxyInfo{web}
+			name := ""
+			if named {
+				name = "web"
+				proxies = append(proxies, ProxyInfo{ID: "project-1234:api", ConfigName: "api"})
+			}
+			ctrl := &fakeProxyController{projectPath: dir}
+			if err := routerWithProxies(t, ctrl, proxies...).runTailscaleURLCommand(name); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.LoadAgntConfigFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(cfg.Proxies) != 1 || cfg.Proxies["web"].StatusURL != web.TailscaleURL || cfg.Proxies["web"].Port != 5173 {
+				t.Fatalf("pin must update the original web node: %+v", cfg.Proxies)
+			}
+			if !ctrl.reconciled {
+				t.Fatal("pin did not request a live update")
+			}
+			var buf bytes.Buffer
+			web.StatusURL = cfg.Proxies["web"].StatusURL
+			NewRenderer(&buf, 200, 24).DrawIndicator(Status{DaemonConnected: ConnectionConnected, Proxies: []ProxyInfo{web}})
+			if !strings.Contains(buf.String(), web.StatusURL) || strings.Contains(buf.String(), "localhost") {
+				t.Fatalf("status bar did not display the saved URL: %q", buf.String())
+			}
+		})
 	}
 }
 
