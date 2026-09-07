@@ -5,6 +5,7 @@ BINARY := devtool-mcp
 DAEMON_BINARY := devtool-mcp-daemon
 AGENT_BINARY := agnt
 AGENT_DAEMON_BINARY := agnt-daemon
+LOCAL_BIN ?= $(HOME)/.local/bin
 
 # Default target
 all: build
@@ -252,19 +253,26 @@ install: build
 
 # Build and install to ~/.local/bin (all binaries)
 install-local: build
-	@# Stop running daemon. pkill sweep catches any stale instances that
-	@# didn't respond to the graceful stop (e.g. old binaries on /run/user/1000
-	@# from before the socket path was fixed to always use /tmp).
-	@~/.local/bin/$(AGENT_BINARY) daemon stop 2>/dev/null || true
-	@pkill -TERM -f '[a]gnt-daemon daemon start' 2>/dev/null || true
-	@sleep 0.3
-	@mkdir -p ~/.local/bin
-	@install -m 755 $(AGENT_BINARY) ~/.local/bin/$(AGENT_BINARY)
-	@install -m 755 $(AGENT_BINARY) ~/.local/bin/$(BINARY)
-	@install -m 755 $(AGENT_BINARY) ~/.local/bin/$(DAEMON_BINARY)
-	@install -m 755 $(AGENT_BINARY) ~/.local/bin/$(AGENT_DAEMON_BINARY)
-	@echo "Installed $(AGENT_BINARY), $(BINARY), $(DAEMON_BINARY), and $(AGENT_DAEMON_BINARY) to ~/.local/bin"
-	@echo "Make sure ~/.local/bin is in your PATH"
+	@set -eu; \
+	mkdir -p "$(LOCAL_BIN)"; \
+	dest=$$(cd "$(LOCAL_BIN)" && pwd -P); \
+	stage=$$(mktemp -d "$$dest/.agnt-install.XXXXXX"); \
+	trap 'rm -rf "$$stage"' EXIT HUP INT TERM; \
+	for name in $(AGENT_BINARY) $(BINARY) $(DAEMON_BINARY) $(AGENT_DAEMON_BINARY); do \
+		install -m 755 "$(AGENT_BINARY)" "$$stage/$$name"; \
+	done; \
+	"$(CURDIR)/$(AGENT_BINARY)" daemon stop || \
+		echo "WARNING: Daemon stop did not succeed. If a daemon is running, restart it before use."; \
+	for name in $(AGENT_BINARY) $(BINARY) $(DAEMON_BINARY) $(AGENT_DAEMON_BINARY); do \
+		mv -f "$$stage/$$name" "$$dest/$$name"; \
+	done; \
+	echo "Installed all four binaries to $$dest"; \
+	active=$$(command -v $(AGENT_BINARY) || true); \
+	echo "PATH resolves $(AGENT_BINARY) to: $${active:-not found}"; \
+	if [ "$$active" != "$$dest/$(AGENT_BINARY)" ]; then \
+		echo "WARNING: Put $$dest first in PATH and run hash -r in your shell."; \
+	fi; \
+	echo "Restart existing agnt sessions and MCP clients to load the new binary."
 
 # Cross-compile and install Windows binaries to Windows ~/.local/bin
 WINDOWS_BIN := /mnt/c/Users/andyb/.local/bin
@@ -399,7 +407,7 @@ help:
 	@echo "  clean            - Remove build artifacts and kill zombie daemons"
 	@echo "  clean-zombies    - Kill orphaned test daemon processes"
 	@echo "  install          - Install all binaries to GOPATH/bin"
-	@echo "  install-local    - Build and install all binaries to ~/.local/bin"
+	@echo "  install-local    - Install all binaries to LOCAL_BIN (default: ~/.local/bin)"
 	@echo "  install-windows  - Cross-compile and install Windows binaries"
 	@echo "  cross-compile      - Verify windows/amd64 + darwin/arm64 builds (with file-type assertion)"
 	@echo "  cross-compile-check - CI-friendly cross-compile check (no binary output)"
