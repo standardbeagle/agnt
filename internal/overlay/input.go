@@ -1086,10 +1086,8 @@ func (r *InputRouter) refreshPanelContent(panelID string) {
 		}
 	}
 
-	// Full redraw when state changed (header needs update) or no diff cache
-	if stateChanged || !r.overlay.renderer.RefreshPanelContent(*panel) {
-		r.overlay.draw()
-	}
+	// Submit the current view; the renderer owns change detection.
+	r.overlay.draw()
 }
 
 // eagerRefreshPanel fetches the latest output for a process panel by ID.

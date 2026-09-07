@@ -10,6 +10,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/standardbeagle/vt10x"
 )
 
 // proxyListenConflict returns the proxy's listen port (as a string) when the
@@ -303,12 +305,7 @@ type Renderer struct {
 	currentMenuRegion  *ScreenRegion
 	currentInputRegion *ScreenRegion
 
-	// Diff-based panel refresh state: cached visible lines from last render
-	lastPanelLines []string
-	lastPanelStart int // startRow of the cached content area
-	lastPanelCol   int // column of the cached content area
-	lastPanelWidth int // width of the cached content area
-	lastPanelAvail int // available lines in the content area
+	panelFrame []vt10x.Glyph
 
 	// Animation frame counter for starting-state indicator. Incremented
 	// atomically on each DrawIndicator call; read by processStateIcon
@@ -345,6 +342,7 @@ func (r *Renderer) SetVersion(version string) {
 // prevent interleaving with PTY output on the same stdout.
 func (r *Renderer) SetOutput(out io.Writer) {
 	r.mu.Lock()
+	r.panelFrame = nil
 	defer r.mu.Unlock()
 	r.out = out
 	r.screenMgr.SetOutput(out)
@@ -357,6 +355,7 @@ func (r *Renderer) SetSize(width, height int) {
 	r.width = width
 	r.height = height
 	r.screenMgr.SetSize(width, height)
+	r.panelFrame = nil
 }
 
 // write outputs a string. When a buffer is active (beginBuffer was called)
@@ -760,6 +759,7 @@ func (r *Renderer) ClearIndicator() {
 // ClearScreen clears the entire screen and resets cursor to home.
 func (r *Renderer) ClearScreen() {
 	r.mu.Lock()
+	r.panelFrame = nil
 	r.beginBuffer()
 
 	// Clear entire screen, move cursor home, reset scroll region
@@ -775,6 +775,7 @@ func (r *Renderer) ClearScreen() {
 // Unlike ClearScreen, this preserves the scroll region.
 func (r *Renderer) ClearVisible() {
 	r.mu.Lock()
+	r.panelFrame = nil
 	r.beginBuffer()
 
 	r.write(ClearScreen + CursorHome)
@@ -792,6 +793,7 @@ func (r *Renderer) WriteFrame(frame []byte) {
 		return
 	}
 	r.mu.Lock()
+	r.panelFrame = nil
 	out := r.out
 	r.mu.Unlock()
 	out.Write(frame)
@@ -801,6 +803,7 @@ func (r *Renderer) WriteFrame(frame []byte) {
 // The main screen content is preserved and restored when ExitAltScreen is called.
 func (r *Renderer) EnterAltScreen() {
 	r.mu.Lock()
+	r.panelFrame = nil
 	r.beginBuffer()
 	r.write(EnterAltScreen + CursorHome)
 	buf := r.buf
@@ -813,6 +816,7 @@ func (r *Renderer) EnterAltScreen() {
 // The main screen content that was preserved when EnterAltScreen was called is restored.
 func (r *Renderer) ExitAltScreen() {
 	r.mu.Lock()
+	r.panelFrame = nil
 	r.beginBuffer()
 	r.write(ExitAltScreen)
 	buf := r.buf
@@ -821,15 +825,13 @@ func (r *Renderer) ExitAltScreen() {
 	r.flushBuffer(buf)
 }
 
-// DrawPanelView draws a full-screen panel view with a niri-style tab bar at top.
+// DrawPanelView renders the current panel and emits only changed terminal rows.
 // Panels are arranged horizontally like niri columns: Ctrl+Left/Right to navigate.
 func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Status, overviewSelectedIdx int, commandInput bool, commandBuffer string, commandSelectedIdx int, showAllPorts bool, actions OverviewActions) {
 	r.mu.Lock()
 	r.beginBuffer()
 
 	r.write(ClearScreen + CursorHome + CursorHide)
-	// Full redraw invalidates diff cache; drawScrollableContent will repopulate it
-	r.lastPanelLines = nil
 
 	if activeIndex >= len(panels) {
 		activeIndex = len(panels) - 1
@@ -921,13 +923,13 @@ func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Sta
 	} else {
 		hint = fmt.Sprintf(" Tab Navigate  ↑↓ Scroll  1-9 Jump  x Close stopped  Esc Exit  (%d/%d) ", activeIndex+1, len(panels))
 	}
-	hint = r.padRight(hint, r.width)
+	hint = r.padRight(r.truncateANSI(hint, r.width), r.width)
 	r.write(hint)
 	r.write(Reset)
 
 	r.write(CursorShow)
 
-	buf := r.buf
+	buf := r.diffPanelFrame(r.buf)
 	r.buf = nil
 	r.mu.Unlock()
 	r.flushBuffer(buf)
@@ -1201,10 +1203,10 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 		if row < startRow+maxRows-1 {
 			row++
 			r.moveTo(row, col)
-			r.write(Bold + "run command" + Reset + FgBrightBlack + "  (type to filter, ↑↓ select, ⏎ run, esc cancel)" + Reset)
+			r.write(r.truncateANSI(Bold+"run command"+Reset+FgBrightBlack+"  (type to filter, ↑↓ select, ⏎ run, esc cancel)", width) + Reset)
 			row++
 			r.moveTo(row, col)
-			r.write(fmt.Sprintf("%s>%s %s%s█%s", FgCyan+Bold, Reset, commandBuffer, FgBrightBlack, Reset))
+			r.write(r.truncateANSI(fmt.Sprintf("%s>%s %s%s█%s", FgCyan+Bold, Reset, commandBuffer, FgBrightBlack, Reset), width) + Reset)
 			row++
 
 			matches, _, _ := filterPaletteCommands(commandBuffer)
@@ -1233,7 +1235,7 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 				}
 				line := fmt.Sprintf("%s%s%-22s%s%s%s", marker, nameCol, name, Reset, FgBrightBlack, c.Desc)
 				if len(line) > 0 {
-					r.write(line + Reset)
+					r.write(r.truncateANSI(line, width-1) + Reset)
 				}
 				row++
 			}
@@ -1768,13 +1770,6 @@ func (r *Renderer) drawScrollableContent(startRow, col, width, availLines int, p
 		row++
 	}
 
-	// Cache for diff-based refresh
-	r.lastPanelLines = visible
-	r.lastPanelStart = startRow
-	r.lastPanelCol = col
-	r.lastPanelWidth = width
-	r.lastPanelAvail = availLines
-
 	// Scroll indicators
 	r.drawScrollIndicators(startRow, col, width, availLines, panel)
 }
@@ -1842,61 +1837,6 @@ func (r *Renderer) drawScrollIndicators(startRow, col, width, availLines int, pa
 		r.moveTo(startRow, col+width-len(indicator)-1)
 		r.write(FgBrightBlack + indicator + Reset)
 	}
-}
-
-// RefreshPanelContent performs a diff-based update of the scrollable content
-// area within the current panel view. Only lines that differ from the last
-// render are redrawn, reducing terminal flicker during live refresh.
-// Returns false if no cached state exists (caller should do a full draw).
-func (r *Renderer) RefreshPanelContent(panel PanelItem) bool {
-	r.mu.Lock()
-
-	if r.lastPanelLines == nil {
-		r.mu.Unlock()
-		return false
-	}
-
-	r.beginBuffer()
-
-	startRow := r.lastPanelStart
-	col := r.lastPanelCol
-	width := r.lastPanelWidth
-	availLines := r.lastPanelAvail
-
-	newLines := visibleLines(panel, availLines, width)
-
-	r.write(CursorHide)
-
-	maxLen := len(newLines)
-	if len(r.lastPanelLines) > maxLen {
-		maxLen = len(r.lastPanelLines)
-	}
-
-	for i := 0; i < maxLen; i++ {
-		var oldLine, newLine string
-		if i < len(r.lastPanelLines) {
-			oldLine = r.lastPanelLines[i]
-		}
-		if i < len(newLines) {
-			newLine = newLines[i]
-		}
-		if oldLine == newLine {
-			continue
-		}
-		r.moveTo(startRow+i, col)
-		r.write(ClearToEOL)
-		r.write(newLine)
-	}
-
-	r.lastPanelLines = newLines
-	r.drawScrollIndicators(startRow, col, width, availLines, panel)
-	r.write(CursorShow)
-
-	buf := r.buf
-	r.buf = nil
-	r.mu.Unlock()
-	r.flushBuffer(buf)
-	return true
 }
 
 // drawProxyPanelContent draws the content for a proxy panel.
@@ -2031,6 +1971,7 @@ func formatShortTimeAgo(t time.Time) string {
 // This restores the screen by clearing the tracked regions.
 func (r *Renderer) ClearMenu() {
 	r.mu.Lock()
+	r.panelFrame = nil
 	defer r.mu.Unlock()
 
 	// Pop all overlays from the stack - this clears each tracked region

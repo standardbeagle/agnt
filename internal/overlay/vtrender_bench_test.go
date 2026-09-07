@@ -1,6 +1,7 @@
 package overlay
 
 import (
+	"io"
 	"os"
 	"testing"
 
@@ -52,3 +53,18 @@ func benchRender(b *testing.B, cols, rows int) {
 func BenchmarkRender_100x30(b *testing.B)  { benchRender(b, 100, 30) }
 func BenchmarkRender_200x50(b *testing.B)  { benchRender(b, 200, 50) }
 func BenchmarkRender_400x100(b *testing.B) { benchRender(b, 400, 100) }
+
+// BenchmarkCommandPaletteTyping measures the actual command-palette
+// repaint path at a common terminal size. Keep this below one 60 Hz frame
+// (16.7 ms) so palette typing remains responsive as the command list grows.
+func BenchmarkCommandPaletteTyping(b *testing.B) {
+	r := NewRenderer(io.Discard, 120, 40)
+	panels := []PanelItem{{Type: "overview", Label: "overview"}}
+	status := Status{DaemonConnected: ConnectionConnected}
+	queries := []string{"", "s", "st", "sta", "star", "start", "start ", "start d"}
+	r.DrawPanelView(panels, 0, status, 0, true, "", 0, false, OverviewActions{})
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		r.DrawPanelView(panels, 0, status, 0, true, queries[i%len(queries)], 0, false, OverviewActions{})
+	}
+}

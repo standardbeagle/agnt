@@ -398,6 +398,22 @@ func TestDrawOverview_NoticeBanner(t *testing.T) {
 	assert.NotContains(t, clean, "dismiss", "no banner when there are no notices")
 }
 
+func TestDrawPanelView_DoesNotEraseWholeFrameWhileTyping(t *testing.T) {
+	var buf bytes.Buffer
+	r := NewRenderer(&buf, 120, 40)
+	panels := []PanelItem{{Type: "overview", Label: "overview"}}
+	status := Status{DaemonConnected: ConnectionConnected}
+
+	r.DrawPanelView(panels, 0, status, 0, true, "pr", 0, false, OverviewActions{})
+	buf.Reset()
+	r.DrawPanelView(panels, 0, status, 0, true, "pro", 0, false, OverviewActions{})
+
+	out := buf.String()
+	assert.NotContains(t, out, ClearScreen, "typing must not erase the whole terminal")
+	assert.NotContains(t, out, ClearLine, "typing must overwrite changed rows without clearing them first")
+	assert.Contains(t, out, "pro", "the updated command query should be rendered")
+}
+
 // TestDrawIndicator_QueueSegment pins the status-bar queue segment and its
 // visibility gate. The gate is queueActive — shared with the overview panel
 // (drawAlertQueueSection) so the two surfaces never disagree about whether
