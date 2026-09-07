@@ -138,8 +138,8 @@ proxies {
 then loopback. The overlay also auto-detects this node's tailnet name and shows
 it in the proxy detail panel; that detection is never promoted into the status
 bar on its own, so the bar does not change under you merely for having tailscale
-installed. `:tailscale-url` in the overview palette writes the detected address
-into this key.
+installed. `:tailscale` in the overview palette writes the detected address
+into this key, along with the bind that makes it answer (see below).
 
 **`status-url` is not `public-url`.** They look interchangeable and are not:
 
@@ -154,8 +154,50 @@ served behind that address (a tunnel), and `status-url` when you only want to
 see it.
 
 Edits to `status-url` are applied to running proxies by the reconcile path, so
-`:config`, `:tailscale-url`, or an external edit followed by a reconcile all
+`:config`, `:tailscale`, or an external edit followed by a reconcile all
 take effect without restarting the proxy.
+
+## Proxy Bind Address (`proxies.<id>.bind` in `.agnt.kdl`)
+
+Which interface the proxy listens on. Default `127.0.0.1`: reachable from this
+machine and nowhere else.
+
+| Value | Reachable from | Needs `allow-external` |
+|---|---|---|
+| unset / `127.0.0.1` | this machine | no |
+| `"tailscale"` | this tailnet, authenticated and device-scoped | no |
+| `"0.0.0.0"`, or any literal non-loopback address | every network this machine is on | yes |
+
+`bind "tailscale"` resolves to this node's tailnet IPv4 (`100.64.0.0/10`) when
+the proxy starts. It is written as that word rather than the address itself
+because `.agnt.kdl` is shared across machines and each machine has its own
+tailnet address; a literal address is treated as any other external bind and
+still requires `allow-external`.
+
+It does not require `allow-external` because the gate exists to stop an
+accidental `0.0.0.0`, and a tailnet address is the narrower posture: only
+devices on your tailnet can reach it. Writing the key is the explicit choice.
+The resolved address is re-checked against the tailnet range, so this
+exemption cannot be widened by what the lookup returns.
+
+**The proxy stops answering on `127.0.0.1`.** A tailnet bind is a move, not an
+addition. Reach the proxy at its tailnet address, which works from this machine
+too. `bind` is part of the proxy's reconcile signature, so changing it stops the
+old listener and starts the proxy on the new address without a daemon restart.
+
+```kdl
+proxies {
+    dev {
+        url "http://localhost:5173"
+        bind "tailscale"
+        status-url "http://box.tail1234.ts.net:19191"
+    }
+}
+```
+
+`:tailscale [proxy]` in the overview palette writes both keys in one edit and
+applies them. A proxy started through the `proxy` MCP tool has no config node,
+so the command refuses it rather than writing keys nothing reads.
 
 ## Alert Push Channels (`internal/config/agnt.go`, `alerts.push` in `.agnt.kdl`)
 

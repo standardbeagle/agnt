@@ -205,13 +205,15 @@ Test startup contract (`Start()` vs `NewForTest`)：`.claude/rules/daemon-archit
 
 | Listener | Shipped default | Widened only by |
 |---|---|---|
-| Dev proxy (`internal/proxy/server.go`) | loopback | `tunnel` |
+| Dev proxy (`internal/proxy/server.go`) | loopback | `tunnel`, or `bind` in `.agnt.kdl` |
 | Public walkthrough plane (`internal/daemon/publish_public.go`) | **off** (no listener) | setting `AGNT_PUBLIC_ADDR` |
 | `agnt publish serve` (`cmd/agnt/publish_serve.go`) | loopback | `--tunnel` |
 | Overlay (`cmd/agnt/overlay.go`, `ai_overlay.go`) | loopback | nothing — no exposure path |
 | Daemon control socket / named pipe | loopback | nothing — uid-scoped socket under `$HOME` |
 
 Widening targets are not equivalent: `tunnel cloudflare` / `ngrok` are genuinely **public**; `tunnel tailscale` (`tailscale serve`) is **tailnet-private** — authenticated, encrypted, device-scoped, closer to LAN-with-authn than to the open internet.
+
+The dev proxy's `bind` key (`docs/configuration.md` § Proxy Bind Address) offers the same two grades directly, without a tunnel process. `bind "tailscale"` resolves to this node's tailnet IPv4 and is **tailnet-private**, the same grade as `tunnel tailscale`; a literal `0.0.0.0` or other non-loopback address reaches every network the machine is on and is the widest posture the proxy has. Only the second requires `allow-external`: the gate exists to catch an unintended `0.0.0.0`, and a tailnet address is narrower than the LAN, not wider. The exemption is checked against the **resolved address** (`platform.IsTailnetAddress`), never against the `"tailscale"` token, so nothing that answers the lookup can widen it. A tailnet bind replaces the loopback listener rather than adding to it. Either way the choice is the operator's, made by writing the key or running `:tailscale`; an agent never widens a bind on its own.
 
 **But the first three listeners are hardened to public standard unconditionally**, because the same listener can be pointed at cloudflare a moment later. Caps must hold in every posture so that widening stays purely a routing decision and never silently doubles as a hardening decision. Each declares: `ReadHeaderTimeout`, `ReadTimeout`, `WriteTimeout`, `IdleTimeout`, `MaxHeaderBytes`, a max-concurrent-connection cap, and a **request rate cap**. Unbounded is a defect, not a default.
 
