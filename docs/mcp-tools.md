@@ -620,6 +620,14 @@ tunnel {action: "start", provider: "cloudflare", local_port: 12345, proxy_id: "d
 tunnel {action: "start", provider: "tailscale",  local_port: 12345, proxy_id: "dev"}
 ```
 
+For the tailnet alone, `bind_address: "tailscale"` needs no tunnel process: the
+proxy listens on this node's tailnet IPv4 and keeps its own port, so it answers
+at `http://<magicdns-name>:<port>`. It is the one non-loopback bind that does
+not need `allow_external`, and it replaces the loopback listener rather than
+adding to it. `.agnt.kdl` spells the same thing `bind "tailscale"`
+(`docs/configuration.md` § Proxy Bind Address); `:tailscale` in the overlay
+writes it. Use `tunnel tailscale` instead when you want HTTPS at the node root.
+
 ### Control WebSocket origins
 
 The injected client opens `/__devtool_metrics` against whatever host the page

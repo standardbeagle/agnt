@@ -50,7 +50,7 @@ Parameters:
 | `target_url` | string | Yes | - | Backend server URL |
 | `port` | integer | No | hash-based | Listen port. Only specify if you need a specific port. |
 | `max_log_size` | integer | No | 1000 | Maximum log entries |
-| `bind_address` | string | No | `127.0.0.1` | Bind address: `127.0.0.1` (localhost only) or `0.0.0.0` (all interfaces for tunnel/mobile testing) |
+| `bind_address` | string | No | `127.0.0.1` | Bind address: `127.0.0.1` (localhost only), `tailscale` (this node's tailnet address, reachable only from your tailnet), or `0.0.0.0` (all interfaces for tunnel/mobile testing). Anything but loopback or `tailscale` also needs `allow_external` |
 | `allow_external` | boolean | No | false | Required to bind to a non-localhost address (`0.0.0.0` or `::`). Acknowledges network exposure risk. |
 | `skip_tls_verify` | boolean | No | false | Skip TLS certificate verification (for self-signed/expired certs in dev). |
 | `public_url` | string | No | - | Public URL for tunnel services (e.g., `https://abc123.trycloudflare.com`). Used for URL rewriting. |

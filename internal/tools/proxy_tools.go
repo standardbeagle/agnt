@@ -104,7 +104,7 @@ type ProxyInput struct {
 	TargetURL     string `json:"target_url,omitempty" jsonschema:"Target URL to proxy (required for start)"`
 	Port          int    `json:"port,omitempty" jsonschema:"Listen port (default: stable hash of target URL). Only specify if you need a specific port."`
 	MaxLogSize    int    `json:"max_log_size,omitempty" jsonschema:"Maximum log entries (default: 1000)"`
-	BindAddress   string `json:"bind_address,omitempty" jsonschema:"Bind address: '127.0.0.1' (default, localhost only) or '0.0.0.0' (all interfaces for tunnel/mobile testing)"`
+	BindAddress   string `json:"bind_address,omitempty" jsonschema:"Bind address: '127.0.0.1' (default, localhost only), 'tailscale' (this node's tailnet address, reachable only from your tailnet), or '0.0.0.0' (all interfaces for tunnel/mobile testing). Anything other than loopback or 'tailscale' needs allow_external"`
 	AllowExternal bool   `json:"allow_external,omitempty" jsonschema:"Required to bind to non-localhost addresses (0.0.0.0 or ::). Acknowledges network exposure risk."`
 	PublicURL     string `json:"public_url,omitempty" jsonschema:"Public URL for tunnel services (e.g. 'https://abc123.trycloudflare.com'). Used for URL rewriting when behind a tunnel."`
 	SkipTLSVerify bool   `json:"skip_tls_verify,omitempty" jsonschema:"Skip TLS certificate verification (default: false, certs are verified). Set to true for self-signed/expired certs in dev environments."`
