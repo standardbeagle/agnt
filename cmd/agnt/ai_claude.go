@@ -545,7 +545,7 @@ func runAiClaudeOverlay(ctx context.Context, opts *claude.AgentOptions, daemonHa
 			RedrawInterval:    200 * time.Millisecond,
 			OnRedraw: func() {
 				if termOverlay != nil {
-					termOverlay.Redraw()
+					termOverlay.RedrawAfterChildOutput()
 				}
 			},
 		}

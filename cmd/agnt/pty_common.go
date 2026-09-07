@@ -1956,7 +1956,7 @@ func setupTerminalOverlay(ctx context.Context, handle *ptyHandle, rt *pipelineRu
 			RedrawInterval:    200 * time.Millisecond,
 			OnRedraw: func() {
 				if rt.termOverlay != nil {
-					rt.termOverlay.Redraw()
+					rt.termOverlay.RedrawAfterChildOutput()
 				}
 			},
 		}

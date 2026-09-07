@@ -843,6 +843,19 @@ func (o *Overlay) Redraw() {
 	o.draw()
 }
 
+// RedrawAfterChildOutput refreshes the indicator after the child PTY emits a
+// redraw-triggering escape sequence. Child output can continue while a menu
+// is open, but the menu owns the screen until it closes, so child-triggered
+// redraws must not repaint the panel (or clear the screen) in that state.
+func (o *Overlay) RedrawAfterChildOutput() {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	if o.State() != StateIndicator {
+		return
+	}
+	o.draw()
+}
+
 // OverviewActions carries the transient global-action state rendered on the
 // overview panel's connection and actions lines.
 type OverviewActions struct {

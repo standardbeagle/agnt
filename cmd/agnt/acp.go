@@ -482,7 +482,7 @@ func runACPOverlay(ctx context.Context, conn *acp.ClientSideConnection, client *
 			RedrawInterval:    200 * time.Millisecond,
 			OnRedraw: func() {
 				if termOverlay != nil {
-					termOverlay.Redraw()
+					termOverlay.RedrawAfterChildOutput()
 				}
 			},
 		}
