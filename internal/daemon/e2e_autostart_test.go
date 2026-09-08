@@ -15,6 +15,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -49,25 +50,60 @@ func (e *e2eEnv) TrackPort(port int) {
 // setupDaemonForE2E builds the agnt binary (once), creates a temp dir and
 // socket, starts a fresh daemon, and returns the environment plus a cleanup
 // function registered via t.Cleanup.
+// builtE2EBinary is the agnt binary these end-to-end tests spawn, built once
+// per test binary from the source under test.
+//
+// It is deliberately not <repoRoot>/agnt. Writing it there puts a build
+// artifact in the working tree, where it dirties every gate that reads the
+// tree; and reusing whatever already sits at that path silently makes a stale
+// developer binary the system under test, whose version skew against this
+// source triggers the client/daemon upgrade path mid-test and eats the
+// deadline as an unexplained timeout.
+var (
+	builtE2EBinaryOnce sync.Once
+	builtE2EBinaryPath string
+	builtE2EBinaryErr  error
+)
+
+func e2eAgntBinary(t *testing.T) string {
+	t.Helper()
+	builtE2EBinaryOnce.Do(func() {
+		wd, err := os.Getwd()
+		if err != nil {
+			builtE2EBinaryErr = err
+			return
+		}
+		dir, err := os.MkdirTemp("", "agnt-daemon-e2e-bin-")
+		if err != nil {
+			builtE2EBinaryErr = err
+			return
+		}
+		binPath := filepath.Join(dir, "agnt")
+		cmd := exec.Command("go", "build", "-o", binPath, "./cmd/agnt/")
+		cmd.Dir = filepath.Join(wd, "..", "..")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			builtE2EBinaryErr = fmt.Errorf("go build ./cmd/agnt: %w\n%s", err, out)
+			return
+		}
+		builtE2EBinaryPath = binPath
+	})
+	require.NoError(t, builtE2EBinaryErr, "building the agnt binary for the E2E tests")
+	return builtE2EBinaryPath
+}
+
 func setupDaemonForE2E(t *testing.T) *e2eEnv {
 	t.Helper()
 
-	// Locate project root from test working directory.
-	wd, err := os.Getwd()
-	require.NoError(t, err)
-	projectRoot := filepath.Join(wd, "..", "..")
-
-	binaryPath := filepath.Join(projectRoot, "agnt")
-	if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
-		// Build the binary.
-		cmd := exec.Command("go", "build", "-o", binaryPath, "./cmd/agnt/")
-		cmd.Dir = projectRoot
-		out, buildErr := cmd.CombinedOutput()
-		require.NoError(t, buildErr, "go build failed: %s", string(out))
-	}
+	binaryPath := e2eAgntBinary(t)
 
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "e2e.sock")
+
+	// The daemon writes its log under XDG_STATE_HOME. Without this the test
+	// daemon appends to, and rotates, the developer's own daemon log.
+	stateHome := filepath.Join(tmpDir, "state")
+	require.NoError(t, os.MkdirAll(stateHome, 0o755))
+	t.Setenv("XDG_STATE_HOME", stateHome)
 
 	d := New(DaemonConfig{
 		SocketPath:   sockPath,
@@ -1587,17 +1623,7 @@ func isProcessZombie(pid int) bool {
 func setupDaemonForCrashTest(t *testing.T) (*e2eEnv, string) {
 	t.Helper()
 
-	wd, err := os.Getwd()
-	require.NoError(t, err)
-	projectRoot := filepath.Join(wd, "..", "..")
-
-	binaryPath := filepath.Join(projectRoot, "agnt")
-	if _, err := os.Stat(binaryPath); os.IsNotExist(err) {
-		cmd := exec.Command("go", "build", "-o", binaryPath, "./cmd/agnt/")
-		cmd.Dir = projectRoot
-		out, buildErr := cmd.CombinedOutput()
-		require.NoError(t, buildErr, "go build failed: %s", string(out))
-	}
+	binaryPath := e2eAgntBinary(t)
 
 	tmpDir := t.TempDir()
 	sockPath := filepath.Join(tmpDir, "e2e.sock")
