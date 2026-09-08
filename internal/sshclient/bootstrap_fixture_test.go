@@ -1,6 +1,7 @@
 package sshclient
 
 import (
+	"go/build"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -63,11 +64,26 @@ func execFixtureHandler(t *testing.T, cwd string, extraEnv ...string) func(chann
 // remoteHomeEnv returns the PATH/HOME env overrides matching a fixture
 // whose "remote $HOME" is homeDir — PATH is prepended with $HOME/.local/bin
 // so an agnt binary installed there becomes runnable via bare "agnt".
+//
+// It also pins the Go toolchain's own directories to their real locations.
+// One of the probes runs "go version", and the toolchain writes its telemetry
+// config and its module cache under $HOME: without this the fixture's temp
+// HOME collects both, the background telemetry writer races t.TempDir's
+// cleanup ("directory not empty"), and the module cache's read-only
+// directories can defeat the removal outright. Overriding HOME is what these
+// tests are about; seeding it with toolchain state is not.
 func remoteHomeEnv(homeDir string) []string {
-	return []string{
+	env := []string{
 		"HOME=" + homeDir,
 		"PATH=" + filepath.Join(homeDir, ".local", "bin") + ":" + os.Getenv("PATH"),
 	}
+	if configDir, err := os.UserConfigDir(); err == nil {
+		env = append(env, "XDG_CONFIG_HOME="+configDir)
+	}
+	if gopath := build.Default.GOPATH; gopath != "" {
+		env = append(env, "GOPATH="+gopath)
+	}
+	return env
 }
 
 // bootstrap's tests reuse forward_test.go's dialFixtureClient helper (same

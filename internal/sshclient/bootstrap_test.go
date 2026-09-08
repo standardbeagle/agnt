@@ -196,3 +196,30 @@ func TestReleaseDownloadURL_MatchesInstallShNamingConvention(t *testing.T) {
 		t.Errorf("ReleaseDownloadURL(v-prefixed) = %q, want %q", got, want)
 	}
 }
+
+// The remote-Go probe runs the real toolchain under the fixture's temp HOME.
+// Anything the toolchain writes there is state the test never asked for, and
+// it races t.TempDir's cleanup: the telemetry writer keeps running after the
+// command returns, and the module cache's directories are read-only.
+func TestFixtureProbesLeaveNoToolchainStateInRemoteHome(t *testing.T) {
+	remoteHome := t.TempDir()
+	fixture := newFixtureServer(t)
+	fixture.onSession = execFixtureHandler(t, remoteHome, remoteHomeEnv(remoteHome)...)
+	stop := fixture.serve(t)
+	defer stop()
+
+	client := dialFixtureClient(t, fixture).SSH
+	_, err := CheckRemoteBinary(client, BootstrapOptions{LocalVersion: "1.2.0", LocalBinaryPath: "/unused"})
+	if err != nil {
+		t.Fatalf("CheckRemoteBinary: %v", err)
+	}
+
+	for _, unwanted := range []string{
+		filepath.Join(remoteHome, ".config", "go"),
+		filepath.Join(remoteHome, "go", "pkg"),
+	} {
+		if _, statErr := os.Stat(unwanted); statErr == nil {
+			t.Errorf("the toolchain wrote %s into the fixture's temp HOME", unwanted)
+		}
+	}
+}
