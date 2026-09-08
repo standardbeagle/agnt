@@ -256,6 +256,7 @@ Widening a posture is a user decision, never an agent's.
 | Overlay UI internals (palette, ports, splash, output protection) | `docs/overlay-internals.md` |
 | Agent system-prompt injection per tool | `docs/agent-adapters.md` |
 | Daemon invariants (source-of-truth, incident pipeline, session containment, session-scoping, test startup) | `.claude/rules/daemon-architecture.md` |
+| Stream-budget exhaustion, registry-vs-resource ordering, child-process isolation in tests | `.claude/rules/lessons-boundary-budgets.md` |
 | Daemon lifecycle | `.claude/rules/daemon-lifecycle.md` |
 | Config contracts | `.claude/rules/config-contracts.md` |
 | Proxy events | `.claude/rules/proxy-events.md` |
