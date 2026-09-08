@@ -1,6 +1,7 @@
 package sshclient
 
 import (
+	"bufio"
 	"context"
 	"encoding/base64"
 	"fmt"
@@ -360,9 +361,18 @@ func TestPortForwardManager_EndToEnd(t *testing.T) {
 		require.NoError(t, httpConn.SetDeadline(time.Now().Add(3*time.Second)))
 		_, err = httpConn.Write([]byte("GET /open HTTP/1.1\r\nHost: 127.0.0.1\r\nConnection: keep-alive\r\n\r\n"))
 		require.NoError(t, err)
-		buf := make([]byte, 2048)
-		_, err = httpConn.Read(buf)
+		// Drain the response to its exact end, and keep reading through the
+		// same buffered reader afterwards. A single Read is not the whole
+		// response: the relay copies through an SSH channel, so the headers
+		// and the body can arrive in separate segments, and a later read
+		// would then return the leftover bytes rather than the closure this
+		// subtest is about.
+		httpReader := bufio.NewReader(httpConn)
+		resp, err := http.ReadResponse(httpReader, nil)
 		require.NoError(t, err)
+		_, err = io.Copy(io.Discard, resp.Body)
+		require.NoError(t, err)
+		require.NoError(t, resp.Body.Close())
 		require.NoError(t, httpConn.SetDeadline(time.Time{}))
 
 		wsURL := url.URL{Scheme: "ws", Host: fmt.Sprintf("127.0.0.1:%d", localPort), Path: "/__devtool_metrics"}
@@ -385,7 +395,7 @@ func TestPortForwardManager_EndToEnd(t *testing.T) {
 		require.Error(t, dialErr, "local listener must actually be closed, not just removed from Status()")
 
 		require.NoError(t, httpConn.SetReadDeadline(time.Now().Add(time.Second)))
-		_, err = httpConn.Read(buf)
+		_, err = httpReader.Read(make([]byte, 2048))
 		require.Error(t, err, "open HTTP relay must be closed before forward removal completes")
 		require.NoError(t, ws.SetReadDeadline(time.Now().Add(time.Second)))
 		_, _, err = ws.ReadMessage()
