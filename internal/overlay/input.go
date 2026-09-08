@@ -129,6 +129,12 @@ type InputRouter struct {
 	forwardingToggle func(paused bool)
 	forwardPaused    bool
 
+	// pendingFlush overrides win32PendingFlush, the scanner's budget for
+	// holding a sequence that straddles a read boundary. Tests shrink it so a
+	// split-sequence case is decided by ordering rather than by a real wait.
+	// Zero means the production value.
+	pendingFlush time.Duration
+
 	// modalInput, when set, diverts raw input bytes to the referenced channel
 	// instead of the normal PTY/overlay handling. It exists so a one-off
 	// startup prompt (e.g. the port-conflict Y/n question) can read a
@@ -238,8 +244,12 @@ func (r *InputRouter) Run() error {
 	if inputSrc == nil {
 		inputSrc = os.Stdin
 	}
+	flush := r.pendingFlush
+	if flush == 0 {
+		flush = win32PendingFlush
+	}
 	go func() {
-		for b := range ScanWin32Input(inputSrc) {
+		for b := range scanWin32Input(inputSrc, flush) {
 			inputCh <- b
 		}
 		errCh <- io.EOF
