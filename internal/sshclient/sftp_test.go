@@ -21,7 +21,7 @@ import (
 // is a real local process" approach (bootstrap_fixture_test.go), extended
 // to also serve the "subsystem sftp" request a real SFTP client sends
 // instead of "exec".
-func sftpFixtureHandler(t *testing.T) func(channel ssh.Channel, requests <-chan *ssh.Request) {
+func sftpFixtureHandler(t *testing.T, root string) func(channel ssh.Channel, requests <-chan *ssh.Request) {
 	t.Helper()
 	return func(channel ssh.Channel, requests <-chan *ssh.Request) {
 		defer channel.Close()
@@ -50,7 +50,7 @@ func sftpFixtureHandler(t *testing.T) func(channel ssh.Channel, requests <-chan 
 			srv.Serve()
 			srv.Close()
 		case "exec":
-			runFixtureExec(channel, req)
+			runFixtureExec(channel, req, root)
 		default:
 			if req.WantReply {
 				req.Reply(false, nil)
@@ -64,13 +64,18 @@ func sftpFixtureHandler(t *testing.T) func(channel ssh.Channel, requests <-chan 
 // execFixtureHandler's semantics but operating on a request already pulled
 // off the requests channel (sftpFixtureHandler dispatches on the first
 // request's type before this is called).
-func runFixtureExec(channel ssh.Channel, req *ssh.Request) {
+func runFixtureExec(channel ssh.Channel, req *ssh.Request, root string) {
 	var payload struct{ Command string }
 	ssh.Unmarshal(req.Payload, &payload)
 	if req.WantReply {
 		req.Reply(true, nil)
 	}
 	cmd := exec.Command("sh", "-c", payload.Command)
+	// The fixture's contract is cwd = root. Without this the child inherits
+	// the test binary's cwd -- the package directory in the repository -- so
+	// the "cd <path> && pwd" probe this handler exists for resolves against
+	// the wrong tree, and any write lands in the working tree.
+	cmd.Dir = root
 	cmd.Stdin = channel
 	cmd.Stdout = channel
 	cmd.Stderr = channel.Stderr()
@@ -89,7 +94,7 @@ func newSFTPFixture(t *testing.T) (root string, sc *sftp.Client) {
 	t.Helper()
 	root = t.TempDir()
 	fixture := newFixtureServer(t)
-	fixture.onSession = sftpFixtureHandler(t)
+	fixture.onSession = sftpFixtureHandler(t, root)
 	stop := fixture.serve(t)
 	t.Cleanup(stop)
 

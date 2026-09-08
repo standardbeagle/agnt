@@ -209,14 +209,21 @@ func TestBootstrap_CrossArchFallthrough(t *testing.T) {
 type stdinExecServer struct {
 	listener net.Listener
 	auth     *testenv.Auth
+	workDir  string
 }
 
 func startStdinExecServer(t *testing.T, auth *testenv.Auth) *stdinExecServer {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
+	// Commands run here, not in the test binary's cwd. This handler drives the
+	// real remote-write pipeline -- mkdir, cat, chmod, mv -- so a cwd-relative
+	// path in it would land in the package directory inside the repository.
+	// The HOME override in the callers is not a substitute: it does not reach
+	// a child's working directory.
+	workDir := t.TempDir()
 	cfg := sftpServerConfig(t, auth)
-	s := &stdinExecServer{listener: listener, auth: auth}
+	s := &stdinExecServer{listener: listener, auth: auth, workDir: workDir}
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
@@ -251,11 +258,11 @@ func (s *stdinExecServer) handleConn(conn net.Conn, cfg *ssh.ServerConfig) {
 		if acceptErr != nil {
 			continue
 		}
-		go handleStdinExecSession(channel, sessionRequests)
+		go handleStdinExecSession(channel, sessionRequests, s.workDir)
 	}
 }
 
-func handleStdinExecSession(channel ssh.Channel, requests <-chan *ssh.Request) {
+func handleStdinExecSession(channel ssh.Channel, requests <-chan *ssh.Request, workDir string) {
 	defer channel.Close()
 	for req := range requests {
 		if req.Type != "exec" {
@@ -270,6 +277,7 @@ func handleStdinExecSession(channel ssh.Channel, requests <-chan *ssh.Request) {
 			_ = req.Reply(true, nil)
 		}
 		cmd := exec.Command("/bin/sh", "-c", payload.Command)
+		cmd.Dir = workDir
 		cmd.Stdin = channel
 		cmd.Stdout = channel
 		cmd.Stderr = channel.Stderr()

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"os/exec"
 	"sync"
 
@@ -16,6 +17,11 @@ import (
 type Server struct {
 	listener net.Listener
 	config   *ssh.ServerConfig
+
+	// workDir is where exec'd commands run. Without it the child inherits the
+	// test binary's cwd -- the package directory inside the repository -- and
+	// any cwd-relative path it writes lands in the working tree.
+	workDir string
 
 	mu     sync.Mutex
 	conns  map[net.Conn]struct{}
@@ -40,8 +46,14 @@ func Start(auth *Auth) (*Server, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen: %w", err)
 	}
+	workDir, err := os.MkdirTemp("", "agnt-testenv-exec-")
+	if err != nil {
+		_ = listener.Close()
+		return nil, fmt.Errorf("exec working directory: %w", err)
+	}
 	s := &Server{
 		listener: listener,
+		workDir:  workDir,
 		config:   auth.ServerConfig(hostKey),
 		conns:    make(map[net.Conn]struct{}),
 		frozen:   make(chan struct{}),
@@ -62,6 +74,9 @@ func (s *Server) Close() error {
 		err = s.listener.Close()
 		s.Drop()
 		close(s.closed)
+		if s.workDir != "" {
+			_ = os.RemoveAll(s.workDir)
+		}
 	})
 	return err
 }
@@ -242,6 +257,7 @@ func (s *Server) handleSession(channel ssh.Channel, requests <-chan *ssh.Request
 		}
 		_ = request.Reply(true, nil)
 		cmd := exec.Command("/bin/sh", "-c", payload.Command)
+		cmd.Dir = s.workDir
 		cmd.Stdout = channel
 		cmd.Stderr = channel.Stderr()
 		err := cmd.Run()
