@@ -1595,6 +1595,24 @@ func parseInt(s string) int {
 // long means the rest is not coming.
 const win32PendingFlush = 25 * time.Millisecond
 
+// staleSequenceFactor scales the hold budget for a remainder that is already
+// past its introducer. A bare ESC is held only briefly, because a lone Esc
+// keypress looks exactly like one and must reach the layer above quickly. A
+// remainder such as "\x1b[1;5" is different: it can only be the start of a
+// sequence, and releasing it early hands the layer above a fragment -- which
+// on the passthrough path means a bound key is typed into the child instead
+// of acted on. A sequence split by a slow link resumes well inside the wider
+// budget; nothing resumes after it.
+const staleSequenceFactor = 20
+
+// holdBudget returns how long a remainder may be held before it is released.
+func holdBudget(pending []byte, flushAfter time.Duration) time.Duration {
+	if len(pending) <= 1 {
+		return flushAfter
+	}
+	return staleSequenceFactor * flushAfter
+}
+
 func ScanWin32Input(r io.Reader) iter.Seq[byte] {
 	return scanWin32Input(r, win32PendingFlush)
 }
@@ -1647,7 +1665,7 @@ func scanWin32Input(r io.Reader, flushAfter time.Duration) iter.Seq[byte] {
 			var timerC <-chan time.Time
 			if len(pending) > 0 {
 				if timer == nil {
-					timer = time.NewTimer(flushAfter)
+					timer = time.NewTimer(holdBudget(pending, flushAfter))
 				}
 				timerC = timer.C
 			}
@@ -1715,16 +1733,38 @@ var ss3Keys = map[byte]string{
 
 // Reader states.
 const (
-	escGround   = iota // no sequence in progress
-	escAfterESC        // ESC seen, waiting for the sequence type
-	escInCSI           // inside ESC [ ... , waiting for a final byte
-	escAfterSS3        // ESC O seen, waiting for its single byte
-	escX10Mouse        // inside the three raw bytes of an ESC [ M report
+	escGround     = iota // no sequence in progress
+	escAfterESC          // ESC seen, waiting for the sequence type
+	escInCSI             // inside ESC [ ... , waiting for a final byte
+	escAfterSS3          // ESC O seen, waiting for its single byte
+	escX10Mouse          // inside the three raw bytes of an ESC [ M report
+	escInString          // inside OSC/DCS/APC/PM/SOS, waiting for a string terminator
+	escDiscardCSI        // past the CSI cap, waiting for the sequence's final byte
 )
+
+// stringSequenceIntroducers are the bytes that follow ESC to open a sequence
+// carrying a payload rather than a keypress: OSC (a colour or clipboard
+// reply), DCS (a terminfo or DECRQSS reply), SOS, PM and APC. A terminal
+// sends these on stdin in answer to a query, and their payload must never be
+// read as keys. Each runs to a string terminator: ST (ESC \\) or, for OSC,
+// BEL as well.
+var stringSequenceIntroducers = map[byte]bool{
+	']': true, // OSC
+	'P': true, // DCS
+	'X': true, // SOS
+	'^': true, // PM
+	'_': true, // APC
+}
 
 // csiMaxLen bounds a runaway CSI so a corrupt stream cannot wedge the reader
 // mid-sequence and swallow every keypress after it.
 const csiMaxLen = 32
+
+// stringMaxLen bounds a string sequence, and a CSI already past csiMaxLen, so
+// a stream that never sends a terminator is abandoned instead of swallowing
+// every keypress after it. It is generous because a legitimate OSC 52
+// clipboard reply carries base64 of whatever was copied.
+const stringMaxLen = 8192
 
 // x10MouseBytes is the fixed payload length of an ESC [ M mouse report.
 const x10MouseBytes = 3
@@ -1746,6 +1786,13 @@ type EscapeSequenceReader struct {
 	// They carry button and coordinates and may hold any value, including
 	// ESC, '[' and 'M', so they are consumed by count and never scanned.
 	x10Remaining int
+	// stringESC records an ESC inside a string sequence, which ends that
+	// sequence when the next byte is the backslash of ST.
+	stringESC bool
+	// discarded counts the bytes dropped since a sequence passed its cap, so
+	// a stream that never produces a final byte is abandoned rather than
+	// swallowing every later keypress.
+	discarded int
 }
 
 // NewEscapeSequenceReader creates a new escape sequence reader.
@@ -1778,11 +1825,62 @@ func (r *EscapeSequenceReader) Feed(b byte) (key string, complete bool) {
 			r.state = escAfterSS3
 			return "", false
 		}
+		if stringSequenceIntroducers[b] {
+			r.state = escInString
+			r.stringESC = false
+			return "", false
+		}
 		// ESC followed by anything else is Alt+key; the caller reads the
 		// Escape+ prefix as Escape.
 		next := b
 		r.reset()
 		return "Escape+" + string(next), true
+
+	case escInString:
+		// The payload is arbitrary and is never scanned for keys. Only the
+		// string terminator ends it: ST (ESC \\), or BEL, which OSC also
+		// accepts and which no other part of a reply may contain.
+		if r.stringESC {
+			r.stringESC = false
+			if b == '\\' {
+				r.reset()
+				return "", true
+			}
+			// An ESC that was not ST restarts the sequence's own escape
+			// tracking rather than ending it.
+			if b == 0x1b {
+				r.stringESC = true
+			}
+			return "", false
+		}
+		switch b {
+		case 0x07:
+			r.reset()
+			return "", true
+		case 0x1b:
+			r.stringESC = true
+		}
+		r.discarded++
+		if r.discarded > stringMaxLen {
+			r.reset()
+			return "", true
+		}
+		return "", false
+
+	case escDiscardCSI:
+		// Past the cap the rest of the sequence is dropped, but the reader
+		// stays inside it: returning to ground here would read its remaining
+		// parameters and its final byte as keypresses.
+		r.discarded++
+		if b >= 0x40 && b <= 0x7e {
+			r.reset()
+			return "", true
+		}
+		if r.discarded > stringMaxLen {
+			r.reset()
+			return "", true
+		}
+		return "", false
 
 	case escAfterSS3:
 		r.reset()
@@ -1812,8 +1910,10 @@ func (r *EscapeSequenceReader) Feed(b byte) (key string, complete bool) {
 		// intermediate bytes come before it.
 		if b < 0x40 || b > 0x7e {
 			if len(r.buffer) > csiMaxLen {
-				r.reset()
-				return "", true
+				r.buffer = r.buffer[:0]
+				r.state = escDiscardCSI
+				r.discarded = 0
+				return "", false
 			}
 			return "", false
 		}
@@ -1852,6 +1952,8 @@ func (r *EscapeSequenceReader) reset() {
 	r.state = escGround
 	r.buffer = r.buffer[:0]
 	r.x10Remaining = 0
+	r.stringESC = false
+	r.discarded = 0
 }
 
 // IsPending returns true if we're in the middle of parsing an escape sequence.
