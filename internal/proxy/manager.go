@@ -144,21 +144,35 @@ func (pm *ProxyManager) GetWithPathFilter(id, pathFilter string) (*ProxyServer, 
 }
 
 // Stop stops a proxy server and removes it from the registry.
+//
+// id may be anything Get accepts, including a single component of a compound
+// id — "dev" for "myapp-abc1:dev:localhost-3000". Removal therefore has to use
+// the resolved proxy, not the string the caller typed: keyed by that string
+// the delete misses, and the stopped proxy stays in the list `proxy list`,
+// the overlay and the alert fan-out all read.
 func (pm *ProxyManager) Stop(ctx context.Context, id string) error {
 	proxy, err := pm.Get(id)
 	if err != nil {
 		return err
 	}
+	return pm.stopProxy(ctx, proxy)
+}
 
+// stopProxy stops one proxy and retires that exact server.
+//
+// The delete is guarded by identity rather than by id: a proxy created again
+// under the same id while this one is stopping — which is what PROXY RESTART
+// does — must not be retired by the stop it does not belong to.
+func (pm *ProxyManager) stopProxy(ctx context.Context, proxy *ProxyServer) error {
 	stopErr := proxy.Stop(ctx)
 
 	// Deregister even when Stop fails: a crashed proxy fails Stop with
 	// "not running", and leaving it registered keeps ActiveCount inflated,
 	// IsRegistered true, and makes every StopAll/Shutdown report a spurious
-	// error for the stale entry. LoadAndDelete keeps concurrent Stops of the
-	// same proxy idempotent — only the caller that actually removed the
+	// error for the stale entry. CompareAndDelete keeps concurrent Stops of
+	// the same proxy idempotent — only the caller that actually removed the
 	// entry decrements the count.
-	if _, loaded := pm.proxies.LoadAndDelete(id); loaded {
+	if pm.proxies.CompareAndDelete(proxy.ID, proxy) {
 		pm.activeCount.Add(-1)
 	}
 

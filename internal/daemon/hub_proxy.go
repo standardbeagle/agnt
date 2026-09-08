@@ -477,6 +477,13 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
 
+	// From here on the proxy's own id is the only one that may be used. The
+	// argument accepts a single component of a compound id -- "dev" for
+	// "myapp-abc1:dev:localhost-3000" -- and carrying that through would
+	// recreate the proxy under the short name, dropping the project hash its
+	// scoping depends on and leaving persisted state under the wrong key.
+	proxyID = p.ID
+
 	// Capture config before stopping. The bound port is preserved across the
 	// restart: clients (browsers, stored URLs, CORS origins) expect the proxy
 	// to come back on the SAME port, not drift to a fresh auto-assignment.
