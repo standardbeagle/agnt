@@ -118,6 +118,28 @@ func (s *proxyEntryStore) List(projectPath string) []*proxyScriptEntry {
 	return result
 }
 
+// retireExplicitProxyEntry removes the admin entry a proxy registered, and is
+// the mirror of registerExplicitProxyEntry.
+//
+// The admin surface -- the overlay status bar and SCRIPT LIST -- reads these
+// entries, so an entry that outlives its proxy keeps reporting a listen
+// address nothing is bound to. It is matched by proxy ID rather than by the
+// derived name so a name collision cannot retire someone else's row.
+//
+// Returns true if an entry was removed.
+func (d *Daemon) retireExplicitProxyEntry(projectPath, proxyID string) bool {
+	if d.proxyEntries == nil || projectPath == "" || proxyID == "" {
+		return false
+	}
+	for _, entry := range d.proxyEntries.List(projectPath) {
+		if entry.ProxyID() == proxyID {
+			d.proxyEntries.Remove(entry.ProjectPath(), entry.Name())
+			return true
+		}
+	}
+	return false
+}
+
 // registerExplicitProxyEntry is the handleExplicitStart integration
 // point. Derives the display name from the proxy ID (stripping the
 // project-hash prefix added by makeProcessID) and registers a

@@ -189,6 +189,7 @@ func (d *Daemon) hubHandleProxyStop(ctx context.Context, conn *hubpkg.Connection
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
 	d.retireIncidentProxyOwner(p.ID)
+	d.retireExplicitProxyEntry(p.Path, p.ID)
 
 	// Remove from persisted state
 	if d.stateMgr != nil {
@@ -513,6 +514,17 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 		d.retireIncidentProxyOwner(proxyID)
 	}
 
+	// The admin entry belongs to the server that is going away. It is retired
+	// here and registered again below against the new one, because a restart
+	// need not come back on the same port: the entry would otherwise keep
+	// pointing the overlay and SCRIPT LIST at the old address.
+	d.retireExplicitProxyEntry(projectPath, proxyID)
+
+	// The admin entry belongs to the server that is going away. It is retired
+	// here and registered again below against the new one, because a restart
+	// need not come back on the same port: the entry would otherwise keep
+	// pointing the overlay and SCRIPT LIST at the old address.
+
 	// Remove from persisted state
 	if d.stateMgr != nil {
 		d.stateMgr.RemoveProxy(proxyID)
@@ -547,6 +559,7 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 	}
 
 	d.registerIncidentProxyOwner(newProxy.ID, conn.SessionCode())
+	d.registerExplicitProxyEntry(projectPath, newProxy.ID, newProxy.ListenAddr)
 	newProxy.CopyPublicURLFrom(p)
 	if configured {
 		d.proxyConfigs.Store(newProxy.ID, configSnapshot)
