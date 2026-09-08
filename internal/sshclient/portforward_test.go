@@ -402,6 +402,88 @@ func TestPortForwardManager_EndToEnd(t *testing.T) {
 		require.Error(t, err, "open WebSocket relay must be closed before forward removal completes")
 	})
 
+	// Status feeds `agnt ssh --status` and the overlay ports panel, and the
+	// subtest above reads it as the signal that a forward is finished. A
+	// forward that has left Status while its relays are still live would make
+	// both of those report a connection the developer can still be using as
+	// already gone.
+	t.Run("StatusKeepsAForwardUntilItIsFullyClosed", func(t *testing.T) {
+		backend := backendStub(t)
+		result, err := dc.ProxyStart("p-hold", backend.URL, 0, 0, "")
+		require.NoError(t, err)
+		listenAddr, _ := result["listen_addr"].(string)
+
+		sshClient := forwardFixture(t, listenAddr)
+		mgr := NewPortForwardManager(sshClient, dc, func(string) {})
+		mgr.Start(context.Background())
+		defer mgr.Stop()
+
+		var localPort int
+		require.Eventually(t, func() bool {
+			for _, m := range mgr.Status() {
+				if m.ProxyID == "p-hold" {
+					localPort = m.LocalPort
+					return true
+				}
+			}
+			return false
+		}, 3*time.Second, 20*time.Millisecond)
+
+		// Hold one relay open inside the forward, so its close cannot finish
+		// until this test lets it.
+		mgr.mu.Lock()
+		forward := mgr.forwards["p-hold"]
+		mgr.mu.Unlock()
+		reached := make(chan struct{})
+		release := make(chan struct{})
+		var reachedOnce, releaseOnce sync.Once
+		releaseHeldRelay := func() { releaseOnce.Do(func() { close(release) }) }
+		// Registered after the mgr.Stop defer above, so it runs first: a
+		// failed assertion below must not leave Stop waiting forever on the
+		// relay this test is holding.
+		defer releaseHeldRelay()
+		forward.connMu.Lock()
+		forward.beforeRemoteTrack = func() {
+			reachedOnce.Do(func() { close(reached) })
+			<-release
+		}
+		forward.connMu.Unlock()
+		held, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", localPort))
+		require.NoError(t, err)
+		defer held.Close()
+		<-reached
+
+		require.NoError(t, dc.ProxyStop("p-hold"))
+
+		// A closed listener proves the close has begun. It cannot finish while
+		// the relay above is held, so this is a stable window to observe in.
+		require.Eventually(t, func() bool {
+			c, dialErr := net.DialTimeout("tcp", fmt.Sprintf("127.0.0.1:%d", localPort), 200*time.Millisecond)
+			if dialErr == nil {
+				c.Close()
+			}
+			return dialErr != nil
+		}, 3*time.Second, 20*time.Millisecond, "the forward's listener must close when its proxy stops")
+
+		stillListed := false
+		for _, m := range mgr.Status() {
+			if m.ProxyID == "p-hold" {
+				stillListed = true
+			}
+		}
+		require.True(t, stillListed, "Status dropped a forward whose relays are still open")
+
+		releaseHeldRelay()
+		require.Eventually(t, func() bool {
+			for _, m := range mgr.Status() {
+				if m.ProxyID == "p-hold" {
+					return false
+				}
+			}
+			return true
+		}, 3*time.Second, 20*time.Millisecond, "Status must drop the forward once it is closed")
+	})
+
 	t.Run("ReconnectKeepsListenersBoundAndReconcilesFreshProxyList", func(t *testing.T) {
 		backend := backendStub(t)
 		oldResult, err := dc.ProxyStart("p-before-reconnect", backend.URL, 0, 0, "")

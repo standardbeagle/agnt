@@ -222,16 +222,33 @@ func (m *PortForwardManager) Stop() {
 
 	m.mu.Lock()
 	forwards := make([]*portForward, 0, len(m.forwards))
-	for id, f := range m.forwards {
+	for _, f := range m.forwards {
 		forwards = append(forwards, f)
-		delete(m.forwards, id)
 	}
 	m.mu.Unlock()
 
 	for _, f := range forwards {
-		f.stop()
+		m.retire(f)
 	}
 	m.emitChange()
+}
+
+// retire closes a forward and only then drops it from the registry Status
+// reads. The order is the contract: Status feeds `agnt ssh --status` and the
+// overlay ports panel, so a forward that disappeared while its listener still
+// accepted connections, or while a relay was still copying, would report a
+// connection the developer can still be using as already gone.
+//
+// The delete is guarded by identity rather than id: a forward started again
+// under the same proxy id during the close must not be retired by the closing
+// one.
+func (m *PortForwardManager) retire(f *portForward) {
+	f.stop()
+	m.mu.Lock()
+	if m.forwards[f.proxyID] == f {
+		delete(m.forwards, f.proxyID)
+	}
+	m.mu.Unlock()
 }
 
 // Mapping is one active remote->local port forward, returned by Status for
@@ -339,11 +356,12 @@ func (m *PortForwardManager) reconcileOnce() {
 
 	m.mu.Lock()
 	var toStop []*portForward
+	stopping := make(map[string]bool)
 	for id, f := range m.forwards {
 		port, ok := desired[id]
 		if !ok || port != f.remotePort {
 			toStop = append(toStop, f)
-			delete(m.forwards, id)
+			stopping[id] = true
 		}
 	}
 	var toStart []struct {
@@ -351,7 +369,9 @@ func (m *PortForwardManager) reconcileOnce() {
 		port int
 	}
 	for id, port := range desired {
-		if _, ok := m.forwards[id]; !ok {
+		// A forward on its way out counts as absent: a proxy whose remote
+		// port changed is stopped and started again in this same pass.
+		if _, ok := m.forwards[id]; !ok || stopping[id] {
 			toStart = append(toStart, struct {
 				id   string
 				port int
@@ -361,7 +381,7 @@ func (m *PortForwardManager) reconcileOnce() {
 	m.mu.Unlock()
 
 	for _, f := range toStop {
-		f.stop()
+		m.retire(f)
 		if m.notify != nil {
 			m.notify(fmt.Sprintf("agnt ssh: proxy %s stopped, local :%d forward closed", f.proxyID, f.localPort))
 		}
