@@ -1680,10 +1680,62 @@ func scanWin32Input(r io.Reader, flushAfter time.Duration) iter.Seq[byte] {
 	}
 }
 
-// EscapeSequenceReader helps parse escape sequences from input.
+// csiKeys maps a complete CSI sequence to the key name the overlay binds it
+// to. A sequence that is not here is consumed and discarded, not reported.
+var csiKeys = map[string]string{
+	"\x1b[A":    "Up",
+	"\x1b[B":    "Down",
+	"\x1b[C":    "Right",
+	"\x1b[D":    "Left",
+	"\x1b[H":    "Home",
+	"\x1b[F":    "End",
+	"\x1b[3~":   "Delete",
+	"\x1b[Z":    "Shift+Tab",
+	"\x1b[1;5C": "Ctrl+Right",
+	"\x1b[1;5D": "Ctrl+Left",
+	"\x1b[1;5A": "Ctrl+Up",
+	"\x1b[1;5B": "Ctrl+Down",
+}
+
+// ss3Keys maps the byte after ESC O, which a terminal in application cursor
+// mode sends instead of the CSI forms above.
+var ss3Keys = map[byte]string{
+	'A': "Up", 'B': "Down", 'C': "Right", 'D': "Left", 'H': "Home", 'F': "End",
+}
+
+// Reader states.
+const (
+	escGround   = iota // no sequence in progress
+	escAfterESC        // ESC seen, waiting for the sequence type
+	escInCSI           // inside ESC [ ... , waiting for a final byte
+	escAfterSS3        // ESC O seen, waiting for its single byte
+	escX10Mouse        // inside the three raw bytes of an ESC [ M report
+)
+
+// csiMaxLen bounds a runaway CSI so a corrupt stream cannot wedge the reader
+// mid-sequence and swallow every keypress after it.
+const csiMaxLen = 32
+
+// x10MouseBytes is the fixed payload length of an ESC [ M mouse report.
+const x10MouseBytes = 3
+
+// EscapeSequenceReader parses terminal input into key names for the overlay.
+//
+// Beyond key lookup it holds one rule: a sequence it does not recognise is
+// consumed and discarded, never reported as Escape. Escape closes the open
+// panel, and the bytes still to come from that sequence would then be passed
+// through to the child process and land in its input field as typed text.
+// That is how mouse motion over a panel typed fragments of mouse reports into
+// the agent's prompt: a report is longer than any bound key, so the reader
+// gave up partway and called it Escape. Only a bare Escape -- an ESC with
+// nothing following it, reported by Timeout -- is Escape.
 type EscapeSequenceReader struct {
 	buffer []byte
 	state  int
+	// x10Remaining counts down the raw bytes left in an ESC [ M report.
+	// They carry button and coordinates and may hold any value, including
+	// ESC, '[' and 'M', so they are consumed by count and never scanned.
+	x10Remaining int
 }
 
 // NewEscapeSequenceReader creates a new escape sequence reader.
@@ -1693,105 +1745,108 @@ func NewEscapeSequenceReader() *EscapeSequenceReader {
 	}
 }
 
-// Feed feeds a byte into the reader and returns any recognized key.
+// Feed feeds a byte into the reader. complete reports that the byte finished
+// something; key names it, and is empty when what finished was a sequence the
+// overlay does not bind.
 func (r *EscapeSequenceReader) Feed(b byte) (key string, complete bool) {
-	if r.state == 0 {
+	switch r.state {
+	case escGround:
 		if b == 0x1b {
-			r.state = 1
+			r.state = escAfterESC
 			r.buffer = append(r.buffer[:0], b)
 			return "", false
 		}
 		return string(b), true
+
+	case escAfterESC:
+		r.buffer = append(r.buffer, b)
+		switch b {
+		case '[':
+			r.state = escInCSI
+			return "", false
+		case 'O':
+			r.state = escAfterSS3
+			return "", false
+		}
+		// ESC followed by anything else is Alt+key; the caller reads the
+		// Escape+ prefix as Escape.
+		next := b
+		r.reset()
+		return "Escape+" + string(next), true
+
+	case escAfterSS3:
+		r.reset()
+		if name, ok := ss3Keys[b]; ok {
+			return name, true
+		}
+		return "", true
+
+	case escX10Mouse:
+		r.x10Remaining--
+		if r.x10Remaining > 0 {
+			return "", false
+		}
+		r.reset()
+		return "", true
+
+	default: // escInCSI
+		// ESC [ M is the X10 mouse report: its payload is counted, because
+		// scanning it for a terminator would stop on a coordinate byte.
+		if b == 'M' && len(r.buffer) == 2 {
+			r.state = escX10Mouse
+			r.x10Remaining = x10MouseBytes
+			return "", false
+		}
+		r.buffer = append(r.buffer, b)
+		// A CSI ends at its first byte in 0x40-0x7e; parameter and
+		// intermediate bytes come before it.
+		if b < 0x40 || b > 0x7e {
+			if len(r.buffer) > csiMaxLen {
+				r.reset()
+				return "", true
+			}
+			return "", false
+		}
+		seq := string(r.buffer)
+		r.reset()
+		return csiKeys[seq], true
 	}
-
-	r.buffer = append(r.buffer, b)
-
-	// Check for common sequences
-	seq := string(r.buffer)
-	switch seq {
-	case "\x1b[A":
-		r.state = 0
-		return "Up", true
-	case "\x1b[B":
-		r.state = 0
-		return "Down", true
-	case "\x1b[C":
-		r.state = 0
-		return "Right", true
-	case "\x1b[D":
-		r.state = 0
-		return "Left", true
-	case "\x1b[H":
-		r.state = 0
-		return "Home", true
-	case "\x1b[F":
-		r.state = 0
-		return "End", true
-	case "\x1b[3~":
-		r.state = 0
-		return "Delete", true
-	// Ctrl+Arrow sequences (xterm-style)
-	case "\x1b[1;5C":
-		r.state = 0
-		return "Ctrl+Right", true
-	case "\x1b[1;5D":
-		r.state = 0
-		return "Ctrl+Left", true
-	case "\x1b[1;5A":
-		r.state = 0
-		return "Ctrl+Up", true
-	case "\x1b[1;5B":
-		r.state = 0
-		return "Ctrl+Down", true
-	// Shift+Tab (backtab)
-	case "\x1b[Z":
-		r.state = 0
-		return "Shift+Tab", true
-	}
-
-	// After \x1b, if next byte is not '[', it's not a CSI sequence
-	// Treat as Escape + that character (return Escape, re-feed next byte)
-	if len(r.buffer) == 2 && r.buffer[1] != '[' {
-		r.state = 0
-		// Return Escape, and the next byte will be processed on next Feed call
-		// We need to handle this byte too, so return both
-		nextByte := r.buffer[1]
-		r.buffer = r.buffer[:0]
-		// Return Escape; caller should handle Escape and then process nextByte
-		// For simplicity, we'll return Escape and lose the next byte
-		// Better: return multiple results or use a different approach
-		return "Escape+" + string(nextByte), true
-	}
-
-	// If we have too many bytes, it's probably not a valid sequence
-	if len(r.buffer) > 6 {
-		r.state = 0
-		return "Escape", true
-	}
-
-	return "", false
 }
 
-// Timeout should be called when no more input arrives after starting an escape sequence.
-// This allows treating a lone Escape key press as "Escape".
+// Timeout should be called when no more input arrives after starting an escape
+// sequence. This is what makes a lone Escape keypress an Escape.
+//
+// Only a bare ESC counts. A timeout partway through a longer sequence means
+// the sequence was split across the window or truncated, and calling that
+// Escape would close the panel on a mouse report that merely arrived slowly --
+// the same failure the reader avoids when the report arrives whole. The
+// partial is dropped instead.
 func (r *EscapeSequenceReader) Timeout() (key string, hadPending bool) {
-	if r.state != 0 {
-		r.state = 0
-		r.buffer = r.buffer[:0]
-		return "Escape", true
+	if r.state == escGround {
+		return "", false
 	}
-	return "", false
+	bare := r.state == escAfterESC && len(r.buffer) == 1
+	r.reset()
+	if !bare {
+		return "", false
+	}
+	return "Escape", true
 }
 
 // Reset resets the reader state.
 func (r *EscapeSequenceReader) Reset() {
-	r.state = 0
+	r.reset()
+}
+
+func (r *EscapeSequenceReader) reset() {
+	r.state = escGround
 	r.buffer = r.buffer[:0]
+	r.x10Remaining = 0
 }
 
 // IsPending returns true if we're in the middle of parsing an escape sequence.
 func (r *EscapeSequenceReader) IsPending() bool {
-	return r.state != 0
+	return r.state != escGround
 }
 
 // closeProcessViewer closes the process viewer.
