@@ -201,10 +201,14 @@ func TestPortForwardManager_EndToEnd(t *testing.T) {
 		require.NoError(t, err)
 
 		conn.SetReadDeadline(time.Now().Add(3 * time.Second))
-		buf := make([]byte, 512)
-		n, err := conn.Read(buf)
+		// One Read is not one response. The relay copies through an SSH
+		// channel, so the status line and the headers can arrive in separate
+		// segments; parsing the response is what reads it to its own end.
+		resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
 		require.NoError(t, err)
-		require.Contains(t, string(buf[:n]), "101", "expected an HTTP 101 Switching Protocols response relayed through the forward")
+		defer resp.Body.Close()
+		require.Equal(t, http.StatusSwitchingProtocols, resp.StatusCode,
+			"expected an HTTP 101 Switching Protocols response relayed through the forward")
 	})
 
 	t.Run("ScreenshotRoundTripThroughForward", func(t *testing.T) {

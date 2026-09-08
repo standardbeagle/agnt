@@ -3,11 +3,14 @@ package httpcaps
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -62,16 +65,21 @@ func TestReadHeaderTimeout_DropsStalledClient(t *testing.T) {
 	// cap returns well under it and a removed cap trips it.
 	_ = conn.SetReadDeadline(time.Now().Add(3 * time.Second))
 	start := time.Now()
-	buf := make([]byte, 512)
-	// Read until the server acts (EOF, reset, or a 408 then close). Either way
-	// the connection must become unusable promptly.
-	_, readErr := conn.Read(buf)
+	// Read to the end of the connection, not once. net/http answers a header
+	// timeout by writing "408 Request Timeout" and then closing, so the first
+	// read can return those bytes with no error while the cap is working
+	// exactly as intended. What the cap promises is that the connection ends,
+	// which is EOF or a reset -- and either way io.ReadAll stops there.
+	served, readErr := io.ReadAll(conn)
 	elapsed := time.Since(start)
 
-	if readErr == nil {
-		// A well-behaved cap closes or 408s; a lone successful read of a full
-		// response would mean the request completed, which it cannot here.
-		t.Fatalf("expected the stalled connection to be dropped, got a clean read")
+	if readErr != nil && !errors.Is(readErr, syscall.ECONNRESET) {
+		t.Fatalf("reading the stalled connection to its end: %v", readErr)
+	}
+	if body := string(served); body != "" && !strings.HasPrefix(body, "HTTP/1.1 408") {
+		// Anything else means the request was served, which it cannot have
+		// been: its headers never terminated.
+		t.Fatalf("stalled request was answered with %q, want a 408 or nothing before the close", body)
 	}
 	if elapsed > time.Second {
 		t.Fatalf("stalled connection was not dropped promptly: elapsed=%v (ReadHeaderTimeout=%v). "+
