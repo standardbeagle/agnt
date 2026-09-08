@@ -60,6 +60,10 @@ type ActivityMonitor struct {
 	currentLine bytes.Buffer // Current line being built
 	pendingCR   bool         // True after a \r whose role (CRLF terminator vs in-place redraw) is not yet known
 	isAnimating bool         // True if we've seen \r without \n (line is being updated in place)
+	// lineOverflowed marks a logical line that passed maxTappedLineBytes. The
+	// rest of that line is dropped rather than accumulated, because a buffer
+	// reset would deliver its tail to the tap as a line of its own.
+	lineOverflowed bool
 
 	// Done message
 	showDoneMessage bool
@@ -222,6 +226,11 @@ func (am *ActivityMonitor) Write(p []byte) (n int, err error) {
 	return n, err
 }
 
+// maxTappedLineBytes bounds one logical line held for the per-line tap, so a
+// child that prints megabytes without a newline cannot grow the buffer without
+// limit.
+const maxTappedLineBytes = 4096
+
 // captureForPreview accumulates output and extracts complete lines for preview.
 // It handles animated output by detecting carriage returns (\r) and debouncing
 // rapid updates to the same line before forwarding.
@@ -252,6 +261,7 @@ func (am *ActivityMonitor) captureForPreview(p []byte) {
 
 		case '\n':
 			am.pendingCR = false
+			am.lineOverflowed = false
 			if am.currentLine.Len() > 0 || am.isAnimating {
 				cleanLine := am.cleanLine(am.currentLine.String())
 				if cleanLine != "" && am.onOutputLine != nil {
@@ -268,16 +278,22 @@ func (am *ActivityMonitor) captureForPreview(p []byte) {
 				am.pendingCR = false
 				am.currentLine.Reset()
 				am.isAnimating = true
+				am.lineOverflowed = false
+			}
+			// Past the cap the rest of this line is dropped, keeping the
+			// prefix. Resetting the buffer instead would hand the tap the
+			// tail of one printed line as a whole line: the start of the
+			// line, where an error names itself, would never be matched, and
+			// an arbitrary middle would be matched on its own and raised as
+			// an alert the child never printed as a line.
+			if am.lineOverflowed {
+				continue
 			}
 			am.currentLine.WriteByte(b)
+			if am.currentLine.Len() > maxTappedLineBytes {
+				am.lineOverflowed = true
+			}
 		}
-	}
-
-	// Limit current line buffer size to prevent memory issues
-	if am.currentLine.Len() > 4096 {
-		am.currentLine.Reset()
-		am.isAnimating = false
-		am.pendingCR = false
 	}
 	am.previewMu.Unlock()
 
