@@ -33,6 +33,14 @@ const config: Config = {
     },
   },
 
+  scripts: [
+    {
+      src: 'https://static.cloudflareinsights.com/beacon.min.js',
+      type: 'module',
+      'data-cf-beacon': '{"token": "e77d64f1f6f24ed9b18d06d0320e7d1a"}',
+    },
+  ],
+
   headTags: [
     {
       tagName: 'script',
