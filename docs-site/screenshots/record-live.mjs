@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {chromium} from 'playwright';
+import {CHROMIUM_LAUNCH_OPTIONS} from './engine/lib/util.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const vidDir = path.join(here, 'videos');
@@ -26,7 +27,7 @@ if (!PROXY_URL || !SYNC) throw new Error('PROXY_URL and SYNC_DIR are required');
 fs.mkdirSync(vidDir, {recursive: true});
 const VIEW = {width: 1440, height: 900};
 
-const browser = await chromium.launch();
+const browser = await chromium.launch(CHROMIUM_LAUNCH_OPTIONS);
 const ctx = await browser.newContext({viewport: VIEW, recordVideo: {dir: vidDir, size: VIEW}});
 const t0 = Date.now();
 const events = [];

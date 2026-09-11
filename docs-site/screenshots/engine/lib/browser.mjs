@@ -14,7 +14,7 @@ import path from 'node:path';
 import {chromium} from 'playwright';
 import {toast as daemonToast, proxyStart, proxyStop, ping, chaosAddRule, chaosClear, exec as daemonExec,
   walkthrough as daemonWalkthrough} from './daemon.mjs';
-import {spawnLogged, waitForURL, writeJSON} from './util.mjs';
+import {CHROMIUM_LAUNCH_OPTIONS, spawnLogged, waitForURL, writeJSON} from './util.mjs';
 
 // Generous liveness ceiling for the event-based injection settle. This is NOT a
 // latency SLO — it is the "the bundle never came up at all" backstop. On an idle
@@ -179,7 +179,7 @@ export const recordBrowser = async (seg, {demoDir, workDir, viewport, env}) => {
   const mod = await import(scriptPath);
   if (typeof mod.default !== 'function') throw new Error(`${seg.script}: must export default async function`);
 
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(CHROMIUM_LAUNCH_OPTIONS);
   const ctx = await browser.newContext({viewport, recordVideo: {dir: workDir, size: viewport}});
   const t0 = Date.now();
   const events = [];

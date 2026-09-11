@@ -14,6 +14,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {chromium} from 'playwright';
+import {CHROMIUM_LAUNCH_OPTIONS} from './engine/lib/util.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const imgDir = path.join(here, '..', 'static', 'img');
@@ -88,7 +89,7 @@ await new Promise(r => server.listen(0, r));
 const url = `http://localhost:${server.address().port}/index.html`;
 console.log('serving', url);
 
-const browser = await chromium.launch();
+const browser = await chromium.launch(CHROMIUM_LAUNCH_OPTIONS);
 
 // ONLY=<scene> node capture.mjs re-captures a single scene.
 const only = process.env.ONLY;

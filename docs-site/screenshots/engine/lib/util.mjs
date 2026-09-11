@@ -30,6 +30,19 @@ export const fileFastKey = (f) => {
   return `${s.size}:${s.mtimeMs}`;
 };
 
+// Chromium launch options shared by every Playwright launch in the demo engine.
+// Two of Playwright's defaults starve headless Chromium of compositor frames on
+// GPU-less hosts (WSL2 measured): its `--enable-unsafe-swiftshader` and the
+// absence of `--disable-gpu`. Either one alone stalls Page.captureScreenshot
+// past 3 s and leaves a 5 s recordVideo take with 24 frames; with both
+// corrected the same take holds 147 frames and screenshots run at 17-20 fps.
+// Measured 2026-09-11 against Playwright 1.60 on chromium, headless shell and
+// system Chrome alike. Every launch goes through this so the fix cannot drift.
+export const CHROMIUM_LAUNCH_OPTIONS = Object.freeze({
+  ignoreDefaultArgs: ['--enable-unsafe-swiftshader'],
+  args: ['--disable-gpu'],
+});
+
 export const ff = (args) =>
   execFileSync('ffmpeg', ['-y', '-v', 'error', ...args], {stdio: ['ignore', 'inherit', 'inherit']});
 

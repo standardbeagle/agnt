@@ -8,3 +8,4 @@ import './assembly-cache.test.mjs';
 import './inspect.test.mjs';
 import './injection-settle.test.mjs';
 import './walkthrough-drive.test.mjs';
+import './chromium-launch.test.mjs';

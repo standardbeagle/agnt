@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {fileURLToPath} from 'node:url';
 import {chromium} from 'playwright';
+import {CHROMIUM_LAUNCH_OPTIONS} from './engine/lib/util.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const vidDir = path.join(here, 'videos');
@@ -88,7 +89,7 @@ const cards = [
   {id: 'card-outro', dur: 4.5, kicker: '', title: 'Give your agent the browser', sub: 'github.com/standardbeagle/agnt'},
 ];
 {
-  const browser = await chromium.launch();
+  const browser = await chromium.launch(CHROMIUM_LAUNCH_OPTIONS);
   const pg = await browser.newPage({viewport: VIEW});
   for (const c of cards) {
     await pg.setContent(cardHTML(c.kicker, c.title, c.sub));

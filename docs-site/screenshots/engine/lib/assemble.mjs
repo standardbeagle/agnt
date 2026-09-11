@@ -5,7 +5,7 @@
 import {execFileSync} from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
-import {ff, probeDur, normalize, readJSON, writeJSON, ttsKey, mezzKey, fileFastKey} from './util.mjs';
+import {CHROMIUM_LAUNCH_OPTIONS, ff, probeDur, normalize, readJSON, writeJSON, ttsKey, mezzKey, fileFastKey} from './util.mjs';
 // playwright (and its chromium browser) is imported lazily inside assemble(),
 // only when a demo has at least one `card` segment. A demo built entirely from
 // pre-recorded cli/browser takes assembles with ffmpeg alone — which is what
@@ -246,7 +246,7 @@ export const assemble = async (spec, {demoDir, workDir, outDir}) => {
   let browser = null, pg = null;
   if (hasCard) {
     const {chromium} = await import('playwright');
-    browser = await chromium.launch();
+    browser = await chromium.launch(CHROMIUM_LAUNCH_OPTIONS);
     pg = await browser.newPage({viewport: {width: view.width, height: view.height}});
   }
   const timeline = [];
