@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/standardbeagle/agnt/internal/finding"
 	"github.com/standardbeagle/agnt/internal/proxy"
 )
 
@@ -258,6 +259,11 @@ func validateGetIncidentsInput(input GetIncidentsInput) error {
 	}
 	for _, err := range checks {
 		if err != nil {
+			return err
+		}
+	}
+	if input.Profile != "" {
+		if _, err := finding.ParseProfile(input.Profile); err != nil {
 			return err
 		}
 	}

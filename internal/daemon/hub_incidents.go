@@ -208,11 +208,18 @@ func (d *Daemon) hubHandleIncidentsQuery(conn *hubpkg.Connection, cmd *hubproto.
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
 	}
+	// The profile is validated once here; every later application
+	// (mark-read selection, result build) can rely on it being known.
+	if _, err := incident.ApplyProfile(nil, filter.Profile); err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+	}
 	var entries []incident.InboxEntry
 	var stats incident.Stats
 	if filter.MarkRead {
 		entries, stats = d.incidentBus.QueryAndMarkSession(sessionCode, qf, func(snapshot []incident.InboxEntry) []string {
-			returned := returnedIncidentEntries(snapshot, filter)
+			// Mark read exactly the rows the profile renders — never rows the
+			// profile dropped, which would be swept past the cursor unseen.
+			returned, _ := profiledIncidentEntries(snapshot, filter)
 			fingerprints := make([]string, len(returned))
 			for i := range returned {
 				fingerprints[i] = returned[i].Fingerprint
@@ -298,9 +305,23 @@ func buildIncidentQueryResultWithHydrator(entries []incident.InboxEntry, stats i
 	examined, truncated := examinedIncidentEntries(entries, filter)
 	filtered := returnedIncidentEntries(entries, filter)
 
+	// The profile projection runs here, hub-side, so the cursor and (in the
+	// mark_read path) the read-set cover exactly the rendered rows. Rows the
+	// profile drops must surface as truncation, or a partial answer presents
+	// as complete.
+	rendered, profileErr := profiledIncidentEntries(entries, filter)
+	if profileErr != nil {
+		// Unreachable: hubHandleIncidentsQuery validates the profile before
+		// querying. Defensive: render unprofiled rather than drop the page.
+		rendered = filtered
+	}
+	if len(rendered) < len(filtered) {
+		truncated = true
+	}
+
 	var warnings []string
-	records := make([]protocol.IncidentRecord, 0, len(filtered))
-	for _, e := range filtered {
+	records := make([]protocol.IncidentRecord, 0, len(rendered))
+	for _, e := range rendered {
 		records = append(records, incidentEntryToRecord(e, filter.Detail, hydrate, func(w string) {
 			warnings = append(warnings, w)
 		}))
@@ -311,8 +332,42 @@ func buildIncidentQueryResultWithHydrator(entries []incident.InboxEntry, stats i
 	// still ahead of the cursor — so successive `since=cursor` pulls sweep the
 	// inbox gap-free. Deriving it from `records` instead would stall a filtered
 	// query forever on a page where nothing matched.
+	//
+	// Exception: an active profile projects the examined page, and rows it
+	// drops must stay AHEAD of the cursor so a later pull can still surface
+	// them. A severity-sorting profile (bug) typically drops rows OLDER than
+	// the newest rendered row, so following the newest rendered row would
+	// sweep the dropped rows behind the cursor unseen. Instead the cursor
+	// sits strictly below the OLDEST DROPPED row (time bound, empty
+	// fingerprint — the inclusive boundary): every dropped row is ahead of
+	// it, and the rows the profile rendered are marked read, so the unread
+	// follow-up (profile=changed) returns exactly the dropped set. When the
+	// profile dropped nothing, the cursor follows the newest examined row as
+	// usual; when the profile rendered nothing AND dropped nothing, no
+	// cursor is published at all.
 	var cursor string
-	if len(examined) > 0 {
+	if incident.ProfileActive(filter.Profile) {
+		renderedFPs := make(map[string]bool, len(rendered))
+		for _, e := range rendered {
+			renderedFPs[e.Fingerprint] = true
+		}
+		var oldestDropped *incident.InboxEntry
+		for i := range filtered {
+			e := filtered[i]
+			if renderedFPs[e.Fingerprint] {
+				continue
+			}
+			if oldestDropped == nil || e.LastSeenAt.Before(oldestDropped.LastSeenAt) {
+				oldestDropped = &filtered[i]
+			}
+		}
+		switch {
+		case oldestDropped != nil:
+			cursor = encodeIncidentCursor(oldestDropped.LastSeenAt, "")
+		case len(examined) > 0:
+			cursor = encodeIncidentCursor(examined[0].LastSeenAt, examined[0].Fingerprint)
+		}
+	} else if len(examined) > 0 {
 		cursor = encodeIncidentCursor(examined[0].LastSeenAt, examined[0].Fingerprint)
 	}
 
@@ -357,8 +412,17 @@ func decodeIncidentCursor(cursor string) (time.Time, string, bool, error) {
 	if err := json.Unmarshal(payload, &decoded); err != nil {
 		return time.Time{}, "", false, err
 	}
+	// An empty fingerprint is a valid INCLUSIVE time boundary: rows whose
+	// LastSeenAt equals the cursor time always satisfy `fp > ""`, so the
+	// boundary row itself is ahead of the cursor. The profiled query path
+	// publishes these to keep profile-dropped rows (including the oldest
+	// dropped row itself) reachable from a since=cursor follow-up.
 	if decoded.Fingerprint == "" {
-		return time.Time{}, "", false, fmt.Errorf("cursor fingerprint is empty")
+		at, err := time.Parse(time.RFC3339Nano, decoded.Time)
+		if err != nil {
+			return time.Time{}, "", false, err
+		}
+		return at, "", true, nil
 	}
 	at, err := time.Parse(time.RFC3339Nano, decoded.Time)
 	if err != nil {
@@ -380,6 +444,14 @@ func examinedIncidentEntries(entries []incident.InboxEntry, filter protocol.Inci
 func returnedIncidentEntries(entries []incident.InboxEntry, filter protocol.IncidentQueryFilter) []incident.InboxEntry {
 	examined, _ := examinedIncidentEntries(entries, filter)
 	return applySecondaryFilters(examined, filter)
+}
+
+// profiledIncidentEntries is the full hub-side selection pipeline: truncation
+// page → secondary filters → profile projection. The mark-read callback and
+// the result builder share it so the read-set and the rendered set cannot
+// drift apart.
+func profiledIncidentEntries(entries []incident.InboxEntry, filter protocol.IncidentQueryFilter) ([]incident.InboxEntry, error) {
+	return incident.ApplyProfile(returnedIncidentEntries(entries, filter), filter.Profile)
 }
 
 // applySecondaryFilters narrows entries by Sources, ProxyID, ProcessID, and Fingerprints

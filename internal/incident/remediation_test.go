@@ -3,6 +3,7 @@ package incident
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -94,15 +95,12 @@ func TestRoute_AllSourcesHaveEntry(t *testing.T) {
 
 // ── context injection ─────────────────────────────────────────────────────────
 
-func TestRoute_ContextInjection_BrowserJS_IncludesURL(t *testing.T) {
+func TestRoute_ContextInjection_BrowserJS_IncludesProxyID(t *testing.T) {
 	t.Parallel()
 	ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "TypeError", "msg",
 		Context{URL: "http://localhost:3000/dashboard", ProxyID: "dev"}, nil)
 	r := Resolve(&ev)
 
-	if r.PrimaryArgs["url"] != "http://localhost:3000/dashboard" {
-		t.Errorf("url not injected: got %v", r.PrimaryArgs["url"])
-	}
 	if r.PrimaryArgs["proxy_id"] != "dev" {
 		t.Errorf("proxy_id not injected: got %v", r.PrimaryArgs["proxy_id"])
 	}
@@ -161,6 +159,62 @@ func TestRoute_Aggregate_WeightedSkill(t *testing.T) {
 	}
 	if len(tools) == 0 {
 		t.Error("expected at least one tool suggestion")
+	}
+}
+
+// ── placeholder audit ─────────────────────────────────────────────────────────
+
+// TestRoutePrimariesCarryNoPlaceholderIdentifiers scans every route's primary
+// and fallback arg strings for tokens a caller would have to invent —
+// "selector", "<...>" placeholders, bare JS identifiers in proxy exec code. A
+// route primary must be an exact, argument-complete tool call: the agent runs
+// it verbatim.
+func TestRoutePrimariesCarryNoPlaceholderIdentifiers(t *testing.T) {
+	t.Parallel()
+
+	scan := func(name string, tc toolCall) {
+		for k, v := range tc.args {
+			s, ok := v.(string)
+			if !ok {
+				continue
+			}
+			for _, tok := range []string{"selector", "<", ">"} {
+				if strings.Contains(s, tok) {
+					t.Errorf("%s: arg %q carries placeholder token %q: %q", name, k, tok, s)
+				}
+			}
+			// Raw JS through proxy exec is a last resort, never a route primary.
+			if tc.tool == "proxy" && strings.Contains(s, "window.__devtool") {
+				t.Errorf("%s: primary routes through raw proxy exec JS: %q", name, s)
+			}
+		}
+	}
+	for src, r := range routes {
+		scan(string(src)+" primary", r.primary)
+		scan(string(src)+" fallback", r.fallback)
+	}
+	scan("genericFallback primary", genericFallback.primary)
+}
+
+// TestRoute_BrowserJS_PrimaryIsCurrentPageTriage pins the browser_js route:
+// primary is currentpage action=triage (session-scoped, argument-complete),
+// with proxylog as the fallback — never a raw-JS placeholder call.
+func TestRoute_BrowserJS_PrimaryIsCurrentPageTriage(t *testing.T) {
+	t.Parallel()
+	ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "TypeError", "msg",
+		Context{URL: "http://localhost:3000/x", ProxyID: "dev"}, nil)
+	r := Resolve(&ev)
+	if r.PrimaryTool != "currentpage" {
+		t.Errorf("browser_js PrimaryTool: got %q, want currentpage", r.PrimaryTool)
+	}
+	if r.PrimaryArgs["action"] != "triage" {
+		t.Errorf("browser_js primary action: got %v, want triage", r.PrimaryArgs["action"])
+	}
+	if r.PrimaryArgs["proxy_id"] != "dev" {
+		t.Errorf("browser_js primary must inject proxy_id: got %v", r.PrimaryArgs["proxy_id"])
+	}
+	if r.FallbackTool != "proxylog" {
+		t.Errorf("browser_js FallbackTool: got %q, want proxylog", r.FallbackTool)
 	}
 }
 

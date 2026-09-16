@@ -614,6 +614,12 @@ type IncidentQueryFilter struct {
 	Detail       string   `json:"detail,omitempty"` // "summary" (default) | "full"
 	MarkRead     bool     `json:"mark_read,omitempty"`
 	Limit        int      `json:"limit,omitempty"` // 0 → 20; max 100
+	// Profile selects the triage projection the hub applies BEFORE truncation,
+	// cursor computation and mark-read, so a mark_read pull covers exactly the
+	// rows the caller sees: bug (top 5 by severity) | changed (unread only) |
+	// release (all severities grouped) | full. Empty is the legacy identity
+	// projection; the get_incidents tool always sends an explicit profile.
+	Profile string `json:"profile,omitempty"`
 	// SessionCode selects which session's inbox to READ when the connection is
 	// not itself session-bound (the MCP daemon connection never is). It is a
 	// read selector only — the inboxes stay hard-isolated (numbered contract 1);

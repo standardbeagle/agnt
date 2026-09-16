@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/finding"
 	"github.com/standardbeagle/agnt/internal/incident"
 	"github.com/standardbeagle/agnt/internal/protocol"
 
@@ -32,6 +33,11 @@ type GetIncidentsInput struct {
 	MarkRead     bool     `json:"mark_read,omitempty"     jsonschema:"Advance cursor and mark returned incidents as read"`
 	Limit        int      `json:"limit,omitempty"         jsonschema:"Max incidents to return (default: 20, max: 100)"`
 	Raw          bool     `json:"raw,omitempty"           jsonschema:"Return full JSON instead of compact text"`
+	// Profile selects the triage lens. Default bug: top 5 by severity with a
+	// next: call per row. changed: only unread incidents (since the cursor).
+	// release: all severities grouped. full: the complete legacy rendering,
+	// byte-identical to a no-profile pull.
+	Profile string `json:"profile,omitempty" jsonschema:"Triage lens: 'bug' (default, top 5 by severity) | 'changed' (unread only) | 'release' (all severities grouped) | 'full' (legacy complete output)"`
 	// Session picks which session's inbox to read when this agent is not already
 	// attached to one. Omit it for the ordinary case; if the daemon can't resolve
 	// a session it returns the candidate sessions to choose from, and you re-call
@@ -86,6 +92,11 @@ type incidentView struct {
 	// incidents it saved.
 	Pinned bool   `json:"pinned,omitempty"`
 	Tag    string `json:"tag,omitempty"`
+	// Next is the finding's exact, argument-complete next call (the primary
+	// remediation when one exists); Producer is the get_incidents call that
+	// returned this row, so a caller can re-pull it by fingerprint.
+	Next     *finding.NextAction `json:"next,omitempty"`
+	Producer *finding.Producer   `json:"producer,omitempty"`
 }
 
 type inboxStats struct {
@@ -154,9 +165,10 @@ func makeGetIncidentsHandler(dt *DaemonTools) func(context.Context, *mcp.CallToo
 			result = &protocol.IncidentQueryResult{}
 		}
 
-		// The hub over-fetches and truncates server-side so the cursor and the
-		// mark-read set cover exactly this page; trust its truncation signal
-		// rather than re-truncating (which would drop an already-marked record).
+		// The hub applies the profile projection BEFORE truncation, cursor
+		// computation and mark-read, so a mark_read pull covers exactly the
+		// rows this response renders; trust its truncation signal rather than
+		// re-truncating (which would drop an already-marked record).
 		truncated := result.Truncated
 
 		views := make([]incidentView, 0, len(result.Incidents))
@@ -317,7 +329,21 @@ func buildGetIncidentsFilter(input GetIncidentsInput) protocol.IncidentQueryFilt
 		MarkRead:     input.MarkRead,
 		Limit:        limit,
 		SessionCode:  input.Session,
+		// The hub applies the profile before cursor/mark-read so the read-set
+		// equals the rendered set; the tool always sends an explicit profile
+		// (empty input defaults to bug) rather than relying on the hub's
+		// legacy identity default.
+		Profile: normalizeIncidentProfile(input.Profile),
 	}
+}
+
+// normalizeIncidentProfile resolves the documented default: an empty profile
+// is bug. Validation of unknown values lives in validateGetIncidentsInput.
+func normalizeIncidentProfile(profile string) string {
+	if profile == "" {
+		return string(finding.ProfileBug)
+	}
+	return profile
 }
 
 func recordToView(rec protocol.IncidentRecord) incidentView {
@@ -341,6 +367,17 @@ func recordToView(rec protocol.IncidentRecord) incidentView {
 	}
 	if t, err := time.Parse(time.RFC3339, rec.LastSeen); err == nil {
 		v.LastSeen = t
+	}
+	if rec.Remediation.PrimaryTool != "" {
+		v.Next = &finding.NextAction{
+			Tool:      rec.Remediation.PrimaryTool,
+			Args:      rec.Remediation.PrimaryArgs,
+			Rationale: "primary remediation for " + rec.Source,
+		}
+	}
+	v.Producer = &finding.Producer{
+		Tool: "get_incidents",
+		Args: map[string]any{"fingerprints": []string{rec.Fingerprint}},
 	}
 	return v
 }

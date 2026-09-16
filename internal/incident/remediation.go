@@ -44,15 +44,16 @@ type route struct {
 // routes maps every Source to remediation guidance. Each Source must have an entry.
 var routes = map[Source]route{
 	SourceBrowserJS: {
-		primary: toolCall{"proxy", map[string]any{
-			"action": "exec",
-			"code":   `window.__devtool.getElementInfo(selector)`,
+		// Session-scoped page triage — argument-complete, no raw JS. The
+		// caller runs this verbatim; proxy_id is injected from the context.
+		primary: toolCall{"currentpage", map[string]any{
+			"action": "triage",
 		}},
 		fallback: toolCall{"proxylog", map[string]any{
 			"types": []string{"error", "custom"},
 		}},
 		skill:   "agnt:browser-debug",
-		context: []string{"url", "page", "proxy_id"},
+		context: []string{"proxy_id"},
 	},
 	SourceHTTP5xx: {
 		primary: toolCall{"proxylog", map[string]any{

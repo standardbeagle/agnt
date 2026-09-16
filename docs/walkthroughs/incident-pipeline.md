@@ -92,7 +92,7 @@ Expected compact output (from `get_incidents.go` `formatIncidentsCompact`):
 [error:browser_js] TypeError (200x, 8s ago)
   Cannot read property 'map' of undefined
   → http://localhost:3000/list
-  next: proxy action=exec code=window.__devtool.getElementInfo(selector)
+  next: currentpage action=triage proxy_id=dev
   skill: agnt:browser-debug
 
 === Next ===

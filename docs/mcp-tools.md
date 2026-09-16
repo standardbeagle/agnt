@@ -61,9 +61,10 @@ Cursor-based pull from the always-active incident inbox. This is the authoritati
 | `sources` | string[] | all | Filter by source (e.g. `browser_js`, `http_5xx`) |
 | `proxy_id` / `process_id` | string | — | Filter to a specific proxy/process |
 | `detail` | string | `summary` | `full` hydrates from the caller session's bounded blob store; evicted payloads fall back to summary |
-| `mark_read` | bool | false | Advance cursor and mark returned incidents read |
+| `mark_read` | bool | false | Advance cursor and mark returned incidents read. With an active `profile`, the daemon projects the page first, so exactly the rendered rows are marked read and dropped rows raise `truncated` instead of being swept past the cursor |
 | `limit` | int | 20 (max 100) | Max incidents returned |
-| `raw` | bool | false | Return full JSON instead of compact text |
+| `raw` | bool | false | Return full JSON instead of compact text (adds per-incident `next` and `producer` fields) |
+| `profile` | string | `bug` | Triage lens: `bug` (top 5 by severity), `changed` (unread since cursor), `release` (all severities grouped), `full` (legacy complete output, byte-identical to a pre-profile pull). When a profile drops rows, the returned cursor sits below the OLDEST dropped row (not the newest rendered one, which severity sorting would strand them behind), so a follow-up `since=<cursor>` with `profile:"changed"` returns exactly the dropped rows |
 | `action` | string | `query` | Retention verb: `pin`, `unpin`, `clear` |
 | `error_id` | string | — | Pin/unpin target: the fingerprint from a prior result |
 | `tag` | string | — | Note stored with a pin, returned on the pinned item |
@@ -121,15 +122,17 @@ view cannot read as an all-clear.
 === Incidents (2) === [inbox: crit=1 err=1 warn=0 info=0 new=2]
 
 [critical:process_crash] panic (2x, 3s ago)
+  id: 9f3a1c2e
   runtime error: index out of range
   payload: goroutine 1 [running]: main.serve(...)   // only when detail:"full"
   next: proc action=output process_id=agnt-dev
   skill: agnt-process-proxy
 
 [error:browser_js] TypeError (1x, 8s ago)
+  id: 41bd07f0
   Cannot read property 'map' of undefined
   → http://localhost:3000/list
-  next: proxy action=exec code=window.__devtool.getElementInfo(selector)
+  next: currentpage action=triage proxy_id=dev
   skill: agnt:browser-debug
 
 === Next ===
