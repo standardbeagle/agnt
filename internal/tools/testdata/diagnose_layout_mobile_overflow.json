@@ -1,0 +1,35 @@
+{
+  "helper": "diagnoseLayoutComposite",
+  "version": 1,
+  "layout": {
+    "findings": [],
+    "count": 0,
+    "scanned": 120,
+    "by_check": {"containing-block-trap": 0, "ineffective-zindex": 0, "click-interception": 0, "clipped-descendant": 0}
+  },
+  "responsive": {
+    "issues": [
+      {
+        "selector": ".wide-table",
+        "issues": [
+          {
+            "type": "unintended-horizontal-scroll",
+            "severity": "error",
+            "message": "Element causes horizontal scroll without overflow-x setting"
+          }
+        ]
+      }
+    ],
+    "summary": {"total": 1, "errors": 1, "warnings": 0, "elementsAnalyzed": 120},
+    "currentViewport": {"width": 375, "height": 667}
+  },
+  "causes": {
+    ".wide-table": {
+      "container": {
+        "position": "static",
+        "trappedBy": {"selector": ".page-shell", "property": "transform"}
+      },
+      "stacking": {"root": "body", "rootTrigger": "document"}
+    }
+  }
+}

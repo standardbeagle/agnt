@@ -99,6 +99,11 @@
       return { error: 'diagnoseClick helper not loaded (old bundle)' };
     },
 
+    // Layout composite diagnosis (diagnose MCP tool, action=layout)
+    diagnoseLayoutComposite: diagnostics && diagnostics.diagnoseLayoutComposite ? diagnostics.diagnoseLayoutComposite : function() {
+      return { error: 'diagnoseLayoutComposite helper not loaded (old bundle)' };
+    },
+
     // ========================================================================
     // TREE WALKING
     // ========================================================================

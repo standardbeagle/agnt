@@ -844,6 +844,131 @@
   }
 
   // ============================================================================
+  // LAYOUT COMPOSITE DIAGNOSIS
+  // ============================================================================
+
+  /**
+   * Diagnose layout in one call — composes existing producers only.
+   *
+   * Runs __devtool_layout.diagnose() (containing-block traps, ineffective
+   * z-index, click interception, clipped descendants), the responsive-risk
+   * scan (__devtool_responsive_risk.checkResponsiveRisk) for the CURRENT
+   * viewport only — no multi-viewport sweep, that stays with responsive_audit
+   * — and, for each offscreen/overflow/clipped finding, attaches the stacking
+   * or container cause via __devtool.getStacking/__devtool.getContainer.
+   * The diagnose MCP tool (action=layout) owns finding projection and the
+   * screenshot_recommended block; this helper only collects evidence.
+   * opts.selector narrows the diagnosis to that subtree (findings outside it
+   * are dropped). A selector that resolves to no element is reported as
+   * evidenceMissing, never diagnosed as a ghost.
+   *
+   * @devtool diagnoseLayoutComposite
+   * @signature diagnoseLayoutComposite(opts?)
+   * @param {object} [opts] - Options
+   * @param {string} [opts.selector] - Narrow the diagnosis to this subtree
+   * @returns {object} {layout, responsive, causes, evidenceMissing?}
+   *
+   * @example
+   *   __devtool.diagnoseLayoutComposite()
+   *   __devtool.diagnoseLayoutComposite({selector: '.sidebar'})
+   */
+  function diagnoseLayoutComposite(opts) {
+    opts = opts || {};
+    var result = { helper: 'diagnoseLayoutComposite', version: 1 };
+
+    var layoutApi = window.__devtool_layout;
+    if (!layoutApi || typeof layoutApi.diagnose !== 'function') {
+      result.evidenceMissing = 'layout module not loaded';
+      return result;
+    }
+
+    var root = null;
+    if (opts.selector) {
+      try {
+        root = utils.resolveElement(opts.selector);
+      } catch (e) { /* resolution failed — leave root null */ }
+      if (!root) {
+        result.evidenceMissing = 'selector resolved to no element: ' + opts.selector;
+        return result;
+      }
+    }
+
+    // In-scope check: without a selector everything is in scope; with one,
+    // only the root itself and its descendants.
+    function inScope(selector) {
+      if (!root) return true;
+      if (!selector) return false;
+      try {
+        var el = utils.resolveElement(selector);
+        return !!(el && (el === root || root.contains(el)));
+      } catch (e) {
+        return false;
+      }
+    }
+
+    // 1. Layout cause→symptom diagnosis (layout.js diagnose()).
+    var layout = layoutApi.diagnose();
+    if (layout && layout.error) {
+      result.evidenceMissing = 'layout diagnose failed: ' + layout.error;
+      return result;
+    }
+    if (layout && layout.findings) {
+      layout.findings = layout.findings.filter(function(f) { return inScope(f.selector); });
+      layout.count = layout.findings.length;
+    }
+    result.layout = layout;
+
+    // 2. Responsive risk scan for the current viewport only.
+    var riskApi = window.__devtool_responsive_risk;
+    if (riskApi && typeof riskApi.checkResponsiveRisk === 'function') {
+      var risk = riskApi.checkResponsiveRisk();
+      if (risk && risk.issues) {
+        risk.issues = risk.issues.filter(function(i) { return inScope(i.selector); });
+      }
+      result.responsive = risk;
+    } else {
+      result.responsive = { evidenceMissing: 'responsive-risk module not loaded' };
+    }
+
+    // 3. Cause enrichment: for each offscreen/overflow/clipped finding,
+    //    attach the stacking root and containing-block trap.
+    var visualSelectors = [];
+    function addCauseSelector(sel) {
+      if (!sel) return;
+      for (var i = 0; i < visualSelectors.length; i++) {
+        if (visualSelectors[i] === sel) return;
+      }
+      visualSelectors.push(sel);
+    }
+    if (layout && layout.findings) {
+      layout.findings.forEach(function(f) {
+        if (f.check === 'clipped-descendant') addCauseSelector(f.selector);
+      });
+    }
+    if (result.responsive && result.responsive.issues) {
+      result.responsive.issues.forEach(function(entry) {
+        (entry.issues || []).forEach(function(issue) {
+          if (/scroll|offscreen|overflow|overlap/.test(issue.type || '')) {
+            addCauseSelector(entry.selector);
+          }
+        });
+      });
+    }
+    var causes = {};
+    var CAUSE_CAP = 15;
+    for (var i = 0; i < visualSelectors.length && i < CAUSE_CAP; i++) {
+      var sel = visualSelectors[i];
+      causes[sel] = {
+        stacking: window.__devtool.getStacking ? window.__devtool.getStacking(sel) : { error: 'getStacking not loaded' },
+        container: window.__devtool.getContainer ? window.__devtool.getContainer(sel) : { error: 'getContainer not loaded' }
+      };
+    }
+    result.causes = causes;
+
+    return result;
+  }
+
+  // ============================================================================
   // DEAD-CLICK DIAGNOSIS
   // ============================================================================
 
@@ -1417,6 +1542,9 @@
 
     // Dead-click diagnosis
     diagnoseClick: diagnoseClick,
+
+    // Layout composite diagnosis
+    diagnoseLayoutComposite: diagnoseLayoutComposite,
 
     // Control
     clear: clear,

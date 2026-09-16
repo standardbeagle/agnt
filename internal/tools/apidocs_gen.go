@@ -19,6 +19,18 @@ var DevToolAPIFunctions = []APIFunction{
 		Example: "__devtool.diagnoseClick()\n  __devtool.diagnoseClick({selector: '.save-btn'})",
 	},
 	{
+		Name:        "diagnoseLayoutComposite",
+		Category:    "",
+		Description: "Diagnose layout in one call — composes existing producers only. Runs __devtool_layout.diagnose() (containing-block traps, ineffective z-index, click interception, clipped descendants), the responsive-risk scan (__devtool_responsive_risk.checkResponsiveRisk) for the CURRENT viewport only — no multi-viewport sweep, that stays with responsive_audit — and, for each offscreen/overflow/clipped finding, attaches the stacking or container cause via __devtool.getStacking/__devtool.getContainer. The diagnose MCP tool (action=layout) owns finding projection and the screenshot_recommended block; this helper only collects evidence. opts.selector narrows the diagnosis to that subtree (findings outside it are dropped). A selector that resolves to no element is reported as evidenceMissing, never diagnosed as a ghost.",
+		Signature:   "diagnoseLayoutComposite(opts?)",
+		Parameters: []string{
+			"opts: object - Options",
+			"opts.selector: string - Narrow the diagnosis to this subtree",
+		},
+		Returns: "object - {layout, responsive, causes, evidenceMissing?}",
+		Example: "__devtool.diagnoseLayoutComposite()\n  __devtool.diagnoseLayoutComposite({selector: '.sidebar'})",
+	},
+	{
 		Name:        "auditAccessibility",
 		Category:    "accessibility",
 		Description: "Run accessibility audit on the page",

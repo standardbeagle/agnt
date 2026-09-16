@@ -1,0 +1,32 @@
+{
+  "helper": "diagnoseLayoutComposite",
+  "version": 1,
+  "layout": {
+    "findings": [
+      {
+        "check": "clipped-descendant",
+        "severity": "medium",
+        "selector": ".sidebar .dropdown",
+        "cause": ".sidebar",
+        "cause_property": "overflow",
+        "detail": "This element extends past its ancestor on the bottom edge and is clipped by the ancestor's overflow:hidden.",
+        "fix": "If the content should be visible (dropdown/tooltip/menu), set overflow:visible on the ancestor or render the content in a portal outside it.",
+        "avoid": "Do not just enlarge the child — the ancestor is doing the clipping."
+      }
+    ],
+    "count": 1,
+    "scanned": 40,
+    "by_check": {"containing-block-trap": 0, "ineffective-zindex": 0, "click-interception": 0, "clipped-descendant": 1}
+  },
+  "responsive": {
+    "issues": [],
+    "summary": {"total": 0, "errors": 0, "warnings": 0, "elementsAnalyzed": 40},
+    "currentViewport": {"width": 1280, "height": 800}
+  },
+  "causes": {
+    ".sidebar .dropdown": {
+      "container": {"position": "static"},
+      "stacking": {"root": ".sidebar", "rootTrigger": "overflow"}
+    }
+  }
+}

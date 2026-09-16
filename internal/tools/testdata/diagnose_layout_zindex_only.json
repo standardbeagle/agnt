@@ -1,0 +1,27 @@
+{
+  "helper": "diagnoseLayoutComposite",
+  "version": 1,
+  "layout": {
+    "findings": [
+      {
+        "check": "ineffective-zindex",
+        "severity": "high",
+        "selector": ".badge",
+        "cause": "",
+        "cause_property": "position:static",
+        "detail": "z-index 5 is ignored: z-index only applies to positioned elements or flex/grid items, and this element is position:static with a non-flex/grid parent.",
+        "fix": "Set position:relative on the element (or make the parent display:flex/grid) so the z-index takes effect.",
+        "avoid": "Do not raise the z-index value — it is being discarded entirely, not losing a comparison."
+      }
+    ],
+    "count": 1,
+    "scanned": 80,
+    "by_check": {"containing-block-trap": 0, "ineffective-zindex": 1, "click-interception": 0, "clipped-descendant": 0}
+  },
+  "responsive": {
+    "issues": [],
+    "summary": {"total": 0, "errors": 0, "warnings": 0, "elementsAnalyzed": 80},
+    "currentViewport": {"width": 1280, "height": 800}
+  },
+  "causes": {}
+}

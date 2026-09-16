@@ -12,13 +12,19 @@ import (
 	"github.com/standardbeagle/go-sdk/mcp"
 )
 
-// DiagnoseInput defines input for the diagnose tool. The action enum declares
-// both actions now so the schema is stable; layout lands in the next slice.
+// DiagnoseViewport requests a temporary viewport resize for action=layout.
+type DiagnoseViewport struct {
+	Width  int `json:"width" jsonschema:"Viewport width in px to resize to before diagnosing"`
+	Height int `json:"height" jsonschema:"Viewport height in px to resize to before diagnosing"`
+}
+
+// DiagnoseInput defines input for the diagnose tool.
 type DiagnoseInput struct {
 	ProxyID  string `json:"proxy_id,omitempty" jsonschema:"Proxy ID to diagnose (preferred)"`
 	ID       string `json:"id,omitempty" jsonschema:"Alias for proxy_id"`
-	Action   string `json:"action" jsonschema:"Diagnosis to run: click (dead-click triage from recorded interactions) or layout (declared, implemented in a later slice)"`
-	Selector string `json:"selector,omitempty" jsonschema:"Diagnose this element instead of the last recorded click (action=click)"`
+	Action   string `json:"action" jsonschema:"Diagnosis to run: click (dead-click triage from recorded interactions) or layout (composite layout diagnosis + responsive risk at the current viewport, with stacking/container causes)"`
+	Selector string            `json:"selector,omitempty" jsonschema:"Narrow the diagnosis: the element for action=click (default: last recorded click), the subtree root for action=layout"`
+	Viewport *DiagnoseViewport `json:"viewport,omitempty" jsonschema:"Layout action only: resize the viewport before diagnosing; the original viewport is restored afterwards"`
 	Target   string `json:"target,omitempty" jsonschema:"Frame in the always-wrap model: 'inner' (default) = active page content frame; 'outer' = chrome shell"`
 	FrameID  string `json:"frame_id,omitempty" jsonschema:"Diagnose a specific content frame by id (default: the active content frame). Rarely needed."`
 	Raw      bool   `json:"raw,omitempty" jsonschema:"Return full JSON instead of compact text"`
@@ -75,9 +81,20 @@ Verdicts:
 Examples:
   diagnose {action: "click", proxy_id: "dev"}
   diagnose {action: "click", proxy_id: "dev", selector: ".save-btn"}
-  diagnose {action: "click", proxy_id: "dev", raw: true}
+  diagnose {action: "layout", proxy_id: "dev"}
+  diagnose {action: "layout", proxy_id: "dev", selector: ".sidebar", viewport: {width: 375, height: 667}}
 
-action=layout is declared in the schema and lands in a later slice.`
+action=layout composes existing producers in one call: layout diagnose()
+(containing-block traps, ineffective z-index, click interception, clipped
+descendants), the responsive-risk scan for the CURRENT viewport only (no
+multi-viewport sweep — that is responsive_audit), and for each
+offscreen/overflow/clipped finding the stacking or container cause via
+__devtool.getStacking/getContainer. Each finding carries a stable id and its
+cause when one was found. A screenshot_recommended block (selector + exact
+__devtool.screenshot call) is populated ONLY when at least one finding is
+visual (overflow, clipped, offscreen, overlap). selector narrows the
+diagnosis to one subtree; viewport resizes before diagnosing and the original
+viewport is restored afterwards, including on failure.`
 
 // RegisterDiagnoseTool registers the diagnose MCP tool. Per-session like
 // get_incidents: intentionally no `global` flag.
@@ -95,7 +112,13 @@ func (dt *DaemonTools) makeDiagnoseHandler() func(context.Context, *mcp.CallTool
 		switch input.Action {
 		case "click":
 		case "layout":
-			return fail[DiagnoseOutput]("action=layout is declared but not implemented yet — use action=click")
+			if input.ProxyID == "" {
+				return fail[DiagnoseOutput]("proxy_id required (or `id` alias)")
+			}
+			if err := dt.ensureConnected(); err != nil {
+				return fail[DiagnoseOutput](err.Error())
+			}
+			return dt.executeDiagnoseLayout(input)
 		default:
 			return fail[DiagnoseOutput](validationError("diagnose", fmt.Errorf("action required (valid: click, layout)")))
 		}

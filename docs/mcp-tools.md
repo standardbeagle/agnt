@@ -32,7 +32,7 @@ for an explicit audit request, not routine debugging.
 | `currentpage` | Inner/content-page inspection: framework triage (default) + layout diagnostics + list/get/summary/clear; responses identify `execution_context` and `frame_id` |
 | `get_incidents` | The error/incident surface — cursor-based, priority-ordered, with remediation hints and retention actions |
 | `responsive_audit` | Responsive design audits across viewport sizes |
-| `diagnose` | Dead-click triage in one call (`action:"click"`): composes last click, obstruction, stacking root, containing-block trap, and incidents since the click into a verdict + exact `next:` |
+| `diagnose` | Dead-click triage in one call (`action:"click"`), or layout composite (`action:"layout"`: layout diagnose + current-viewport responsive risk + stacking/container causes, `screenshot_recommended` when a visual finding exists) |
 | `api_audit` | API efficiency audit (waterfall, N+1, duplicate, chatty-load) over the fetch/XHR buffer |
 | `loading_audit` | Loading-UX audit (spinner cascade + concurrent fragmentation) over the spinner timeline |
 | `snapshot` | Visual regression testing (baseline/compare screenshots) |
@@ -369,15 +369,69 @@ stacking root (`__devtool.getStacking`), the fixed/containing-block trap
 (`__devtool.getContainer`), and `browser_js` incidents recorded since the
 click. The browser half is `__devtool.diagnoseClick(opts)` in
 `internal/proxy/scripts/diagnostics.js`; the Go side owns the verdict and the
-compact rendering. `action:"layout"` is declared in the schema and lands in a
-later slice.
+compact rendering.
+
+### action:"layout"
+
+Layout triage in one call — composes **existing** producers only: layout.js
+`diagnose()` (containing-block traps, ineffective z-index, click interception,
+clipped descendants; parsed Go-side only via `parseLayoutDiagnostics`, the
+same parser as `currentpage action:"layout"`), the responsive-risk scan
+(`__devtool_responsive_risk.checkResponsiveRisk`) for the **current viewport
+only** — no multi-viewport sweep, that stays with `responsive_audit` — and,
+for each offscreen/overflow/clipped finding, the stacking or container cause
+via `__devtool.getStacking`/`__devtool.getContainer`. The browser half is
+`__devtool.diagnoseLayoutComposite(opts)` in `diagnostics.js`.
+
+Every finding carries a stable id (`finding.StableID("layout", selector,
+type)`) and, when one was found, its cause inline in the evidence.
+
+`selector` narrows the diagnosis to one subtree (findings outside it are not
+returned). `viewport {width, height}` resizes the viewport via the existing
+proxy resize action before diagnosing and restores the prior state
+afterwards — including when the diagnosis exec fails. The prior state is read
+from the shell's content-frame style: a full-bleed frame is restored via the
+`__devtool_resize_content(0,0)` reset, a prior explicit resize is re-applied
+as px. No raw `innerWidth` exec is ever issued against the inner frame.
+
+**screenshot_recommended** — a single block populated ONLY when at least one
+finding is visual (`Visual=true`: overflow, clipped, offscreen, overlap). It
+names the selector to frame and the exact call:
+`__devtool.screenshot({selector: '<sel>', name: 'diagnose_layout'})`. A page
+with only ineffective-z-index findings yields no block, in compact and raw
+output alike.
+
+```json
+diagnose {action: "layout", proxy_id: "dev"}
+diagnose {action: "layout", proxy_id: "dev", selector: ".sidebar"}
+diagnose {action: "layout", proxy_id: "dev", viewport: {"width": 375, "height": 667}}
+```
+
+```
+=== diagnose layout (dev) ===
+findings: 1
+
+[error] Element causes horizontal scroll without overflow-x setting; container cause: trapped by ".page-shell" (transform)
+  id: 4d5e6f70
+  next: proxy exec __devtool.getContainer('.wide-table')
+
+screenshot_recommended: __devtool.screenshot({selector: '.wide-table', name: 'diagnose_layout'})
+  frame: .wide-table
+```
+
+Verdicts: `issues_found`, `no_issues`, `insufficient_evidence` (helper absent
+— old bundle — or an unresolvable `selector`; the exact reason is carried,
+never a fabricated diagnosis).
+
+**Key Files**: `internal/tools/diagnose.go`, `internal/tools/diagnose_layout.go`, `internal/tools/diagnose_test.go`, `internal/tools/diagnose_layout_test.go`, `internal/proxy/scripts/diagnostics.js`
 
 **Parameters**:
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `action` | string | required | `click` (implemented) or `layout` (declared, later slice) |
+| `action` | string | required | `click` (dead-click triage) or `layout` (layout + responsive-risk composite) |
 | `proxy_id` | string | required | Proxy ID (alias: `id`) |
-| `selector` | string | — | Diagnose this element instead of the last recorded click |
+| `selector` | string | — | `click`: diagnose this element instead of the last recorded click; `layout`: narrow to this subtree |
+| `viewport` | object | — | `layout` only: `{width, height}` to resize before diagnosing; restored afterwards |
 | `target` | string | `inner` | Frame in the always-wrap model |
 | `frame_id` | string | active | Diagnose a specific content frame by id |
 | `raw` | bool | false | Return full JSON instead of compact text |
