@@ -343,12 +343,29 @@ func verifyProducerFor[In any, Out any](
 		if prepare != nil {
 			prepare(&in)
 		}
-		_, out, err := handler(ctx, nil, in)
+		res, out, err := handler(ctx, nil, in)
 		if err != nil {
 			return nil, err
 		}
+		// A handler failure arrives as an IsError CallToolResult with a nil Go
+		// error (fail[...]). It must surface as a producer error so its targets
+		// count as persist — never resolved (a false PASS hides a regression).
+		if res != nil && res.IsError {
+			return nil, fmt.Errorf("producer handler failed: %s", callToolResultErrorText(res))
+		}
 		return extract(out), nil
 	}
+}
+
+// callToolResultErrorText flattens an IsError CallToolResult's text content.
+func callToolResultErrorText(res *mcp.CallToolResult) string {
+	var parts []string
+	for _, c := range res.Content {
+		if tc, ok := c.(*mcp.TextContent); ok {
+			parts = append(parts, tc.Text)
+		}
+	}
+	return strings.Join(parts, "; ")
 }
 
 // dispatchGetIncidents re-runs get_incidents with the recorded args.
@@ -368,28 +385,28 @@ func dispatchGetIncidents(dt *DaemonTools, since string) verifyProducerFunc {
 
 // dispatchResponsiveAudit re-runs responsive_audit in-process.
 func dispatchResponsiveAudit(handler func(context.Context, *mcp.CallToolRequest, ResponsiveAuditInput) (*mcp.CallToolResult, ResponsiveAuditOutput, error)) verifyProducerFunc {
-	return verifyProducerFor(nil, handler, func(out ResponsiveAuditOutput) []string {
+	return verifyProducerFor(func(in *ResponsiveAuditInput) { in.Raw = true }, handler, func(out ResponsiveAuditOutput) []string {
 		return extractRawFindingIDs(out.Raw)
 	})
 }
 
 // dispatchAPIAudit re-runs api_audit in-process.
 func dispatchAPIAudit(handler func(context.Context, *mcp.CallToolRequest, APIAuditInput) (*mcp.CallToolResult, APIAuditOutput, error)) verifyProducerFunc {
-	return verifyProducerFor(nil, handler, func(out APIAuditOutput) []string {
+	return verifyProducerFor(func(in *APIAuditInput) { in.Raw = true }, handler, func(out APIAuditOutput) []string {
 		return extractRawFindingIDs(out.Raw)
 	})
 }
 
 // dispatchLoadingAudit re-runs loading_audit in-process.
 func dispatchLoadingAudit(handler func(context.Context, *mcp.CallToolRequest, LoadingAuditInput) (*mcp.CallToolResult, LoadingAuditOutput, error)) verifyProducerFunc {
-	return verifyProducerFor(nil, handler, func(out LoadingAuditOutput) []string {
+	return verifyProducerFor(func(in *LoadingAuditInput) { in.Raw = true }, handler, func(out LoadingAuditOutput) []string {
 		return extractRawFindingIDs(out.Raw)
 	})
 }
 
 // dispatchDiagnose re-runs diagnose in-process.
 func dispatchDiagnose(handler func(context.Context, *mcp.CallToolRequest, DiagnoseInput) (*mcp.CallToolResult, DiagnoseOutput, error)) verifyProducerFunc {
-	return verifyProducerFor(nil, handler, func(out DiagnoseOutput) []string {
+	return verifyProducerFor(func(in *DiagnoseInput) { in.Raw = true }, handler, func(out DiagnoseOutput) []string {
 		return extractRawFindingIDs(out.Raw)
 	})
 }
