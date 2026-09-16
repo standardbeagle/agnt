@@ -62,8 +62,8 @@ type Trace struct {
 	Scenario string `json:"scenario"`
 	// Provenance names the source file and lines this trace was
 	// transcribed from. Required on baseline traces.
-	Provenance string   `json:"provenance,omitempty"`
-	Steps      []Step   `json:"steps"`
+	Provenance string `json:"provenance,omitempty"`
+	Steps      []Step `json:"steps"`
 }
 
 // validate enforces the schema. Malformed traces are rejected wholesale —

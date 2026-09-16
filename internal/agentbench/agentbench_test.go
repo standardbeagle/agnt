@@ -32,10 +32,10 @@ func TestScoreDeterministic(t *testing.T) {
 func TestScoreRejectsMalformedTrace(t *testing.T) {
 	good := Step{Tool: "proxy", Action: "status", Kind: KindState, ResponseBytes: 100}
 	cases := map[string]Trace{
-		"missing tool":    {Steps: []Step{{Kind: KindState, ResponseBytes: 10}}},
-		"negative bytes":  {Steps: []Step{{Tool: "proxy", Kind: KindState, ResponseBytes: -1}}},
-		"unknown kind":    {Steps: []Step{{Tool: "proxy", Kind: StepKind("bogus"), ResponseBytes: 10}}},
-		"no steps":        {},
+		"missing tool":              {Steps: []Step{{Kind: KindState, ResponseBytes: 10}}},
+		"negative bytes":            {Steps: []Step{{Tool: "proxy", Kind: KindState, ResponseBytes: -1}}},
+		"unknown kind":              {Steps: []Step{{Tool: "proxy", Kind: StepKind("bogus"), ResponseBytes: 10}}},
+		"no steps":                  {},
 		"one good only matters not": {Steps: []Step{good, {Tool: "", Kind: KindState}}},
 	}
 	for name, tr := range cases {

@@ -13,7 +13,7 @@ var baselineFS embed.FS
 
 // Scenario describes one pinned debugging scenario.
 type Scenario struct {
-	Name string
+	Name  string
 	Blurb string
 }
 
@@ -21,14 +21,14 @@ type Scenario struct {
 // testdata/baseline/<name>.json 1:1 — TestScenarioCatalogueMatchesTestdata
 // asserts it.
 var scenarios = map[string]Scenario{
-	"blank_page":        {"blank_page", "page renders empty; locate the failing render path"},
-	"dead_click":        {"dead_click", "click does nothing; find what swallowed the event"},
-	"mobile_overflow":   {"mobile_overflow", "horizontal scrollbar on mobile viewport"},
+	"blank_page":         {"blank_page", "page renders empty; locate the failing render path"},
+	"dead_click":         {"dead_click", "click does nothing; find what swallowed the event"},
+	"mobile_overflow":    {"mobile_overflow", "horizontal scrollbar on mobile viewport"},
 	"zindex_positioning": {"zindex_positioning", "element hidden behind another despite z-index"},
-	"api_failure":       {"api_failure", "API call fails; trace request to backend error"},
-	"loading_flicker":   {"loading_flicker", "spinner flashes repeatedly during load"},
-	"a11y_failure":      {"a11y_failure", "accessibility audit failures on a page"},
-	"release_qa":        {"release_qa", "pre-release QA sweep across audits and snapshots"},
+	"api_failure":        {"api_failure", "API call fails; trace request to backend error"},
+	"loading_flicker":    {"loading_flicker", "spinner flashes repeatedly during load"},
+	"a11y_failure":       {"a11y_failure", "accessibility audit failures on a page"},
+	"release_qa":         {"release_qa", "pre-release QA sweep across audits and snapshots"},
 }
 
 // Scenarios returns the catalogue in stable name order.
