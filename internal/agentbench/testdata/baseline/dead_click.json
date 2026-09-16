@@ -1,0 +1,11 @@
+{
+  "scenario": "dead_click",
+  "provenance": "documented-workflow baseline; transcribed from standardbeagle-tools/plugins/agnt/skills/browser-debug/SKILL.md L48-L62 (step 1: screenshot), L33-L44 (errors first -> get_incidents), L310-L350 (dead-click workflow: interactions.getLastClick, mutations.getTriggeredBy('click')); internal/incident/remediation.go L45-L55 (SourceBrowserJS primary)",
+  "steps": [
+    {"tool": "currentpage", "kind": "state", "response_bytes": 320},
+    {"tool": "proxy", "action": "exec", "kind": "screenshot", "code": "await __devtool.screenshot('debug-state')", "response_bytes": 45000},
+    {"tool": "get_incidents", "kind": "incidents", "args": {"severity": ["error", "critical"]}, "response_bytes": 1200},
+    {"tool": "proxy", "action": "exec", "kind": "exec", "code": "__devtool.interactions.getLastClick()", "response_bytes": 1400, "useful": true, "finding_kind": "layout"},
+    {"tool": "proxy", "action": "exec", "kind": "exec", "code": "__devtool.mutations.getTriggeredBy('click')", "response_bytes": 900}
+  ]
+}

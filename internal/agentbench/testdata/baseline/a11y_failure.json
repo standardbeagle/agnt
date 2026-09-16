@@ -1,0 +1,10 @@
+{
+  "scenario": "a11y_failure",
+  "provenance": "documented-workflow baseline; transcribed from standardbeagle-tools/plugins/agnt/skills/browser-debug/SKILL.md L79-L91 (diagnose step pattern via proxy exec); a11y audit runs through the injected audit bundle (internal/proxy/scripts/accessibility.js, axe-core.min.js) as __devtool.audit with the full profile, then re-run scoped to the failing area",
+  "steps": [
+    {"tool": "currentpage", "kind": "state", "response_bytes": 320},
+    {"tool": "proxy", "action": "exec", "kind": "audit", "code": "__devtool.audit({profile: 'full', categories: ['a11y']})", "args": {"profile": "full"}, "response_bytes": 7000, "useful": true, "finding_kind": "a11y"},
+    {"tool": "proxy", "action": "exec", "kind": "audit", "code": "__devtool.audit({profile: 'full', categories: ['a11y'], selector: '.nav'})", "args": {"profile": "full", "selector": ".nav"}, "response_bytes": 1800},
+    {"tool": "proxy", "action": "exec", "kind": "exec", "code": "__devtool.highlight('.nav [aria-hidden]')", "response_bytes": 300}
+  ]
+}

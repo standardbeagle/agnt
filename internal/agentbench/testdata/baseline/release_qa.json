@@ -1,0 +1,12 @@
+{
+  "scenario": "release_qa",
+  "provenance": "documented-workflow baseline; transcribed from the MCP tool catalogue (snapshot baseline/compare for visual regression, responsive_audit/api_audit/loading_audit full-profile sweeps) and standardbeagle-tools/plugins/agnt/skills/browser-debug/SKILL.md L690-L710 (common debugging checklist: capture state, analyze, visualize)",
+  "steps": [
+    {"tool": "currentpage", "kind": "state", "response_bytes": 320},
+    {"tool": "snapshot", "action": "baseline", "kind": "composite", "args": {"name": "release"}, "response_bytes": 800},
+    {"tool": "responsive_audit", "kind": "audit", "args": {"profile": "full"}, "response_bytes": 6000},
+    {"tool": "api_audit", "kind": "audit", "args": {"profile": "full"}, "response_bytes": 4500},
+    {"tool": "loading_audit", "kind": "audit", "args": {"profile": "full"}, "response_bytes": 5000, "useful": true, "finding_kind": "network"},
+    {"tool": "snapshot", "action": "compare", "kind": "composite", "args": {"name": "release"}, "response_bytes": 1200}
+  ]
+}

@@ -1,0 +1,11 @@
+{
+  "scenario": "mobile_overflow",
+  "provenance": "documented-workflow baseline; transcribed from standardbeagle-tools/plugins/agnt/skills/browser-debug/SKILL.md L33-L44 (errors first -> get_incidents), L158-L170 (horizontal-scrollbar workflow: __devtool.findOverflows), L176-L188 (getBox on the overflowing element); responsive_audit is the MCP audit tool for the mobile viewport sweep",
+  "steps": [
+    {"tool": "currentpage", "kind": "state", "response_bytes": 320},
+    {"tool": "get_incidents", "kind": "incidents", "args": {"severity": ["error", "critical"]}, "response_bytes": 800},
+    {"tool": "responsive_audit", "kind": "audit", "args": {"profile": "full"}, "response_bytes": 6000},
+    {"tool": "proxy", "action": "exec", "kind": "exec", "code": "__devtool.findOverflows()", "response_bytes": 1400, "useful": true, "finding_kind": "responsive"},
+    {"tool": "proxy", "action": "exec", "kind": "exec", "code": "__devtool.getBox('.overflowing-element')", "response_bytes": 700}
+  ]
+}

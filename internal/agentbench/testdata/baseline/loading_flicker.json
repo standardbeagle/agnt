@@ -1,0 +1,10 @@
+{
+  "scenario": "loading_flicker",
+  "provenance": "documented-workflow baseline; transcribed from standardbeagle-tools/plugins/agnt/skills/browser-debug/SKILL.md L33-L44 (errors first -> get_incidents), L585-L600 (mutation performance debugging: mutations.getRateStats); loading_audit is the MCP audit tool for the spinner timeline",
+  "steps": [
+    {"tool": "currentpage", "kind": "state", "response_bytes": 320},
+    {"tool": "get_incidents", "kind": "incidents", "args": {"severity": ["error", "critical"]}, "response_bytes": 500},
+    {"tool": "loading_audit", "kind": "audit", "args": {"profile": "full"}, "response_bytes": 5200, "useful": true, "finding_kind": "network"},
+    {"tool": "proxy", "action": "exec", "kind": "exec", "code": "__devtool.mutations.getRateStats()", "response_bytes": 900}
+  ]
+}

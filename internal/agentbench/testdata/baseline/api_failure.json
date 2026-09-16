@@ -1,0 +1,10 @@
+{
+  "scenario": "api_failure",
+  "provenance": "documented-workflow baseline; transcribed from internal/incident/remediation.go L56-L67 (SourceHTTP5xx primary: proxylog types=http status_codes=[500,502,503,504]; fallback: proc output tail=200) and L120-L126 (get_incidents severity error/critical); api_audit is the MCP audit tool for the fetch/XHR waterfall",
+  "steps": [
+    {"tool": "get_incidents", "kind": "incidents", "args": {"severity": ["error", "critical"], "since": "5m"}, "response_bytes": 1500, "useful": true, "finding_kind": "network"},
+    {"tool": "proxylog", "action": "query", "kind": "incidents", "args": {"types": ["http"], "status_codes": [500, 502, 503, 504]}, "response_bytes": 2200},
+    {"tool": "api_audit", "kind": "audit", "args": {"profile": "full"}, "response_bytes": 4500},
+    {"tool": "proc", "action": "output", "kind": "other", "args": {"tail": 200}, "response_bytes": 4000}
+  ]
+}

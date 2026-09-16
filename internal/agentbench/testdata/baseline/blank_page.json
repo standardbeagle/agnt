@@ -1,0 +1,11 @@
+{
+  "scenario": "blank_page",
+  "provenance": "documented-workflow baseline; transcribed from standardbeagle-tools/plugins/agnt/skills/browser-debug/SKILL.md L48-L62 (step 1: screenshot), L33-L44 (check errors first -> get_incidents), L79-L91 (step 3: __devtool.diagnoseLayout); internal/incident/remediation.go L45-L55 (SourceBrowserJS primary: proxy exec __devtool.getElementInfo)",
+  "steps": [
+    {"tool": "currentpage", "kind": "state", "response_bytes": 320},
+    {"tool": "proxy", "action": "exec", "kind": "screenshot", "code": "await __devtool.screenshot('debug-state')", "response_bytes": 45000},
+    {"tool": "get_incidents", "kind": "incidents", "args": {"severity": ["error", "critical"]}, "response_bytes": 1200},
+    {"tool": "proxy", "action": "exec", "kind": "exec", "code": "__devtool.diagnoseLayout()", "response_bytes": 2800, "useful": true, "finding_kind": "layout"},
+    {"tool": "proxy", "action": "exec", "kind": "exec", "code": "__devtool.inspect('body')", "response_bytes": 1500}
+  ]
+}

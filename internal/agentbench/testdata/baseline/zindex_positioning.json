@@ -1,0 +1,11 @@
+{
+  "scenario": "zindex_positioning",
+  "provenance": "documented-workflow baseline; transcribed from standardbeagle-tools/plugins/agnt/skills/browser-debug/SKILL.md L33-L44 (errors first -> get_incidents), L202-L240 (z-index workflow: findStackingContexts, getStacking('.dropdown-menu'), checkOverlap); internal/incident/remediation.go L45-L55 (SourceBrowserJS primary)",
+  "steps": [
+    {"tool": "currentpage", "kind": "state", "response_bytes": 320},
+    {"tool": "get_incidents", "kind": "incidents", "args": {"severity": ["error", "critical"]}, "response_bytes": 400},
+    {"tool": "proxy", "action": "exec", "kind": "exec", "code": "__devtool.findStackingContexts()", "response_bytes": 3200},
+    {"tool": "proxy", "action": "exec", "kind": "exec", "code": "__devtool.getStacking('.dropdown-menu')", "response_bytes": 1100, "useful": true, "finding_kind": "layout"},
+    {"tool": "proxy", "action": "exec", "kind": "exec", "code": "__devtool.checkOverlap('.dropdown-menu', '.modal')", "response_bytes": 600}
+  ]
+}
