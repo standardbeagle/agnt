@@ -31,6 +31,7 @@ for an explicit audit request, not routine debugging.
 | `tunnel` | Tunnel management (cloudflare/ngrok/tailscale) |
 | `currentpage` | Inner/content-page inspection: framework triage (default) + layout diagnostics + list/get/summary/clear; responses identify `execution_context` and `frame_id` |
 | `get_incidents` | The error/incident surface — cursor-based, priority-ordered, with remediation hints and retention actions |
+| `verify_change` | Recheck only the session's recorded findings — re-runs each finding's producer in-process, reports resolved/persist/new, merges the outcome back into the Investigation |
 | `responsive_audit` | Responsive design audits across viewport sizes |
 | `diagnose` | Dead-click triage in one call (`action:"click"`), or layout composite (`action:"layout"`: layout diagnose + current-viewport responsive risk + stacking/container causes, `screenshot_recommended` when a visual finding exists) |
 | `api_audit` | API efficiency audit (waterfall, N+1, duplicate, chatty-load) over the fetch/XHR buffer |
@@ -573,6 +574,49 @@ spinner-cascade (1)
 ```
 
 **Key Files**: `internal/proxy/scripts/audit-loading.js` (`window.__devtool_audit_loading.auditLoading`), `internal/proxy/scripts/mutation.js` (spinner recorder), `internal/tools/loading_audit.go`
+
+## verify_change Tool
+
+Recheck only the findings this session already recorded — the narrow follow-up
+after a fix, instead of a broad re-audit. Reads the session Investigation
+(`INVESTIGATION GET`), resolves the target set (`finding_ids` when given, else
+every finding in the record), and re-runs each target's recorded **Producer**
+(the exact tool+args that produced it: `get_incidents`, `responsive_audit`,
+`api_audit`, `loading_audit`, `diagnose`) **in-process** by calling the same
+handler functions. It never runs a broad/full audit and never re-reads
+`currentpage`.
+
+**Comparison by id**: `resolved` (id absent now), `persist` (id still
+reported), `new` (ids the same producer reports that were not targets).
+Screenshots via the existing `__devtool.screenshot` path are captured **only**
+for `Visual=true` findings that resolved or changed; the last ref is recorded
+as the Investigation's `visual_baseline_ref`.
+
+**Parameters**:
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `proxy_id` | string | investigation's active proxy | Proxy used for conditional visual-baseline screenshots |
+| `finding_ids` | []string | all recorded findings | Finding ids/fingerprints to recheck |
+| `since` | string | none | Cursor forwarded to producers that accept one (e.g. `get_incidents`) |
+| `raw` | bool | false | Return full JSON instead of compact text |
+
+**Header semantics**: the first line is
+`verify_change: PASS|FAIL (<n> resolved, <m> persist, <k> new)`. The header is
+**FAIL whenever any target persists** — PASS is impossible while a target is
+still reported. A producer error counts as persist (never a false PASS) and
+adds a `collection_warnings` line.
+
+**Stale ids**: a `finding_ids` entry that is not in the record (and has no
+recorded producer) cannot be rechecked. It produces one
+`stale_finding_id: "<id>" ...` entry in `collection_warnings` and is skipped;
+the remaining ids are still verified — a per-id failure never aborts the call.
+
+**Merge-back**: after the call the Investigation no longer lists resolved ids
+and lists new ones (read back via the next `verify_change` or
+`INVESTIGATION GET`); resolved removals run before appends so a re-added id
+survives.
+
+**Key Files**: `internal/tools/verify_change.go`, `internal/finding/finding.go` (Producer), `internal/protocol/commands.go` (Investigation/Merge)
 
 ## watch Tool
 
