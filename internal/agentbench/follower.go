@@ -35,7 +35,7 @@ func Follow(scenario string, ex Executor) (*Trace, error) {
 	if err != nil {
 		return nil, fmt.Errorf("agentbench: %s: initial currentpage: %w", scenario, err)
 	}
-	tr.Steps = append(tr.Steps, stepFrom(Call{Tool: "currentpage"}, resp))
+	tr.Steps = append(tr.Steps, stepFrom(Call{Tool: "currentpage"}, resp, false))
 
 	for len(tr.Steps) < maxFollowSteps {
 		next := strings.TrimSpace(resp.Next)
@@ -57,12 +57,13 @@ func Follow(scenario string, ex Executor) (*Trace, error) {
 			return nil, fmt.Errorf("agentbench: %s: step %d: %w\noffending response:\n%s",
 				scenario, len(tr.Steps), err, resp.Text)
 		}
+		prescribed := resp.Prescribed
 		resp, err = ex.Execute(call)
 		if err != nil {
 			return nil, fmt.Errorf("agentbench: %s: step %d (%s): %w",
 				scenario, len(tr.Steps), call.Tool, err)
 		}
-		tr.Steps = append(tr.Steps, stepFrom(call, resp))
+		tr.Steps = append(tr.Steps, stepFrom(call, resp, prescribed))
 	}
 	return nil, fmt.Errorf("agentbench: %s: exceeded %d steps — next: cycle?", scenario, maxFollowSteps)
 }
@@ -216,8 +217,10 @@ func unquote(v string) string {
 	return v
 }
 
-// stepFrom builds the trace step for one executed call.
-func stepFrom(c Call, resp Response) Step {
+// stepFrom builds the trace step for one executed call. prescribed marks
+// the step as reached via an explicitly recorded contract prescription
+// rather than a tool-emitted pointer.
+func stepFrom(c Call, resp Response, prescribed bool) Step {
 	return Step{
 		Tool:          c.Tool,
 		Action:        c.Action,
@@ -227,6 +230,7 @@ func stepFrom(c Call, resp Response) Step {
 		Kind:          classify(c),
 		Useful:        resp.Useful,
 		FindingKind:   resp.FindingKind,
+		Prescribed:    prescribed,
 	}
 }
 

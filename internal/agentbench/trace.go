@@ -55,6 +55,10 @@ type Step struct {
 	// layout/responsive/visual findings anchor
 	// screenshot_before_visual_hypothesis.
 	FindingKind string `json:"finding_kind,omitempty"`
+	// Prescribed marks a step whose next action came from an explicitly
+	// recorded contract prescription (e.g. a release_qa sweep link the
+	// shipped tools do not emit as a pointer), not from a tool response.
+	Prescribed bool `json:"prescribed,omitempty"`
 }
 
 // Trace is one scenario's recorded session.

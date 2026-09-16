@@ -24,7 +24,11 @@ type fixtureResponse struct {
 	Formatter   string          `json:"formatter,omitempty"` // incidents|responsive|buffer|diagnose_layout|diagnose_click
 	Headline    string          `json:"headline,omitempty"`
 	Input       json.RawMessage `json:"input,omitempty"`
-	Next        string          `json:"next,omitempty"` // raw-JSON next field; overrides text parsing
+	Next        string          `json:"next,omitempty"` // raw-JSON next field; verbatim non-formatter responses only
+	// Prescribed records a sweep link the shipped contract does not emit
+	// as a pointer: the follower still executes it, but the step is
+	// marked prescribed in the trace and disclosed in the docs table.
+	Prescribed  string          `json:"prescribed,omitempty"`
 	Useful      bool            `json:"useful,omitempty"`
 	FindingKind string          `json:"finding_kind,omitempty"`
 }
@@ -61,6 +65,14 @@ func loadContractFixture(t *testing.T, scenario string) *fixtureExecutor {
 	}
 	ex := &fixtureExecutor{scenario: scenario, byKey: map[string]fixtureResponse{}}
 	for _, r := range fx.Responses {
+		if r.Formatter != "" && r.Next != "" {
+			t.Fatalf("contract fixture %q: formatter-rendered response (tool=%s) carries an injected next override %q — record it as prescribed instead",
+				scenario, r.Call.Tool, r.Next)
+		}
+		if r.Next != "" && r.Prescribed != "" {
+			t.Fatalf("contract fixture %q: response (tool=%s) sets both next and prescribed",
+				scenario, r.Call.Tool)
+		}
 		key := Call{Tool: r.Call.Tool, Action: r.Call.Action, Args: r.Call.Args, Code: r.Call.Code}.key()
 		if _, dup := ex.byKey[key]; dup {
 			t.Fatalf("contract fixture %q: duplicate response for tool=%s action=%s args=%v code=%q",
@@ -85,7 +97,11 @@ func (ex *fixtureExecutor) Execute(call Call) (Response, error) {
 		}
 		text = rendered
 	}
-	return Response{Text: text, Next: r.Next, Useful: r.Useful, FindingKind: r.FindingKind}, nil
+	next, prescribed := r.Next, false
+	if r.Prescribed != "" {
+		next, prescribed = r.Prescribed, true
+	}
+	return Response{Text: text, Next: next, Useful: r.Useful, FindingKind: r.FindingKind, Prescribed: prescribed}, nil
 }
 
 // renderFixtureText runs the shipped formatter for a fixture response.
@@ -236,13 +252,25 @@ func TestFollower_ContractBeatsBaselineOnEveryMetric(t *testing.T) {
 			if err != nil {
 				t.Fatalf("score baseline %s: %v", sc.Name, err)
 			}
-			_, contract := followContract(t, sc.Name)
+			tr, contract := followContract(t, sc.Name)
+
+			prescribed := 0
+			for _, s := range tr.Steps {
+				if s.Prescribed {
+					prescribed++
+				}
+			}
 
 			baseSummary := fmt.Sprintf("%d/%d/%d/%d/%d/%d", base.CallsToFirstFinding, base.ReturnedBytes,
 				base.TokensEstimate, base.RepeatedStateReads, base.RawJSSteps, base.BroadAuditCount)
 			contractSummary := fmt.Sprintf("%d/%d/%d/%d/%d/%d", contract.CallsToFirstFinding, contract.ReturnedBytes,
 				contract.TokensEstimate, contract.RepeatedStateReads, contract.RawJSSteps, contract.BroadAuditCount)
 			line := fmt.Sprintf("%-18s | %-22s | %-22s", sc.Name, baseSummary, contractSummary)
+			if prescribed > 0 {
+				// Sweep links the shipped contract does not emit as
+				// pointers, recorded explicitly in the fixture.
+				line += fmt.Sprintf(" (prescribed steps: %d)", prescribed)
+			}
 			t.Log(line)
 			fmt.Println(line)
 

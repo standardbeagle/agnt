@@ -25,6 +25,11 @@ type Response struct {
 	Next        string
 	Useful      bool
 	FindingKind string
+	// Prescribed marks Next as a contract-prescribed step, explicitly
+	// recorded in the fixture — not a pointer the shipped tool emitted.
+	// Formatter-rendered responses never carry it: their next: text is
+	// owned by the shipped formatter.
+	Prescribed bool
 }
 
 // Executor answers follower calls. Implementations must fail loudly on an

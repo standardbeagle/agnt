@@ -18,7 +18,7 @@
                 "type": "overflow",
                 "severity": "critical",
                 "selector": ".main",
-                "message": "content is 412px wide in a 375px viewport",
+                "message": "forces horizontal scroll +37px",
                 "next": "proxy exec __devtool.getContainer('.main')"
               }
             ]

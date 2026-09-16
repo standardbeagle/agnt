@@ -14,15 +14,11 @@
       "formatter": "responsive",
       "input": {
         "viewports": {
-          "mobile": {
-            "width": 375,
-            "issues": [
-              {"id": "rq1a2b3c", "type": "touch-target", "severity": "warning", "selector": ".cta", "message": "touch target 36x36px below 44px minimum", "next": "api_audit {profile:\"bug\"}"}
-            ]
-          },
+          "mobile": {"width": 375, "issues": []},
           "desktop": {"width": 1920, "issues": []}
         }
-      }
+      },
+      "prescribed": "api_audit {profile:\"bug\"}"
     },
     {
       "call": {"tool": "api_audit", "args": {"profile": "bug"}},
@@ -34,7 +30,7 @@
         "summary": "No API anti-patterns detected.",
         "findingsByType": {}
       },
-      "next": "loading_audit {profile:\"bug\"}"
+      "prescribed": "loading_audit {profile:\"bug\"}"
     },
     {
       "call": {"tool": "loading_audit", "args": {"profile": "bug"}},
