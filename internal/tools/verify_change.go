@@ -296,25 +296,7 @@ func makeVerifyChangeHandler(dt *DaemonTools) func(context.Context, *mcp.CallToo
 		if err := dt.ensureConnected(); err != nil {
 			return fail[VerifyChangeOutput]("verify_change failed: cannot reach daemon: " + err.Error())
 		}
-		deps := verifyDeps{
-			investigation: func(ctx context.Context) (*protocol.Investigation, error) {
-				res, err := dt.client.InvestigationGet(dt.SessionCode())
-				if err != nil {
-					return nil, err
-				}
-				if !res.Found {
-					return nil, nil
-				}
-				return res.Investigation, nil
-			},
-			merge: func(ctx context.Context, patch protocol.InvestigationPatch) error {
-				_, err := dt.client.InvestigationMerge(dt.SessionCode(), patch)
-				return err
-			},
-			producers:  defaultVerifyProducers(dt, input.Since),
-			screenshot: defaultVerifyScreenshot(dt),
-		}
-		out, err := runVerifyChange(ctx, input, deps)
+		out, err := runVerifyChange(ctx, input, defaultVerifyDeps(dt, input.Since))
 		if err != nil {
 			return fail[VerifyChangeOutput]("verify_change failed: " + err.Error())
 		}
@@ -323,6 +305,30 @@ func makeVerifyChangeHandler(dt *DaemonTools) func(context.Context, *mcp.CallToo
 			return mcpText(string(b)), out, nil
 		}
 		return mcpText(formatVerifyChangeCompact(out)), out, nil
+	}
+}
+
+// defaultVerifyDeps builds the real daemon-backed verifyDeps: session-scoped
+// Investigation get/merge plus the in-process producer dispatch table. Shared
+// by verify_change and release_qa (which reuses verify_change in-process).
+func defaultVerifyDeps(dt *DaemonTools, since string) verifyDeps {
+	return verifyDeps{
+		investigation: func(ctx context.Context) (*protocol.Investigation, error) {
+			res, err := dt.client.InvestigationGet(dt.SessionCode())
+			if err != nil {
+				return nil, err
+			}
+			if !res.Found {
+				return nil, nil
+			}
+			return res.Investigation, nil
+		},
+		merge: func(ctx context.Context, patch protocol.InvestigationPatch) error {
+			_, err := dt.client.InvestigationMerge(dt.SessionCode(), patch)
+			return err
+		},
+		producers:  defaultVerifyProducers(dt, since),
+		screenshot: defaultVerifyScreenshot(dt),
 	}
 }
 
@@ -417,6 +423,53 @@ func dispatchDiagnose(handler func(context.Context, *mcp.CallToolRequest, Diagno
 	})
 }
 
+// dispatchReleaseQA rechecks one release_qa-merged finding through its
+// TARGETED drill-down handler (diagnose layout/click, api_audit) — never the
+// broad audit. The verifyProducerFunc contract forbids broad audits here:
+// the broad audit belongs to release_qa itself, exactly once per call, and
+// standalone verify_change runs none. Args are per-finding (finding_id, type,
+// area, selector, url), recorded by release_qa at merge. A finding whose area
+// has no targeted drill-down (quality-content types) cannot be rechecked
+// without the broad audit, so it reports an error — counted as persist,
+// never a fake resolution.
+func dispatchReleaseQA(dt *DaemonTools) verifyProducerFunc {
+	return func(ctx context.Context, args map[string]any) ([]string, error) {
+		proxyID := getString(args, "proxy_id")
+		if proxyID == "" {
+			return nil, fmt.Errorf("release_qa producer args missing proxy_id")
+		}
+		f := releaseQAFinding{
+			ID:       getString(args, "finding_id"),
+			Type:     getString(args, "type"),
+			Selector: getString(args, "selector"),
+			URL:      getString(args, "url"),
+		}
+		if f.ID == "" {
+			return nil, fmt.Errorf("release_qa producer args missing finding_id (recorded by an older release_qa; re-run release_qa to recheck)")
+		}
+		area := getString(args, "area")
+		if area == "" {
+			return nil, fmt.Errorf("release_qa finding %q (%s) has no targeted drill-down; re-run release_qa to recheck", f.ID, f.Type)
+		}
+		current, err := dt.releaseQADrillFindings(proxyID)(ctx, area, f)
+		if err != nil {
+			return nil, err
+		}
+		for _, c := range current {
+			if f.Selector != "" && c.Selector == f.Selector {
+				return []string{f.ID}, nil
+			}
+			if f.URL != "" && c.URL == f.URL {
+				return []string{f.ID}, nil
+			}
+			if f.Selector == "" && f.URL == "" && c.ID == f.ID {
+				return []string{f.ID}, nil
+			}
+		}
+		return nil, nil
+	}
+}
+
 // defaultVerifyProducers is the dispatch table from producer tool name to an
 // in-process runner that calls the producer's own handler function directly.
 func defaultVerifyProducers(dt *DaemonTools, since string) map[string]verifyProducerFunc {
@@ -426,6 +479,7 @@ func defaultVerifyProducers(dt *DaemonTools, since string) map[string]verifyProd
 		"api_audit":        dispatchAPIAudit(dt.makeAPIAuditHandler()),
 		"loading_audit":    dispatchLoadingAudit(dt.makeLoadingAuditHandler()),
 		"diagnose":         dispatchDiagnose(dt.makeDiagnoseHandler()),
+		"release_qa":       dispatchReleaseQA(dt),
 	}
 }
 

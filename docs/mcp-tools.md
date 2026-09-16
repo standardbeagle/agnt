@@ -32,6 +32,7 @@ for an explicit audit request, not routine debugging.
 | `currentpage` | Inner/content-page inspection: framework triage (default) + layout diagnostics + list/get/summary/clear; responses identify `execution_context` and `frame_id` |
 | `get_incidents` | The error/incident surface — cursor-based, priority-ordered, with remediation hints and retention actions |
 | `verify_change` | Recheck only the session's recorded findings — re-runs each finding's producer in-process, reports resolved/persist/new, merges the outcome back into the Investigation |
+| `release_qa` | Release gate: verify the changed flow, run exactly ONE broad audit (default `__devtool.auditAll`), drill into failed areas only — the sole default-broad-audit tool |
 | `responsive_audit` | Responsive design audits across viewport sizes |
 | `diagnose` | Dead-click triage in one call (`action:"click"`), or layout composite (`action:"layout"`: layout diagnose + current-viewport responsive risk + stacking/container causes, `screenshot_recommended` when a visual finding exists) |
 | `api_audit` | API efficiency audit (waterfall, N+1, duplicate, chatty-load) over the fetch/XHR buffer |
@@ -625,6 +626,88 @@ reported it (producer runs are deduped by tool+args, so each run's own args
 travel with its new ids).
 
 **Key Files**: `internal/tools/verify_change.go`, `internal/finding/finding.go` (Producer), `internal/protocol/commands.go` (Investigation/Merge)
+
+## release_qa Tool
+
+The release gate: verify the changed flow, run exactly **ONE broad audit**,
+then drill into failures only. **This is the sole tool where a broad audit is
+the default** — every other tool (`verify_change`, `diagnose`, the named
+audits) stays targeted, and release_qa itself never runs a second broad audit.
+
+Steps, in order:
+
+1. **flow** (optional): explicit `flow` steps run FIRST, through the existing
+   proxy navigate/exec actions only — no new browser automation:
+   `navigate` (needs `url`) reuses `buildNavigateJS("goto", url)`; `exec`
+   (needs `selector`) clicks the element via `__devtool.clickElement(sel)`.
+2. **verify**: re-runs `verify_change` in-process over the session
+   Investigation (the "changed flow" = the session's FailedAreas + Findings).
+3. **audit**: exactly one broad audit per call — the full aggregate quality
+   audit via `__devtool.auditAll` through proxy exec (default; auditAll
+   returns a Promise in every mode, resolved via `.then` before stringify),
+   or the named audit tool (`responsive`/`api`/`loading`) — always with
+   `profile=release` unless overridden.
+4. **drill-down**: ONLY for areas the broad audit failed, classified by the
+   finding's audit source (its `type`): responsive types (`overflow`,
+   `exceeds-viewport`, `small-touch-target`, ...)
+   → `diagnose {action:"layout"}` on the failing selector;
+   `click-interception` → `diagnose {action:"click"}` with the selector; api
+   types (`waterfall`, `n-plus-one`, `duplicate-call`, `chatty-load`) → an
+   `api_audit` re-run. Quality-content findings (`missing-alt`,
+   `duplicate-id`, ...) and loading findings have no drill-down. An area that
+   passed is never drilled. Each drill-down line carries the summary the
+   `diagnose`/`api_audit` handler returned.
+
+**Parameters**:
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `proxy_id` | string | — (required) | Proxy ID to run the release gate against |
+| `flow` | []object | none | Explicit changed-flow steps: `{action, selector?, url?}`, run via proxy navigate/exec |
+| `audit` | string | `quality` | The ONE broad audit: `quality`, `responsive`, `api`, or `loading` |
+| `profile` | string | `release` | Finding projection passed to the broad audit |
+| `raw` | bool | false | Return full JSON instead of compact text |
+
+**Header semantics**: the first line is `release_qa: PASS|FAIL`. PASS only
+when verify passed **and** the broad audit returned no release-profile
+findings; any persist, finding, flow-step failure or drill-down failure fails
+the gate. A drill-down exec failure adds a `warnings:` line and the header is
+FAIL, but all four sections (`verify`, `audit`, `drill-down`, `warnings`)
+still render.
+
+**Merge-back**: failed area names and the audit's new finding ids merge into
+the session Investigation (`FailedAreas` union, `Findings` append with
+per-finding `release_qa` producer args: `finding_id`/`type`/`area`/`selector`/
+`url`), so the next `verify_change` re-checks them — through the **targeted
+drill-down handlers** (`diagnose layout`/`click`, `api_audit`), never a broad
+audit. Quality-content findings with no drill-down report as persist on
+recheck; re-run `release_qa` itself to clear them.
+
+**PASS example**:
+```
+release_qa: PASS
+
+verify: verify_change: PASS (2 resolved, 0 persist, 0 new)
+audit: quality profile=release — 0 finding(s)
+drill-down:
+  (none — no failed areas)
+warnings:
+  (none)
+```
+
+**FAIL example** (responsive finding -> layout drill-down):
+```
+release_qa: FAIL
+
+verify: verify_change: PASS (2 resolved, 0 persist, 0 new)
+audit: quality profile=release — 1 finding(s)
+  [error] overflow id:r1 selector:.sidebar
+drill-down:
+  responsive .sidebar ok (layout: 2 overflow cause(s) on .sidebar)
+warnings:
+  (none)
+```
+
+**Key Files**: `internal/tools/release_qa.go`, `internal/tools/verify_change.go` (verify reuse), `internal/tools/diagnose.go` (drill-down), `internal/proxy/scripts/audit-quality.js` (`__devtool.auditAll`)
 
 ## watch Tool
 

@@ -150,6 +150,7 @@ Available tools:
 	tools.RegisterLoadingAuditTool(server, dt)
 	tools.RegisterGetIncidentsTool(server, dt)
 	tools.RegisterVerifyChangeTool(server, dt)
+	tools.RegisterReleaseQATool(server, dt)
 
 	// Register the replaytest tool (Pro: advanced_testing). The license manager
 	// validates the installed license once at load.

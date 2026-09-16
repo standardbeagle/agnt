@@ -174,6 +174,7 @@ func registerAllTools(t *testing.T) *mcp.Server {
 	RegisterLoadingAuditTool(server, dt)
 	RegisterGetIncidentsTool(server, dt)
 	RegisterVerifyChangeTool(server, dt)
+	RegisterReleaseQATool(server, dt)
 	RegisterReplaytestTool(server, license.NewManager(), dt.ReplaytestLogClient)
 	RegisterChannelReplyTool(server, dt)
 	RegisterWalkthroughTool(server, dt)
