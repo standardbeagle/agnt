@@ -110,7 +110,7 @@ func runVerifyChange(ctx context.Context, input VerifyChangeInput, deps verifyDe
 	type runKey struct{ tool, args string }
 	runs := map[runKey][]string{}
 	runErrs := map[runKey]error{}
-	argsByTool := map[string]map[string]any{}
+	argsByRun := map[runKey]map[string]any{}
 	targetByTool := map[string]map[string]bool{}
 	for _, tg := range targets {
 		tool := tg.ref.Producer.Tool
@@ -131,8 +131,8 @@ func runVerifyChange(ctx context.Context, input VerifyChangeInput, deps verifyDe
 				}
 			}
 		}
-		if argsByTool[tool] == nil {
-			argsByTool[tool] = tg.ref.Producer.Args
+		if argsByRun[key] == nil {
+			argsByRun[key] = tg.ref.Producer.Args
 		}
 		if targetByTool[tool] == nil {
 			targetByTool[tool] = map[string]bool{}
@@ -216,7 +216,7 @@ func runVerifyChange(ctx context.Context, input VerifyChangeInput, deps verifyDe
 			newRefs = append(newRefs, protocol.FindingRef{
 				Fingerprint: id,
 				Source:      key.tool,
-				Producer:    &finding.Producer{Tool: key.tool, Args: argsByTool[key.tool]},
+				Producer:    &finding.Producer{Tool: key.tool, Args: argsByRun[key]},
 			})
 		}
 	}

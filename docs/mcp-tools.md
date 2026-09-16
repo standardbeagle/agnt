@@ -620,7 +620,9 @@ the remaining ids are still verified — a per-id failure never aborts the call.
 **Merge-back**: after the call the Investigation no longer lists resolved ids
 and lists new ones (read back via the next `verify_change` or
 `INVESTIGATION GET`); resolved removals run before appends so a re-added id
-survives.
+survives. A new finding is recorded with the Producer args of the run that
+reported it (producer runs are deduped by tool+args, so each run's own args
+travel with its new ids).
 
 **Key Files**: `internal/tools/verify_change.go`, `internal/finding/finding.go` (Producer), `internal/protocol/commands.go` (Investigation/Merge)
 

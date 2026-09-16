@@ -2,6 +2,7 @@ package tools
 
 import (
 	"context"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -376,5 +377,85 @@ func TestVerifyChange_ProducerIsErrorResultPersists(t *testing.T) {
 	}
 	if !warned {
 		t.Fatalf("expected a producer-failure warning, got %v", out.CollectionWarnings)
+	}
+}
+
+// TestVerifyChange_NewFindingCarriesReportingRunArgs: two recorded findings
+// from the same producer tool with different args run two deduped producer
+// calls; a new id reported only by the second run must be recorded with THAT
+// run's args — not the first target's — or the next targeted verify_change
+// re-runs the wrong args, misses the id, and reports a false PASS.
+func TestVerifyChange_NewFindingCarriesReportingRunArgs(t *testing.T) {
+	saveArgs := map[string]any{"action": "click", "selector": "#save"}
+	cancelArgs := map[string]any{"action": "click", "selector": "#cancel"}
+	mkRef := func(id string, args map[string]any) protocol.FindingRef {
+		return protocol.FindingRef{
+			Fingerprint: id,
+			Source:      "diagnose",
+			Producer:    &finding.Producer{Tool: "diagnose", Args: args},
+		}
+	}
+	spy := func(ctx context.Context, args map[string]any) ([]string, error) {
+		if args["selector"] == "#cancel" {
+			return []string{"bbbb2222", "cccc3333"}, nil
+		}
+		return []string{"aaaa1111"}, nil
+	}
+	fx := &verifyFixture{
+		inv: &protocol.Investigation{Findings: []protocol.FindingRef{
+			mkRef("aaaa1111", saveArgs),
+			mkRef("bbbb2222", cancelArgs),
+		}},
+	}
+	deps := fx.deps()
+	deps.producers = map[string]verifyProducerFunc{"diagnose": spy}
+	out, err := runVerifyChange(context.Background(), VerifyChangeInput{}, deps)
+	if err != nil {
+		t.Fatalf("runVerifyChange: %v", err)
+	}
+	if out.Header != "verify_change: FAIL (0 resolved, 2 persist, 1 new)" {
+		t.Fatalf("header = %q", out.Header)
+	}
+	if len(out.New) != 1 || out.New[0] != "cccc3333" {
+		t.Fatalf("new = %v, want [cccc3333]", out.New)
+	}
+	var cRef *protocol.FindingRef
+	for i, r := range fx.merged.Findings {
+		if r.Fingerprint == "cccc3333" {
+			cRef = &fx.merged.Findings[i]
+		}
+	}
+	if cRef == nil || cRef.Producer == nil {
+		t.Fatalf("cccc3333 not recorded with a producer: %+v", fx.merged.Findings)
+	}
+	if cRef.Producer.Tool != "diagnose" {
+		t.Fatalf("cccc3333 producer tool = %q", cRef.Producer.Tool)
+	}
+	if !reflect.DeepEqual(cRef.Producer.Args, cancelArgs) {
+		t.Fatalf("cccc3333 producer args = %v, want %v (the reporting run's args, not #save's)", cRef.Producer.Args, cancelArgs)
+	}
+
+	// Second half: a targeted re-verify of cccc3333 must re-run diagnose with
+	// the recorded #cancel args and report persist (FAIL) — never resolved.
+	var seenSelector string
+	deps2 := fx.deps()
+	deps2.producers = map[string]verifyProducerFunc{
+		"diagnose": func(ctx context.Context, args map[string]any) ([]string, error) {
+			seenSelector, _ = args["selector"].(string)
+			return spy(ctx, args)
+		},
+	}
+	out2, err := runVerifyChange(context.Background(), VerifyChangeInput{FindingIDs: []string{"cccc3333"}}, deps2)
+	if err != nil {
+		t.Fatalf("runVerifyChange targeted: %v", err)
+	}
+	if seenSelector != "#cancel" {
+		t.Fatalf("targeted re-verify ran diagnose with selector %q, want #cancel", seenSelector)
+	}
+	if out2.Status == "PASS" || strings.HasPrefix(out2.Header, "verify_change: PASS") {
+		t.Fatalf("false PASS while cccc3333 persists: %q", out2.Header)
+	}
+	if len(out2.Persisting) != 1 || out2.Persisting[0] != "cccc3333" {
+		t.Fatalf("persisting = %v, want [cccc3333]", out2.Persisting)
 	}
 }
