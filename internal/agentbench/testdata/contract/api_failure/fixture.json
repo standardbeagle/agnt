@@ -1,0 +1,30 @@
+{
+  "scenario": "api_failure",
+  "responses": [
+    {
+      "call": {"tool": "currentpage"},
+      "text": "=== currentpage ===\nurl: http://localhost:5173/items\ntitle: Items\nproxy: dev\nfailed_requests: POST /api/items/ → 500 (x14)\n\nnext: api_audit {profile:\"bug\"}",
+      "useful": true,
+      "finding_kind": "network"
+    },
+    {
+      "call": {"tool": "api_audit", "args": {"profile": "bug"}},
+      "formatter": "buffer",
+      "headline": "API Audit",
+      "input": {
+        "score": 35,
+        "grade": "F",
+        "summary": "N+1 pattern on /api/items/.",
+        "findingsByType": {
+          "n-plus-one": [
+            {"id": "n1a2b3c4", "type": "n-plus-one", "severity": "critical", "selector": "/api/items/", "message": "/api/items/ fetched 14 times in 800ms"}
+          ]
+        }
+      }
+    },
+    {
+      "call": {"tool": "proxylog", "action": "query", "args": {"action": "query", "proxy_id": "dev", "url_pattern": "/api/items/"}},
+      "text": "=== proxylog query (dev) ===\n14x POST /api/items/ → 500 (12-40ms)\nfirst: 2026-09-16T11:00:01Z  last: 2026-09-16T11:00:02Z\n  id: 7f6e5d4c"
+    }
+  ]
+}

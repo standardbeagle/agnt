@@ -1,0 +1,30 @@
+{
+  "scenario": "loading_flicker",
+  "responses": [
+    {
+      "call": {"tool": "currentpage"},
+      "text": "=== currentpage ===\nurl: http://localhost:5173/dashboard\ntitle: Dashboard\nproxy: dev\n\nnext: loading_audit {profile:\"bug\"}"
+    },
+    {
+      "call": {"tool": "loading_audit", "args": {"profile": "bug"}},
+      "formatter": "buffer",
+      "headline": "Loading Audit",
+      "input": {
+        "score": 55,
+        "grade": "D",
+        "summary": "Spinner cascade during initial load.",
+        "findingsByType": {
+          "spinner-cascade": [
+            {"id": "s1a2b3c4", "type": "spinner-cascade", "severity": "warning", "selector": ".app", "message": "3 overlapping spinners within 400ms"}
+          ]
+        }
+      }
+    },
+    {
+      "call": {"tool": "currentpage", "action": "layout", "args": {"action": "layout", "proxy_id": "dev"}},
+      "text": "=== currentpage layout (dev) ===\n.app mounts spinner#list, spinner#chart, spinner#table concurrently; each unmounts independently\n  id: 2b3c4d5e",
+      "useful": true,
+      "finding_kind": "visual"
+    }
+  ]
+}

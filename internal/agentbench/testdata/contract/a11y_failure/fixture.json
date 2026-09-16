@@ -1,0 +1,15 @@
+{
+  "scenario": "a11y_failure",
+  "responses": [
+    {
+      "call": {"tool": "currentpage"},
+      "text": "=== currentpage ===\nurl: http://localhost:5173/\ntitle: App\nproxy: dev\n\nnext: proxy exec __devtool.audit({profile:'full',categories:['a11y']})"
+    },
+    {
+      "call": {"tool": "proxy", "action": "exec", "code": "__devtool.audit({profile:'full',categories:['a11y']})"},
+      "text": "=== a11y audit ===\n3 serious violations\n  id: a11y001\n  .nav [aria-hidden=\"true\"] contains focusable elements\ncontrast: 2 moderate\n",
+      "useful": true,
+      "finding_kind": "a11y"
+    }
+  ]
+}

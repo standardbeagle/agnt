@@ -1,0 +1,31 @@
+{
+  "scenario": "blank_page",
+  "responses": [
+    {
+      "call": {"tool": "currentpage"},
+      "text": "=== currentpage ===\nurl: http://localhost:5173/\ntitle: App\nproxy: dev\nconsole_errors: 1\n\nnext: get_incidents"
+    },
+    {
+      "call": {"tool": "get_incidents"},
+      "formatter": "incidents",
+      "input": [
+        {
+          "severity": "error",
+          "source": "browser_js",
+          "category": "uncaught",
+          "summary": "TypeError: Cannot read properties of null (reading 'render')",
+          "fingerprint": "fp_blank_1",
+          "url": "http://localhost:5173/",
+          "next_tool": "proxy",
+          "next_args": {"action": "exec", "code": "__devtool.diagnoseLayout()"}
+        }
+      ]
+    },
+    {
+      "call": {"tool": "proxy", "action": "exec", "code": "__devtool.diagnoseLayout()"},
+      "text": "=== diagnose layout (dev) ===\nfindings: 1\n\n[error] main#app has height 0 — contents never mounted\n  id: 3fa9c1e2",
+      "useful": true,
+      "finding_kind": "layout"
+    }
+  ]
+}

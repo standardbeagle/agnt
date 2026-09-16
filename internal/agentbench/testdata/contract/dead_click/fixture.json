@@ -1,0 +1,42 @@
+{
+  "scenario": "dead_click",
+  "responses": [
+    {
+      "call": {"tool": "currentpage"},
+      "text": "=== currentpage ===\nurl: http://localhost:5173/settings\ntitle: Settings\nproxy: dev\n\nnext: diagnose {kind:\"click\", selector:\"button.save\"}"
+    },
+    {
+      "call": {"tool": "diagnose", "args": {"kind": "click", "selector": "button.save"}},
+      "formatter": "diagnose_click",
+      "input": {
+        "verdict": "handler_missing",
+        "findings": [
+          {
+            "id": "c1e2a3b4",
+            "category": "click",
+            "severity": "error",
+            "evidence": "click reached \"button.save\" but produced no effect",
+            "next": {"tool": "get_incidents", "args": {"sources": ["browser_js"]}, "rationale": "check for a JS error in the click handler around the click time"},
+            "producer": {"tool": "diagnose", "args": {"kind": "click", "selector": "button.save"}}
+          }
+        ]
+      }
+    },
+    {
+      "call": {"tool": "get_incidents", "args": {"sources": ["browser_js"]}},
+      "formatter": "incidents",
+      "input": [
+        {
+          "severity": "error",
+          "source": "browser_js",
+          "category": "uncaught",
+          "summary": "click handler threw: undefined is not a function (save.js:41)",
+          "fingerprint": "fp_click_1",
+          "url": "http://localhost:5173/settings"
+        }
+      ],
+      "useful": true,
+      "finding_kind": "interaction"
+    }
+  ]
+}

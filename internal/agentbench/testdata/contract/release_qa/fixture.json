@@ -1,0 +1,61 @@
+{
+  "scenario": "release_qa",
+  "responses": [
+    {
+      "call": {"tool": "currentpage"},
+      "text": "=== currentpage ===\nurl: http://localhost:5173/\ntitle: App\nproxy: dev\n\nnext: snapshot {action:\"baseline\", name:\"release\"}"
+    },
+    {
+      "call": {"tool": "snapshot", "action": "baseline", "args": {"action": "baseline", "name": "release"}},
+      "text": "=== snapshot baseline ===\nsaved baseline 'release' (1920x1080)\n\nnext: responsive_audit {profile:\"full\"}"
+    },
+    {
+      "call": {"tool": "responsive_audit", "args": {"profile": "full"}},
+      "formatter": "responsive",
+      "input": {
+        "viewports": {
+          "mobile": {
+            "width": 375,
+            "issues": [
+              {"id": "rq1a2b3c", "type": "touch-target", "severity": "warning", "selector": ".cta", "message": "touch target 36x36px below 44px minimum", "next": "api_audit {profile:\"bug\"}"}
+            ]
+          },
+          "desktop": {"width": 1920, "issues": []}
+        }
+      }
+    },
+    {
+      "call": {"tool": "api_audit", "args": {"profile": "bug"}},
+      "formatter": "buffer",
+      "headline": "API Audit",
+      "input": {
+        "score": 92,
+        "grade": "A",
+        "summary": "No API anti-patterns detected.",
+        "findingsByType": {}
+      },
+      "next": "loading_audit {profile:\"bug\"}"
+    },
+    {
+      "call": {"tool": "loading_audit", "args": {"profile": "bug"}},
+      "formatter": "buffer",
+      "headline": "Loading Audit",
+      "input": {
+        "score": 48,
+        "grade": "D",
+        "summary": "Spinner cascade during initial load.",
+        "findingsByType": {
+          "spinner-cascade": [
+            {"id": "rq5e6f7a", "type": "spinner-cascade", "severity": "critical", "selector": ".app", "message": "3 overlapping spinners within 400ms of navigation"}
+          ]
+        }
+      },
+      "useful": true,
+      "finding_kind": "network"
+    },
+    {
+      "call": {"tool": "currentpage", "action": "layout", "args": {"action": "layout", "proxy_id": "dev"}},
+      "text": "=== currentpage layout (dev) ===\n.app mounts spinner#list, spinner#chart concurrently on route change\n  id: rq8b9c0d"
+    }
+  ]
+}

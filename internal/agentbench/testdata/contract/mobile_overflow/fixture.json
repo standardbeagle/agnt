@@ -1,0 +1,36 @@
+{
+  "scenario": "mobile_overflow",
+  "responses": [
+    {
+      "call": {"tool": "currentpage"},
+      "text": "=== currentpage ===\nurl: http://localhost:5173/\ntitle: App\nproxy: dev\n\nnext: responsive_audit {profile:\"bug\"}"
+    },
+    {
+      "call": {"tool": "responsive_audit", "args": {"profile": "bug"}},
+      "formatter": "responsive",
+      "input": {
+        "viewports": {
+          "mobile": {
+            "width": 375,
+            "issues": [
+              {
+                "id": "ov1a2b3c",
+                "type": "overflow",
+                "severity": "critical",
+                "selector": ".main",
+                "message": "content is 412px wide in a 375px viewport",
+                "next": "proxy exec __devtool.getContainer('.main')"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "call": {"tool": "proxy", "action": "exec", "code": "__devtool.getContainer('.main')"},
+      "text": "=== getContainer('.main') ===\n.main width 412px: child .hero-img (400px) + padding 12px overflows 375px viewport\n  id: 9d8c7b6a",
+      "useful": true,
+      "finding_kind": "responsive"
+    }
+  ]
+}

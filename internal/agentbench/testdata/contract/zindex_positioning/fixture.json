@@ -1,0 +1,29 @@
+{
+  "scenario": "zindex_positioning",
+  "responses": [
+    {
+      "call": {"tool": "currentpage"},
+      "text": "=== currentpage ===\nurl: http://localhost:5173/checkout\ntitle: Checkout\nproxy: dev\n\nnext: diagnose {kind:\"layout\", selector:\".modal\"}"
+    },
+    {
+      "call": {"tool": "diagnose", "args": {"kind": "layout", "selector": ".modal"}},
+      "formatter": "diagnose_layout",
+      "input": [
+        {
+          "id": "z1b2c3d4",
+          "category": "layout",
+          "severity": "error",
+          "evidence": "\".modal\" obscured by \".modal-overlay\" at the click point (z-index 1000)",
+          "next": {"tool": "proxy", "args": {"action": "exec", "code": "__devtool.getStacking('.modal-overlay')"}, "rationale": "find the obstructor's stacking root and rootTrigger"},
+          "producer": {"tool": "diagnose", "args": {"kind": "layout", "selector": ".modal"}}
+        }
+      ]
+    },
+    {
+      "call": {"tool": "proxy", "action": "exec", "code": "__devtool.getStacking('.modal-overlay')"},
+      "text": "=== getStacking('.modal-overlay') ===\nstacking root: body (rootTrigger: position:fixed on .modal-overlay)\n  id: 5e6f7a8b",
+      "useful": true,
+      "finding_kind": "layout"
+    }
+  ]
+}
