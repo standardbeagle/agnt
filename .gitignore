@@ -84,8 +84,11 @@ __pycache__/
 .mcpregistry_*
 .worktrees/
 
-# worktrack loop state (per-clone; carries lease_holder email)
-.worktrack/
+# worktrack loop state (per-clone; carries lease_holder email) — the workspace
+# binding and the workflow template manifest are project-owned and committed
+.worktrack/*
+!.worktrack/mcp.json
+!.worktrack/templates.json
 
 # risk-pipeline plugin runtime state (per-clone: hook log, queue, telemetry, hashes)
 .risk-pipeline/

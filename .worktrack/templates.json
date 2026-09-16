@@ -1,0 +1,110 @@
+[
+  {
+    "name": "go-slice",
+    "description": "Drain-drivable Go slice: kimi k3 over ACP implements red-green and commits with the task trailer -> scope check (disclosure) -> go build -> go test -p 1 ./... -> fable headless review submitting through the verdict door, rewinding to implement on fail.",
+    "autoAttachOnTags": [
+      "go-slice"
+    ],
+    "steps": [
+      {
+        "kind": "acp_agent",
+        "name": "implement",
+        "specJson": "{\"agent\": {\"argv\": [\"opencode-acp\", \"acp\"]}, \"prompt\": \"HARD RULE 0: Do all reading, edits, tests and commits yourself, in this session. Do not delegate to subagents, do not call the `task` tool, and do not spawn child sessions for any purpose. Work done in a child session is invisible to the supervisor, counts as inactivity, and gets the run killed.\\n\\nYou are implementing ONE worktrack task in this repository (agnt: a Go monorepo, module github.com/standardbeagle/agnt, tests via `go test`, supervised through tman), working directory the repo root. Read AGENTS.md and the files under .claude/rules/ that the task's area names. Open other files only when the task, the scope or a failing test names them.\\n\\nTASK {{task.id}} ({{workspace}}): {{task.title}}\\n\\n{{task.primer}}\\n{{task.description}}\\n\\nTEST WORK ORDER (the test_plan gate checks these names, so a name here that does not exist when you finish comes back to you):\\n{{task.tests}}\\n\\nWORKTRACK ACCESS: the worktrack MCP server is registered under slop-mcp. Call it as execute_tool(mcp_name=\\\"worktrack\\\", tool_name=\\\"<tool>\\\", parameters={...}). Use exactly these tools: FIRST task_get(id=\\\"{{task.id}}\\\") for the declared fileScope and full task text; task_comments_list(id=\\\"{{task.id}}\\\", limit=20) for prior checkpoints, review rewind notes and any question/answer thread; task_create / task_link_create / task_scope_set only when the task tells you to FILE a follow-up slice (same workspace, parentId = this task's parent, tags [\\\"go-slice\\\"], a real scope, testable criteria; put its id where the task says); LAST task_comment_add(id=\\\"{{task.id}}\\\", kind=\\\"note\\\", body=<JSON string>) with a worktrack_completion_v1 checkpoint naming the commits you made and any paths outside the declared scope. Never call task_start, task_claim, task_update, task_workflow_* or lease_*: the driver owns the lease and the workflow.\\n\\nRULES\\n1. Scope is a starting point: bound the search to the declared paths, but when the work needs a file outside them, change it and list the path in the checkpoint; the scope gate discloses it to the reviewer.\\n2. Verify the task's premise against the tree before editing. If it is false, make no change and end your turn saying so with evidence.\\n3. RED first: write the failing test from the test work order or the acceptance criteria in ONE commit, run it against the old code, and paste the failure signature into the fix commit body. Assertion-level failures only; a compile failure is not RED.\\n4. Commands: `tman run -- go build ./...` and `tman run -- go test ./internal/<package>/` for the packages you touch while iterating. If you add, rename or re-describe an MCP tool, run `make generate` and commit the regenerated docs; TestAPIDocsNoDrift fails otherwise. Before ending the turn run `tman run -- go build ./...` and `tman run -- go test -p 1 ./...` once (set your shell timeout to at least 20 minutes for it). A run cut off by a timeout is not a pass: record it in the checkpoint as not run, never commit over a red or unfinished run.\\n5. COMMIT YOUR WORK. The scope gate attributes changes by commit trailer, so an uncommitted change is no evidence that anything happened. Atomic conventional commits: one for the RED test, one for the fix, one for docs; subject `<type>(<scope>): <imperative>` under 72 chars; body says why. Write every message through `git commit -F -` with a heredoc, never `git commit -m` with \\\\n inside the string. The LAST paragraph of the message is exactly this line, nothing after it:\\n   worktrack-task: {{task.id}}\\n   After each commit run `git log -1 --format='%(trailers:key=worktrack-task,valueonly)'`; if it prints nothing, amend before doing anything else. Stage specific files with `git add <path>`; never `git add -A`; never stage anything under `.worktrack/` or `.agnt/`. Leave the working tree clean.\\n6. Wire what you add: a new tool, verb or option is registered where its siblings are registered and reached from every caller that needs it, or the feature ships unreachable. Replace and remove: no dual paths, no fallbacks, no old implementation kept beside the new one. No dummy data. Fail fast. Raw JavaScript through proxy exec is a last resort in this codebase, never a fallback you add.\\n7. CONTEXT BUDGET: at 45 tool calls, stop and take stock. Land what is green, commit it, write the checkpoint naming what remains, and end the turn.\\n\\nWHEN DONE end your turn with a compact summary: commits (sha + subject), files changed, RED signature, test counts. Do not paste source or diffs.\", \"permissions\": \"allow_all\", \"fs\": \"read_write\", \"model\": \"kimi-for-coding/k3\", \"stall_seconds\": 600, \"timeout_seconds\": 3600}",
+        "required": true,
+        "allowSkip": false,
+        "outcomeSchemaRef": "builtin:acp_result_v1",
+        "maxAttempts": 2
+      },
+      {
+        "kind": "file_scope",
+        "name": "scope-check",
+        "specJson": "{}",
+        "required": true,
+        "allowSkip": false,
+        "outcomeSchemaRef": "builtin:file_scope_eval_v1",
+        "maxAttempts": 3
+      },
+      {
+        "kind": "command",
+        "name": "go-build",
+        "specJson": "{\"argv\": [\"tman\", \"run\", \"--\", \"go\", \"build\", \"./...\"], \"expect_exit\": 0, \"timeout_seconds\": 900}",
+        "required": true,
+        "allowSkip": false,
+        "outcomeSchemaRef": "builtin:command_result_v1",
+        "maxAttempts": 3
+      },
+      {
+        "kind": "command",
+        "name": "go-test",
+        "specJson": "{\"argv\": [\"tman\", \"run\", \"--\", \"go\", \"test\", \"-p\", \"1\", \"./...\"], \"expect_exit\": 0, \"timeout_seconds\": 2400}",
+        "required": true,
+        "allowSkip": false,
+        "outcomeSchemaRef": "builtin:command_result_v1",
+        "maxAttempts": 3
+      },
+      {
+        "kind": "claude_agent",
+        "name": "review",
+        "specJson": "{\"prompt\": \"REVIEW GATE for task {{task.id}} ({{workspace}}): {{task.title}}\\n\\nTASK TEXT:\\n{{task.description}}\\n\\nDECLARED SCOPE:\\n{{task.scope}}\\n\\nPATHS CHANGED OUTSIDE THE DECLARED SCOPE (judge whether each was necessary): {{step.scope-check.outcome.outOfScopePaths}}\\n\\nCONSTRAINTS IN FORCE: {{task.primer.constraints}}\\n\\nThis review step's id is {{step.id}}. If and only if your verdict is fail, set rewind_to to \\\"{{rewind_to}}\\\" (the 'implement' step's id). If your verdict is pass or pass_with_changes, OMIT rewind_to entirely: the schema rejects a pass that carries rewind_to and the whole review is discarded.\\n\\nThe project's verification is `go build ./...` and `go test -p 1 ./...`; both ran green before this gate, so judge design, correctness against the criteria, reachability of what was added, and whether raw JavaScript was added where an audit or __devtool helper exists (that is a major finding in this repository).\\n\\nFollow the review contract in your system prompt: read the packet through the worktrack MCP tools, apply the rubric, post the annotation comment, and submit the reviewer_verdict_v1 object through the verdict door (mcp__worktrack__task_workflow_step_verdict_submit with taskId, stepId and verdict, or `worktrack-mcp verdict submit --task {{task.id}} --step {{step.id}} --file <path>`); your final output is never read for it.\", \"system_prompt_file\": \"docs/fleet/prompts/review-context.md\", \"model\": \"claude-fable-5-1\", \"effort\": \"high\", \"allowed_tools\": [\"Read\", \"Grep\", \"Glob\", \"Bash(git diff *)\", \"Bash(git log *)\", \"Bash(git show *)\", \"Bash(git status *)\", \"mcp__worktrack__task_get\", \"mcp__worktrack__task_search\", \"mcp__worktrack__task_comments_list\", \"mcp__worktrack__task_workflow_get\", \"mcp__worktrack__task_workflow_review_change_packet\", \"mcp__worktrack__task_comment_add\", \"mcp__worktrack__task_workflow_step_verdict_submit\"], \"mcp_servers\": {\"worktrack\": {\"command\": \"{{host.worktrack_mcp}}\", \"env\": {\"WORKTRACK_DB\": \"{{host.worktrack_db}}\"}}}, \"max_turns\": 80, \"max_budget_usd\": 10, \"stall_seconds\": 600, \"timeout_seconds\": 2700, \"rewind_to_step\": \"implement\"}",
+        "required": true,
+        "allowSkip": false,
+        "outcomeSchemaRef": "builtin:reviewer_verdict_v1",
+        "maxAttempts": 3
+      }
+    ]
+  },
+  {
+    "name": "go-epic",
+    "description": "Epic container for go-slice children: waits for every go-slice child to be done, builds and tests the integrated tree, fable reviews the union of the children's change packets against the epic's done-condition, then harvests lessons into tasks and rules.",
+    "autoAttachOnTags": [
+      "epic"
+    ],
+    "steps": [
+      {
+        "kind": "subtask_gate",
+        "name": "slices-done",
+        "specJson": "{\"match\": {\"tag\": \"go-slice\"}, \"require\": {\"minCount\": 1, \"status\": [\"done\"]}}",
+        "required": true,
+        "allowSkip": false,
+        "outcomeSchemaRef": "builtin:subtask_gate_eval_v1",
+        "maxAttempts": 3
+      },
+      {
+        "kind": "command",
+        "name": "go-build",
+        "specJson": "{\"argv\": [\"tman\", \"run\", \"--\", \"go\", \"build\", \"./...\"], \"expect_exit\": 0, \"timeout_seconds\": 900}",
+        "required": true,
+        "allowSkip": false,
+        "outcomeSchemaRef": "builtin:command_result_v1",
+        "maxAttempts": 3
+      },
+      {
+        "kind": "command",
+        "name": "go-test",
+        "specJson": "{\"argv\": [\"tman\", \"run\", \"--\", \"go\", \"test\", \"-p\", \"1\", \"./...\"], \"expect_exit\": 0, \"timeout_seconds\": 2400}",
+        "required": true,
+        "allowSkip": false,
+        "outcomeSchemaRef": "builtin:command_result_v1",
+        "maxAttempts": 3
+      },
+      {
+        "kind": "claude_agent",
+        "name": "epic-review",
+        "specJson": "{\"prompt\": \"EPIC REVIEW GATE for task {{task.id}} ({{workspace}}): {{task.title}}\\n\\nEPIC TEXT:\\n{{task.description}}\\n\\nThis task is an EPIC container. It has no commits of its own, so its own change packet is empty by design and that emptiness is NOT a failed gate here; the review contract's hasChanges rule applies to the children, not to the container. The work under review is the union of the children's work. Every child tagged go-slice is done (the gate before this step checked it) and the project's `go build ./...` and `go test -p 1 ./...` both ran green on the integrated tree just before this step.\\n\\nDo this: (1) mcp__worktrack__task_get on the epic, then list its children with mcp__worktrack__task_search (parentId = the epic id) and read each child's task_get and its worktrack_completion_v1 checkpoint and review verdict through task_comments_list. (2) For each child, mcp__worktrack__task_workflow_review_change_packet with the CHILD's id and cwd = the working directory you were started in; read the diffs together as one change. (3) Judge the epic against its own text: the GOAL, the DONE-CONDITION (including any document or benchmark the epic says must exist, which you verify with Read), the decisions settled at planning time (a child that re-opened one is a blocker), and the out-of-scope gaps (named, not silently done). Apply the rubric's lenses across the integrated change. (4) Post the annotation comment on the epic and submit the reviewer_verdict_v1 object through the verdict door (mcp__worktrack__task_workflow_step_verdict_submit with taskId, stepId and verdict, or `worktrack-mcp verdict submit --task {{task.id}} --step {{step.id}} --file <path>`); your final output is never read for it. Omit rewind_to: there is no single implement step to rewind. A fail names which child or which done-condition clause is unmet so the person can decide.\", \"system_prompt_file\": \"docs/fleet/prompts/review-context.md\", \"model\": \"claude-fable-5-1\", \"effort\": \"high\", \"allowed_tools\": [\"Read\", \"Grep\", \"Glob\", \"Bash(git diff *)\", \"Bash(git log *)\", \"Bash(git show *)\", \"Bash(git status *)\", \"mcp__worktrack__task_get\", \"mcp__worktrack__task_search\", \"mcp__worktrack__task_comments_list\", \"mcp__worktrack__task_workflow_get\", \"mcp__worktrack__task_workflow_review_change_packet\", \"mcp__worktrack__task_comment_add\", \"mcp__worktrack__task_workflow_step_verdict_submit\"], \"mcp_servers\": {\"worktrack\": {\"command\": \"{{host.worktrack_mcp}}\", \"env\": {\"WORKTRACK_DB\": \"{{host.worktrack_db}}\"}}}, \"max_turns\": 100, \"max_budget_usd\": 12, \"stall_seconds\": 600, \"timeout_seconds\": 2700}",
+        "required": true,
+        "allowSkip": false,
+        "outcomeSchemaRef": "builtin:reviewer_verdict_v1",
+        "maxAttempts": 2
+      },
+      {
+        "kind": "claude_agent",
+        "name": "harvest",
+        "specJson": "{\"prompt\": \"HARVEST GATE for task {{task.id}} ({{workspace}}): {{task.title}}\\n\\nTASK TEXT:\\n{{task.description}}\\n\\nFollow the learning contract in your system prompt: trace each defect to the earliest gate that could have refused it and turn that into a write: tasks via task_batch_create tagged efficiency/malleability with real fileScope and executable criteria, the full text of any rule that belongs in .claude/rules/, and any template change named by template and step position in .worktrack/templates.json. Read the children's review verdicts and checkpoints (task_search with parentId, then task_comments_list per child) as the audit trail.\\n\\nA harvest that produces only prose has not run. When done, post a worktrack_completion_v1 note through task_comment_add naming what you wrote.\", \"system_prompt_file\": \"docs/fleet/prompts/learning-context.md\", \"model\": \"claude-fable-5-1\", \"effort\": \"high\", \"allowed_tools\": [\"Read\", \"Grep\", \"Glob\", \"Bash(git diff *)\", \"Bash(git log *)\", \"Bash(git show *)\", \"Bash(git status *)\", \"mcp__worktrack__task_get\", \"mcp__worktrack__task_search\", \"mcp__worktrack__task_comments_list\", \"mcp__worktrack__task_workflow_get\", \"mcp__worktrack__task_batch_create\", \"mcp__worktrack__task_link_create\", \"mcp__worktrack__task_scope_set\", \"mcp__worktrack__task_comment_add\"], \"mcp_servers\": {\"worktrack\": {\"command\": \"{{host.worktrack_mcp}}\", \"env\": {\"WORKTRACK_DB\": \"{{host.worktrack_db}}\"}}}, \"max_turns\": 80, \"max_budget_usd\": 10, \"stall_seconds\": 600, \"timeout_seconds\": 2700}",
+        "required": true,
+        "allowSkip": false,
+        "outcomeSchemaRef": "builtin:claude_result_v1",
+        "maxAttempts": 2
+      }
+    ]
+  }
+]
