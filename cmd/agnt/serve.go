@@ -149,6 +149,7 @@ Available tools:
 	tools.RegisterAPIAuditTool(server, dt)
 	tools.RegisterLoadingAuditTool(server, dt)
 	tools.RegisterGetIncidentsTool(server, dt)
+	tools.RegisterVerifyChangeTool(server, dt)
 
 	// Register the replaytest tool (Pro: advanced_testing). The license manager
 	// validates the installed license once at load.

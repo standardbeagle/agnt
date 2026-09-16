@@ -55,16 +55,183 @@ type verifyDeps struct {
 	screenshot    func(ctx context.Context, proxyID, name string) (string, error)
 }
 
-// runVerifyChange is the pure orchestration core (RED skeleton; see
-// verifyChangeRun for the real flow).
+// runVerifyChange is the orchestration core: read the session Investigation,
+// re-run each target finding's producer in-process, compare by id, screenshot
+// visual findings that resolved or persist, and merge the outcome back.
 func runVerifyChange(ctx context.Context, input VerifyChangeInput, deps verifyDeps) (VerifyChangeOutput, error) {
 	out := VerifyChangeOutput{
-		Status:    "PASS",
-		Header:    "verify_change: PASS (0 resolved, 0 persist, 0 new)",
-		Findings:  []verifyFindingLine{},
-		Resolved:  []string{},
+		Findings:   []verifyFindingLine{},
+		Resolved:   []string{},
 		Persisting: []string{},
-		New:       []string{},
+		New:        []string{},
+	}
+
+	inv, err := deps.investigation(ctx)
+	if err != nil {
+		return out, fmt.Errorf("read investigation: %w", err)
+	}
+	refsByID := map[string]protocol.FindingRef{}
+	if inv != nil {
+		for _, r := range inv.Findings {
+			refsByID[r.Fingerprint] = r
+		}
+	}
+
+	targetIDs := input.FindingIDs
+	if len(targetIDs) == 0 {
+		for id := range refsByID {
+			targetIDs = append(targetIDs, id)
+		}
+		sort.Strings(targetIDs)
+	}
+	if len(targetIDs) == 0 {
+		return out, fmt.Errorf("no findings to verify: the session Investigation is empty and no finding_ids were given")
+	}
+
+	// Resolve targets. An id absent from the record has no producer, so it
+	// cannot be rechecked: warn stale_finding_id and move on — never abort.
+	type target struct {
+		id  string
+		ref protocol.FindingRef
+	}
+	targets := []target{}
+	for _, id := range targetIDs {
+		r, ok := refsByID[id]
+		if !ok || r.Producer == nil || r.Producer.Tool == "" {
+			out.CollectionWarnings = append(out.CollectionWarnings,
+				fmt.Sprintf("stale_finding_id: %q is not in the session investigation record and has no producer; skipped", id))
+			continue
+		}
+		targets = append(targets, target{id: id, ref: r})
+	}
+
+	// Re-run producers, deduped by (tool, args): identical producer calls run
+	// once. Only the producers of target findings are ever invoked.
+	type runKey struct{ tool, args string }
+	runs := map[runKey][]string{}
+	runErrs := map[runKey]error{}
+	argsByTool := map[string]map[string]any{}
+	targetByTool := map[string]map[string]bool{}
+	for _, tg := range targets {
+		tool := tg.ref.Producer.Tool
+		runner, ok := deps.producers[tool]
+		if !ok {
+			out.CollectionWarnings = append(out.CollectionWarnings,
+				fmt.Sprintf("stale_finding_id: %q names unknown producer %q; skipped", tg.id, tool))
+			continue
+		}
+		argsJSON, _ := json.Marshal(tg.ref.Producer.Args)
+		key := runKey{tool: tool, args: string(argsJSON)}
+		if _, done := runs[key]; !done {
+			if _, failed := runErrs[key]; !failed {
+				ids, rerr := runner(ctx, tg.ref.Producer.Args)
+				runs[key] = ids
+				if rerr != nil {
+					runErrs[key] = rerr
+				}
+			}
+		}
+		if argsByTool[tool] == nil {
+			argsByTool[tool] = tg.ref.Producer.Args
+		}
+		if targetByTool[tool] == nil {
+			targetByTool[tool] = map[string]bool{}
+		}
+		targetByTool[tool][tg.id] = true
+	}
+
+	// Compare by id.
+	idIn := func(ids []string, id string) bool {
+		for _, x := range ids {
+			if x == id {
+				return true
+			}
+		}
+		return false
+	}
+	proxyID := input.ProxyID
+	if proxyID == "" && inv != nil {
+		proxyID = inv.ActiveProxyID
+	}
+	var removeIDs []string
+	for _, tg := range targets {
+		tool := tg.ref.Producer.Tool
+		if _, ok := deps.producers[tool]; !ok {
+			continue // already warned
+		}
+		argsJSON, _ := json.Marshal(tg.ref.Producer.Args)
+		key := runKey{tool: tool, args: string(argsJSON)}
+		line := verifyFindingLine{ID: tg.id, Producer: tool}
+		if rerr, failed := runErrs[key]; failed {
+			// A producer error must never read as resolved (false PASS hides a
+			// regression): count as persist and warn.
+			line.Status = "persist"
+			out.CollectionWarnings = append(out.CollectionWarnings,
+				fmt.Sprintf("producer %s failed for %q: %v (counted as persist)", tool, tg.id, rerr))
+		} else if idIn(runs[key], tg.id) {
+			line.Status = "persist"
+		} else {
+			line.Status = "resolved"
+		}
+		// Screenshots: Visual=true findings that resolved or changed only.
+		if tg.ref.Visual && deps.screenshot != nil {
+			ref, serr := deps.screenshot(ctx, proxyID, "verify-change-"+tg.id)
+			if serr != nil {
+				out.CollectionWarnings = append(out.CollectionWarnings,
+					fmt.Sprintf("visual screenshot for %q failed: %v", tg.id, serr))
+			} else {
+				line.VisualRef = ref
+				out.VisualBaselineRef = ref
+			}
+		}
+		switch line.Status {
+		case "resolved":
+			out.Resolved = append(out.Resolved, tg.id)
+			removeIDs = append(removeIDs, tg.id)
+		default:
+			out.Persisting = append(out.Persisting, tg.id)
+		}
+		out.Findings = append(out.Findings, line)
+	}
+
+	// New: ids a target producer reports now that were not among its targets.
+	newSet := map[string]bool{}
+	var newRefs []protocol.FindingRef
+	for key, ids := range runs {
+		if runErrs[key] != nil {
+			continue
+		}
+		for _, id := range ids {
+			if targetByTool[key.tool][id] || newSet[id] {
+				continue
+			}
+			newSet[id] = true
+			out.New = append(out.New, id)
+			newRefs = append(newRefs, protocol.FindingRef{
+				Fingerprint: id,
+				Source:      key.tool,
+				Producer:    &finding.Producer{Tool: key.tool, Args: argsByTool[key.tool]},
+			})
+		}
+	}
+	sort.Strings(out.New)
+
+	out.Status = "PASS"
+	if len(out.Persisting) > 0 {
+		out.Status = "FAIL"
+	}
+	out.Header = fmt.Sprintf("verify_change: %s (%d resolved, %d persist, %d new)",
+		out.Status, len(out.Resolved), len(out.Persisting), len(out.New))
+
+	// Merge the outcome back: resolved ids removed, new appended.
+	if deps.merge != nil && inv != nil && (len(removeIDs) > 0 || len(newRefs) > 0 || out.VisualBaselineRef != "") {
+		if err := deps.merge(ctx, protocol.InvestigationPatch{
+			RemoveFindings:    removeIDs,
+			Findings:          newRefs,
+			VisualBaselineRef: out.VisualBaselineRef,
+		}); err != nil {
+			out.CollectionWarnings = append(out.CollectionWarnings, "investigation merge failed: "+err.Error())
+		}
 	}
 	return out, nil
 }
@@ -301,6 +468,3 @@ func defaultVerifyScreenshot(dt *DaemonTools) func(ctx context.Context, proxyID,
 		return entries[0].Screenshot.FilePath, nil
 	}
 }
-
-// compile-time anchor so the finding import is used by the skeleton too.
-var _ = finding.Producer{}
