@@ -35,6 +35,9 @@ import (
 // degrades gracefully if a helper is renamed or removed in JSDoc, but
 // the drift is caught by TestPromotedFunctionsExist.
 var PromotedFunctions = []string{
+	// diagnose — one-call composites backing the `diagnose` MCP tool.
+	"diagnoseClick",
+	"diagnoseLayoutComposite",
 	// logging — how agents report what they saw back to the proxy log.
 	"log",
 	"screenshot",
@@ -66,15 +69,26 @@ var PromotedFunctions = []string{
 // cheatSheetHeader is the fixed rules block that precedes the helper
 // list. Kept verbatim so the drift test can pin it.
 const cheatSheetHeader = `## Browser debugging helpers
+Diagnose first: MCP ` + "`diagnose {action:\"click\"|\"layout\"}`" + ` wraps the composite helpers below.
 Run the task-level audit first; drill into failed evidence only.
 Prefer __devtool.* helpers over raw document.*/window.*/getBoundingClientRect.
-Call ` + "`proxy exec search: X`" + ` before writing raw JS.
+Call ` + "`proxy exec search: X`" + ` before writing raw JS (last resort).
 Use ` + "`proxy exec describe: name`" + ` for full signature + example.
 Symptom→helper (the decisive evidence is runtime state, not the source):
 - z-index/layering wrong → __devtool.getStacking (stackingRoot + rootTrigger), not a bigger z-index.
 - position:fixed scrolls/mispositions → __devtool.getContainer (trappedBy ancestor).
 - element clipped/hidden → __devtool.findOverflows / isVisible.
 `
+
+// categoryOf maps a catalog entry to its cheat-sheet group header. The
+// composite diagnose helpers carry no JSDoc category (empty string); they
+// group under "diagnose" rather than an empty header.
+func categoryOf(fn tools.APIFunction) string {
+	if fn.Category == "" {
+		return "diagnose"
+	}
+	return fn.Category
+}
 
 // BuildCheatSheet renders the compact helper cheat sheet. Callers pass
 // the same apiFunctions slice that is exposed via
@@ -104,10 +118,10 @@ func BuildCheatSheet(apiFunctions []tools.APIFunction) string {
 		if !ok {
 			continue
 		}
-		idx, seen := catIndex[fn.Category]
+		idx, seen := catIndex[categoryOf(fn)]
 		if !seen {
-			catIndex[fn.Category] = len(groups)
-			groups = append(groups, group{category: fn.Category, fns: []tools.APIFunction{fn}})
+			catIndex[categoryOf(fn)] = len(groups)
+			groups = append(groups, group{category: categoryOf(fn), fns: []tools.APIFunction{fn}})
 			continue
 		}
 		groups[idx].fns = append(groups[idx].fns, fn)
@@ -140,7 +154,7 @@ func PromotedCategories(apiFunctions []tools.APIFunction) []string {
 	seen := map[string]struct{}{}
 	for _, name := range PromotedFunctions {
 		if fn, ok := index[name]; ok {
-			seen[fn.Category] = struct{}{}
+			seen[categoryOf(fn)] = struct{}{}
 		}
 	}
 	out := make([]string, 0, len(seen))

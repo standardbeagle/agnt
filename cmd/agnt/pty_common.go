@@ -1409,6 +1409,7 @@ func buildAgntSystemPrompt(socketPath string) string {
 					sb.WriteString(fmt.Sprintf("- **%s**: %s → %s\n", id, listen, target))
 					sb.WriteString(fmt.Sprintf("  - Logs: `proxylog {action: \"query\", proxy_id: \"%s\"}`\n", id))
 					sb.WriteString(fmt.Sprintf("  - Errors: `get_incidents {proxy_id: \"%s\"}`\n", id))
+					sb.WriteString(fmt.Sprintf("  - Diagnose: `diagnose {action: \"click\", proxy_id: \"%s\"}` (or `action: \"layout\"`)\n", id))
 				}
 			}
 		}

@@ -2135,3 +2135,56 @@ auth-breakout {
 	_, err = ParseAgntConfig("auth-breakout {\n patterns \"\"\n}")
 	require.Error(t, err)
 }
+
+// TestSystemPrompt_DebuggingFlowOrder pins the task-shaped debugging flow:
+// state (currentpage) → reproduce (watch/interaction) → ONE specialised call
+// (diagnose click|layout, or one audit) → drill-down via the returned next: →
+// verify_change. diagnose and verify_change must appear before any mention of
+// `proxy exec`, and release_qa must be described as explicit-release-QA-only.
+func TestSystemPrompt_DebuggingFlowOrder(t *testing.T) {
+	cfg := DefaultAgntConfig()
+	prompt := cfg.BuildSystemPrompt()
+
+	assert.Contains(t, prompt, "Debugging flow")
+
+	iState := strings.Index(prompt, "currentpage")
+	iDiag := strings.Index(prompt, "diagnose")
+	iNext := strings.Index(prompt, "next:")
+	iVerify := strings.Index(prompt, "verify_change")
+	iExec := strings.Index(prompt, "proxy exec")
+	for name, idx := range map[string]int{
+		"currentpage": iState, "diagnose": iDiag, "next:": iNext,
+		"verify_change": iVerify, "proxy exec": iExec,
+	} {
+		assert.NotEqual(t, -1, idx, "prompt must mention %s", name)
+	}
+	assert.Less(t, iState, iDiag, "currentpage (state) precedes diagnose")
+	assert.Less(t, iDiag, iNext, "diagnose precedes next: drill-down")
+	assert.Less(t, iNext, iVerify, "next: precedes verify_change")
+	assert.Less(t, iVerify, iExec, "verify_change precedes any proxy exec mention")
+
+	iRelease := strings.Index(prompt, "release_qa")
+	if assert.NotEqual(t, -1, iRelease, "prompt must mention release_qa") {
+		releaseLine := prompt[strings.LastIndex(prompt[:iRelease], "\n"):strings.Index(prompt[iRelease:], "\n")+iRelease]
+		assert.Contains(t, releaseLine, "only when", "release_qa line must say 'only when' (explicit release QA)")
+	}
+}
+
+// TestSystemPrompt_RawJSIsLastResort pins the wording: raw JavaScript via
+// proxy exec is the last resort; __devtool helpers and diagnose are named
+// as what to try first, and no sentence recommends proxy exec as a first step.
+func TestSystemPrompt_RawJSIsLastResort(t *testing.T) {
+	cfg := DefaultAgntConfig()
+	prompt := cfg.BuildSystemPrompt()
+
+	iLast := strings.Index(prompt, "last resort")
+	if !assert.NotEqual(t, -1, iLast, "prompt must call raw JS the last resort") {
+		return
+	}
+	lastLine := prompt[strings.LastIndex(prompt[:iLast], "\n"):]
+	assert.Contains(t, lastLine, "proxy exec", "'last resort' must attach to proxy exec")
+
+	// __devtool helpers and diagnose are named before the last-resort line.
+	assert.Less(t, strings.Index(prompt, "__devtool"), iLast, "__devtool helpers named before last resort")
+	assert.Less(t, strings.Index(prompt, "diagnose"), iLast, "diagnose named before last resort")
+}

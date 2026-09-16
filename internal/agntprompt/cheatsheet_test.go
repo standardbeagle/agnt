@@ -104,3 +104,18 @@ func TestBuildCheatSheet_SkipsUnknownNames(t *testing.T) {
 		t.Errorf("expected auditAccessibility to be skipped in reduced output:\n%s", out)
 	}
 }
+
+// TestCheatSheet_PromotesDiagnoseHelpers pins the composite diagnose helpers
+// in the promoted list and requires the header to name diagnose first.
+func TestCheatSheet_PromotesDiagnoseHelpers(t *testing.T) {
+	out := BuildCheatSheet(tools.DevToolAPIFunctions)
+	for _, w := range []string{"diagnoseClick(", "diagnoseLayoutComposite("} {
+		if !strings.Contains(out, w) {
+			t.Errorf("cheat sheet missing promoted helper %q; got:\n%s", w, out)
+		}
+	}
+	header := strings.SplitN(out, "###", 2)[0]
+	if !strings.Contains(header, "diagnose") {
+		t.Errorf("cheat sheet header must name diagnose first; got:\n%s", header)
+	}
+}

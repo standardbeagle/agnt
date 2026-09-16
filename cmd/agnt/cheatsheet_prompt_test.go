@@ -3,12 +3,16 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/standardbeagle/agnt/internal/agentadapter"
+	"github.com/standardbeagle/agnt/internal/daemon"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 )
 
 // TestBuildAgntSystemPrompt_IncludesCheatSheetByDefault guards the wiring
@@ -104,6 +108,37 @@ func TestPromptDelivery_CheatSheetViaFlagAndContextFile(t *testing.T) {
 	}
 	if !strings.Contains(string(ctxFile), "auditAccessibility(") {
 		t.Errorf("context file missing promoted helper; got:\n%s", ctxFile)
+	}
+}
+
+// TestProxyHintLinesIncludeDiagnose pins the per-proxy runtime hint block:
+// each running proxy gets a diagnose hint line pointing at the click flow,
+// alongside the existing proxylog/get_incidents hints.
+func TestProxyHintLinesIncludeDiagnose(t *testing.T) {
+	dir := t.TempDir()
+	chdir(t, dir)
+
+	socketPath := filepath.Join(t.TempDir(), "hint-daemon.sock")
+	_ = daemon.NewForTest(t, daemon.DaemonConfig{SocketPath: socketPath})
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(socketPath))
+	if err := client.Connect(); err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(func() { _ = client.Close() })
+
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("fixture"))
+	}))
+	t.Cleanup(backend.Close)
+	if _, err := client.ProxyStart("hint-proxy", backend.URL, 0, 0, dir); err != nil {
+		t.Fatalf("proxy start: %v", err)
+	}
+	t.Cleanup(func() { _ = client.ProxyStop("hint-proxy") })
+
+	prompt := buildAgntSystemPrompt(socketPath)
+	want := `diagnose {action: "click", proxy_id: "hint-proxy"}`
+	if !strings.Contains(prompt, want) {
+		t.Errorf("runtime proxy hints missing %q; got:\n%s", want, prompt)
 	}
 }
 
