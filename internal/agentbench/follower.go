@@ -17,12 +17,14 @@ var toolNameRE = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
 // from the initial state step (currentpage), then repeatedly executes the
 // next action the previous response carried — Response.Next (the raw-JSON
 // path) or the first `next:` line of Response.Text (the compact-text
-// path) — until a response carries no next action. The recorded trace is
-// returned ready for Score.
+// path) — until a response carries no next action. A no-next response is
+// the terminal step only after a useful step; before any useful step the
+// chain is broken and Follow fails loudly. The recorded trace is returned
+// ready for Score.
 //
-// Follow fails loudly: an executor error, an unparsable next action, or a
-// next: cycle all return an error quoting the offending response; a run
-// never silently ends early.
+// Follow fails loudly: an executor error, a missing or unparsable next
+// action on a non-terminal step, or a next: cycle all return an error
+// quoting the offending response; a run never silently ends early.
 func Follow(scenario string, ex Executor) (*Trace, error) {
 	if ex == nil {
 		return nil, errors.New("agentbench: nil executor")
@@ -41,6 +43,10 @@ func Follow(scenario string, ex Executor) (*Trace, error) {
 			next = firstNextLine(resp.Text)
 		}
 		if next == "" {
+			if !tr.hasUsefulStep() {
+				return nil, fmt.Errorf("agentbench: %s: step %d (%s): no next action before any useful step — chain broken\noffending response:\n%s",
+					scenario, len(tr.Steps), lastTool(tr), resp.Text)
+			}
 			if err := tr.validate(); err != nil {
 				return nil, fmt.Errorf("agentbench: %s: %w", scenario, err)
 			}
@@ -59,6 +65,24 @@ func Follow(scenario string, ex Executor) (*Trace, error) {
 		tr.Steps = append(tr.Steps, stepFrom(call, resp))
 	}
 	return nil, fmt.Errorf("agentbench: %s: exceeded %d steps — next: cycle?", scenario, maxFollowSteps)
+}
+
+// hasUsefulStep reports whether any recorded step produced a finding.
+func (t *Trace) hasUsefulStep() bool {
+	for _, s := range t.Steps {
+		if s.Useful {
+			return true
+		}
+	}
+	return false
+}
+
+// lastTool names the tool of the most recent step, for error context.
+func lastTool(t *Trace) string {
+	if len(t.Steps) == 0 {
+		return "start"
+	}
+	return t.Steps[len(t.Steps)-1].Tool
 }
 
 // firstNextLine returns the first `next:` line of a compact response body.
