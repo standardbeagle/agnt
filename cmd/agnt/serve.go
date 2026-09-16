@@ -145,6 +145,7 @@ Available tools:
 	tools.RegisterBrowserTool(server, dt)
 	tools.RegisterAutomationTool(server, dt)
 	tools.RegisterResponsiveAuditTool(server, dt)
+	tools.RegisterDiagnoseTool(server, dt)
 	tools.RegisterAPIAuditTool(server, dt)
 	tools.RegisterLoadingAuditTool(server, dt)
 	tools.RegisterGetIncidentsTool(server, dt)

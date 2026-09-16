@@ -1,0 +1,34 @@
+{
+  "helper": "diagnoseClick",
+  "version": 1,
+  "click": {
+    "selector": ".floating-cta",
+    "timestamp": 1758020000000,
+    "position": { "client_x": 700, "client_y": 620, "page_x": 700, "page_y": 620 }
+  },
+  "element": {
+    "selector": ".floating-cta",
+    "tag": "a",
+    "classes": ["floating-cta"]
+  },
+  "atPoint": { "selector": ".floating-cta" },
+  "obstructed": false,
+  "stacking": {
+    "zIndex": "50",
+    "position": "fixed",
+    "createsContext": true,
+    "stackingRoot": ".page-shell"
+  },
+  "container": {
+    "type": "normal",
+    "position": "fixed",
+    "expectedContainingBlock": "viewport",
+    "actualContainingBlock": ".transformed-parent",
+    "trappedBy": {
+      "selector": ".transformed-parent",
+      "property": "transform",
+      "value": "translateZ(0)"
+    },
+    "escaped": false
+  }
+}

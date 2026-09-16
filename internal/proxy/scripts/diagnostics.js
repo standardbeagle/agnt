@@ -844,6 +844,136 @@
   }
 
   // ============================================================================
+  // DEAD-CLICK DIAGNOSIS
+  // ============================================================================
+
+  /**
+   * Diagnose a dead click in one call — composes existing evidence only.
+   *
+    * Reads the last recorded click from __devtool_interactions.getLastClick
+    * (interaction.js — scans the full interaction ring buffer, never a
+    * fixed event window, so a click followed by many recorded interactions
+    * still diagnoses), resolves the element and any obstruction at the click
+   * point (document.elementFromPoint + __devtool.getElementInfo), and attaches
+   * the stacking root (__devtool.getStacking) and fixed/containing-block trap
+   * (__devtool.getContainer). Returns a structured evidence object; the
+   * diagnose MCP tool owns the verdict. When no click is recorded and no
+   * selector is given, the result carries click:null — the caller must answer
+   * "no click recorded", never a fabricated cause. With opts.selector, the
+   * recorded click's position drives the hit-test ONLY when that click
+   * targeted the same element (clickSel === selector); otherwise the named
+   * element's own center is hit-tested — a stale click point must never
+   * produce a false obstructor. result.hitTestPoint ("click"|"center")
+   * records which point was tested. An unresolvable selector is reported as
+   * evidenceMissing, not diagnosed.
+   *
+   * @devtool diagnoseClick
+   * @signature diagnoseClick(opts?)
+   * @param {object} [opts] - Options
+   * @param {string} [opts.selector] - Diagnose this element instead of the last recorded click
+   * @returns {object} {click, element, atPoint, hitTestPoint, obstructed, stacking, container, evidenceMissing?}
+   *
+   * @example
+   *   __devtool.diagnoseClick()
+   *   __devtool.diagnoseClick({selector: '.save-btn'})
+   */
+  function diagnoseClick(opts) {
+    opts = opts || {};
+    var result = { helper: 'diagnoseClick', version: 1 };
+
+    var interactionsApi = window.__devtool_interactions;
+    if (!interactionsApi || typeof interactionsApi.getLastClick !== 'function') {
+      result.evidenceMissing = 'interactions module not loaded';
+    }
+
+    // Last click from the interaction ring buffer (interaction.js
+    // getLastClick scans the entire ring — no fixed window).
+    var click = null;
+    if (!result.evidenceMissing) {
+      try {
+        click = interactionsApi.getLastClick() || null;
+      } catch (e) {
+        click = null;
+      }
+    }
+
+    var selector = opts.selector || null;
+    var position = null;
+    if (click) {
+      var clickSel = (click.target && click.target.selector) || null;
+      if (selector) {
+        // Named-element path: only a click that targeted THIS element may
+        // drive the hit-test point. A stale click on a different element
+        // must never pin the obstruction check.
+        if (clickSel === selector) {
+          position = click.position || null;
+        }
+      } else {
+        selector = clickSel;
+        position = click.position || null;
+      }
+      result.click = {
+        selector: selector,
+        timestamp: typeof click.timestamp === 'number' ? click.timestamp : null,
+        position: position
+      };
+    } else if (selector) {
+      result.click = { selector: selector, timestamp: null, position: null };
+    } else {
+      // No recorded click and no explicit selector — caller answers
+      // no_click_recorded; do not fabricate a cause.
+      result.click = null;
+      return result;
+    }
+
+    if (!selector) {
+      // A click was recorded but carried no selector — not enough to diagnose.
+      return result;
+    }
+
+    // Unresolvable selector: report the gap; never diagnose a ghost element.
+    var targetEl = null;
+    try {
+      targetEl = utils.resolveElement(selector);
+    } catch (e) { /* resolution failed — leave targetEl null */ }
+    if (!targetEl) {
+      result.evidenceMissing = 'selector resolved to no element: ' + selector;
+      return result;
+    }
+
+    result.element = window.__devtool.getElementInfo(selector);
+    result.stacking = window.__devtool.getStacking(selector);
+    result.container = window.__devtool.getContainer(selector);
+
+    // Obstruction evidence: which element is actually hit-testable at the
+    // click point (matching click only) or at the named element's center.
+    var pt = null;
+    if (position && typeof position.client_x === 'number' && typeof position.client_y === 'number') {
+      pt = { x: position.client_x, y: position.client_y };
+      result.hitTestPoint = 'click';
+    } else {
+      try {
+        var r = utils.getRect(targetEl);
+        if (r) {
+          pt = { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+          result.hitTestPoint = 'center';
+        }
+      } catch (e) { /* rect unavailable — leave pt null */ }
+    }
+    if (pt) {
+      try {
+        var hit = document.elementFromPoint(pt.x, pt.y);
+        if (hit) {
+          result.atPoint = { selector: utils.generateSelector(hit) };
+          result.obstructed = !!(hit !== targetEl && !targetEl.contains(hit) && !hit.contains(targetEl));
+        }
+      } catch (e) { /* elementFromPoint failed — leave evidence absent */ }
+    }
+
+    return result;
+  }
+
+  // ============================================================================
   // DOM SNAPSHOT & DIFF
   // ============================================================================
 
@@ -1284,6 +1414,9 @@
     compareDOMSnapshots: compareDOMSnapshots,
     showDOMDiff: showDOMDiff,
     highlightDOMChanges: highlightDOMChanges,
+
+    // Dead-click diagnosis
+    diagnoseClick: diagnoseClick,
 
     // Control
     clear: clear,

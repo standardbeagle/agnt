@@ -169,6 +169,7 @@ func registerAllTools(t *testing.T) *mcp.Server {
 	RegisterBrowserTool(server, dt)
 	RegisterAutomationTool(server, dt)
 	RegisterResponsiveAuditTool(server, dt)
+	RegisterDiagnoseTool(server, dt)
 	RegisterAPIAuditTool(server, dt)
 	RegisterLoadingAuditTool(server, dt)
 	RegisterGetIncidentsTool(server, dt)

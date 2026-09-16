@@ -1,0 +1,24 @@
+{
+  "helper": "diagnoseClick",
+  "version": 1,
+  "click": {
+    "selector": "#save-btn",
+    "timestamp": 1758020000000,
+    "position": { "client_x": 412, "client_y": 96, "page_x": 412, "page_y": 540 }
+  },
+  "element": {
+    "selector": "#save-btn",
+    "tag": "button",
+    "id": "save-btn",
+    "classes": ["btn", "btn-primary"]
+  },
+  "atPoint": { "selector": ".modal-overlay" },
+  "obstructed": true,
+  "stacking": {
+    "zIndex": "auto",
+    "position": "static",
+    "createsContext": false,
+    "stackingRoot": null
+  },
+  "container": { "type": "normal", "position": "static" }
+}

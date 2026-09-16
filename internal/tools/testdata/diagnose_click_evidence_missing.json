@@ -1,0 +1,6 @@
+{
+  "helper": "diagnoseClick",
+  "version": 1,
+  "evidenceMissing": "interactions module not loaded",
+  "click": null
+}

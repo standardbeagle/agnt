@@ -32,6 +32,7 @@ for an explicit audit request, not routine debugging.
 | `currentpage` | Inner/content-page inspection: framework triage (default) + layout diagnostics + list/get/summary/clear; responses identify `execution_context` and `frame_id` |
 | `get_incidents` | The error/incident surface — cursor-based, priority-ordered, with remediation hints and retention actions |
 | `responsive_audit` | Responsive design audits across viewport sizes |
+| `diagnose` | Dead-click triage in one call (`action:"click"`): composes last click, obstruction, stacking root, containing-block trap, and incidents since the click into a verdict + exact `next:` |
 | `api_audit` | API efficiency audit (waterfall, N+1, duplicate, chatty-load) over the fetch/XHR buffer |
 | `loading_audit` | Loading-UX audit (spinner cascade + concurrent fragmentation) over the spinner timeline |
 | `snapshot` | Visual regression testing (baseline/compare screenshots) |
@@ -356,6 +357,110 @@ PATTERNS: 1 mobile-only, 0 tablet-only, 1 cross-viewport
 - `crossViewport`: Issues across all viewports
 
 **Key Files**: `internal/tools/responsive_audit.go`, `internal/tools/responsive_audit_test.go`, `internal/proxy/scripts/responsive.js`
+
+## diagnose Tool
+
+Dead-click triage in one call. `action:"click"` composes **existing** evidence
+— no new detection: the last click from the interaction ring buffer
+(`__devtool_interactions.getLastClick` — full ring buffer, never a fixed
+event window), the element and any obstruction at the
+click point (`__devtool.getElementInfo` + `document.elementFromPoint`), the
+stacking root (`__devtool.getStacking`), the fixed/containing-block trap
+(`__devtool.getContainer`), and `browser_js` incidents recorded since the
+click. The browser half is `__devtool.diagnoseClick(opts)` in
+`internal/proxy/scripts/diagnostics.js`; the Go side owns the verdict and the
+compact rendering. `action:"layout"` is declared in the schema and lands in a
+later slice.
+
+**Parameters**:
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `action` | string | required | `click` (implemented) or `layout` (declared, later slice) |
+| `proxy_id` | string | required | Proxy ID (alias: `id`) |
+| `selector` | string | — | Diagnose this element instead of the last recorded click |
+| `target` | string | `inner` | Frame in the always-wrap model |
+| `frame_id` | string | active | Diagnose a specific content frame by id |
+| `raw` | bool | false | Return full JSON instead of compact text |
+
+Per-session like `get_incidents`: intentionally no `global` flag.
+
+**Named-element path** (`selector`): the recorded click's position drives the
+hit-test only when that click targeted the same element; otherwise the helper
+hit-tests the named element's own center — a stale click point never produces
+a false obstructor. The helper reports which point was tested
+(`hitTestPoint: "click"|"center"`).
+
+**Fail-honest**: any evidence gap — interactions module missing, an
+unresolvable selector (surfacing as a `getElementInfo`/`getStacking`/
+`getContainer` error), or no hit-test performed — yields
+`insufficient_evidence` carrying the exact reason, never `handler_missing`
+or `no_click_recorded`.
+
+**Examples**:
+```json
+diagnose {action: "click", proxy_id: "dev"}
+diagnose {action: "click", proxy_id: "dev", selector: ".save-btn"}
+diagnose {action: "click", proxy_id: "dev", raw: true}
+```
+
+**Compact output per verdict**:
+
+`obstructed` — another element is hit-testable at the click point:
+```
+=== diagnose click (dev) ===
+verdict: obstructed
+
+[error] elementFromPoint at the click point resolves to ".modal-overlay", not the target
+  id: 1a2b3c4d
+  next: proxy exec __devtool.getStacking('.modal-overlay')
+```
+
+`container_trap` — a `position:fixed` element captured by an ancestor
+transform/filter/etc.:
+```
+=== diagnose click (dev) ===
+verdict: container_trap
+
+[error] position:fixed element's containing block is ".transformed-parent" via transform
+  id: 5e6f7081
+  next: proxy exec __devtool.getContainer('.floating-cta')
+```
+
+`handler_missing` — the click reached its target and nothing intercepted it:
+```
+=== diagnose click (dev) ===
+verdict: handler_missing
+
+[error] no obstruction at the click point and no containing-block trap
+  id: 9a0b1c2d
+  next: get_incidents sources=[browser_js]
+```
+
+`no_click_recorded` — interaction history empty; no cause is fabricated:
+```
+=== diagnose click (dev) ===
+verdict: no_click_recorded
+
+[warning] interaction ring buffer holds no click event
+  id: 3e4f5a6b
+  next: watch {events:"interactions"}
+```
+
+`insufficient_evidence` — e.g. `__devtool.diagnoseClick` absent (old bundle);
+carries the exact reason, never a fabricated diagnosis:
+```
+=== diagnose click (dev) ===
+verdict: insufficient_evidence
+
+[warning] __devtool.diagnoseClick not available on this page (old injected bundle — reload the page through the proxy)
+  id: 7c8d9e0f
+  next: proxy action=status
+```
+
+Finding ids are stable (`finding.StableID("click", selector, cause)`) so
+identical evidence reproduces the same id.
+
+**Key Files**: `internal/tools/diagnose.go`, `internal/tools/diagnose_test.go`, `internal/proxy/scripts/diagnostics.js`
 
 ## api_audit Tool
 

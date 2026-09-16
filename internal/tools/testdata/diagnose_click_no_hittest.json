@@ -1,0 +1,21 @@
+{
+  "helper": "diagnoseClick",
+  "version": 1,
+  "click": {
+    "selector": "#save-btn",
+    "timestamp": 1758020000000,
+    "position": null
+  },
+  "element": {
+    "selector": "#save-btn",
+    "tag": "button",
+    "id": "save-btn"
+  },
+  "stacking": {
+    "zIndex": "auto",
+    "position": "static",
+    "createsContext": false,
+    "stackingRoot": null
+  },
+  "container": { "type": "normal", "position": "static" }
+}

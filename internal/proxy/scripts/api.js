@@ -94,6 +94,11 @@
     getTransform: inspection.getTransform,
     getOverflow: inspection.getOverflow,
 
+    // Dead-click diagnosis (diagnose MCP tool, action=click)
+    diagnoseClick: diagnostics && diagnostics.diagnoseClick ? diagnostics.diagnoseClick : function() {
+      return { error: 'diagnoseClick helper not loaded (old bundle)' };
+    },
+
     // ========================================================================
     // TREE WALKING
     // ========================================================================

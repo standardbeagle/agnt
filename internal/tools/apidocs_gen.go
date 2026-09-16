@@ -7,6 +7,18 @@ package tools
 // functions, extracted from JSDoc blocks in internal/proxy/scripts/*.js.
 var DevToolAPIFunctions = []APIFunction{
 	{
+		Name:        "diagnoseClick",
+		Category:    "",
+		Description: "Diagnose a dead click in one call — composes existing evidence only. Reads the last recorded click from __devtool_interactions.getLastClick (interaction.js — scans the full interaction ring buffer, never a fixed event window, so a click followed by many recorded interactions still diagnoses), resolves the element and any obstruction at the click point (document.elementFromPoint + __devtool.getElementInfo), and attaches the stacking root (__devtool.getStacking) and fixed/containing-block trap (__devtool.getContainer). Returns a structured evidence object; the diagnose MCP tool owns the verdict. When no click is recorded and no selector is given, the result carries click:null — the caller must answer \"no click recorded\", never a fabricated cause. With opts.selector, the recorded click's position drives the hit-test ONLY when that click targeted the same element (clickSel === selector); otherwise the named element's own center is hit-tested — a stale click point must never produce a false obstructor. result.hitTestPoint (\"click\"|\"center\") records which point was tested. An unresolvable selector is reported as evidenceMissing, not diagnosed.",
+		Signature:   "diagnoseClick(opts?)",
+		Parameters: []string{
+			"opts: object - Options",
+			"opts.selector: string - Diagnose this element instead of the last recorded click",
+		},
+		Returns: "object - {click, element, atPoint, hitTestPoint, obstructed, stacking, container, evidenceMissing?}",
+		Example: "__devtool.diagnoseClick()\n  __devtool.diagnoseClick({selector: '.save-btn'})",
+	},
+	{
 		Name:        "auditAccessibility",
 		Category:    "accessibility",
 		Description: "Run accessibility audit on the page",

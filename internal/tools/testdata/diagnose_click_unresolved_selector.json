@@ -1,0 +1,12 @@
+{
+  "helper": "diagnoseClick",
+  "version": 1,
+  "click": {
+    "selector": ".ghost-btn",
+    "timestamp": null,
+    "position": null
+  },
+  "element": { "error": "element not found: .ghost-btn" },
+  "stacking": { "error": "element not found: .ghost-btn" },
+  "container": { "error": "element not found: .ghost-btn" }
+}
