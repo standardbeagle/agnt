@@ -320,79 +320,89 @@ func makeVerifyChangeHandler(dt *DaemonTools) func(context.Context, *mcp.CallToo
 	}
 }
 
+// verifyProducerFor builds a verify producer around a producer's own handler
+// function: the recorded Producer.Args round-trip into the handler's input
+// struct, prepare adjusts the request (audit/diagnose dispatchers must ask for
+// raw output so finding ids come back), and the handler runs IN-PROCESS.
+func verifyProducerFor[In any, Out any](
+	prepare func(*In),
+	handler func(context.Context, *mcp.CallToolRequest, In) (*mcp.CallToolResult, Out, error),
+	extract func(Out) []string,
+) verifyProducerFunc {
+	return func(ctx context.Context, args map[string]any) ([]string, error) {
+		var in In
+		if len(args) > 0 {
+			b, err := json.Marshal(args)
+			if err != nil {
+				return nil, err
+			}
+			if err := json.Unmarshal(b, &in); err != nil {
+				return nil, err
+			}
+		}
+		if prepare != nil {
+			prepare(&in)
+		}
+		_, out, err := handler(ctx, nil, in)
+		if err != nil {
+			return nil, err
+		}
+		return extract(out), nil
+	}
+}
+
+// dispatchGetIncidents re-runs get_incidents with the recorded args.
+func dispatchGetIncidents(dt *DaemonTools, since string) verifyProducerFunc {
+	return verifyProducerFor(func(in *GetIncidentsInput) {
+		if since != "" && in.Since == "" {
+			in.Since = since
+		}
+	}, makeGetIncidentsHandler(dt), func(out GetIncidentsOutput) []string {
+		ids := make([]string, 0, len(out.Incidents))
+		for _, v := range out.Incidents {
+			ids = append(ids, v.Fingerprint)
+		}
+		return ids
+	})
+}
+
+// dispatchResponsiveAudit re-runs responsive_audit in-process.
+func dispatchResponsiveAudit(handler func(context.Context, *mcp.CallToolRequest, ResponsiveAuditInput) (*mcp.CallToolResult, ResponsiveAuditOutput, error)) verifyProducerFunc {
+	return verifyProducerFor(nil, handler, func(out ResponsiveAuditOutput) []string {
+		return extractRawFindingIDs(out.Raw)
+	})
+}
+
+// dispatchAPIAudit re-runs api_audit in-process.
+func dispatchAPIAudit(handler func(context.Context, *mcp.CallToolRequest, APIAuditInput) (*mcp.CallToolResult, APIAuditOutput, error)) verifyProducerFunc {
+	return verifyProducerFor(nil, handler, func(out APIAuditOutput) []string {
+		return extractRawFindingIDs(out.Raw)
+	})
+}
+
+// dispatchLoadingAudit re-runs loading_audit in-process.
+func dispatchLoadingAudit(handler func(context.Context, *mcp.CallToolRequest, LoadingAuditInput) (*mcp.CallToolResult, LoadingAuditOutput, error)) verifyProducerFunc {
+	return verifyProducerFor(nil, handler, func(out LoadingAuditOutput) []string {
+		return extractRawFindingIDs(out.Raw)
+	})
+}
+
+// dispatchDiagnose re-runs diagnose in-process.
+func dispatchDiagnose(handler func(context.Context, *mcp.CallToolRequest, DiagnoseInput) (*mcp.CallToolResult, DiagnoseOutput, error)) verifyProducerFunc {
+	return verifyProducerFor(nil, handler, func(out DiagnoseOutput) []string {
+		return extractRawFindingIDs(out.Raw)
+	})
+}
+
 // defaultVerifyProducers is the dispatch table from producer tool name to an
 // in-process runner that calls the producer's own handler function directly.
 func defaultVerifyProducers(dt *DaemonTools, since string) map[string]verifyProducerFunc {
-	roundtrip := func(args map[string]any, dst any) error {
-		b, err := json.Marshal(args)
-		if err != nil {
-			return err
-		}
-		return json.Unmarshal(b, dst)
-	}
 	return map[string]verifyProducerFunc{
-		"get_incidents": func(ctx context.Context, args map[string]any) ([]string, error) {
-			var in GetIncidentsInput
-			if err := roundtrip(args, &in); err != nil {
-				return nil, err
-			}
-			if since != "" && in.Since == "" {
-				in.Since = since
-			}
-			_, out, err := makeGetIncidentsHandler(dt)(ctx, nil, in)
-			if err != nil {
-				return nil, err
-			}
-			ids := make([]string, 0, len(out.Incidents))
-			for _, v := range out.Incidents {
-				ids = append(ids, v.Fingerprint)
-			}
-			return ids, nil
-		},
-		"responsive_audit": func(ctx context.Context, args map[string]any) ([]string, error) {
-			var in ResponsiveAuditInput
-			if err := roundtrip(args, &in); err != nil {
-				return nil, err
-			}
-			_, out, err := dt.makeResponsiveAuditHandler()(ctx, nil, in)
-			if err != nil {
-				return nil, err
-			}
-			return extractRawFindingIDs(out.Raw), nil
-		},
-		"api_audit": func(ctx context.Context, args map[string]any) ([]string, error) {
-			var in APIAuditInput
-			if err := roundtrip(args, &in); err != nil {
-				return nil, err
-			}
-			_, out, err := dt.makeAPIAuditHandler()(ctx, nil, in)
-			if err != nil {
-				return nil, err
-			}
-			return extractRawFindingIDs(out.Raw), nil
-		},
-		"loading_audit": func(ctx context.Context, args map[string]any) ([]string, error) {
-			var in LoadingAuditInput
-			if err := roundtrip(args, &in); err != nil {
-				return nil, err
-			}
-			_, out, err := dt.makeLoadingAuditHandler()(ctx, nil, in)
-			if err != nil {
-				return nil, err
-			}
-			return extractRawFindingIDs(out.Raw), nil
-		},
-		"diagnose": func(ctx context.Context, args map[string]any) ([]string, error) {
-			var in DiagnoseInput
-			if err := roundtrip(args, &in); err != nil {
-				return nil, err
-			}
-			_, out, err := dt.makeDiagnoseHandler()(ctx, nil, in)
-			if err != nil {
-				return nil, err
-			}
-			return extractRawFindingIDs(out.Raw), nil
-		},
+		"get_incidents":    dispatchGetIncidents(dt, since),
+		"responsive_audit": dispatchResponsiveAudit(dt.makeResponsiveAuditHandler()),
+		"api_audit":        dispatchAPIAudit(dt.makeAPIAuditHandler()),
+		"loading_audit":    dispatchLoadingAudit(dt.makeLoadingAuditHandler()),
+		"diagnose":         dispatchDiagnose(dt.makeDiagnoseHandler()),
 	}
 }
 

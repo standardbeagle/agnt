@@ -8,6 +8,8 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/finding"
 	"github.com/standardbeagle/agnt/internal/protocol"
+
+	"github.com/standardbeagle/go-sdk/mcp"
 )
 
 // verifyFixture builds fake deps around a recorded Investigation and a spy
@@ -232,5 +234,114 @@ func TestVerifyChange_MergesOutcomeIntoInvestigation(t *testing.T) {
 	}
 	if !got["bbbb2222"] || !got["cccc3333"] {
 		t.Fatalf("findings after merge = %v", got)
+	}
+}
+
+// TestVerifyChange_DispatcherRequestsRawAndReportsPersist drives the same
+// dispatch constructors defaultVerifyProducers uses, backed by handler-faithful
+// stubs: audit/diagnose handlers only fill Raw when the caller asks for it.
+// The dispatcher must request raw output, see the known id, and report the
+// target as persist with header FAIL — reading it as resolved is a false PASS.
+func TestVerifyChange_DispatcherRequestsRawAndReportsPersist(t *testing.T) {
+	rawPayload := map[string]any{"findings": []any{
+		map[string]any{"id": "ffff0001", "severity": "high", "type": "duplicate-call"},
+	}}
+	dispatchers := map[string]func(raw *bool) verifyProducerFunc{
+		"api_audit": func(raw *bool) verifyProducerFunc {
+			return dispatchAPIAudit(func(_ context.Context, _ *mcp.CallToolRequest, in APIAuditInput) (*mcp.CallToolResult, APIAuditOutput, error) {
+				*raw = *raw || in.Raw
+				if !in.Raw {
+					return nil, APIAuditOutput{Summary: "compact"}, nil
+				}
+				return nil, APIAuditOutput{Raw: rawPayload}, nil
+			})
+		},
+		"loading_audit": func(raw *bool) verifyProducerFunc {
+			return dispatchLoadingAudit(func(_ context.Context, _ *mcp.CallToolRequest, in LoadingAuditInput) (*mcp.CallToolResult, LoadingAuditOutput, error) {
+				*raw = *raw || in.Raw
+				if !in.Raw {
+					return nil, LoadingAuditOutput{Summary: "compact"}, nil
+				}
+				return nil, LoadingAuditOutput{Raw: rawPayload}, nil
+			})
+		},
+		"responsive_audit": func(raw *bool) verifyProducerFunc {
+			return dispatchResponsiveAudit(func(_ context.Context, _ *mcp.CallToolRequest, in ResponsiveAuditInput) (*mcp.CallToolResult, ResponsiveAuditOutput, error) {
+				*raw = *raw || in.Raw
+				if !in.Raw {
+					return nil, ResponsiveAuditOutput{Summary: "compact"}, nil
+				}
+				return nil, ResponsiveAuditOutput{Raw: rawPayload}, nil
+			})
+		},
+		"diagnose": func(raw *bool) verifyProducerFunc {
+			return dispatchDiagnose(func(_ context.Context, _ *mcp.CallToolRequest, in DiagnoseInput) (*mcp.CallToolResult, DiagnoseOutput, error) {
+				*raw = *raw || in.Raw
+				if !in.Raw {
+					return nil, DiagnoseOutput{Summary: "compact"}, nil
+				}
+				return nil, DiagnoseOutput{Raw: rawPayload}, nil
+			})
+		},
+	}
+	for tool, mk := range dispatchers {
+		t.Run(tool, func(t *testing.T) {
+			var rawRequested bool
+			fx := &verifyFixture{
+				inv: &protocol.Investigation{Findings: []protocol.FindingRef{
+					ref("ffff0001", tool, false),
+				}},
+			}
+			deps := fx.deps()
+			deps.producers = map[string]verifyProducerFunc{tool: mk(&rawRequested)}
+			out, err := runVerifyChange(context.Background(), VerifyChangeInput{}, deps)
+			if err != nil {
+				t.Fatalf("runVerifyChange: %v", err)
+			}
+			if !rawRequested {
+				t.Errorf("%s dispatcher must request raw output so the handler returns finding ids", tool)
+			}
+			if out.Status == "PASS" || strings.HasPrefix(out.Header, "verify_change: PASS") {
+				t.Fatalf("false PASS while ffff0001 persists: %q", out.Header)
+			}
+			if len(out.Persisting) != 1 || out.Persisting[0] != "ffff0001" {
+				t.Fatalf("persisting = %v, want [ffff0001]", out.Persisting)
+			}
+		})
+	}
+}
+
+// TestVerifyChange_ProducerIsErrorResultPersists: a producer handler that
+// fails via fail[...] (IsError CallToolResult, nil Go error) must make its
+// targets PERSIST with header FAIL — never resolved, never PASS.
+func TestVerifyChange_ProducerIsErrorResultPersists(t *testing.T) {
+	stub := func(_ context.Context, _ *mcp.CallToolRequest, in APIAuditInput) (*mcp.CallToolResult, APIAuditOutput, error) {
+		return fail[APIAuditOutput]("audit-api module not loaded")
+	}
+	fx := &verifyFixture{
+		inv: &protocol.Investigation{Findings: []protocol.FindingRef{
+			ref("aaaa1111", "api_audit", false),
+		}},
+	}
+	deps := fx.deps()
+	deps.producers = map[string]verifyProducerFunc{"api_audit": dispatchAPIAudit(stub)}
+	out, err := runVerifyChange(context.Background(), VerifyChangeInput{}, deps)
+	if err != nil {
+		t.Fatalf("runVerifyChange: %v", err)
+	}
+	if out.Status == "PASS" || strings.HasPrefix(out.Header, "verify_change: PASS") {
+		t.Fatalf("false PASS on IsError producer: %q", out.Header)
+	}
+	if len(out.Persisting) != 1 || out.Persisting[0] != "aaaa1111" {
+		t.Fatalf("persisting = %v, want [aaaa1111]", out.Persisting)
+	}
+	var warned bool
+	for _, w := range out.CollectionWarnings {
+		if strings.Contains(w, "producer") && strings.Contains(w, "aaaa1111") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Fatalf("expected a producer-failure warning, got %v", out.CollectionWarnings)
 	}
 }
