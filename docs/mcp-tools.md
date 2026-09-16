@@ -588,6 +588,10 @@ handler functions. It never runs a broad/full audit and never re-reads
 
 **Comparison by id**: `resolved` (id absent now), `persist` (id still
 reported), `new` (ids the same producer reports that were not targets).
+Audit/diagnose dispatchers always re-request raw output internally, so ids
+are compared even though the original producer call was compact. A handler
+that returns an `IsError` result (for example its audit module not loaded)
+is a producer error: its targets count as persist, never resolved.
 Screenshots via the existing `__devtool.screenshot` path are captured **only**
 for `Visual=true` findings that resolved or changed; the last ref is recorded
 as the Investigation's `visual_baseline_ref`.
