@@ -269,6 +269,76 @@ func TestFollower_ContractBeatsBaselineOnEveryMetric(t *testing.T) {
 	}
 }
 
+// responsiveNextFor mirrors responsiveNextAction in
+// internal/proxy/scripts/responsive.js: the shipped mapping from a
+// responsive finding's message to its remediation next action.
+func responsiveNextFor(selector, message string) string {
+	switch {
+	case strings.Contains(message, "horizontal scroll"):
+		return "proxy exec __devtool.getContainer('" + selector + "')"
+	case strings.Contains(message, "fixed element covers"):
+		return "__devtool.getStacking('" + selector + "')"
+	case strings.Contains(message, "clipped"), strings.Contains(message, "truncated"):
+		return "__devtool.getBox('" + selector + "')"
+	default:
+		return "__devtool.inspect('" + selector + "')"
+	}
+}
+
+// TestContractFixturePointersAreShipped: every next: pointer the follower
+// consumes from a formatter-rendered response is one the shipped code
+// produces for that input. A formatter-rendered fixture response may not
+// carry a next override (the formatter owns its next: text); responsive
+// issues must carry the next responsiveNextAction computes for their
+// message. A sweep link the shipped contract does not provide is recorded
+// as an explicitly prescribed step, never injected as a pointer.
+func TestContractFixturePointersAreShipped(t *testing.T) {
+	type responsiveIssue struct {
+		Selector string `json:"selector"`
+		Message  string `json:"message"`
+		Next     string `json:"next"`
+	}
+	type responsiveViewport struct {
+		Issues []responsiveIssue `json:"issues"`
+	}
+	for _, sc := range Scenarios() {
+		t.Run(sc.Name, func(t *testing.T) {
+			data, err := contractFS.ReadFile("testdata/contract/" + sc.Name + "/fixture.json")
+			if err != nil {
+				t.Fatalf("read fixture: %v", err)
+			}
+			var fx contractFixture
+			if err := json.Unmarshal(data, &fx); err != nil {
+				t.Fatalf("parse fixture: %v", err)
+			}
+			for i, r := range fx.Responses {
+				if r.Formatter != "" && r.Next != "" {
+					t.Errorf("response %d (%s): formatter-rendered response carries an injected next override %q — record it as a prescribed step instead",
+						i, r.Call.Tool, r.Next)
+				}
+				if r.Formatter != "responsive" {
+					continue
+				}
+				var in struct {
+					Viewports map[string]responsiveViewport `json:"viewports"`
+				}
+				if err := json.Unmarshal(r.Input, &in); err != nil {
+					t.Fatalf("response %d: decode responsive input: %v", i, err)
+				}
+				for vp, v := range in.Viewports {
+					for _, is := range v.Issues {
+						want := responsiveNextFor(is.Selector, is.Message)
+						if is.Next != want {
+							t.Errorf("response %d viewport %s issue %q: next %q is not the shipped responsiveNextAction %q for its message",
+								i, vp, is.Message, is.Next, want)
+						}
+					}
+				}
+			}
+		})
+	}
+}
+
 func TestFollower_UnknownNextActionFailsLoud(t *testing.T) {
 	bogus := "??not-a-tool?? {{"
 	ex := &fixtureExecutor{scenario: "bogus_next", byKey: map[string]fixtureResponse{
