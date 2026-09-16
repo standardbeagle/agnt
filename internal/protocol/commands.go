@@ -3,6 +3,8 @@ package protocol
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/finding"
 )
 
 // Agnt-specific command verbs (beyond those in go-cli-server).
@@ -902,13 +904,16 @@ const (
 
 // FindingRef is a compact pointer at a finding the agent already surfaced
 // (usually an incident fingerprint) so later tools re-read it instead of
-// re-discovering it.
+// re-discovering it. Producer carries the exact tool call that produced the
+// finding (S0 contract); verify_change re-runs it to recheck the finding.
 type FindingRef struct {
-	Fingerprint string    `json:"fingerprint"`
-	Severity    string    `json:"severity,omitempty"`
-	Source      string    `json:"source,omitempty"`
-	Summary     string    `json:"summary,omitempty"`
-	SeenAt      time.Time `json:"seen_at,omitempty"`
+	Fingerprint string           `json:"fingerprint"`
+	Severity    string           `json:"severity,omitempty"`
+	Source      string           `json:"source,omitempty"`
+	Summary     string           `json:"summary,omitempty"`
+	Visual      bool             `json:"visual,omitempty"`
+	Producer    *finding.Producer `json:"producer,omitempty"`
+	SeenAt      time.Time        `json:"seen_at,omitempty"`
 }
 
 // Investigation is the per-session investigation record. It lives on the
@@ -929,14 +934,19 @@ type Investigation struct {
 // non-zero scalar fields replace, Findings append with FIFO eviction at
 // MaxInvestigationFindings, FailedAreas set-union capped at
 // MaxInvestigationFailedAreas. A zero-valued patch is a no-op except UpdatedAt.
+// RemoveFindings lists fingerprints to delete from Findings (verify_change
+// resolved ids); removal runs before appends so a re-added id survives.
 type InvestigationPatch struct {
 	ActiveProxyID       string       `json:"active_proxy_id,omitempty"`
 	ActivePageSessionID string       `json:"active_page_session_id,omitempty"`
 	IncidentCursor      time.Time    `json:"incident_cursor,omitempty"`
 	Findings            []FindingRef `json:"findings,omitempty"`
+	RemoveFindings      []string     `json:"remove_findings,omitempty"`
 	FailedAreas         []string     `json:"failed_areas,omitempty"`
 	VisualBaselineRef   string       `json:"visual_baseline_ref,omitempty"`
 }
+
+// InvestigationMergeRequest is the request payload for INVESTIGATION MERGE.
 
 // MergeInvestigation applies patch to cur (nil cur starts an empty record)
 // and returns a NEW record — the caller stores it replace-on-write so readers
@@ -962,6 +972,19 @@ func MergeInvestigation(cur *Investigation, patch InvestigationPatch, now time.T
 	}
 	if patch.VisualBaselineRef != "" {
 		next.VisualBaselineRef = patch.VisualBaselineRef
+	}
+	if len(patch.RemoveFindings) > 0 {
+		drop := make(map[string]bool, len(patch.RemoveFindings))
+		for _, fp := range patch.RemoveFindings {
+			drop[fp] = true
+		}
+		kept := next.Findings[:0]
+		for _, f := range next.Findings {
+			if !drop[f.Fingerprint] {
+				kept = append(kept, f)
+			}
+		}
+		next.Findings = kept
 	}
 	next.Findings = append(next.Findings, patch.Findings...)
 	if overflow := len(next.Findings) - MaxInvestigationFindings; overflow > 0 {

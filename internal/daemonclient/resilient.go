@@ -345,6 +345,16 @@ func (rc *ResilientClient) ProxyLogClear(proxyID string) error {
 	return rc.WithClient(func(c *Client) error { return c.ProxyLogClear(proxyID) })
 }
 
+// InvestigationGet reads the per-session investigation record.
+func (rc *ResilientClient) InvestigationGet(sessionCode string) (*protocol.InvestigationResult, error) {
+	return withResult(rc, func(c *Client) (*protocol.InvestigationResult, error) { return c.InvestigationGet(sessionCode) })
+}
+
+// InvestigationMerge applies patch to the session's investigation record.
+func (rc *ResilientClient) InvestigationMerge(sessionCode string, patch protocol.InvestigationPatch) (*protocol.InvestigationResult, error) {
+	return withResult(rc, func(c *Client) (*protocol.InvestigationResult, error) { return c.InvestigationMerge(sessionCode, patch) })
+}
+
 // ProxyLogStats gets proxy log statistics.
 func (rc *ResilientClient) ProxyLogStats(proxyID string) (map[string]interface{}, error) {
 	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ProxyLogStats(proxyID) })
