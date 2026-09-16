@@ -587,7 +587,9 @@ handler functions. It never runs a broad/full audit and never re-reads
 `currentpage`.
 
 **Comparison by id**: `resolved` (id absent now), `persist` (id still
-reported), `new` (ids the same producer reports that were not targets).
+reported), `new` (ids the same producer reports that were not targets **and
+not already recorded** — a recorded non-target id left out by a narrowed
+`finding_ids` is never re-reported as new or appended again).
 Audit/diagnose dispatchers always re-request raw output internally, so ids
 are compared even though the original producer call was compact. A handler
 that returns an `IsError` result (for example its audit module not loaded)
