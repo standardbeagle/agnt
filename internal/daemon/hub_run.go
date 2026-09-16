@@ -266,6 +266,16 @@ func (d *Daemon) registerAgntCommands() error {
 		return err
 	}
 
+	// INVESTIGATION command - per-session investigation record (read + merge)
+	if err := register(hubpkg.CommandDefinition{
+		Verb:        protocol.VerbInvestigation,
+		SubVerbs:    routerSubVerbs(d.investigationActions()),
+		Description: "Read and merge the per-session investigation record",
+		Handler:     d.hubHandleInvestigation,
+	}); err != nil {
+		return err
+	}
+
 	// PORTS command - listening-port inventory + orphan pgid management
 	if err := register(hubpkg.CommandDefinition{
 		Verb:        protocol.VerbPorts,

@@ -100,8 +100,38 @@ type Session struct {
 	// never set it see unchanged wire output.
 	Kind SessionKind `json:"kind,omitempty"`
 
+	// investigation is the per-session investigation record (INVESTIGATION
+	// GET/MERGE). Lock-free: reads load the pointer, writes replace-on-write
+	// under CAS, so no mutex guards this field. The record dies with the
+	// session — markDisconnectedIfStale clears it on heartbeat-timeout
+	// disconnect, and registry removal (UnregisterExact / daemon shutdown)
+	// drops the last reference — honouring per-session isolation
+	// (daemon-architecture.md numbered contract 1).
+	investigation atomic.Pointer[protocol.Investigation]
+
 	// Internal fields (not serialized)
 	mu sync.RWMutex
+}
+
+// Investigation returns the session's current investigation record, or nil
+// when none has been started. The returned pointer is immutable
+// (replace-on-write), so readers never observe a partial merge.
+func (s *Session) Investigation() *protocol.Investigation {
+	return s.investigation.Load()
+}
+
+// MergeInvestigation applies patch to the current record and atomically
+// swaps in the merged replacement, returning the new record. Merge semantics
+// (non-zero replace, Findings append-with-cap, FailedAreas union-with-cap)
+// live in protocol.MergeInvestigation.
+func (s *Session) MergeInvestigation(patch protocol.InvestigationPatch) *protocol.Investigation {
+	for {
+		cur := s.investigation.Load()
+		next := protocol.MergeInvestigation(cur, patch, time.Now())
+		if s.investigation.CompareAndSwap(cur, next) {
+			return next
+		}
+	}
 }
 
 // kindOrClassic normalizes an empty Kind to SessionKindClassic for wire
@@ -155,6 +185,10 @@ func (s *Session) markDisconnectedIfStale(cutoff time.Time) bool {
 	defer s.mu.Unlock()
 	if s.Status == SessionStatusActive && s.LastSeen.Before(cutoff) {
 		s.Status = SessionStatusDisconnected
+		// Heartbeat-timeout disconnect ends the investigation exactly like an
+		// explicit teardown: a later read for this session must find nothing,
+		// not a stale record from a dead agent.
+		s.investigation.Store(nil)
 		return true
 	}
 	return false

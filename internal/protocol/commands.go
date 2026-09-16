@@ -1,33 +1,37 @@
 package protocol
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Agnt-specific command verbs (beyond those in go-cli-server).
 const (
-	VerbProxy        = "PROXY"
-	VerbProxyLog     = "PROXYLOG"
-	VerbCurrentPage  = "CURRENTPAGE"
-	VerbTunnel       = "TUNNEL"
-	VerbBrowser      = "BROWSER"
-	VerbAutomation   = "AUTOMATION" // chromedp-based browser automation sessions
-	VerbChaos        = "CHAOS"
-	VerbDetect       = "DETECT"
-	VerbOverlay      = "OVERLAY"
-	VerbStatus       = "STATUS" // Full daemon status (Hub's INFO is minimal)
-	VerbStore        = "STORE"
-	VerbAutomate     = "AUTOMATE"      // Agent-based automation processing
-	VerbAlerts       = "ALERTS"        // Process output alert queries
-	VerbScript       = "SCRIPT"        // Script registry queries and control
-	VerbDoctor       = "DOCTOR"        // Health check / diagnostic report
-	VerbAutostart    = "AUTOSTART"     // Resolve port conflicts and resume autostart
-	VerbStreamEvents = "STREAM-EVENTS" // Long-lived event stream
-	VerbHook         = "HOOK"          // Claude Code hook dispatcher enqueue
-	VerbIncidents    = "INCIDENTS"     // Incident inbox query + mark-read
-	VerbPorts        = "PORTS"         // Listening-port inventory + orphan pgid management
-	VerbSessionHost  = "SESSION-HOST"  // Daemon-owned detachable PTY sessions (see docs/superpowers/specs/2026-07-03-remote-ssh-design.md §1)
-	VerbScope        = "SCOPE"         // Resolve effective query scope
-	VerbPublish      = "PUBLISH"       // Public walkthrough share-token lifecycle (control plane; see docs/superpowers/specs/2026-07-13-public-walkthrough-publish-security.md)
-	VerbShim         = "SHIM"          // Shell shim routing (EXEC) + install bookkeeping (REGISTER)
+	VerbProxy         = "PROXY"
+	VerbProxyLog      = "PROXYLOG"
+	VerbCurrentPage   = "CURRENTPAGE"
+	VerbTunnel        = "TUNNEL"
+	VerbBrowser       = "BROWSER"
+	VerbAutomation    = "AUTOMATION" // chromedp-based browser automation sessions
+	VerbChaos         = "CHAOS"
+	VerbDetect        = "DETECT"
+	VerbOverlay       = "OVERLAY"
+	VerbStatus        = "STATUS" // Full daemon status (Hub's INFO is minimal)
+	VerbStore         = "STORE"
+	VerbAutomate      = "AUTOMATE"      // Agent-based automation processing
+	VerbAlerts        = "ALERTS"        // Process output alert queries
+	VerbScript        = "SCRIPT"        // Script registry queries and control
+	VerbDoctor        = "DOCTOR"        // Health check / diagnostic report
+	VerbAutostart     = "AUTOSTART"     // Resolve port conflicts and resume autostart
+	VerbStreamEvents  = "STREAM-EVENTS" // Long-lived event stream
+	VerbHook          = "HOOK"          // Claude Code hook dispatcher enqueue
+	VerbIncidents     = "INCIDENTS"     // Incident inbox query + mark-read
+	VerbPorts         = "PORTS"         // Listening-port inventory + orphan pgid management
+	VerbSessionHost   = "SESSION-HOST"  // Daemon-owned detachable PTY sessions (see docs/superpowers/specs/2026-07-03-remote-ssh-design.md §1)
+	VerbScope         = "SCOPE"         // Resolve effective query scope
+	VerbPublish       = "PUBLISH"       // Public walkthrough share-token lifecycle (control plane; see docs/superpowers/specs/2026-07-13-public-walkthrough-publish-security.md)
+	VerbShim          = "SHIM"          // Shell shim routing (EXEC) + install bookkeeping (REGISTER)
+	VerbInvestigation = "INVESTIGATION" // Per-session investigation record (GET read, MERGE replace-on-write patch)
 )
 
 // DirectoryFilter preserves JSON presence for global while retaining the
@@ -118,6 +122,7 @@ const (
 	SubVerbNavigate       = "NAVIGATE"      // Navigate to URL in automation session
 	SubVerbEvaluate       = "EVALUATE"      // Evaluate JavaScript in automation session
 	SubVerbReport         = "REPORT"        // Report alert matches from agnt run
+	SubVerbMerge          = "MERGE"         // Merge a patch into the per-session investigation record
 	SubVerbStartupLog     = "STARTUP-LOG"   // Query startup log (successes and failures)
 	SubVerbClearPorts     = "CLEAR-PORTS"   // Kill port blockers and resume autostart
 	SubVerbContinue       = "CONTINUE"      // Resume autostart without killing blockers
@@ -881,4 +886,127 @@ type InboxStatsRecord struct {
 	Info     int   `json:"info"`
 	Dropped  int64 `json:"dropped"`
 	New      int   `json:"new"` // unread entries
+}
+
+// Bounds for the per-session investigation record (INVESTIGATION GET/MERGE).
+// The record is a working memory for verify/QA tools, so it must stay small
+// enough to read whole; exceeding writers lose the oldest entries rather than
+// growing without bound.
+const (
+	// MaxInvestigationFindings caps Findings; appends evict the oldest (FIFO).
+	MaxInvestigationFindings = 32
+	// MaxInvestigationFailedAreas caps FailedAreas; merges set-union and keep
+	// the most recently named areas when the union exceeds the cap.
+	MaxInvestigationFailedAreas = 8
+)
+
+// FindingRef is a compact pointer at a finding the agent already surfaced
+// (usually an incident fingerprint) so later tools re-read it instead of
+// re-discovering it.
+type FindingRef struct {
+	Fingerprint string    `json:"fingerprint"`
+	Severity    string    `json:"severity,omitempty"`
+	Source      string    `json:"source,omitempty"`
+	Summary     string    `json:"summary,omitempty"`
+	SeenAt      time.Time `json:"seen_at,omitempty"`
+}
+
+// Investigation is the per-session investigation record. It lives on the
+// daemon Session behind an atomic.Pointer and dies with the session —
+// nothing here survives unregister, heartbeat-timeout disconnect, or daemon
+// shutdown (per-session isolation, daemon-architecture.md numbered contract 1).
+type Investigation struct {
+	ActiveProxyID       string       `json:"active_proxy_id,omitempty"`
+	ActivePageSessionID string       `json:"active_page_session_id,omitempty"`
+	IncidentCursor      time.Time    `json:"incident_cursor,omitempty"`
+	Findings            []FindingRef `json:"findings,omitempty"`
+	FailedAreas         []string     `json:"failed_areas,omitempty"`
+	VisualBaselineRef   string       `json:"visual_baseline_ref,omitempty"`
+	UpdatedAt           time.Time    `json:"updated_at"`
+}
+
+// InvestigationPatch is the INVESTIGATION MERGE payload. Merge semantics:
+// non-zero scalar fields replace, Findings append with FIFO eviction at
+// MaxInvestigationFindings, FailedAreas set-union capped at
+// MaxInvestigationFailedAreas. A zero-valued patch is a no-op except UpdatedAt.
+type InvestigationPatch struct {
+	ActiveProxyID       string       `json:"active_proxy_id,omitempty"`
+	ActivePageSessionID string       `json:"active_page_session_id,omitempty"`
+	IncidentCursor      time.Time    `json:"incident_cursor,omitempty"`
+	Findings            []FindingRef `json:"findings,omitempty"`
+	FailedAreas         []string     `json:"failed_areas,omitempty"`
+	VisualBaselineRef   string       `json:"visual_baseline_ref,omitempty"`
+}
+
+// MergeInvestigation applies patch to cur (nil cur starts an empty record)
+// and returns a NEW record — the caller stores it replace-on-write so readers
+// never observe a partially merged record.
+func MergeInvestigation(cur *Investigation, patch InvestigationPatch, now time.Time) *Investigation {
+	next := Investigation{UpdatedAt: now}
+	if cur != nil {
+		next = *cur
+		// Defensive copy: the append paths below must never write through
+		// into a backing array a concurrent reader still holds.
+		next.Findings = append([]FindingRef(nil), cur.Findings...)
+		next.FailedAreas = append([]string(nil), cur.FailedAreas...)
+		next.UpdatedAt = now
+	}
+	if patch.ActiveProxyID != "" {
+		next.ActiveProxyID = patch.ActiveProxyID
+	}
+	if patch.ActivePageSessionID != "" {
+		next.ActivePageSessionID = patch.ActivePageSessionID
+	}
+	if !patch.IncidentCursor.IsZero() {
+		next.IncidentCursor = patch.IncidentCursor
+	}
+	if patch.VisualBaselineRef != "" {
+		next.VisualBaselineRef = patch.VisualBaselineRef
+	}
+	next.Findings = append(next.Findings, patch.Findings...)
+	if overflow := len(next.Findings) - MaxInvestigationFindings; overflow > 0 {
+		next.Findings = next.Findings[overflow:]
+	}
+	if len(patch.FailedAreas) > 0 {
+		seen := make(map[string]bool, len(next.FailedAreas)+len(patch.FailedAreas))
+		for _, a := range next.FailedAreas {
+			seen[a] = true
+		}
+		for _, a := range patch.FailedAreas {
+			if !seen[a] {
+				seen[a] = true
+				next.FailedAreas = append(next.FailedAreas, a)
+			}
+		}
+		if overflow := len(next.FailedAreas) - MaxInvestigationFailedAreas; overflow > 0 {
+			next.FailedAreas = next.FailedAreas[overflow:]
+		}
+	}
+	return &next
+}
+
+// InvestigationGetRequest is the request payload for INVESTIGATION GET.
+// SessionCode picks which of the caller's sessions to read when the
+// connection is not itself session-bound (the MCP daemon connection never
+// is); empty falls back to the connection's bound session. The records stay
+// hard-isolated — the caller merely selects one (same rule as
+// IncidentQueryFilter.SessionCode).
+type InvestigationGetRequest struct {
+	SessionCode string `json:"session_code,omitempty"`
+}
+
+// InvestigationMergeRequest is the request payload for INVESTIGATION MERGE.
+type InvestigationMergeRequest struct {
+	SessionCode string             `json:"session_code,omitempty"`
+	Patch       InvestigationPatch `json:"patch"`
+}
+
+// InvestigationResult is the response payload for INVESTIGATION GET / MERGE.
+// Found is false (and Investigation nil) when the named session no longer
+// exists or has not started an investigation — a retired session reads empty,
+// never stale.
+type InvestigationResult struct {
+	SessionCode   string         `json:"session_code"`
+	Found         bool           `json:"found"`
+	Investigation *Investigation `json:"investigation,omitempty"`
 }

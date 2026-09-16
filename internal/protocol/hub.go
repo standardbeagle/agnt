@@ -3,6 +3,14 @@
 // This package extends go-cli-server/protocol with agnt-specific verbs and types.
 // The core protocol infrastructure (Parser, Writer, Command, Response) comes
 // from go-cli-server, while this package adds agnt-specific extensions.
+//
+// INVESTIGATION GET {session_code} reads the per-session investigation record
+// (Investigation); INVESTIGATION MERGE {session_code, patch} applies an
+// InvestigationPatch replace-on-write (non-zero scalars replace, Findings
+// append capped at MaxInvestigationFindings FIFO, FailedAreas set-union capped
+// at MaxInvestigationFailedAreas). The record lives on the daemon Session and
+// is dropped with it — unregister, heartbeat-timeout disconnect, and daemon
+// shutdown all leave nothing behind.
 package protocol
 
 import (

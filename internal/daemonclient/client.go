@@ -748,6 +748,50 @@ func (c *Client) SessionURL(code string, url string, scriptName string) (map[str
 	return req.JSON()
 }
 
+// InvestigationGet reads the per-session investigation record (INVESTIGATION
+// GET). sessionCode may be empty when the connection itself is session-bound;
+// the MCP daemon connection must name one. A retired session returns a result
+// with Found=false and a nil Investigation — never a stale record.
+func (c *Client) InvestigationGet(sessionCode string) (*protocol.InvestigationResult, error) {
+	result, err := c.conn.Request(protocol.VerbInvestigation, protocol.SubVerbGet).
+		WithJSON(protocol.InvestigationGetRequest{SessionCode: sessionCode}).JSON()
+	if err != nil {
+		return nil, err
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	var resp protocol.InvestigationResult
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
+// InvestigationMerge applies patch to the session's investigation record
+// (INVESTIGATION MERGE) and returns the merged record. Merge semantics:
+// non-zero scalars replace, Findings append capped at
+// protocol.MaxInvestigationFindings (FIFO), FailedAreas set-union capped at
+// protocol.MaxInvestigationFailedAreas; a zero-valued patch is a no-op except
+// UpdatedAt.
+func (c *Client) InvestigationMerge(sessionCode string, patch protocol.InvestigationPatch) (*protocol.InvestigationResult, error) {
+	result, err := c.conn.Request(protocol.VerbInvestigation, protocol.SubVerbMerge).
+		WithJSON(protocol.InvestigationMergeRequest{SessionCode: sessionCode, Patch: patch}).JSON()
+	if err != nil {
+		return nil, err
+	}
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil, err
+	}
+	var resp protocol.InvestigationResult
+	if err := json.Unmarshal(data, &resp); err != nil {
+		return nil, err
+	}
+	return &resp, nil
+}
+
 // StoreGet retrieves a value from the key-value store.
 func (c *Client) StoreGet(req protocol.StoreGetRequest) (map[string]interface{}, error) {
 	return c.conn.Request(protocol.VerbStore, protocol.SubVerbGet).WithJSON(req).JSON()
