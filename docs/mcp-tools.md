@@ -284,27 +284,43 @@ Run responsive design audits across multiple viewport sizes. Detects layout issu
 | `checks` | array | all | Checks to run: `["layout", "overflow", "a11y"]` |
 | `timeout` | int | 10000 | Load timeout per viewport (ms) |
 | `raw` | bool | false | Return full JSON instead of compact text |
+| `profile` | string | `full` | Finding projection: `bug` (top 5 by severity), `release`, or `full` |
+
+**Profiles** (compact output projection, applied Go-side over the raw finding
+JSON): `bug` renders only the top 5 findings by severity (critical > warning >
+info, stable within a severity) — the triage view; `release` and `full` render
+every finding.
 
 **Examples**:
 ```json
 responsive_audit {proxy_id: "dev"}
 responsive_audit {proxy_id: "dev", checks: ["layout", "overflow"]}
 responsive_audit {proxy_id: "dev", viewports: [{name: "xs", width: 320, height: 568}]}
+responsive_audit {proxy_id: "dev", profile: "bug"}
 responsive_audit {proxy_id: "dev", raw: true}
 ```
 
-**Compact Output Format**:
+**Compact Output Format** — every finding line is followed by its stable `id:`
+and one `next:` remediation line (a concrete `__devtool` helper call with the
+finding's selector: horizontal scroll → `getContainer`, fixed-position trap →
+`getStacking`, clipped/truncated → `getBox`, image overflow → `inspect`):
 ```
 === Responsive Audit: 3 viewports ===
 
 MOBILE (375px) - 2 issues
-  ! [layout] .header - collapsed content, element has text but zero height
-  o [overflow] .sidebar - truncated text without title/tooltip
+  ! [layout] .header - collapsed content, element has text but zero height #a1b2c3d4
+    id: a1b2c3d4
+    next: __devtool.inspect('.header')
+  o [overflow] .sidebar - truncated text without title/tooltip #e5f60718
+    id: e5f60718
+    next: __devtool.getBox('.sidebar')
 
 TABLET (768px) - 0 issues
 
 DESKTOP (1440px) - 1 issues
-  ! [layout] .fixed-nav - fixed element covers 45% of viewport
+  ! [layout] .fixed-nav - fixed element covers 45% of viewport #29a3b4c5
+    id: 29a3b4c5
+    next: __devtool.getStacking('.fixed-nav')
 
 SUMMARY: 3 issues (1 critical, 2 minor)
 PATTERNS: 1 mobile-only, 0 tablet-only, 1 cross-viewport

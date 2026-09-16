@@ -18,6 +18,7 @@ type ResponsiveAuditInput struct {
 	Checks    []string        `json:"checks,omitempty" jsonschema:"Checks to run: layout, overflow, a11y (default: all)"`
 	Timeout   int             `json:"timeout,omitempty" jsonschema:"Load timeout per viewport in ms (default: 10000)"`
 	Raw       bool            `json:"raw,omitempty" jsonschema:"Return full JSON instead of compact text"`
+	Profile   string          `json:"profile,omitempty" jsonschema:"Finding projection: 'bug' (top 5 by severity), 'release', or 'full' (default: full)"`
 }
 
 // ViewportInput defines a viewport for testing.
@@ -50,7 +51,16 @@ Examples:
   responsive_audit {proxy_id: "dev"}
   responsive_audit {proxy_id: "dev", checks: ["layout", "overflow"]}
   responsive_audit {proxy_id: "dev", viewports: [{name: "xs", width: 320, height: 568}]}
+  responsive_audit {proxy_id: "dev", profile: "bug"}
   responsive_audit {proxy_id: "dev", raw: true}
+
+Profiles (compact output projection):
+  bug:     Top 5 findings by severity — triage view
+  release: All findings — release gate
+  full:    All findings (default)
+
+Each compact finding carries an "id:" line (stable finding ID) and a "next:"
+line (a concrete __devtool helper call for the offending selector).
 
 Output:
   - Default: Compact text format optimized for AI consumption
@@ -98,8 +108,11 @@ func (dt *DaemonTools) makeResponsiveAuditHandler() func(context.Context, *mcp.C
 
 // executeResponsiveAuditDaemon runs the responsive audit using the daemon client.
 func (dt *DaemonTools) executeResponsiveAuditDaemon(input ResponsiveAuditInput) (*mcp.CallToolResult, ResponsiveAuditOutput, error) {
-	// Build the audit options for the browser
+	// Build the audit options for the browser. The JS module is the finding
+	// producer: always request raw JSON so the Go side owns the profile
+	// projection and compact rendering.
 	auditOpts := buildAuditOptions(input)
+	auditOpts["raw"] = true
 
 	// Build JavaScript code to execute
 	optsJSON, err := json.Marshal(auditOpts)
@@ -157,8 +170,15 @@ func (dt *DaemonTools) executeResponsiveAuditDaemon(input ResponsiveAuditInput) 
 			output.Raw = rawResult
 		}
 	} else {
-		// Result is already formatted as compact text
-		output.Summary = resultStr
+		// Render compact text in Go from the raw finding JSON, applying the
+		// requested profile projection.
+		compact, err := renderResponsiveCompact([]byte(resultStr), input.Profile)
+		if err != nil {
+			// Fall back to the unrendered payload rather than dropping it.
+			output.Summary = resultStr
+		} else {
+			output.Summary = compact
+		}
 	}
 
 	return nil, output, nil
@@ -233,6 +253,13 @@ func validateResponsiveAuditInput(input ResponsiveAuditInput) error {
 	// Validate timeout
 	if input.Timeout < 0 {
 		return fmt.Errorf("invalid timeout: %d (must be non-negative)", input.Timeout)
+	}
+
+	// Validate profile
+	switch input.Profile {
+	case "", AuditProfileBug, AuditProfileRelease, AuditProfileFull:
+	default:
+		return fmt.Errorf("invalid profile: %q (valid: bug, release, full)", input.Profile)
 	}
 
 	return nil

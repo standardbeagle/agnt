@@ -1,0 +1,86 @@
+{
+  "viewports": {
+    "mobile": {
+      "width": 375,
+      "issues": [
+        {
+          "id": "f111aaaa",
+          "type": "overflow",
+          "severity": "critical",
+          "selector": ".main",
+          "message": "forces horizontal scroll +25px",
+          "next": "proxy exec __devtool.getContainer('.main')"
+        },
+        {
+          "id": "f222bbbb",
+          "type": "layout",
+          "severity": "critical",
+          "selector": ".header",
+          "message": "collapsed content, element has text but zero height",
+          "next": "__devtool.inspect('.header')"
+        },
+        {
+          "id": "f333cccc",
+          "type": "layout",
+          "severity": "warning",
+          "selector": ".nav",
+          "message": "fixed element covers 30% of viewport",
+          "next": "__devtool.getStacking('.nav')"
+        },
+        {
+          "id": "f444dddd",
+          "type": "overflow",
+          "severity": "info",
+          "selector": ".sidebar",
+          "message": "truncated text without title/tooltip",
+          "next": "__devtool.getBox('.sidebar')"
+        }
+      ]
+    },
+    "tablet": {
+      "width": 768,
+      "issues": [
+        {
+          "id": "f555eeee",
+          "type": "overflow",
+          "severity": "warning",
+          "selector": ".content",
+          "message": "content clipped by overflow:hidden",
+          "next": "__devtool.getBox('.content')"
+        },
+        {
+          "id": "f666ffff",
+          "type": "overflow",
+          "severity": "warning",
+          "selector": "img.hero",
+          "message": "image squeezed or hidden by container",
+          "next": "__devtool.inspect('img.hero')"
+        }
+      ]
+    },
+    "desktop": {
+      "width": 1440,
+      "issues": [
+        {
+          "id": "f7770000",
+          "type": "a11y",
+          "severity": "info",
+          "selector": "button.submit",
+          "message": "touch target smaller than 44x44px minimum",
+          "next": "__devtool.inspect('button.submit')"
+        }
+      ]
+    }
+  },
+  "summary": {
+    "total": 7,
+    "critical": 2,
+    "minor": 5,
+    "complete": true
+  },
+  "patterns": {
+    "mobileOnly": 0,
+    "tabletOnly": 0,
+    "crossViewport": 0
+  }
+}

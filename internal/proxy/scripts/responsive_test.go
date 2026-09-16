@@ -25,6 +25,15 @@ func TestResponsiveScriptEmbedded(t *testing.T) {
 	}
 }
 
+func TestResponsiveFindingsCarryNext(t *testing.T) {
+	// Findings must be produced with a `next` remediation action so the
+	// Go-side compact renderer can emit `next:` lines per finding.
+	combined := buildCombinedScript(RoleFull)
+	if !strings.Contains(combined, "responsiveNextAction") {
+		t.Error("responsive.js findings do not carry a next action (responsiveNextAction helper missing)")
+	}
+}
+
 func TestResponsiveInScriptNames(t *testing.T) {
 	names := GetScriptNames()
 	found := false

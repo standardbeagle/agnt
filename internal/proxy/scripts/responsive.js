@@ -768,6 +768,28 @@
   }
 
   /**
+   * Compute the remediation `next` action for a finding: one concrete
+   * __devtool helper call whose arguments come from the finding itself.
+   * The Go side renders this as the finding's `next:` line; the mapping is
+   * keyed off the finding's message, set by the detectors above.
+   */
+  function responsiveNextAction(issue) {
+    var sel = issue.selector || '';
+    var msg = issue.message || '';
+    if (msg.indexOf('horizontal scroll') !== -1) {
+      return "proxy exec __devtool.getContainer('" + sel + "')";
+    }
+    if (msg.indexOf('fixed element covers') !== -1) {
+      return "__devtool.getStacking('" + sel + "')";
+    }
+    if (msg.indexOf('clipped') !== -1 || msg.indexOf('truncated') !== -1) {
+      return "__devtool.getBox('" + sel + "')";
+    }
+    // Image overflow and everything else (layout, a11y).
+    return "__devtool.inspect('" + sel + "')";
+  }
+
+  /**
    * Run the full responsive audit across all viewports
    * @param {object} options - Audit options
    * @param {array} options.viewports - Custom viewports to test
@@ -873,9 +895,12 @@
               checksComplete: viewportResult.checksComplete !== false
             };
 
-            // Update summary counts
+            // Update summary counts and attach remediation actions
             for (var i = 0; i < viewportResult.issues.length; i++) {
               var issue = viewportResult.issues[i];
+              if (!issue.next) {
+                issue.next = responsiveNextAction(issue);
+              }
               results.summary.total++;
               if (issue.severity === 'critical') {
                 results.summary.critical++;
