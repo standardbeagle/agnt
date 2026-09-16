@@ -155,15 +155,29 @@ Printed by `go test -run TestFollower_ContractBeatsBaselineOnEveryMetric -v ./in
 | blank_page         | 4/50820/12705/0/0/0     | 3/488/122/0/0/0     |
 | dead_click         | 4/48820/12205/0/0/0     | 3/526/131/0/0/0     |
 | loading_flicker    | 3/6920/1730/0/0/1       | 3/478/119/0/0/0     |
-| mobile_overflow    | 4/9220/2305/0/0/1       | 3/543/135/0/0/0     |
-| release_qa         | 5/17820/4455/0/0/3      | 5/944/236/0/0/1     |
+| mobile_overflow    | 4/9220/2305/0/0/1       | 3/532/133/0/0/0     |
+| release_qa         | 5/17820/4455/0/0/3      | 5/815/203/0/0/1 †   |
 | zindex_positioning | 4/5620/1405/0/0/0       | 3/450/112/0/0/0     |
+
+† `release_qa` contains 2 **prescribed steps**: the sweep links
+`responsive_audit → api_audit → loading_audit`. Clean audits render no
+`next:`, and the shipped contract provides no cross-audit pointer, so these
+links are recorded explicitly in the fixture (`prescribed` field), marked
+`prescribed: true` in the trace, and disclosed here — never injected as a
+`next:` pointer on a formatter-rendered response. Every pointer the
+follower consumes from a formatter-rendered response is one the shipped
+code produces for that input; `TestContractFixturePointersAreShipped`
+asserts responsive issue `next` values match `responsiveNextAction` for the
+issue's message and rejects `next` overrides on formatter-rendered
+responses.
 
 ### Honest limits
 
 - **Prescribed workflow, not a model.** The contract trace follows the
   documented pointer chain; it proves the shipped `next:` pointers are
-  parseable and efficient, not that a live agent will follow them.
+  parseable and efficient, not that a live agent will follow them. The
+  `release_qa` sweep order itself is prescribed (see † above): the shipped
+  tools do not emit a pointer from one clean audit to the next.
 - **Fixture responses.** Responses are recorded/rendered fixtures; live
   daemon state, timing and long-tail output sizes are absent. Formatter-owned
   responses are regenerated from inputs so formatter drift breaks the gate.
