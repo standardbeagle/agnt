@@ -237,6 +237,39 @@ func TestVerifyChange_MergesOutcomeIntoInvestigation(t *testing.T) {
 	}
 }
 
+// TestVerifyChange_NarrowedTargetsNeverDuplicateRecordedFindings: when
+// finding_ids narrows the target set, an id already recorded in the
+// Investigation for the same producer that the producer still reports is
+// neither "new" nor appended again — the merged Investigation lists it
+// exactly once and New is empty.
+func TestVerifyChange_NarrowedTargetsNeverDuplicateRecordedFindings(t *testing.T) {
+	fx := &verifyFixture{
+		inv: &protocol.Investigation{Findings: []protocol.FindingRef{
+			ref("aaaa1111", "api_audit", false), // target, resolves
+			ref("bbbb2222", "api_audit", false), // recorded, NOT a target, still reported
+		}},
+		responses: map[string][]string{"api_audit": {"bbbb2222"}},
+	}
+	out, err := runVerifyChange(context.Background(), VerifyChangeInput{
+		FindingIDs: []string{"aaaa1111"},
+	}, fx.deps())
+	if err != nil {
+		t.Fatalf("runVerifyChange: %v", err)
+	}
+	if len(out.New) != 0 {
+		t.Fatalf("new = %v, want empty: bbbb2222 is already recorded, not new", out.New)
+	}
+	count := 0
+	for _, r := range fx.merged.Findings {
+		if r.Fingerprint == "bbbb2222" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("bbbb2222 listed %d times in merged investigation, want exactly 1: %+v", count, fx.merged.Findings)
+	}
+}
+
 // TestVerifyChange_DispatcherRequestsRawAndReportsPersist drives the same
 // dispatch constructors defaultVerifyProducers uses, backed by handler-faithful
 // stubs: audit/diagnose handlers only fill Raw when the caller asks for it.
