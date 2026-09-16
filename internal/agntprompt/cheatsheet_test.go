@@ -30,6 +30,9 @@ func TestBuildCheatSheet_ContainsHeader(t *testing.T) {
 	if !strings.Contains(out, "Prefer __devtool.* helpers over raw document.*") {
 		t.Errorf("cheat sheet missing rules block; got:\n%s", out)
 	}
+	if !strings.Contains(out, "task-level audit first") {
+		t.Errorf("cheat sheet missing audit-first rule; got:\n%s", out)
+	}
 	if !strings.Contains(out, "proxy exec search:") {
 		t.Errorf("cheat sheet missing search hint; got:\n%s", out)
 	}

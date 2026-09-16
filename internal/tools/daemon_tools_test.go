@@ -309,6 +309,18 @@ func TestProxyToolDescription_NoRawDevtoolCalls(t *testing.T) {
 	}
 }
 
+func TestProxyToolDescription_AuditBeforeExec(t *testing.T) {
+	desc := ProxyToolDescription
+	auditIdx := strings.Index(desc, "dedicated MCP audit")
+	searchIdx := strings.Index(desc, "search:")
+	if auditIdx < 0 || searchIdx < 0 || auditIdx > searchIdx {
+		t.Errorf("dedicated audits must precede the exec discovery ladder")
+	}
+	if !strings.Contains(desc, "drill into failed areas only") {
+		t.Error("description must make targeted drill-down conditional")
+	}
+}
+
 // TestProxyToolDescription_LineLimit verifies the description stays within
 // the 80-line budget defined in the task spec.
 func TestProxyToolDescription_LineLimit(t *testing.T) {

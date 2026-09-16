@@ -5,10 +5,14 @@ package tools
 // description stays in sync across both registration paths.
 const ProxyToolDescription = `Manage reverse proxy servers with traffic logging and frontend instrumentation.
 
-Discovery (do this FIRST when using exec):
+Prefer a dedicated MCP audit when it answers the question: responsive_audit,
+api_audit, loading_audit, snapshot. For broader page QA, run one compact
+auditPageQuality pass; drill into failed areas only.
+
+Discovery (before targeted exec):
   proxy {action: "exec", search: "X"}          -- find helpers by keyword
   proxy {action: "exec", describe: "name"}     -- get full signature + example
-  proxy {action: "exec", code: "..."}          -- run JS (use helpers, not raw DOM)
+  proxy {action: "exec", code: "..."}          -- call one helper; raw JS last
 
 Proxy lifecycle:
   proxy {action: "start", id: "dev", target_url: "http://localhost:3000"}

@@ -66,6 +66,7 @@ var PromotedFunctions = []string{
 // cheatSheetHeader is the fixed rules block that precedes the helper
 // list. Kept verbatim so the drift test can pin it.
 const cheatSheetHeader = `## Browser debugging helpers
+Run the task-level audit first; drill into failed evidence only.
 Prefer __devtool.* helpers over raw document.*/window.*/getBoundingClientRect.
 Call ` + "`proxy exec search: X`" + ` before writing raw JS.
 Use ` + "`proxy exec describe: name`" + ` for full signature + example.

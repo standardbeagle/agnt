@@ -3,6 +3,22 @@
 Full tool catalog, per-tool parameters, and output formats. CLAUDE.md carries
 only the summary table + handler pattern; this is the detailed reference.
 
+## Agent call order
+
+Use the broadest existing operation that can answer the question:
+
+1. Read `get_incidents`, `currentpage`, or process output for current state.
+2. Run the matching MCP audit: `responsive_audit`, `api_audit`, `loading_audit`,
+   or `snapshot`. For release QA, begin with one compact
+   `__devtool.auditPageQuality()` call.
+3. Drill into failed areas only. Use `proxy exec` `search`, then `describe`, then
+   one targeted `__devtool.*` helper.
+4. Use raw JavaScript only when the catalog has no helper. Do not rebuild an
+   audit with selectors or many piecemeal REPL calls.
+
+One audit plus targeted evidence is the default. Independent full audits are
+for an explicit audit request, not routine debugging.
+
 ## Tool Catalog
 
 | Tool | Description |
