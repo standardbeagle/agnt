@@ -1,6 +1,10 @@
 package incident
 
-import "time"
+import (
+	"time"
+
+	"github.com/standardbeagle/agnt/internal/finding"
+)
 
 // IncidentView is the pull-side projection of an InboxEntry, enriched with
 // remediation guidance. Used by get_incidents output and AggregateRemediation.
@@ -20,12 +24,9 @@ type IncidentView struct {
 	Read        bool        `json:"read"`
 }
 
-// ToolSuggestion is a pre-filled tool call with a one-line rationale.
-type ToolSuggestion struct {
-	Tool      string         `json:"tool"`
-	Args      map[string]any `json:"args,omitempty"`
-	Rationale string         `json:"rationale"`
-}
+// ToolSuggestion is a pre-filled tool call with a one-line rationale. It is a
+// type alias of finding.NextAction so get_incidents output is unchanged.
+type ToolSuggestion = finding.NextAction
 
 type toolCall struct {
 	tool string
