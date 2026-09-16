@@ -21,7 +21,7 @@
       }
     },
     {
-      "call": {"tool": "currentpage", "action": "layout", "args": {"action": "layout", "proxy_id": "dev"}},
+      "call": {"tool": "currentpage", "action": "layout", "args": {"proxy_id": "dev"}},
       "text": "=== currentpage layout (dev) ===\n.app mounts spinner#list, spinner#chart, spinner#table concurrently; each unmounts independently\n  id: 2b3c4d5e",
       "useful": true,
       "finding_kind": "visual"

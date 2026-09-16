@@ -6,7 +6,7 @@
       "text": "=== currentpage ===\nurl: http://localhost:5173/\ntitle: App\nproxy: dev\n\nnext: snapshot {action:\"baseline\", name:\"release\"}"
     },
     {
-      "call": {"tool": "snapshot", "action": "baseline", "args": {"action": "baseline", "name": "release"}},
+      "call": {"tool": "snapshot", "action": "baseline", "args": {"name": "release"}},
       "text": "=== snapshot baseline ===\nsaved baseline 'release' (1920x1080)\n\nnext: responsive_audit {profile:\"full\"}"
     },
     {
@@ -54,7 +54,7 @@
       "finding_kind": "network"
     },
     {
-      "call": {"tool": "currentpage", "action": "layout", "args": {"action": "layout", "proxy_id": "dev"}},
+      "call": {"tool": "currentpage", "action": "layout", "args": {"proxy_id": "dev"}},
       "text": "=== currentpage layout (dev) ===\n.app mounts spinner#list, spinner#chart concurrently on route change\n  id: rq8b9c0d"
     }
   ]

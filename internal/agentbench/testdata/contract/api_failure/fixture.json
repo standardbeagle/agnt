@@ -23,7 +23,7 @@
       }
     },
     {
-      "call": {"tool": "proxylog", "action": "query", "args": {"action": "query", "proxy_id": "dev", "url_pattern": "/api/items/"}},
+      "call": {"tool": "proxylog", "action": "query", "args": {"proxy_id": "dev", "url_pattern": "/api/items/"}},
       "text": "=== proxylog query (dev) ===\n14x POST /api/items/ → 500 (12-40ms)\nfirst: 2026-09-16T11:00:01Z  last: 2026-09-16T11:00:02Z\n  id: 7f6e5d4c"
     }
   ]
