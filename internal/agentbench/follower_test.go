@@ -288,16 +288,42 @@ func TestFollower_UnknownNextActionFailsLoud(t *testing.T) {
 		t.Fatalf("error must quote the offending response, got: %v", err)
 	}
 
-	// Missing next on a non-terminal step: executor has no response for the
-	// follow-up call — also loud, never a silent end.
+	// Missing next: on the initial step, before any useful step — the chain
+	// broke immediately and must fail loudly quoting the response, never
+	// silently return a finding-less trace.
 	ex2 := &fixtureExecutor{scenario: "dead_end", byKey: map[string]fixtureResponse{
 		(Call{Tool: "currentpage"}).key(): {
 			Call: fixtureCall{Tool: "currentpage"},
-			Text: "=== currentpage ===\n\nnext: get_incidents",
+			Text: "=== currentpage ===\n\nurl: http://localhost:9999/\ntitle: blank",
 		},
 	}}
-	if _, err := Follow("dead_end", ex2); err == nil {
-		t.Fatalf("expected loud failure for unrecorded follow-up call")
+	_, err = Follow("dead_end", ex2)
+	if err == nil {
+		t.Fatalf("expected loud failure for missing next: on a non-terminal step")
+	}
+	if !strings.Contains(err.Error(), "no next") {
+		t.Fatalf("error must name the missing next action, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "title: blank") {
+		t.Fatalf("error must quote the offending response, got: %v", err)
+	}
+
+	// Missing next: after a useful finding is a legitimate terminal step —
+	// the run ends clean.
+	ex3 := &fixtureExecutor{scenario: "clean_end", byKey: map[string]fixtureResponse{
+		(Call{Tool: "currentpage"}).key(): {
+			Call:    fixtureCall{Tool: "currentpage"},
+			Text:    "=== currentpage ===\n\nerror: TypeError boom",
+			Useful:      true,
+			FindingKind: "errors",
+		},
+	}}
+	tr3, err := Follow("clean_end", ex3)
+	if err != nil {
+		t.Fatalf("terminal response after a useful step must end clean, got: %v", err)
+	}
+	if len(tr3.Steps) != 1 {
+		t.Fatalf("clean end: expected 1 step, got %d", len(tr3.Steps))
 	}
 }
 
