@@ -194,7 +194,10 @@ func runVerifyChange(ctx context.Context, input VerifyChangeInput, deps verifyDe
 		out.Findings = append(out.Findings, line)
 	}
 
-	// New: ids a target producer reports now that were not among its targets.
+	// New: ids a target producer reports now that were not among its targets
+	// AND not already recorded in the Investigation (a narrowed target set
+	// leaves recorded non-target ids in place; re-reporting them is persist,
+	// never new — otherwise every narrowed call duplicates the record).
 	newSet := map[string]bool{}
 	var newRefs []protocol.FindingRef
 	for key, ids := range runs {
@@ -203,6 +206,9 @@ func runVerifyChange(ctx context.Context, input VerifyChangeInput, deps verifyDe
 		}
 		for _, id := range ids {
 			if targetByTool[key.tool][id] || newSet[id] {
+				continue
+			}
+			if _, recorded := refsByID[id]; recorded {
 				continue
 			}
 			newSet[id] = true
