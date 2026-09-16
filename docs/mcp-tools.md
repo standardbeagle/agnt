@@ -479,8 +479,18 @@ identical evidence reproduces the same id.
 |-----------|------|---------|-------------|
 | `proxy_id` | string | required | Proxy ID to run audit on |
 | `raw` | bool | false | Return full JSON instead of compact text |
+| `profile` | string | full | Finding projection: `bug` (top 5 by severity), `release`, or `full` |
 
-**Output**: audit-module shape (`score`/`grade`/`summary`/`findings`/`findingSelectors`); score = 100 minus weighted findings → grade A–F.
+**Output**: audit-module shape (`score`/`grade`/`summary`/`findings`/`findingSelectors`); score = 100 minus weighted findings → grade A–F. Every compact finding line carries its stable `id:` and one exact `next:` drill-down action (raw JSON findings carry the same `next`):
+
+```
+n-plus-one (1)
+  [warning] https://x/api/items/1 — 7× GET /api/items/{id} → batch
+  id: aa000002
+  next: proxylog {action:"query", proxy_id:"dev", url_pattern:"/api/items/"}
+```
+
+`next` mapping: `n-plus-one` / `duplicate-call` / `chatty-load` → `proxylog {action:"query", url_pattern:<from finding>}` (n-plus-one uses the finding's template path truncated before the first `{id}` — e.g. `GET /api/items/{id}` → `/api/items/` — so the pattern substring-matches every recorded call URL in the group); `waterfall` → `proxylog {action:"summary", proxy_id}`.
 
 **Key Files**: `internal/proxy/scripts/audit-api.js` (`window.__devtool_audit_api.auditAPIEfficiency`), `internal/tools/api_audit.go`
 
@@ -497,8 +507,16 @@ identical evidence reproduces the same id.
 |-----------|------|---------|-------------|
 | `proxy_id` | string | required | Proxy ID to run audit on |
 | `raw` | bool | false | Return full JSON instead of compact text |
+| `profile` | string | full | Finding projection: `bug` (top 5 by severity), `release`, or `full` |
 
-**Output**: same audit-module shape; score = 100 minus cascade (depth-weighted, +critical) and fragmentation deductions → grade.
+**Output**: same audit-module shape; score = 100 minus cascade (depth-weighted, +critical) and fragmentation deductions → grade. Compact findings carry `id:` and a `next:` line; spinner findings drill into the page layout:
+
+```
+spinner-cascade (1)
+  [warning] #content .spinner — 3 loaders fired serially over 2400ms
+  id: bb000001
+  next: currentpage {action:"layout", proxy_id:"dev"}
+```
 
 **Key Files**: `internal/proxy/scripts/audit-loading.js` (`window.__devtool_audit_loading.auditLoading`), `internal/proxy/scripts/mutation.js` (spinner recorder), `internal/tools/loading_audit.go`
 

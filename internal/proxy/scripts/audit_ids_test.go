@@ -101,6 +101,20 @@ func TestAuditFindingIDStableHash(t *testing.T) {
 	}
 }
 
+// TestAuditAPIFindingsCarryID verifies every audit-api.js finding constructor
+// attaches the stable computeFindingID hash as the finding's id field.
+func TestAuditAPIFindingsCarryID(t *testing.T) {
+	types := []string{"waterfall", "n-plus-one", "duplicate-call", "chatty-load"}
+	for _, ty := range types {
+		if !strings.Contains(auditApiJS, "computeFindingID('"+ty+"'") {
+			t.Errorf("audit-api.js %s finding missing computeFindingID('%s', ...) id", ty, ty)
+		}
+	}
+	if n := strings.Count(auditApiJS, "id: id,"); n < len(types) {
+		t.Errorf("audit-api.js attaches the computed id in only %d finding constructors, want >= %d", n, len(types))
+	}
+}
+
 // TestAuditHighlightSharedRegistry verifies that responsive.js references the
 // shared window.__devtool.audit.findingSelectors so highlights from all four
 // audit modules are reachable via window.__devtool.audit.highlight.

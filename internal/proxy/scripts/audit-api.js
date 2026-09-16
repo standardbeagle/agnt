@@ -383,12 +383,16 @@
       var gf = findings[gi];
       if (!byType[gf.type]) byType[gf.type] = [];
       if (byType[gf.type].length < 5) {
-        byType[gf.type].push({
+        var entry = {
           id: gf.id,
           severity: gf.severity,
           selector: gf.selector,
           message: gf.message
-        });
+        };
+        // n-plus-one carries its method+path template so consumers can derive
+        // a url_pattern that substring-matches every call URL in the group.
+        if (gf.template) entry.template = gf.template;
+        byType[gf.type].push(entry);
       }
     }
 

@@ -17,6 +17,7 @@ type APIAuditInput struct {
 	Target  string `json:"target,omitempty" jsonschema:"Frame in the always-wrap model: 'inner' (default) = active page content frame; 'outer' = chrome shell. Audits normally want inner."`
 	FrameID string `json:"frame_id,omitempty" jsonschema:"Audit a specific content frame by id (default: the active content frame). Rarely needed."`
 	Raw     bool   `json:"raw,omitempty" jsonschema:"Return full JSON instead of compact text"`
+	Profile string `json:"profile,omitempty" jsonschema:"Finding projection: 'bug' (top 5 by severity), 'release', or 'full' (default: full)"`
 }
 
 // APIAuditOutput defines output for the api_audit tool.
@@ -67,7 +68,7 @@ func (dt *DaemonTools) makeAPIAuditHandler() func(context.Context, *mcp.CallTool
 			return fail[APIAuditOutput](err.Error())
 		}
 
-		res, summary, raw := dt.runBufferAudit(apiAuditSpec, input.ProxyID, input.Target, input.FrameID, input.Raw)
+		res, summary, raw := dt.runBufferAudit(apiAuditSpec, input.ProxyID, input.Target, input.FrameID, input.Raw, input.Profile)
 		if res != nil {
 			return res, APIAuditOutput{}, nil
 		}
@@ -107,7 +108,10 @@ func buildBufferAuditCode(spec bufferAuditSpec, raw bool) string {
 // runBufferAudit executes a buffer-backed audit via the daemon and returns
 // either an error result (non-nil first return) or a summary string plus an
 // optional raw payload. proxyID must already be resolved.
-func (dt *DaemonTools) runBufferAudit(spec bufferAuditSpec, proxyID, target, frameID string, raw bool) (*mcp.CallToolResult, string, any) {
+func (dt *DaemonTools) runBufferAudit(spec bufferAuditSpec, proxyID, target, frameID string, raw bool, profile string) (*mcp.CallToolResult, string, any) {
+	if err := validateBufferAuditProfile(profile); err != nil {
+		return fail[string](err.Error())
+	}
 	code := buildBufferAuditCode(spec, raw)
 
 	execTarget, err := resolveExecTarget(target, frameID)
@@ -141,15 +145,84 @@ func (dt *DaemonTools) runBufferAudit(spec bufferAuditSpec, proxyID, target, fra
 	}
 
 	if raw {
+		annotateBufferAuditNext(parsed, proxyID)
 		return nil, getString(parsed, "summary"), parsed
 	}
-	return nil, formatBufferAuditCompact(spec.headline, parsed), nil
+	return nil, formatBufferAuditCompact(spec.headline, parsed, proxyID, profile), nil
+}
+
+// validateBufferAuditProfile rejects unknown profile names.
+func validateBufferAuditProfile(profile string) error {
+	switch profile {
+	case "", AuditProfileBug, AuditProfileRelease, AuditProfileFull:
+		return nil
+	}
+	return fmt.Errorf("invalid profile: %q (valid: bug, release, full)", profile)
+}
+
+// bufferAuditURLPattern derives the proxylog query url_pattern for a
+// finding. For n-plus-one the finding's template ("GET /api/items/{id}") is
+// reduced to the concrete path prefix — method dropped, truncated before the
+// first {id} — so the pattern substring-matches every recorded request URL
+// in the group ("/api/items/"). Other findings use their URL selector.
+func bufferAuditURLPattern(findingType string, f map[string]any) string {
+	if findingType == "n-plus-one" {
+		if tmpl := getString(f, "template"); tmpl != "" {
+			pat := tmpl
+			if i := strings.Index(pat, "{id}"); i >= 0 {
+				pat = pat[:i]
+			}
+			if i := strings.Index(pat, " "); i >= 0 {
+				pat = pat[i+1:]
+			}
+			return pat
+		}
+	}
+	return getString(f, "selector")
+}
+
+// bufferAuditNextAction returns the exact follow-up tool action for one
+// finding: N+1/duplicate/chatty drill into the recorded call buffer via
+// proxylog query (url_pattern derived by bufferAuditURLPattern), waterfall
+// wants the buffer summary, and loading findings want the page layout view.
+// findingType is the resolved type (finding field or group key); S3b may
+// retarget the spinner findings to diagnose.
+func bufferAuditNextAction(findingType string, f map[string]any, proxyID string) string {
+	switch findingType {
+	case "n-plus-one", "duplicate-call", "chatty-load":
+		return fmt.Sprintf(`proxylog {action:"query", proxy_id:"%s", url_pattern:"%s"}`, proxyID, bufferAuditURLPattern(findingType, f))
+	case "waterfall":
+		return fmt.Sprintf(`proxylog {action:"summary", proxy_id:"%s"}`, proxyID)
+	case "spinner-cascade", "spinner-fragmentation":
+		return fmt.Sprintf(`currentpage {action:"layout", proxy_id:"%s"}`, proxyID)
+	}
+	return ""
+}
+
+// annotateBufferAuditNext adds a "next" action to every finding in the raw
+// JSON payload so raw consumers get the same drill-down as the compact text.
+func annotateBufferAuditNext(parsed map[string]any, proxyID string) {
+	findings, ok := parsed["findings"].([]any)
+	if !ok {
+		return
+	}
+	for _, fAny := range findings {
+		f, ok := fAny.(map[string]any)
+		if !ok {
+			continue
+		}
+		if next := bufferAuditNextAction(getString(f, "type"), f, proxyID); next != "" {
+			f["next"] = next
+		}
+	}
 }
 
 // formatBufferAuditCompact builds a short text summary from the AI-optimized
 // (non-raw) audit object: score/grade headline, summary line, and a grouped
-// list of findings by type.
-func formatBufferAuditCompact(headline string, parsed map[string]any) string {
+// list of findings by type. Every finding line is followed by its stable
+// `id:` and one exact `next:` drill-down action. The profile projection
+// (ProjectFindingsByProfile) selects which findings render.
+func formatBufferAuditCompact(headline string, parsed map[string]any, proxyID, profile string) string {
 	var b strings.Builder
 
 	score := getFloat64(parsed, "score")
@@ -168,31 +241,67 @@ func formatBufferAuditCompact(headline string, parsed map[string]any) string {
 		return strings.TrimRight(b.String(), "\n")
 	}
 
-	// Deterministic ordering of finding types.
-	types := make([]string, 0, len(byType))
+	// Flatten in sorted-type order (deterministic input for the stable bug
+	// sort), attach next actions, project by profile, regroup by type.
+	flatTypes := make([]string, 0, len(byType))
 	for t := range byType {
-		types = append(types, t)
+		flatTypes = append(flatTypes, t)
 	}
-	sort.Strings(types)
-
-	for _, t := range types {
-		findings, ok := byType[t].([]any)
-		if !ok || len(findings) == 0 {
+	sort.Strings(flatTypes)
+	flat := make([]AuditFinding, 0, len(byType))
+	for _, t := range flatTypes {
+		fList := byType[t]
+		findings, ok := fList.([]any)
+		if !ok {
 			continue
 		}
-		fmt.Fprintf(&b, "\n%s (%d)\n", t, len(findings))
 		for _, fAny := range findings {
 			f, ok := fAny.(map[string]any)
 			if !ok {
 				continue
 			}
-			sev := getString(f, "severity")
-			msg := getString(f, "message")
-			sel := getString(f, "selector")
-			if sel != "" {
-				fmt.Fprintf(&b, "  [%s] %s — %s\n", sev, sel, msg)
+			ft := getString(f, "type")
+			if ft == "" {
+				ft = t
+			}
+			flat = append(flat, AuditFinding{
+				ID:       getString(f, "id"),
+				Type:     ft,
+				Severity: getString(f, "severity"),
+				Selector: getString(f, "selector"),
+				Message:  getString(f, "message"),
+				Next:     bufferAuditNextAction(ft, f, proxyID),
+			})
+		}
+	}
+	projected := ProjectFindingsByProfile(flat, profile)
+
+	grouped := make(map[string][]AuditFinding)
+	for _, f := range projected {
+		grouped[f.Type] = append(grouped[f.Type], f)
+	}
+
+	// Deterministic ordering of finding types.
+	types := make([]string, 0, len(grouped))
+	for t := range grouped {
+		types = append(types, t)
+	}
+	sort.Strings(types)
+
+	for _, t := range types {
+		findings := grouped[t]
+		fmt.Fprintf(&b, "\n%s (%d)\n", t, len(findings))
+		for _, f := range findings {
+			if f.Selector != "" {
+				fmt.Fprintf(&b, "  [%s] %s — %s\n", f.Severity, f.Selector, f.Message)
 			} else {
-				fmt.Fprintf(&b, "  [%s] %s\n", sev, msg)
+				fmt.Fprintf(&b, "  [%s] %s\n", f.Severity, f.Message)
+			}
+			if f.ID != "" {
+				fmt.Fprintf(&b, "  id: %s\n", f.ID)
+			}
+			if f.Next != "" {
+				fmt.Fprintf(&b, "  next: %s\n", f.Next)
 			}
 		}
 	}

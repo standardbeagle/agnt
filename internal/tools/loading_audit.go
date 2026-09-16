@@ -13,6 +13,7 @@ type LoadingAuditInput struct {
 	Target  string `json:"target,omitempty" jsonschema:"Frame in the always-wrap model: 'inner' (default) = active page content frame; 'outer' = chrome shell. Audits normally want inner."`
 	FrameID string `json:"frame_id,omitempty" jsonschema:"Audit a specific content frame by id (default: the active content frame). Rarely needed."`
 	Raw     bool   `json:"raw,omitempty" jsonschema:"Return full JSON instead of compact text"`
+	Profile string `json:"profile,omitempty" jsonschema:"Finding projection: 'bug' (top 5 by severity), 'release', or 'full' (default: full)"`
 }
 
 // LoadingAuditOutput defines output for the loading_audit tool.
@@ -64,7 +65,7 @@ func (dt *DaemonTools) makeLoadingAuditHandler() func(context.Context, *mcp.Call
 			return fail[LoadingAuditOutput](err.Error())
 		}
 
-		res, summary, raw := dt.runBufferAudit(loadingAuditSpec, input.ProxyID, input.Target, input.FrameID, input.Raw)
+		res, summary, raw := dt.runBufferAudit(loadingAuditSpec, input.ProxyID, input.Target, input.FrameID, input.Raw, input.Profile)
 		if res != nil {
 			return res, LoadingAuditOutput{}, nil
 		}
