@@ -537,8 +537,7 @@ func defaultVerifyScreenshot(dt *DaemonTools) func(ctx context.Context, proxyID,
 		if proxyID == "" {
 			return "", fmt.Errorf("no proxy_id for visual screenshot")
 		}
-		optsJSON, _ := json.Marshal(map[string]any{"name": name})
-		result, err := dt.client.ProxyExec(proxyID, fmt.Sprintf("await __devtool.screenshot(%s)", optsJSON))
+		result, err := dt.client.ProxyExec(proxyID, buildScreenshotExecCode(name, false, ""))
 		if err != nil {
 			return "", err
 		}

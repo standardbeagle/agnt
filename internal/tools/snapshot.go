@@ -262,15 +262,7 @@ func handleSnapshotScreenshot(dt *DaemonTools, input SnapshotInput) (*mcp.CallTo
 
 	// Build __devtool.screenshot(opts) invocation. Browser overlay drops the
 	// PNG into audit storage and logs a `screenshot` entry with file_path.
-	opts := map[string]interface{}{"name": name}
-	if input.FullPage {
-		opts["fullPage"] = true
-	}
-	if input.Selector != "" {
-		opts["selector"] = input.Selector
-	}
-	optsJSON, _ := json.Marshal(opts)
-	code := fmt.Sprintf("await __devtool.screenshot(%s)", optsJSON)
+	code := buildScreenshotExecCode(name, input.FullPage, input.Selector)
 
 	execTarget, err := resolveExecTarget(input.Target, input.FrameID)
 	if err != nil {
@@ -295,6 +287,21 @@ func handleSnapshotScreenshot(dt *DaemonTools, input SnapshotInput) (*mcp.CallTo
 		Success: true,
 		Message: message,
 	}, nil
+}
+
+// buildScreenshotExecCode returns the Promise expression directly. The browser
+// exec harness evaluates classic-script source with eval(), where top-level
+// await is a syntax error, then awaits a returned Promise itself.
+func buildScreenshotExecCode(name string, fullPage bool, selector string) string {
+	opts := map[string]interface{}{"name": name}
+	if fullPage {
+		opts["fullPage"] = true
+	}
+	if selector != "" {
+		opts["selector"] = selector
+	}
+	optsJSON, _ := json.Marshal(opts)
+	return fmt.Sprintf("__devtool.screenshot(%s)", optsJSON)
 }
 
 // Helper functions
