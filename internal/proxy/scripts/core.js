@@ -354,7 +354,7 @@
           // id, so the agent can run a REPL in the outer frame ("outer" target)
           // without knowing the per-page shell id.
           var myRole = frameContext.role;
-          var match = targetFrame === '' ||
+          var match = (targetFrame === '' && myRole !== 'chrome') ||
             targetFrame === myFrame ||
             (targetFrame === '@chrome' && myRole === 'chrome');
           if (match) {

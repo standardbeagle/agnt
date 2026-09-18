@@ -103,11 +103,12 @@ func TestResolveExecTarget(t *testing.T) {
 func TestBundleExecFrameTargeting(t *testing.T) {
 	bundle := scripts.GetCombinedScript()
 	for _, want := range []string{
-		"message.frame_id",         // exec guard: run only if untargeted or addressed to this frame
-		"frame_active",             // content frame reports active to the proxy
-		"reportActive",             // the reporter helper
-		"@chrome",                  // outer-shell role token
-		"__devtool_resize_content", // shell-side resize helper
+		"message.frame_id",                          // exec guard: run only if untargeted or addressed to this frame
+		"targetFrame === '' && myRole !== 'chrome'", // untargeted fallback reaches content only
+		"frame_active",                              // content frame reports active to the proxy
+		"reportActive",                              // the reporter helper
+		"@chrome",                                   // outer-shell role token
+		"__devtool_resize_content",                  // shell-side resize helper
 	} {
 		if !strings.Contains(bundle, want) {
 			t.Errorf("bundle missing exec-targeting marker %q", want)
