@@ -1,5 +1,6 @@
 {
   "stack": "go",
+  "delivery": "internal-tool",
   "templates": [
     {
       "name": "go-slice",
