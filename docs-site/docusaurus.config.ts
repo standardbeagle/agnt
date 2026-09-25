@@ -95,6 +95,10 @@ const config: Config = {
     // Regenerate with: npm run social-card (source: scripts/social-card.html).
     image: 'img/agnt-social-card.png',
     metadata: [
+      // Google-only removal (2026-09-25): the whole dev host is disowned from
+      // Google — frozen since 2026-08-18 and dragging the parent domain.
+      // Bingbot ignores the googlebot name and indexes normally.
+      {name: 'googlebot', content: 'noindex, follow'},
       {name: 'keywords', content: 'MCP server, browser debugging, AI coding agent, Claude Code, Cursor, Windsurf, frontend debugging, error tracking, DOM inspection, screenshots'},
       // Site-level tags only. og:title / og:description / og:url / og:image are
       // emitted per page by the theme (from the page title + front-matter
