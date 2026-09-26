@@ -18,11 +18,3 @@ alias "test" {
     args "test" "./..."
 }
 
-
-// The dev-fleet install that follows a tagged release (worktrack delivery
-// profile internal-tool: deploy via tag, then this). Installs agnt, devtool-mcp
-// and agnt-daemon into ~/.local/bin on the host that runs the deploy.
-alias "fleet-deploy" {
-    command "make"
-    args "install-local"
-}
