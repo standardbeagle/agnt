@@ -64,6 +64,11 @@ export function validateDemoSpec(spec) {
 
   if (spec.narration !== undefined) validateNarration(spec.narration, segIds, err);
   if (spec.brand !== undefined) validateBrand(spec.brand, err);
+  if (spec.cardBrand !== undefined) {
+    const b = spec.cardBrand;
+    if (!isObject(b) || !isString(b.name) || b.name.trim() === '') err('cardBrand.name: required non-empty string');
+    else if (b.sub !== undefined && !isString(b.sub)) err('cardBrand.sub: must be a string');
+  }
 
   return {ok: errors.length === 0, errors};
 }

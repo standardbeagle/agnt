@@ -59,7 +59,12 @@ export const cachedMezz = (takeFastKey, seg, view, {cacheDir, mezzOut}, deps) =>
   return mezzOut;
 };
 
-const cardHTML = (kicker, title, sub, view) => `<!DOCTYPE html><html><head><style>
+// The wordmark at a card's bottom right. spec.cardBrand ({name, sub}) sets it
+// for demos of other products; without one it stays agnt's.
+const DEFAULT_CARD_BRAND = {name: 'agnt', sub: 'dev'};
+const escapeHTML = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+
+export const cardHTML = (kicker, title, sub, view, brand = DEFAULT_CARD_BRAND) => `<!DOCTYPE html><html><head><style>
   body { margin:0; width:${view.width}px; height:${view.height}px; background:#0f1117; color:#e6e9ef;
          font:15px -apple-system,'Segoe UI',Roboto,sans-serif; display:flex; align-items:center; }
   .wrap { padding-left:120px; max-width:1000px; }
@@ -71,7 +76,7 @@ const cardHTML = (kicker, title, sub, view) => `<!DOCTYPE html><html><head><styl
   .brand b { color:#e6e9ef; } .brand span { color:#4f8cff; }
 </style></head><body><div class="bar"></div><div class="wrap">
   ${kicker ? `<div class="kicker">${kicker}</div>` : ''}<h1>${title}</h1><div class="sub">${sub}</div>
-</div><div class="brand"><b>agnt</b><span>·</span>dev</div></body></html>`;
+</div><div class="brand"><b>${escapeHTML(brand.name)}</b>${brand.sub ? `<span>·</span>${escapeHTML(brand.sub)}` : ''}</div></body></html>`;
 
 // Keep-range endpoint grammar: "start" | "end" | "mark:<name>[+|-<seconds>]".
 // A keep range [a, b] keeps footage from a to b; everything else in the take
@@ -254,7 +259,7 @@ export const assemble = async (spec, {demoDir, workDir, outDir}) => {
     let file;
     if (seg.type === 'card') {
       const png = path.join(workDir, seg.id + '.png');
-      await pg.setContent(cardHTML(seg.kicker, seg.title, seg.sub, view));
+      await pg.setContent(cardHTML(seg.kicker, seg.title, seg.sub, view, spec.cardBrand));
       await pg.waitForTimeout(120);
       await pg.screenshot({path: png});
       file = path.join(workDir, seg.id + '.webm');
