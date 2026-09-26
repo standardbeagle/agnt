@@ -1,9 +1,16 @@
 {
   "stack": "go",
-  "delivery": "internal-tool",
-  "deploy": {
-    "via": "tag",
-    "bump": "patch"
+  "delivery": {
+    "label": "public release",
+    "landing": "task-branch",
+    "push": "after-each-merge",
+    "gates": [
+      "test"
+    ],
+    "deploy": {
+      "via": "tag",
+      "bump": "patch"
+    }
   },
   "templates": [
     {
