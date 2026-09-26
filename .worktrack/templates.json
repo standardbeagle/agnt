@@ -1,6 +1,11 @@
 {
   "stack": "go",
   "delivery": "internal-tool",
+  "deploy": {
+    "via": "tag",
+    "bump": "patch",
+    "then": "fleet-deploy"
+  },
   "templates": [
     {
       "name": "go-slice",
