@@ -250,8 +250,19 @@ func runDaemonRestart(cmd *cobra.Command, args []string) {
 		}
 	}
 
-	// Start new daemon
-	runDaemonStart(cmd, args)
+	// Start the new daemon DETACHED, the way every client auto-starts it. Calling
+	// runDaemonStart here ran it in this command's foreground: restart never
+	// returned, and the daemon died with the shell that ran it.
+	config := daemonclient.DefaultAutoStartConfig()
+	config.SocketPath = socketPath
+	started := daemonclient.NewAutoStartClient(config)
+	if err := started.Connect(); err != nil {
+		fmt.Fprintf(os.Stderr, "Failed to start daemon: %v\n", err)
+		os.Exit(1)
+	}
+	started.Close()
+	fmt.Println("Daemon restarted")
+	fmt.Printf("Socket: %s\n", socketPath)
 }
 
 func runDaemonStatus(cmd *cobra.Command, args []string) {
