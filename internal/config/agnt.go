@@ -67,6 +67,10 @@ type AgntConfig struct {
 	// Project-wide: applies to every proxy of the project.
 	AuthBreakout *AuthBreakoutConfig `kdl:"auth-breakout"`
 
+	// DevOIDC declares the dev-only OIDC issuer served on every proxy of the
+	// project, with personas switchable from the proxy UI.
+	DevOIDC *DevOIDCConfig `kdl:"dev-oidc"`
+
 	// Warnings holds non-fatal configuration warnings collected at parse
 	// time (e.g. a script that depends-on a non-autostart script, which with
 	// the default dep timeout of 0 would hang autostart forever with no
@@ -1234,6 +1238,10 @@ func ParseAgntConfig(data string) (*AgntConfig, error) {
 
 	// Validate auth-breakout block if present.
 	if err := validateAuthBreakout(cfg.AuthBreakout); err != nil {
+		return nil, err
+	}
+
+	if err := cfg.DevOIDC.Validate(); err != nil {
 		return nil, err
 	}
 

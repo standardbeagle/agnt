@@ -320,8 +320,10 @@ func (d *Daemon) hubHandleDetect(ctx context.Context, conn *hubpkg.Connection, c
 func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
 	// Every daemon proxy-creation path funnels through here, so this is the
 	// single chokepoint applying project-level .agnt.kdl settings that live
-	// outside the per-proxy block (currently: auth-breakout, secret sink).
+	// outside the per-proxy block (currently: auth-breakout, dev-oidc,
+	// secret sink).
 	d.applyAuthBreakout(server)
+	d.applyDevOIDC(server)
 	d.wireSecretSink(server)
 	if d.eventHub == nil {
 		return

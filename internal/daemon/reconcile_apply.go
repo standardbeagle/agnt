@@ -84,6 +84,7 @@ func (d *Daemon) ReconcileProjectConfig(ctx context.Context, projectPath string)
 	}
 	plan := computeReconcile(desired, running, desiredProxies, runningProxies)
 	d.applyProxyDisplayConfig(projectPath, cfg)
+	d.applyDevOIDCProject(projectPath, cfg)
 
 	log := d.startupLog(projectPath)
 	if plan.IsEmpty() {
@@ -148,6 +149,7 @@ func (d *Daemon) ReconcileProjectConfig(ctx context.Context, projectPath string)
 		}
 	}
 	d.applyProxyDisplayConfig(projectPath, cfg)
+	d.applyDevOIDCProject(projectPath, cfg)
 	return plan, nil
 }
 

@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"crypto"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -110,13 +111,14 @@ func (a *CloudflareAccess) SetOnDeny(fn func(err error)) { a.onDeny = fn }
 // observer, never to the client.
 func (a *CloudflareAccess) Guard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if err := a.Verify(r.Header.Get(AccessJWTHeader)); err != nil {
+		id, err := a.verify(r.Header.Get(AccessJWTHeader))
+		if err != nil {
 			a.reportDeny(err)
 			w.Header().Set("Cache-Control", "no-store")
 			http.Error(w, "forbidden", http.StatusForbidden)
 			return
 		}
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), accessIdentityKey{}, id)))
 	})
 }
 
@@ -124,59 +126,80 @@ func (a *CloudflareAccess) Guard(next http.Handler) http.Handler {
 // issued by the team, addressed to the configured audience, inside its
 // validity window.
 func (a *CloudflareAccess) Verify(token string) error {
+	_, err := a.verify(token)
+	return err
+}
+
+// AccessIdentity is who a verified Access token says the caller is. Email is
+// empty for service tokens, which carry no user.
+type AccessIdentity struct {
+	Email string
+}
+
+type accessIdentityKey struct{}
+
+// AccessIdentityFrom returns the identity Guard verified for this request.
+// It is only ever set by Guard, never read from a header.
+func AccessIdentityFrom(ctx context.Context) (AccessIdentity, bool) {
+	id, ok := ctx.Value(accessIdentityKey{}).(AccessIdentity)
+	return id, ok
+}
+
+func (a *CloudflareAccess) verify(token string) (AccessIdentity, error) {
 	if token == "" {
-		return ErrAccessMissingToken
+		return AccessIdentity{}, ErrAccessMissingToken
 	}
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
-		return ErrAccessMalformed
+		return AccessIdentity{}, ErrAccessMalformed
 	}
 	var header struct {
 		Alg string `json:"alg"`
 		Kid string `json:"kid"`
 	}
 	if err := decodeJWTSegment(parts[0], &header); err != nil {
-		return ErrAccessMalformed
+		return AccessIdentity{}, ErrAccessMalformed
 	}
 	if header.Alg != "RS256" {
-		return ErrAccessAlgorithm
+		return AccessIdentity{}, ErrAccessAlgorithm
 	}
 	sig, err := base64.RawURLEncoding.DecodeString(parts[2])
 	if err != nil {
-		return ErrAccessMalformed
+		return AccessIdentity{}, ErrAccessMalformed
 	}
 	key, err := a.keyFor(header.Kid)
 	if err != nil {
-		return err
+		return AccessIdentity{}, err
 	}
 	digest := sha256.Sum256([]byte(parts[0] + "." + parts[1]))
 	if err := rsa.VerifyPKCS1v15(key, crypto.SHA256, digest[:], sig); err != nil {
-		return ErrAccessSignature
+		return AccessIdentity{}, ErrAccessSignature
 	}
 
 	var claims struct {
-		Iss string          `json:"iss"`
-		Aud json.RawMessage `json:"aud"`
-		Exp *float64        `json:"exp"`
-		Nbf *float64        `json:"nbf"`
+		Iss   string          `json:"iss"`
+		Email string          `json:"email"`
+		Aud   json.RawMessage `json:"aud"`
+		Exp   *float64        `json:"exp"`
+		Nbf   *float64        `json:"nbf"`
 	}
 	if err := decodeJWTSegment(parts[1], &claims); err != nil {
-		return ErrAccessMalformed
+		return AccessIdentity{}, ErrAccessMalformed
 	}
 	if claims.Iss != a.issuer {
-		return ErrAccessIssuer
+		return AccessIdentity{}, ErrAccessIssuer
 	}
 	if !audienceContains(claims.Aud, a.aud) {
-		return ErrAccessAudience
+		return AccessIdentity{}, ErrAccessAudience
 	}
 	now := a.now()
 	if claims.Exp == nil || now.After(unixSeconds(*claims.Exp).Add(accessClockLeeway)) {
-		return ErrAccessExpired
+		return AccessIdentity{}, ErrAccessExpired
 	}
 	if claims.Nbf != nil && now.Add(accessClockLeeway).Before(unixSeconds(*claims.Nbf)) {
-		return ErrAccessNotYetValid
+		return AccessIdentity{}, ErrAccessNotYetValid
 	}
-	return nil
+	return AccessIdentity{Email: claims.Email}, nil
 }
 
 // keyFor returns the public key for kid, fetching the team JWKS when the key

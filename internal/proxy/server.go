@@ -18,6 +18,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/devoidc"
 	"github.com/standardbeagle/agnt/internal/httpcaps"
 	"github.com/standardbeagle/agnt/internal/platform"
 	"github.com/standardbeagle/agnt/internal/store"
@@ -119,6 +120,9 @@ type ProxyServer struct {
 	// owned by the daemon's tunnel manager instead and bind via SetTunnelURL.
 	namedTunnelSetup *namedTunnelSetup
 	tunnel           atomic.Pointer[namedTunnel]
+
+	// devOIDC is the project's dev OIDC issuer mounted at /__agnt/oidc/.
+	devOIDC devOIDCState
 
 	// Chaos engine for failure injection
 	chaosEngine *ChaosEngine
@@ -630,6 +634,7 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 	mux.HandleFunc("/__devtool_html2canvas", handleHtml2Canvas)
 	mux.HandleFunc("/__devtool_impeccable", handleImpeccableDetect)
 	mux.HandleFunc("/__devtool/", handleInstrumentationAsset)
+	mux.HandleFunc(devoidc.Prefix+"/", ps.serveDevOIDC)
 	mux.HandleFunc("/", ps.handleProxy)
 
 	// Try to bind to requested port first

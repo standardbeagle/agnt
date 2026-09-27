@@ -257,6 +257,7 @@ type Daemon struct {
 	eventHub             *EventHub                              // Routes alerts to overlay/MCP/stream sinks
 	incidentBus          *incident.MPSCBus                      // Incident pipeline event bus (L8+)
 	incidentProxyOwner   sync.Map                               // proxy ID -> *health.ResourceOwner for one lifetime
+	devIssuers           sync.Map                               // normalized project path -> *devoidc.Issuer (dev-oidc block)
 	incidentProcessOwner sync.Map                               // process ID -> *health.ResourceOwner for one lifetime
 	hookRing             *hookRingBuffer                        // Claude Code hook event ring buffer (phase 1 scope)
 
