@@ -114,6 +114,9 @@ var (
 	//go:embed indicator-tabs.js
 	indicatorTabsJS string
 
+	//go:embed persona-chip.js
+	personaChipJS string
+
 	//go:embed indicator.js
 	indicatorJS string
 
@@ -395,7 +398,10 @@ var moduleOrder = []moduleEntry{
 	{"indicator-styles", []string{"ui-tokens"}},
 	{"indicator-data", []string{"core", "utils", "indicator-styles"}},
 	{"indicator-tabs", []string{"indicator-data", "indicator-styles"}},
-	{"indicator", []string{"core", "utils", "sketch", "design", "style-editor", "toast", "framework-detector", "api-tracker", "shadow-root", "indicator-bridge", "indicator-styles", "indicator-data", "indicator-tabs"}},
+	// persona-chip: dev-oidc persona switcher mounted in the indicator's tab
+	// bar; self-contained, so it only needs the design tokens.
+	{"persona-chip", []string{"ui-tokens", "frames"}},
+	{"indicator", []string{"core", "utils", "sketch", "design", "style-editor", "toast", "framework-detector", "api-tracker", "shadow-root", "indicator-bridge", "indicator-styles", "indicator-data", "indicator-tabs", "persona-chip"}},
 	{"snapshot-helper", []string{"core"}},
 	{"diagnostics", []string{"utils", "core"}},
 	{"session", []string{"core"}},
@@ -449,6 +455,7 @@ var moduleRole = map[string]Role{
 	"indicator-styles": RoleChrome,
 	"indicator-data":   RoleChrome,
 	"indicator-tabs":   RoleChrome,
+	"persona-chip":     RoleChrome,
 	"indicator":        RoleChrome,
 	"walkthrough":      RoleChrome,
 
@@ -560,6 +567,7 @@ var moduleScript = map[string]string{
 	"indicator-styles":   indicatorStylesJS,
 	"indicator-data":     indicatorDataJS,
 	"indicator-tabs":     indicatorTabsJS,
+	"persona-chip":       personaChipJS,
 	"indicator":          indicatorJS,
 	"snapshot-helper":    snapshotHelperJS,
 	"diagnostics":        diagnosticsJS,

@@ -1035,6 +1035,12 @@
       tabBar.appendChild(tab);
     });
 
+    // Dev OIDC persona chip (persona-chip.js). It renders nothing when the
+    // project declares no dev-oidc block.
+    if (window.__devtool_personaChip) {
+      tabBar.appendChild(window.__devtool_personaChip.create());
+    }
+
     // Close button at the end
     var closeBtn = document.createElement('button');
     closeBtn.style.cssText = STYLES.tabCloseBtn;
