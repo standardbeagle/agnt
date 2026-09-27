@@ -327,6 +327,11 @@ func TestTrafficLogger_PanickingCallback(t *testing.T) {
 
 	var seen atomic.Int64
 	var recovered atomic.Int64
+	// completed counts callbacks that have fully returned, recovery included.
+	// seen alone is not a completion signal: it is incremented before the
+	// panic, so when the final entry is the panicking one, seen reaches total
+	// while that callback's recovery (and its recovered.Add) is still pending.
+	var completed atomic.Int64
 
 	// The callback recovers its own panic (as a real consumer would). The
 	// dispatcher worker ALSO recovers as defence in depth, so even an
@@ -337,6 +342,7 @@ func TestTrafficLogger_PanickingCallback(t *testing.T) {
 			if r := recover(); r != nil {
 				recovered.Add(1)
 			}
+			completed.Add(1)
 		}()
 		n := seen.Add(1)
 		if n%10 == 0 {
@@ -363,9 +369,10 @@ func TestTrafficLogger_PanickingCallback(t *testing.T) {
 	wg.Wait()
 
 	// (1) Callback eventually fires for every entry (delivery is async now).
-	require.Eventually(t, func() bool { return seen.Load() == int64(total) },
+	require.Eventually(t, func() bool { return completed.Load() == int64(total) },
 		5*time.Second, 5*time.Millisecond,
-		"callback invoked for every log() — panics do not skip entries")
+		"callback completed for every log() — panics do not skip entries")
+	require.Equal(t, int64(total), seen.Load(), "every entry reached the callback exactly once")
 
 	// (4) Panic rate matches 1-in-10 (exact because seen is atomic incremented
 	// inside the callback before the panic check).
