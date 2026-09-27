@@ -25,6 +25,7 @@ var paletteCommands = []PaletteCommand{
 	{Name: "tunnel", Arg: "<provider> [proxy]", Desc: "open a tunnel: cloudflare | ngrok | tailscale"},
 	{Name: "stop-tunnel", Arg: "<id>", Desc: "stop a tunnel"},
 	{Name: "tailscale", Arg: "[proxy]", Desc: "serve a proxy on this node's tailnet address"},
+	{Name: "as", Arg: "<persona> [proxy]", Desc: "sign the app in as a dev-oidc persona"},
 	{Name: "config", Desc: "open the .agnt.kdl editor"},
 	{Name: "toggle-ports", Desc: "show/hide system & infra ports"},
 	{Name: "mute", Desc: "pause forwarding errors/notifications to the agent"},

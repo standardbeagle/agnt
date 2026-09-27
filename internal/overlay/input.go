@@ -37,6 +37,10 @@ type DaemonClient interface {
 
 	// RequestOK sends a request and returns nil on success.
 	RequestOK(verb string, payload interface{}, args ...string) error
+
+	// RequestData sends a request whose payload is raw bytes rather than
+	// JSON (PROXY EXEC takes the script itself as its payload).
+	RequestData(verb string, data []byte, args ...string) (map[string]interface{}, error)
 }
 
 // ProcessOutputFetcher is an interface for fetching process output from the daemon.
@@ -82,6 +86,8 @@ type ScriptController interface {
 	ReconcileConfig() error
 	// ProjectPath is the directory holding the project's .agnt.kdl.
 	ProjectPath() string
+	// ProxyExec runs JavaScript in the browser page behind a proxy.
+	ProxyExec(proxyID, code string) error
 }
 
 // StatusSummarizer is an interface for summarizing system status.
@@ -949,6 +955,10 @@ func (r *InputRouter) dispatchPaletteCommand(c PaletteCommand, args string) {
 	case "tailscale":
 		if err := r.runTailscaleCommand(args); err != nil {
 			fail("tailscale", err)
+		}
+	case "as":
+		if err := r.runAsCommand(args); err != nil {
+			fail("as", err)
 		}
 	case "config":
 		if err := r.openConfigPanel(); err != nil {

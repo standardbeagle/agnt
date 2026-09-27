@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/standardbeagle/agnt/internal/config"
+	"github.com/standardbeagle/agnt/internal/devoidc"
 	proxypkg "github.com/standardbeagle/agnt/internal/proxy"
 )
 
@@ -182,5 +183,40 @@ func (r *InputRouter) runTailscaleCommand(args string) error {
 		Level: LevelInfo,
 		Text:  fmt.Sprintf("%s now serves on %s", target.ID, target.TailscaleURL),
 	})
+	return nil
+}
+
+// runAsCommand switches the browser behind a proxy to a dev-oidc persona:
+// `:as <persona> [proxy]`. It checks the persona against the issuer first so
+// a typo is answered with the available names instead of a silent no-op in
+// the page.
+func (r *InputRouter) runAsCommand(args string) error {
+	fields := strings.Fields(args)
+	if len(fields) == 0 || len(fields) > 2 {
+		return fmt.Errorf("usage: as <persona> [proxy]")
+	}
+	persona, proxyID := fields[0], ""
+	if len(fields) == 2 {
+		proxyID = fields[1]
+	}
+	target, err := resolveProxy(r.overlay.GetStatus().Proxies, proxyID)
+	if err != nil {
+		return err
+	}
+	port, err := listenPortOf(target)
+	if err != nil {
+		return err
+	}
+	st, err := devoidc.FetchState("http://localhost:" + strconv.Itoa(port))
+	if err != nil {
+		return err
+	}
+	if !st.Has(persona) {
+		return fmt.Errorf("no persona %q on %s (available: %s)", persona, target.ID, strings.Join(st.Names(), ", "))
+	}
+	if err := r.scriptController.ProxyExec(target.ID, devoidc.SwitchScript(persona, "")); err != nil {
+		return fmt.Errorf("switching %s to %s: %w", target.ID, persona, err)
+	}
+	r.overlay.Notify(Notification{Level: LevelInfo, Text: fmt.Sprintf("%s: signing in as %s", target.ID, persona)})
 	return nil
 }

@@ -3,12 +3,15 @@ package overlay
 import (
 	"bytes"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/standardbeagle/agnt/internal/config"
+	"github.com/standardbeagle/agnt/internal/devoidc"
 	"github.com/standardbeagle/agnt/internal/proxy"
 )
 
@@ -26,6 +29,10 @@ type fakeProxyController struct {
 
 	reconciled bool
 	reconcile  error
+
+	execProxyID string
+	execCode    string
+	execErr     error
 }
 
 func (f *fakeProxyController) StopScript(string) error    { return nil }
@@ -38,6 +45,11 @@ func (f *fakeProxyController) RestartProxy(string) error  { return nil }
 func (f *fakeProxyController) StopProxy(string) error     { return nil }
 func (f *fakeProxyController) StopTunnel(string) error    { return nil }
 func (f *fakeProxyController) ProjectPath() string        { return f.projectPath }
+
+func (f *fakeProxyController) ProxyExec(proxyID, code string) error {
+	f.execProxyID, f.execCode = proxyID, code
+	return f.execErr
+}
 
 func (f *fakeProxyController) StartTunnel(provider, proxyID string, localPort int) (string, error) {
 	f.tunnelProvider, f.tunnelProxyID, f.tunnelPort = provider, proxyID, localPort
@@ -346,5 +358,65 @@ func TestTailscaleCommand_RefusesAProxyThatIsNotInTheConfig(t *testing.T) {
 	}
 	if _, statErr := os.Stat(filepath.Join(dir, config.AgntConfigFileName)); statErr == nil {
 		t.Error("a refused command still wrote a config file")
+	}
+}
+
+func TestAsCommand(t *testing.T) {
+	is, err := devoidc.New(devoidc.Config{
+		Clients:  map[string]devoidc.Client{"web": {ID: "web", RedirectURIs: []string{"http://localhost:*/cb"}}},
+		Personas: map[string]devoidc.Persona{"standard": {Email: "s@x.com"}, "admin": {Email: "a@x.com"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	issuer := httptest.NewServer(is.Handler(devoidc.Mount{
+		Caller:     func(*http.Request) devoidc.Caller { return devoidc.Caller{Local: true} },
+		SameOrigin: func(*http.Request) bool { return true },
+	}))
+	t.Cleanup(issuer.Close)
+	app := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/html")
+		w.Write([]byte("<html>app</html>"))
+	}))
+	t.Cleanup(app.Close)
+	withIssuer := ProxyInfo{ID: "dev", ListenAddr: strings.TrimPrefix(issuer.URL, "http://")}
+	withoutIssuer := ProxyInfo{ID: "plain", ListenAddr: strings.TrimPrefix(app.URL, "http://")}
+
+	ctrl := &fakeProxyController{}
+	r := routerWithProxies(t, ctrl, withIssuer)
+	if err := r.runAsCommand("admin"); err != nil {
+		t.Fatalf(":as admin: %v", err)
+	}
+	if ctrl.execProxyID != "dev" || !strings.Contains(ctrl.execCode, `add('persona', "admin")`) || !strings.Contains(ctrl.execCode, "/__agnt/oidc/switch") {
+		t.Fatalf("exec not sent to the proxy with the switch form: %q %q", ctrl.execProxyID, ctrl.execCode)
+	}
+
+	ctrl = &fakeProxyController{}
+	r = routerWithProxies(t, ctrl, withIssuer)
+	err = r.runAsCommand("root")
+	if err == nil || !strings.Contains(err.Error(), "admin, standard") || ctrl.execCode != "" {
+		t.Fatalf("unknown persona must list the available ones and send nothing: %v / %q", err, ctrl.execCode)
+	}
+
+	r = routerWithProxies(t, ctrl, withoutIssuer)
+	if err := r.runAsCommand("admin"); err == nil || !strings.Contains(err.Error(), "declare a dev-oidc block") || ctrl.execCode != "" {
+		t.Fatalf("proxy without dev-oidc: %v", err)
+	}
+
+	r = routerWithProxies(t, ctrl, withIssuer, withoutIssuer)
+	if err := r.runAsCommand("admin"); err == nil || !strings.Contains(err.Error(), "several proxies") {
+		t.Fatalf("ambiguous proxy: %v", err)
+	}
+	if err := r.runAsCommand("admin dev"); err != nil {
+		t.Fatalf(":as admin dev with two proxies: %v", err)
+	}
+	for _, bad := range []string{"", "a b c"} {
+		if err := r.runAsCommand(bad); err == nil || !strings.Contains(err.Error(), "usage") {
+			t.Errorf(":as %q: %v, want usage", bad, err)
+		}
+	}
+	ctrl.execErr = fmt.Errorf("no browser connected")
+	if err := r.runAsCommand("admin dev"); err == nil || !strings.Contains(err.Error(), "no browser connected") {
+		t.Fatalf("exec failure must surface: %v", err)
 	}
 }

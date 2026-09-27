@@ -730,3 +730,16 @@ func (c *DaemonScriptController) ReconcileConfig() error {
 func (c *DaemonScriptController) ProjectPath() string {
 	return c.projectPath
 }
+
+// ProxyExec runs JavaScript in the active page behind a proxy. An error the
+// page reports comes back as an error, not as a successful result.
+func (c *DaemonScriptController) ProxyExec(proxyID, code string) error {
+	result, err := c.conn.RequestData(protocol.VerbProxy, []byte(code), protocol.SubVerbExec, proxyID)
+	if err != nil {
+		return err
+	}
+	if msg, ok := result["error"].(string); ok && msg != "" {
+		return fmt.Errorf("%s", msg)
+	}
+	return nil
+}

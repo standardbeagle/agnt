@@ -438,13 +438,6 @@ func (h *handler) mint(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-type personaView struct {
-	Name        string   `json:"name"`
-	Email       string   `json:"email"`
-	DisplayName string   `json:"display_name"`
-	Roles       []string `json:"roles"`
-}
-
 func (h *handler) state(w http.ResponseWriter, r *http.Request) {
 	cfg := h.is.Config()
 	caller := h.m.Caller(r)
@@ -455,10 +448,10 @@ func (h *handler) state(w http.ResponseWriter, r *http.Request) {
 	} else if caller.Local && slices.Contains(allowed, cfg.DefaultPersona) {
 		current = cfg.DefaultPersona
 	}
-	views := make([]personaView, 0, len(allowed))
+	views := make([]PersonaView, 0, len(allowed))
 	for _, name := range allowed {
 		p := cfg.Personas[name]
-		views = append(views, personaView{Name: name, Email: p.Email, DisplayName: p.DisplayName, Roles: p.Roles})
+		views = append(views, PersonaView{Name: name, Email: p.Email, DisplayName: p.DisplayName, Roles: p.Roles})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"persona": current, "personas": views})
 }

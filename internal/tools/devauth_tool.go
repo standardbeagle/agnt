@@ -23,22 +23,14 @@ type DevAuthInput struct {
 	Client  string `json:"client,omitempty" jsonschema:"Client id: for token, the access token's client (required); for as, whose login-path to land on"`
 }
 
-// DevAuthPersona is one persona as the issuer reports it.
-type DevAuthPersona struct {
-	Name        string   `json:"name"`
-	Email       string   `json:"email"`
-	DisplayName string   `json:"display_name,omitempty"`
-	Roles       []string `json:"roles,omitempty"`
-}
-
 // DevAuthOutput is the output of the devauth tool.
 type DevAuthOutput struct {
-	Issuer      string           `json:"issuer,omitempty"`
-	Current     string           `json:"current,omitempty"`
-	Personas    []DevAuthPersona `json:"personas,omitempty"`
-	AccessToken string           `json:"access_token,omitempty"`
-	ExpiresIn   int              `json:"expires_in,omitempty"`
-	Message     string           `json:"message,omitempty"`
+	Issuer      string                `json:"issuer,omitempty"`
+	Current     string                `json:"current,omitempty"`
+	Personas    []devoidc.PersonaView `json:"personas,omitempty"`
+	AccessToken string                `json:"access_token,omitempty"`
+	ExpiresIn   int                   `json:"expires_in,omitempty"`
+	Message     string                `json:"message,omitempty"`
 }
 
 // RegisterDevAuthTool registers the devauth MCP tool.
@@ -105,29 +97,6 @@ func devAuthOrigin(listenAddr string) (string, error) {
 
 var devAuthHTTP = &http.Client{Timeout: 5 * time.Second}
 
-type devAuthState struct {
-	Persona  string           `json:"persona"`
-	Personas []DevAuthPersona `json:"personas"`
-}
-
-func fetchDevAuthState(origin string) (devAuthState, error) {
-	var st devAuthState
-	resp, err := devAuthHTTP.Get(origin + devoidc.Prefix + "/state")
-	if err != nil {
-		return st, err
-	}
-	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if resp.StatusCode != http.StatusOK {
-		// 404 or the app's own page means the prefix was proxied: no issuer.
-		return st, fmt.Errorf("dev-oidc not available on this proxy (HTTP %d: %s); declare a dev-oidc block in .agnt.kdl", resp.StatusCode, strings.TrimSpace(string(body)))
-	}
-	if err := json.Unmarshal(body, &st); err != nil {
-		return st, fmt.Errorf("dev-oidc not available on this proxy (the path answered with non-issuer content); declare a dev-oidc block in .agnt.kdl")
-	}
-	return st, nil
-}
-
 func devAuthIssuer(origin string) string {
 	resp, err := devAuthHTTP.Get(origin + devoidc.Prefix + "/.well-known/openid-configuration")
 	if err != nil {
@@ -142,7 +111,7 @@ func devAuthIssuer(origin string) string {
 }
 
 func devAuthPersonas(origin string) (*mcp.CallToolResult, DevAuthOutput, error) {
-	st, err := fetchDevAuthState(origin)
+	st, err := devoidc.FetchState(origin)
 	if err != nil {
 		return fail[DevAuthOutput](err.Error())
 	}
@@ -188,22 +157,14 @@ func (dt *DaemonTools) devAuthAs(origin string, in DevAuthInput) (*mcp.CallToolR
 	if in.Persona == "" {
 		return fail[DevAuthOutput]("as needs persona")
 	}
-	st, err := fetchDevAuthState(origin)
+	st, err := devoidc.FetchState(origin)
 	if err != nil {
 		return fail[DevAuthOutput](err.Error())
 	}
-	known := false
-	for _, p := range st.Personas {
-		known = known || p.Name == in.Persona
+	if !st.Has(in.Persona) {
+		return fail[DevAuthOutput](fmt.Sprintf("unknown persona %q; available: %s", in.Persona, strings.Join(st.Names(), ", ")))
 	}
-	if !known {
-		names := make([]string, 0, len(st.Personas))
-		for _, p := range st.Personas {
-			names = append(names, p.Name)
-		}
-		return fail[DevAuthOutput](fmt.Sprintf("unknown persona %q; available: %s", in.Persona, strings.Join(names, ", ")))
-	}
-	result, err := dt.client.ProxyExec(in.ProxyID, devAuthSwitchScript(in.Persona, in.Client))
+	result, err := dt.client.ProxyExec(in.ProxyID, devoidc.SwitchScript(in.Persona, in.Client))
 	if err != nil {
 		return fail[DevAuthOutput](fmt.Sprintf("switch exec failed: %v", err))
 	}
@@ -212,28 +173,4 @@ func (dt *DaemonTools) devAuthAs(origin string, in DevAuthInput) (*mcp.CallToolR
 	}
 	return nil, DevAuthOutput{Current: in.Persona,
 		Message: fmt.Sprintf("switched to %s; the page is signing in again", in.Persona)}, nil
-}
-
-// devAuthSwitchScript builds the in-page form submit. Values go through
-// json.Marshal so they are JS string literals, never spliced code.
-func devAuthSwitchScript(persona, client string) string {
-	p, _ := json.Marshal(persona)
-	c, _ := json.Marshal(client)
-	return fmt.Sprintf(`(function() {
-  var f = document.createElement('form');
-  f.method = 'POST';
-  f.action = %q;
-  var add = function(name, value) {
-    if (!value) return;
-    var i = document.createElement('input');
-    i.type = 'hidden'; i.name = name; i.value = value;
-    f.appendChild(i);
-  };
-  add('persona', %s);
-  add('client', %s);
-  f.style.display = 'none';
-  (document.body || document.documentElement).appendChild(f);
-  f.submit();
-  return 'switching';
-})()`, devoidc.Prefix+"/switch", p, c)
 }

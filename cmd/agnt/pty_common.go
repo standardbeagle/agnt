@@ -719,6 +719,10 @@ func (a *daemonClientAdapter) RequestJSON(verb string, payload interface{}, args
 	return req.JSON()
 }
 
+func (a *daemonClientAdapter) RequestData(verb string, data []byte, args ...string) (map[string]interface{}, error) {
+	return a.conn.Request(verb, args...).WithData(data).JSON()
+}
+
 func (a *daemonClientAdapter) RequestString(verb string, args ...string) (string, error) {
 	return a.conn.Request(verb, args...).String()
 }

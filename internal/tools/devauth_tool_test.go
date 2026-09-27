@@ -64,16 +64,6 @@ func TestDevAuthNoIssuerIsReportedPlainly(t *testing.T) {
 	}
 }
 
-func TestDevAuthSwitchScriptQuotesValues(t *testing.T) {
-	js := devAuthSwitchScript(`adm'in"</script>`, "web")
-	if !strings.Contains(js, `add('persona', "adm'in\"\u003c/script\u003e")`) {
-		t.Fatalf("persona not emitted as a JSON string literal:\n%s", js)
-	}
-	if !strings.Contains(js, `f.action = "/__agnt/oidc/switch"`) || !strings.Contains(js, `add('client', "web")`) {
-		t.Fatalf("switch script shape:\n%s", js)
-	}
-}
-
 func TestDevAuthOrigin(t *testing.T) {
 	for addr, want := range map[string]string{"127.0.0.1:4242": "http://localhost:4242", "[::1]:80": "http://localhost:80"} {
 		if got, err := devAuthOrigin(addr); err != nil || got != want {
