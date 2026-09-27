@@ -161,31 +161,6 @@ type DeveloperEvent struct {
 	Severity    string `json:"severity"`
 }
 
-// ProxyStartConfig represents configuration for a PROXY START command.
-type ProxyStartConfig struct {
-	ID          string        `json:"id"`
-	TargetURL   string        `json:"target_url"`
-	Port        int           `json:"port"`
-	MaxLogSize  int           `json:"max_log_size,omitempty"`
-	BindAddress string        `json:"bind_address,omitempty"` // "127.0.0.1" (default) or "0.0.0.0" (all interfaces)
-	PublicURL   string        `json:"public_url,omitempty"`   // Public URL for tunnels (e.g., "https://abc.trycloudflare.com")
-	Tunnel      *TunnelConfig `json:"tunnel,omitempty"`
-}
-
-// TunnelConfig represents configuration for starting a tunnel alongside a proxy.
-type TunnelConfig struct {
-	// Provider is the tunnel provider: "ngrok", "cloudflared", "tailscale", or "custom"
-	Provider string `json:"provider"`
-	// Command is used when Provider is "custom" - the full command to run
-	Command string `json:"command,omitempty"`
-	// Args are additional arguments for the tunnel command
-	Args []string `json:"args,omitempty"`
-	// AuthToken is the authentication token (for ngrok)
-	AuthToken string `json:"auth_token,omitempty"`
-	// Region is the tunnel region (optional)
-	Region string `json:"region,omitempty"`
-}
-
 // LogQueryFilter represents filters for PROXYLOG QUERY command.
 type LogQueryFilter struct {
 	Types       []string `json:"types,omitempty"`
@@ -907,13 +882,13 @@ const (
 // re-discovering it. Producer carries the exact tool call that produced the
 // finding (S0 contract); verify_change re-runs it to recheck the finding.
 type FindingRef struct {
-	Fingerprint string           `json:"fingerprint"`
-	Severity    string           `json:"severity,omitempty"`
-	Source      string           `json:"source,omitempty"`
-	Summary     string           `json:"summary,omitempty"`
-	Visual      bool             `json:"visual,omitempty"`
+	Fingerprint string            `json:"fingerprint"`
+	Severity    string            `json:"severity,omitempty"`
+	Source      string            `json:"source,omitempty"`
+	Summary     string            `json:"summary,omitempty"`
+	Visual      bool              `json:"visual,omitempty"`
 	Producer    *finding.Producer `json:"producer,omitempty"`
-	SeenAt      time.Time        `json:"seen_at,omitempty"`
+	SeenAt      time.Time         `json:"seen_at,omitempty"`
 }
 
 // Investigation is the per-session investigation record. It lives on the

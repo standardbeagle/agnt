@@ -20,7 +20,6 @@ import (
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/httpcaps"
 	"github.com/standardbeagle/agnt/internal/platform"
-	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/store"
 )
 
@@ -114,8 +113,10 @@ type ProxyServer struct {
 	// Voice sessions for speech-to-text (map[connID]*VoiceSession)
 	voiceSessions sync.Map
 
-	// Tunnel manager for ngrok/cloudflared integration
-	tunnel *TunnelManager
+	// tunnel is the proxy-owned tunnel declared in the proxy's config, nil
+	// when none is. Tunnels started through the TUNNEL verb are owned by the
+	// daemon's tunnel manager instead and bind via SetTunnelURL.
+	tunnel proxyTunnel
 
 	// Chaos engine for failure injection
 	chaosEngine *ChaosEngine
@@ -211,7 +212,6 @@ type ProxyConfig struct {
 	// explicitly declares `listen-port` in .agnt.kdl — an explicit port
 	// means "this port or nothing", not "this port or a random one".
 	StrictListenPort bool
-	Tunnel           *protocol.TunnelConfig
 
 	// HealthCheckInterval controls how often the backend is probed.
 	// Zero disables health checks. Default: 30s.
@@ -225,6 +225,13 @@ type ProxyConfig struct {
 	// (nil = off). Populated from the project's .agnt.kdl auth-breakout
 	// block; may also be set post-create via SetAuthBreakout.
 	AuthBreakout *AuthBreakout
+}
+
+// proxyTunnel is the lifecycle surface the proxy needs from a tunnel it owns.
+type proxyTunnel interface {
+	PublicURL() string
+	IsRunning() bool
+	Stop() error
 }
 
 // SetAuthBreakout installs (or clears, with nil) the OAuth-breakout rules.
@@ -588,11 +595,6 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 	ps.proxy.ModifyResponse = ps.modifyResponse
 	ps.proxy.FlushInterval = -1 // Flush immediately for streaming/WebSocket responses
 
-	// Initialize tunnel manager if configured
-	if config.Tunnel != nil && config.Tunnel.Provider != "" {
-		ps.tunnel = NewTunnelManager(config.Tunnel, config.ListenPort)
-	}
-
 	return ps, nil
 }
 
@@ -677,20 +679,6 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 	// Start backend health probe (non-zero interval means enabled)
 	ps.backendHealthy.Store(true)
 	go ps.runHealthCheck(ctx)
-
-	// Start tunnel if configured, pointing it at the ACTUAL bound port — the
-	// manager was constructed with the requested port, which is wrong when
-	// the bind fell back to an auto-assigned one.
-	if ps.tunnel != nil {
-		ps.tunnel.SetProxyPort(ps.BoundPort())
-		if err := ps.tunnel.Start(ctx); err != nil {
-			// Log but don't fail - proxy can work without tunnel
-			ps.logger.LogError(FrontendError{
-				Message: fmt.Sprintf("failed to start tunnel: %v", err),
-				Source:  "tunnel",
-			})
-		}
-	}
 
 	// Emit a lifecycle diagnostic so STREAM-EVENTS consumers (e.g. agnt ssh's
 	// port-forward manager, task 07 of the remote-ssh epic) can react to a
