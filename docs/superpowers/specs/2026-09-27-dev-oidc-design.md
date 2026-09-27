@@ -1,6 +1,6 @@
 # Dev OIDC issuer: personas you can switch from the proxy UI
 
-Status: approved for build (owner, 2026-09-27). Builds on the named Cloudflare
+Status: built (2026-09-27); this document records the shipped design. Builds on the named Cloudflare
 tunnel + Access work (`cloudflare-tunnel`, commits `ffcbf77d`..`fd0a4df3`).
 
 ## 1. Goal
@@ -34,36 +34,37 @@ email then decides which personas that person may assume. Access is the
 Project-level block, applied to every proxy of the project (same chokepoint as
 `auth-breakout`: `Daemon.wireProxyLogger` → `applyDevOIDC`).
 
+As shipped (see `docs/configuration.md` § Dev OIDC for the reference):
+
 ```kdl
 dev-oidc {
-    // Optional. Default: http://localhost:<proxy port>/__agnt/oidc. Set it to
-    // the tunnel hostname when the browser reaches the app through a tunnel.
-    issuer "https://dev.sbdev.io/__agnt/oidc"
-
-    client "story-web" {
-        redirect-uri "http://localhost:*/auth/callback" "https://dev.sbdev.io/auth/callback"
-        secret "dev-only"             // omit for a public (PKCE-only) client
-        audience "story-api"          // access-token aud; default = client id
-        login-path "/auth/login"      // where a persona switch sends the app to log in again
-        session-cookies "story.sid"   // app cookies to expire on a switch
+    issuer "https://dev.sbdev.io/__agnt/oidc"   // optional
+    clients {
+        story-web {
+            redirect-uri "http://localhost:*/auth/callback" "https://dev.sbdev.io/auth/callback"
+            secret "dev-only"
+            audience "story-api"
+            login-path "/auth/login"
+            session-cookies "story.sid"
+        }
     }
-
-    persona "standard" {
-        email "andy+std@standardbeagle.com"
-        name "Standard Andy"
-        roles "user"
-    }
-    persona "admin" {
-        email "andy+admin@standardbeagle.com"
-        name "Admin Andy"
-        roles "admin" "user"
-        claims { tenant "acme" }
+    personas {
+        standard {
+            email "andy+std@standardbeagle.com"
+            roles "user"
+        }
+        admin {
+            email "andy+admin@standardbeagle.com"
+            roles "admin" "user"
+            claims {
+                tenant "acme"
+            }
+        }
     }
     default-persona "standard"
-
-    // Through an Access-protected tunnel: which verified Access emails may
-    // assume which personas. Absent = no persona is available over the tunnel.
-    allow "andybrummer@standardbeagle.com" personas="standard admin"
+    allow {
+        "andybrummer@standardbeagle.com" "standard" "admin"
+    }
 }
 ```
 
@@ -93,7 +94,8 @@ Parse-time validation (fails loud, `ParseAgntConfig`):
 | `/userinfo` | GET | Claims for a bearer access token. |
 | `/logout` | GET | `end_session_endpoint`: clears the persona's app session state, redirects to `post_logout_redirect_uri` if registered. |
 | `/switch` | POST | Persona switch (§4.3). |
-| `/state` | GET | JSON `{persona, personas[], allowed[]}` for the indicator. |
+| `/state` | GET | JSON `{persona, personas[]}` for the indicator, the palette and the MCP tool. |
+| `/mint` | POST | Local callers only, same-origin: an access token for `persona` + `client`, backing `devauth {action:"token"}`. |
 
 ### 3.1 Back channel through a tunnel
 
@@ -156,8 +158,9 @@ against `callerPersonas`. `HttpOnly; SameSite=Lax; Path=/__agnt/oidc`,
    the control WebSocket) and `callerPersonas` membership;
 2. set `__agnt_persona`;
 3. expire every cookie named in the clients' `session-cookies` (Set-Cookie,
-   `Max-Age=0`, `Path=/`), and revoke outstanding refresh tokens for this
-   browser's previous persona;
+   `Max-Age=0`, `Path=/`). Refresh tokens are not revoked: the issuer cannot
+   tell which browser holds one, and expiring the app's session is what forces
+   the new login;
 4. `303` to the client's `login-path` (or `/` when none is declared). The app
    starts a login, authorize takes step 1, and the app is now signed in as the
    new persona.
@@ -197,14 +200,14 @@ never serves the issuer.
 
 | Piece | Where |
 |---|---|
-| Config structs + validation | `internal/config/dev_oidc.go` |
+| Config structs + validation | `internal/config/dev_oidc.go` (redirect-pattern rule in `internal/devoidc/redirect.go`) |
 | Issuer (keys, codes, tokens, persona policy, HTTP handler) | new `internal/devoidc/` package, no dependency on `proxy` |
 | Access claims in request context | `internal/proxy/cfaccess.go` (`Guard` stores verified claims) |
 | Local-origin classification + mount on the proxy mux and tunnel ingress | `internal/proxy/devoidc.go` |
 | Project wiring (one issuer per project, shared by its proxies) | `internal/daemon/devoidc.go`, called from `wireProxyLogger` |
-| `devauth` MCP tool + `DEVAUTH` hub verb | `internal/tools/devauth.go`, `internal/daemon/hub_devauth.go` |
-| Overlay palette `:as` | overlay palette command table |
-| Indicator persona chip | `internal/proxy/scripts/indicator*.js` (chrome role) |
+| `devauth` MCP tool (no hub verb: the MCP process is a local caller of the proxy's endpoints) | `internal/tools/devauth_tool.go`, shared client in `internal/devoidc/client.go` |
+| Overlay palette `:as` | `internal/overlay/proxy_commands.go` (`runAsCommand`) |
+| Indicator persona chip | `internal/proxy/scripts/persona-chip.js` (chrome role), mounted by `indicator.js` |
 | Docs | `docs/configuration.md` § Dev OIDC, `docs/mcp-tools.md` |
 
 ## 7. Tests

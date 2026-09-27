@@ -275,6 +275,116 @@ Scope: `.agnt.kdl` only. A proxy started through the `proxy` MCP tool has no
 config node and cannot declare one. Quick tunnels started with the `tunnel` tool
 (`cloudflare`, `ngrok`, `tailscale`) are unchanged and have no Access check.
 
+## Dev OIDC (`dev-oidc` in `.agnt.kdl`)
+
+A dev-only OIDC issuer that agnt serves on every proxy of the project, so you
+can sign the app under development in as a *standard* user one minute and an
+*admin* the next, without real IdP accounts. Personas (users and their claims)
+live in the file; you switch between them from the browser indicator, the
+overlay palette (`:as <persona>`), or the `devauth` MCP tool.
+
+```kdl
+dev-oidc {
+    // Optional. Default: http://localhost:<proxy port>/__agnt/oidc
+    issuer "https://dev.example.com/__agnt/oidc"
+    clients {
+        story-web {
+            redirect-uri "http://localhost:*/auth/callback" "https://dev.example.com/auth/callback"
+            secret "dev-only"
+            audience "story-api"
+            login-path "/auth/login"
+            session-cookies "story.sid"
+        }
+    }
+    personas {
+        standard {
+            email "andy+std@example.com"
+            name "Standard Andy"
+            roles "user"
+        }
+        admin {
+            email "andy+admin@example.com"
+            roles "admin" "user"
+            claims {
+                tenant "acme"
+            }
+        }
+    }
+    default-persona "standard"
+    allow {
+        "andy@example.com" "standard" "admin"
+    }
+}
+```
+
+Write nested blocks one node per line: the KDL parser rejects `} }` on one
+line.
+
+| Key | Description |
+|---|---|
+| `issuer` | The `iss` of every token and the authority your app is configured with. Default: the proxy's own `http://localhost:<port>/__agnt/oidc`. Set it to the tunnel hostname when the browser reaches the app through a `cloudflare-tunnel`. |
+| `clients.<id>.redirect-uri` | Registered redirect URIs. Exact match, except a whole-port `*` on `localhost`/`127.0.0.1`/`[::1]` (the proxy port is not known in advance). No other wildcards. |
+| `clients.<id>.secret` | Makes the client confidential. A dev-only literal: it protects nothing outside this issuer, so it may live in the checked-in file. Omit it for a public client, which must then use PKCE (S256). |
+| `clients.<id>.audience` | The access token's `aud`. Default: the client id. |
+| `clients.<id>.login-path` | Where a persona switch sends the app to log in again. Default `/`. |
+| `clients.<id>.session-cookies` | App cookies expired on a switch (at `Path=/`), so the app forgets the previous persona's session. |
+| `personas.<name>` | `email` (required), `name` (display), `roles` (the `roles` claim), `claims { key "value" }` (extra string claims; the standard ones such as `sub` and `email` are reserved). |
+| `default-persona` | Used without asking for local logins that have not picked one, so automated and agent logins never stop at the picker. |
+| `allow` | Through a named tunnel: which verified Cloudflare Access emails may assume which personas. No entry, no persona. |
+
+Endpoints live under `/__agnt/oidc/` on each proxy: discovery at
+`/.well-known/openid-configuration`, then `authorize`, `token`
+(`authorization_code` and `refresh_token`), `userinfo`, `jwks`, `logout`.
+Tokens are RS256. `sub` is `agnt-dev|<persona>`, and tokens carry `email`,
+`name`, `preferred_username`, `roles` and the persona's `claims`. Access tokens
+last an hour; refresh tokens are single use and last a day. The signing key is
+generated per project when the daemon starts and is never written to disk, so a
+daemon restart means signing in again. Without a `dev-oidc` block the prefix is
+proxied to your app as before.
+
+**Who may use it.** The issuer lets anyone who reaches it become a persona, so
+where it answers is the security boundary, decided by the listener a request
+arrived on:
+
+- **The proxy's own port**: every persona, but only when all of these hold: the
+  proxy is bound to loopback (not `0.0.0.0`, a LAN address, or
+  `bind "tailscale"`); the `Host` is `localhost`, `127.0.0.1` or `[::1]`; no
+  quick tunnel or static `public-url` is bound to the proxy; and the request
+  carries no reverse-proxy header (`Cf-Ray`, `Cf-Connecting-IP`,
+  `X-Forwarded-For`, `Forwarded`, `Tailscale-User-Login`, `ngrok-*`). The
+  headers are only ever used to refuse, so sending them cannot grant access; they
+  catch a tunnel agnt did not start.
+- **A `cloudflare-tunnel` with `access`**: only the personas `allow` grants to
+  the verified Access email, taken from the Access token the ingress already
+  checked, never from a header. An Access token without an email (a service
+  token) gets none.
+- **Anything else**, including a tunnel with `allow-unauthenticated true`: `403`
+  on every route.
+
+The picker and the switch refuse cross-origin posts.
+
+**Pointing an app at it.** Set the app's OIDC authority to the issuer and its
+client id, secret and redirect URI to a declared client. Through a tunnel, the
+browser uses the public issuer, but the app's *backend* cannot reach the tunnel
+hostname: Cloudflare Access refuses server-side calls that carry no login. So
+point the backend's discovery at the proxy's local URL
+(`http://localhost:<port>/__agnt/oidc/.well-known/openid-configuration`; for
+example .NET `MetadataAddress`, or openid-client `Issuer.discover(localUrl)`).
+A discovery request that arrives locally is answered with local back-channel
+endpoints (`token`, `jwks`, `userinfo`), and `iss` stays the configured issuer.
+Libraries that insist the discovery URL equals the issuer are not supported yet
+through a tunnel; locally they work with the default issuer.
+
+**Switching.** The indicator's tab bar shows `as: <persona>`; pick another and
+the page is sent through the app's `login-path` and signs in again. `:as admin`
+in the overlay palette and `devauth {action:"as"}` do the same. Switching sets
+a `__agnt_persona` cookie scoped to `/__agnt/oidc`, expires the declared
+`session-cookies`, and redirects to the login path. The cookie is a preference,
+re-checked against the caller's allowed personas on every use.
+
+Editing the block applies to running proxies on the next config reconcile; no
+restart needed.
+
 ## Alert Push Channels (`internal/config/agnt.go`, `alerts.push` in `.agnt.kdl`)
 
 Controls which incident-pinger channels push alerts to the AI client. The

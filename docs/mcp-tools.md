@@ -956,6 +956,23 @@ agnt monitor --process app             # Process output follow mode
 Flags: `--types`, `--proxy`, `--process`, `--severity`, `--format` (compact/json), `--socket`
 Auto-reconnects on daemon restart. Clean exit on SIGINT/SIGTERM.
 
+## devauth (dev OIDC personas)
+
+Signs the app under development in as a persona from the project's `dev-oidc`
+block (`docs/configuration.md` § Dev OIDC). All three actions talk to the
+proxy's own local `/__agnt/oidc/` endpoints.
+
+```
+devauth {action: "personas", proxy_id: "dev"}                      // personas, current one, issuer URL
+devauth {action: "as", proxy_id: "dev", persona: "admin"}          // switch the browser; the app signs in again
+devauth {action: "token", proxy_id: "dev", persona: "standard", client: "story-web"}  // access token for API calls
+```
+
+`as` submits the issuer's switch form in the page through `proxy exec`, the
+same request the indicator's persona chip makes. `token` uses a mint endpoint
+that answers only local callers. A proxy without `dev-oidc` returns an error
+saying to declare the block.
+
 ## Tunnel Integration
 
 Cloudflare/ngrok/tailscale support for mobile testing (`cloudflared`/`ngrok` =

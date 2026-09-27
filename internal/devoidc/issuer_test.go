@@ -6,6 +6,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"io"
 	"math/big"
 	"net/http"
@@ -511,5 +512,32 @@ func TestMintEndpointLocalOnly(t *testing.T) {
 	f.caller.Store(&Caller{AccessEmail: "andy@example.com"}) // may use admin, but not mint
 	if r := f.post("/mint", form, "", ""); r.StatusCode != 403 {
 		t.Fatalf("mint over the tunnel: %d, want 403", r.StatusCode)
+	}
+}
+
+// TestSignInSwitchSignInAgain is the relying-party loop the feature exists
+// for: sign in as the default persona, switch, sign in again, see the new
+// persona's roles.
+func TestSignInSwitchSignInAgain(t *testing.T) {
+	f := newFixture(t, testConfig())
+	login := func() map[string]any {
+		t.Helper()
+		code := f.codeFrom(f.get("/authorize", f.authorizeQuery("web", nil)))
+		status, tok := f.exchange("web", "s3cret", codeForm(code))
+		if status != http.StatusOK {
+			t.Fatalf("token: %d %v", status, tok)
+		}
+		return f.verifyWithJWKS(tok["id_token"].(string))
+	}
+	first := login()
+	if first["sub"] != "agnt-dev|standard" || fmt.Sprint(first["roles"]) != "[user]" {
+		t.Fatalf("first login: %v", first)
+	}
+	if r := f.post("/switch", url.Values{"persona": {"admin"}}, "", ""); r.StatusCode != http.StatusSeeOther {
+		t.Fatalf("switch: %d", r.StatusCode)
+	}
+	second := login()
+	if second["sub"] != "agnt-dev|admin" || fmt.Sprint(second["roles"]) != "[admin user]" || second["tenant"] != "acme" {
+		t.Fatalf("login after switch: %v", second)
 	}
 }
