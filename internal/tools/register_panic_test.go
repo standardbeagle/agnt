@@ -32,6 +32,7 @@ func TestRegisterMCPTools_NoSchemaPanic(t *testing.T) {
 		{"daemon", func(s *mcp.Server) { RegisterDaemonTools(s, dt) }},
 		{"daemon_management", func(s *mcp.Server) { RegisterDaemonManagementTool(s, dt) }},
 		{"tunnel", func(s *mcp.Server) { RegisterTunnelTool(s, dt) }},
+		{"devauth", func(s *mcp.Server) { RegisterDevAuthTool(s, dt) }},
 		{"browser", func(s *mcp.Server) { RegisterBrowserTool(s, dt) }},
 		{"automation", func(s *mcp.Server) { RegisterAutomationTool(s, dt) }},
 		{"responsive_audit", func(s *mcp.Server) { RegisterResponsiveAuditTool(s, dt) }},

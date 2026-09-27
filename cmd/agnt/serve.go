@@ -142,6 +142,7 @@ Available tools:
 	tools.RegisterDaemonTools(server, dt)
 	tools.RegisterDaemonManagementTool(server, dt)
 	tools.RegisterTunnelTool(server, dt)
+	tools.RegisterDevAuthTool(server, dt)
 	tools.RegisterBrowserTool(server, dt)
 	tools.RegisterAutomationTool(server, dt)
 	tools.RegisterResponsiveAuditTool(server, dt)

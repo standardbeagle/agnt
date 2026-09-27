@@ -490,3 +490,26 @@ func mergeForm(a, b url.Values) url.Values {
 	}
 	return out
 }
+
+func TestMintEndpointLocalOnly(t *testing.T) {
+	f := newFixture(t, testConfig())
+	form := url.Values{"client": {"web"}, "persona": {"admin"}}
+	resp := f.post("/mint", form, "", "")
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if resp.StatusCode != 200 || f.verifyWithJWKS(body["access_token"].(string))["sub"] != "agnt-dev|admin" {
+		t.Fatalf("local mint: %d %v", resp.StatusCode, body)
+	}
+	if r := f.post("/mint", url.Values{"client": {"web"}, "persona": {"root"}}, "", ""); r.StatusCode != 400 {
+		t.Fatalf("mint unknown persona: %d, want 400", r.StatusCode)
+	}
+	f.cross.Store(true)
+	if r := f.post("/mint", form, "", ""); r.StatusCode != 403 {
+		t.Fatalf("cross-origin mint: %d, want 403", r.StatusCode)
+	}
+	f.cross.Store(false)
+	f.caller.Store(&Caller{AccessEmail: "andy@example.com"}) // may use admin, but not mint
+	if r := f.post("/mint", form, "", ""); r.StatusCode != 403 {
+		t.Fatalf("mint over the tunnel: %d, want 403", r.StatusCode)
+	}
+}

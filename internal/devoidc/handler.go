@@ -40,6 +40,7 @@ func (is *Issuer) Handler(m Mount) http.Handler {
 	mux.HandleFunc("GET "+Prefix+"/logout", h.logout)
 	mux.HandleFunc("POST "+Prefix+"/switch", h.switchPersona)
 	mux.HandleFunc("GET "+Prefix+"/state", h.state)
+	mux.HandleFunc("POST "+Prefix+"/mint", h.mint)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if len(h.is.Config().AllowedPersonas(h.m.Caller(r))) == 0 {
@@ -408,6 +409,33 @@ func loginPath(cfg *Config, clientID string) string {
 		}
 	}
 	return "/"
+}
+
+// mint returns an access token for a persona without a browser flow, for
+// API tests driven by an agent. Local callers only: they can already sign in
+// as any persona through authorize, so this grants nothing new, while an
+// Access caller over the tunnel never gets it.
+func (h *handler) mint(w http.ResponseWriter, r *http.Request) {
+	if !h.m.Caller(r).Local {
+		http.Error(w, "mint is only available on the local listener", http.StatusForbidden)
+		return
+	}
+	if !h.m.SameOrigin(r) {
+		http.Error(w, "cross-origin request refused", http.StatusForbidden)
+		return
+	}
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "bad form", http.StatusBadRequest)
+		return
+	}
+	tok, err := h.is.MintAccessToken(h.issuer(), r.PostForm.Get("client"), r.PostForm.Get("persona"))
+	if err != nil {
+		tokenError(w, http.StatusBadRequest, "invalid_request", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"access_token": tok, "token_type": "Bearer", "expires_in": int(accessTokenTTL.Seconds()),
+	})
 }
 
 type personaView struct {
