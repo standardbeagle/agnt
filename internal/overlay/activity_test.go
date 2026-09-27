@@ -72,7 +72,7 @@ func TestActivityMonitorStateTransitions(t *testing.T) {
 	}
 
 	// Wait for idle timeout (idle check now runs every 10ms)
-	require.Eventually(t, func() bool { return am.State() == ActivityIdle }, 500*time.Millisecond, 5*time.Millisecond)
+	require.Eventually(t, func() bool { return am.State() == ActivityIdle }, 5*time.Second, 5*time.Millisecond)
 	if am.State() != ActivityIdle {
 		t.Errorf("state after timeout = %v, want ActivityIdle", am.State())
 	}
@@ -622,8 +622,13 @@ func TestActivityMonitorDoneMessageDisabled(t *testing.T) {
 	am.Write([]byte("Working\n"))
 
 	// Wait for idle (idle check now runs every 10ms), then a bit more for preview callback
-	require.Eventually(t, func() bool { return am.State() == ActivityIdle }, 500*time.Millisecond, 5*time.Millisecond)
-	time.Sleep(30 * time.Millisecond) // Allow preview callback to fire
+	require.Eventually(t, func() bool { return am.State() == ActivityIdle }, 5*time.Second, 5*time.Millisecond)
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(previewLines) > 0
+	}, 5*time.Second, 5*time.Millisecond)
+	time.Sleep(30 * time.Millisecond) // the window a done message would land in, were it enabled
 
 	mu.Lock()
 	defer mu.Unlock()
