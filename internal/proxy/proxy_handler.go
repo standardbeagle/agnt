@@ -13,6 +13,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/publish"
+	"github.com/standardbeagle/agnt/internal/tunnel"
 )
 
 // Stop gracefully stops the proxy server.
@@ -35,8 +36,8 @@ func (ps *ProxyServer) Stop(ctx context.Context) error {
 	}
 
 	// Stop tunnel first
-	if ps.tunnel != nil {
-		ps.tunnel.Stop()
+	if n := ps.tunnel.Swap(nil); n != nil {
+		n.stop()
 	}
 
 	if ps.cancelFunc != nil {
@@ -108,23 +109,21 @@ func (ps *ProxyServer) IsRunning() bool {
 
 // TunnelURL returns the public tunnel URL if a tunnel is running.
 func (ps *ProxyServer) TunnelURL() string {
-	if ps.tunnel == nil {
-		return ""
+	if n := ps.tunnel.Load(); n != nil {
+		return n.tun.PublicURL()
 	}
-	return ps.tunnel.PublicURL()
+	return ""
 }
 
-// HasTunnel returns true if a tunnel is configured.
+// HasTunnel returns true if the proxy declares its own tunnel.
 func (ps *ProxyServer) HasTunnel() bool {
-	return ps.tunnel != nil
+	return ps.namedTunnelSetup != nil
 }
 
-// IsTunnelRunning returns true if the tunnel is currently running.
+// IsTunnelRunning returns true if the proxy's own tunnel is connected.
 func (ps *ProxyServer) IsTunnelRunning() bool {
-	if ps.tunnel == nil {
-		return false
-	}
-	return ps.tunnel.IsRunning()
+	n := ps.tunnel.Load()
+	return n != nil && n.tun.State() == tunnel.StateConnected
 }
 
 // Logger returns the traffic logger.

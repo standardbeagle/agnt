@@ -10,6 +10,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/proxy"
+	"github.com/standardbeagle/agnt/internal/tunnel"
 )
 
 // buildProxyServerConfig builds a proxy.ProxyConfig from a .agnt.kdl
@@ -64,7 +65,36 @@ func buildProxyServerConfig(id, targetURL, projectPath string, cfg *config.Proxy
 		AllowExternal:    allowExternal,
 		PublicURL:        publicURL,
 		StatusURL:        statusURL,
+		NamedTunnel:      namedTunnelConfig(projectPath, cfg),
 	}
+}
+
+// namedTunnelConfig translates a proxy's cloudflare-tunnel block. The block
+// was validated at parse time; the credentials path resolves against the
+// project here. A path that cannot resolve is passed through verbatim so the
+// tunnel's own credential check fails loud naming it.
+func namedTunnelConfig(projectPath string, cfg *config.ProxyConfig) *proxy.NamedTunnelConfig {
+	if cfg == nil || cfg.CloudflareTunnel == nil {
+		return nil
+	}
+	ct := cfg.CloudflareTunnel
+	creds, err := ct.CredentialsPath(projectPath)
+	if err != nil {
+		creds = ct.CredentialsFile
+	}
+	nt := &proxy.NamedTunnelConfig{
+		Tunnel: tunnel.NamedCloudflare{
+			TunnelID:        ct.ID,
+			Hostname:        ct.Hostname,
+			CredentialsFile: creds,
+		},
+		AllowUnauthenticated: ct.AllowUnauthenticated,
+	}
+	if ct.Access != nil {
+		nt.AccessTeamDomain = ct.Access.TeamDomain
+		nt.AccessAUD = ct.Access.AUD
+	}
+	return nt
 }
 
 // handleProxyEvents runs the proxy event handling loop.

@@ -498,6 +498,7 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 	allowExternal := p.AllowExternal
 	publicURL := p.GetPublicURL()
 	skipTLSVerify := p.SkipTLSVerify
+	namedTunnel := p.NamedTunnelConfig()
 	boundPort := p.BoundPort()
 	// Capture any still-pending readiness dependencies so the gate is re-armed
 	// on the new server. A ready proxy has none (empty), and coming back ready
@@ -553,6 +554,7 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 		AllowExternal: allowExternal,
 		PublicURL:     publicURL,
 		SkipTLSVerify: skipTLSVerify,
+		NamedTunnel:   namedTunnel,
 	})
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart proxy: %v", err))

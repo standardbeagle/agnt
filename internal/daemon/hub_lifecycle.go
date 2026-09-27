@@ -115,6 +115,7 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 		ProjectPath   string
 		BindAddress   string
 		AllowExternal bool
+		NamedTunnel   *proxy.NamedTunnelConfig
 	}
 
 	var procsToRestart []procManifest
@@ -145,6 +146,7 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 				ProjectPath:   p.Path,
 				BindAddress:   p.BindAddress,
 				AllowExternal: p.AllowExternal,
+				NamedTunnel:   p.NamedTunnelConfig(),
 			})
 		}
 	}
@@ -193,6 +195,7 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 			Path:          pm.ProjectPath,
 			BindAddress:   pm.BindAddress,
 			AllowExternal: pm.AllowExternal,
+			NamedTunnel:   pm.NamedTunnel,
 		})
 		if err != nil {
 			debug.Error("daemon", "Failed to restart proxy %s: %v", pm.ID, err)

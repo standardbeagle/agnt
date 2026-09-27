@@ -125,3 +125,46 @@ func TestComputeReconcile_CombinesScriptsAndProxies(t *testing.T) {
 
 	assert.True(t, computeReconcile(nil, nil, nil, nil).IsEmpty())
 }
+
+func TestProxySignature_DetectsCloudflareTunnelChanges(t *testing.T) {
+	withTunnel := func(mut func(*config.CloudflareTunnelConfig)) *config.ProxyConfig {
+		ct := &config.CloudflareTunnelConfig{
+			ID: "tid", Hostname: "dev.example.com", CredentialsFile: "~/c.json",
+			Access: &config.CloudflareAccessConfig{TeamDomain: "beagle.cloudflareaccess.com", AUD: "aud"},
+		}
+		if mut != nil {
+			mut(ct)
+		}
+		return &config.ProxyConfig{URL: "http://localhost:3000", CloudflareTunnel: ct}
+	}
+	base := proxySignature(withTunnel(nil))
+	assert.Equal(t, base, proxySignature(withTunnel(nil)))
+	assert.NotEqual(t, base, proxySignature(&config.ProxyConfig{URL: "http://localhost:3000"}), "removing the tunnel must restart")
+	for name, mut := range map[string]func(*config.CloudflareTunnelConfig){
+		"id":          func(c *config.CloudflareTunnelConfig) { c.ID = "other" },
+		"hostname":    func(c *config.CloudflareTunnelConfig) { c.Hostname = "b.example.com" },
+		"credentials": func(c *config.CloudflareTunnelConfig) { c.CredentialsFile = "~/d.json" },
+		"team":        func(c *config.CloudflareTunnelConfig) { c.Access.TeamDomain = "x.cloudflareaccess.com" },
+		"aud":         func(c *config.CloudflareTunnelConfig) { c.Access.AUD = "aud2" },
+		"opt-out":     func(c *config.CloudflareTunnelConfig) { c.Access = nil; c.AllowUnauthenticated = true },
+	} {
+		assert.NotEqual(t, base, proxySignature(withTunnel(mut)), "%s change must restart", name)
+	}
+}
+
+func TestBuildProxyServerConfig_CloudflareTunnel(t *testing.T) {
+	cfg := &config.ProxyConfig{CloudflareTunnel: &config.CloudflareTunnelConfig{
+		ID: "tid", Hostname: "dev.example.com", CredentialsFile: "secrets/dev.json",
+		Access: &config.CloudflareAccessConfig{TeamDomain: "beagle.cloudflareaccess.com", AUD: "aud"},
+	}}
+	got := buildProxyServerConfig("p", "http://localhost:3000", "/proj", cfg).NamedTunnel
+	if assert.NotNil(t, got) {
+		assert.Equal(t, "tid", got.Tunnel.TunnelID)
+		assert.Equal(t, "dev.example.com", got.Tunnel.Hostname)
+		assert.Equal(t, "/proj/secrets/dev.json", got.Tunnel.CredentialsFile, "relative credentials resolve against the project")
+		assert.Equal(t, "beagle.cloudflareaccess.com", got.AccessTeamDomain)
+		assert.Equal(t, "aud", got.AccessAUD)
+		assert.False(t, got.AllowUnauthenticated)
+	}
+	assert.Nil(t, buildProxyServerConfig("p", "http://localhost:3000", "/proj", &config.ProxyConfig{}).NamedTunnel)
+}

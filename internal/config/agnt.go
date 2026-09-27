@@ -557,6 +557,11 @@ type ProxyConfig struct {
 	// serves. A live tunnel's URL still wins over it.
 	StatusURL string `kdl:"status-url"`
 
+	// CloudflareTunnel runs a named Cloudflare tunnel in front of this
+	// proxy, making it public at the tunnel's hostname. See
+	// CloudflareTunnelConfig for the Access requirement.
+	CloudflareTunnel *CloudflareTunnelConfig `kdl:"cloudflare-tunnel"`
+
 	// Websocket enables WebSocket proxying
 	Websocket bool `kdl:"websocket"`
 
@@ -1211,6 +1216,15 @@ func ParseAgntConfig(data string) (*AgntConfig, error) {
 	// rather than waiting for startup races.
 	if err := validateProxyWaitFor(cfg.Proxies, cfg.Scripts); err != nil {
 		return nil, err
+	}
+
+	for id, p := range cfg.Proxies {
+		if p == nil {
+			continue
+		}
+		if err := p.CloudflareTunnel.Validate(); err != nil {
+			return nil, fmt.Errorf("proxy %q: %w", id, err)
+		}
 	}
 
 	// Validate channel config fields if present.

@@ -16,6 +16,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 )
 
@@ -24,7 +25,6 @@ import (
 const AccessJWTHeader = "Cf-Access-Jwt-Assertion"
 
 const (
-	accessTeamDomainSuffix = ".cloudflareaccess.com"
 	// accessClockLeeway absorbs clock skew between Cloudflare's edge and this
 	// machine when checking exp/nbf.
 	accessClockLeeway = 30 * time.Second
@@ -84,12 +84,11 @@ type CloudflareAccess struct {
 // (<team>.cloudflareaccess.com): the verifier fetches signing keys from it,
 // so it is never allowed to name an arbitrary host.
 func NewCloudflareAccess(teamDomain, aud string) (*CloudflareAccess, error) {
-	teamDomain = strings.ToLower(strings.TrimSpace(teamDomain))
-	aud = strings.TrimSpace(aud)
-	label := strings.TrimSuffix(teamDomain, accessTeamDomainSuffix)
-	if label == teamDomain || label == "" || strings.ContainsAny(label, "./:@") {
-		return nil, fmt.Errorf("access team-domain %q must be <team>%s", teamDomain, accessTeamDomainSuffix)
+	teamDomain, err := config.NormalizeAccessTeamDomain(teamDomain)
+	if err != nil {
+		return nil, err
 	}
+	aud = strings.TrimSpace(aud)
 	if aud == "" {
 		return nil, errors.New("access aud is required (the Access application's Audience tag)")
 	}

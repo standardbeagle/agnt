@@ -113,10 +113,12 @@ type ProxyServer struct {
 	// Voice sessions for speech-to-text (map[connID]*VoiceSession)
 	voiceSessions sync.Map
 
-	// tunnel is the proxy-owned tunnel declared in the proxy's config, nil
-	// when none is. Tunnels started through the TUNNEL verb are owned by the
-	// daemon's tunnel manager instead and bind via SetTunnelURL.
-	tunnel proxyTunnel
+	// namedTunnelSetup is the validated named-tunnel declaration (nil when
+	// the proxy declares none); tunnel is the running instance, published by
+	// Start and cleared by Stop. Tunnels started through the TUNNEL verb are
+	// owned by the daemon's tunnel manager instead and bind via SetTunnelURL.
+	namedTunnelSetup *namedTunnelSetup
+	tunnel           atomic.Pointer[namedTunnel]
 
 	// Chaos engine for failure injection
 	chaosEngine *ChaosEngine
@@ -225,13 +227,11 @@ type ProxyConfig struct {
 	// (nil = off). Populated from the project's .agnt.kdl auth-breakout
 	// block; may also be set post-create via SetAuthBreakout.
 	AuthBreakout *AuthBreakout
-}
 
-// proxyTunnel is the lifecycle surface the proxy needs from a tunnel it owns.
-type proxyTunnel interface {
-	PublicURL() string
-	IsRunning() bool
-	Stop() error
+	// NamedTunnel runs a named Cloudflare tunnel in front of the proxy
+	// (nil = none). NewProxyServer refuses one with neither a valid Access
+	// application nor an explicit AllowUnauthenticated.
+	NamedTunnel *NamedTunnelConfig
 }
 
 // SetAuthBreakout installs (or clears, with nil) the OAuth-breakout rules.
@@ -308,6 +308,13 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 	if err != nil {
 		debug.Error("proxy", "invalid target URL %q: %v", config.TargetURL, err)
 		return nil, fmt.Errorf("invalid target URL: %w", err)
+	}
+
+	// Validated before anything that starts goroutines, so a refused named
+	// tunnel returns without leaking them.
+	namedSetup, err := newNamedTunnelSetup(config.NamedTunnel)
+	if err != nil {
+		return nil, err
 	}
 
 	// Only set default port if not specified (negative values use default, 0 means auto-assign)
@@ -398,6 +405,8 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 	ps.SetStatusURL(config.StatusURL)
 
 	ps.authBreakout.Store(config.AuthBreakout)
+
+	ps.namedTunnelSetup = namedSetup
 
 	// Push chaos state to connected browser clients whenever any control
 	// surface (MCP, hub, browser panel) mutates the engine.
@@ -679,6 +688,10 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 	// Start backend health probe (non-zero interval means enabled)
 	ps.backendHealthy.Store(true)
 	go ps.runHealthCheck(ctx)
+
+	if ps.namedTunnelSetup != nil {
+		ps.startNamedTunnel(ctx, mux)
+	}
 
 	// Emit a lifecycle diagnostic so STREAM-EVENTS consumers (e.g. agnt ssh's
 	// port-forward manager, task 07 of the remote-ssh epic) can react to a

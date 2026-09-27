@@ -141,5 +141,23 @@ func proxySignature(p *config.ProxyConfig) string {
 		strconv.FormatBool(p.AllowExternal),
 		p.PublicURL,
 		strings.Join(p.WaitFor, "\x00"),
+		cloudflareTunnelSignature(p.CloudflareTunnel),
 	}, "\x1f")
+}
+
+// cloudflareTunnelSignature folds the cloudflare-tunnel block into the proxy
+// signature, so editing the tunnel or its Access application restarts the
+// proxy with the new values.
+func cloudflareTunnelSignature(c *config.CloudflareTunnelConfig) string {
+	if c == nil {
+		return ""
+	}
+	var team, aud string
+	if c.Access != nil {
+		team, aud = c.Access.TeamDomain, c.Access.AUD
+	}
+	return strings.Join([]string{
+		c.ID, c.Hostname, c.CredentialsFile, team, aud,
+		strconv.FormatBool(c.AllowUnauthenticated),
+	}, "\x00")
 }
