@@ -6,8 +6,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 	"regexp"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -88,6 +90,27 @@ type Config struct {
 	BinaryPath string // optional: path to tunnel binary, otherwise uses PATH
 	ID         string // tunnel identifier
 	Path       string // project path for session scoping
+
+	// Named runs a locally-managed named Cloudflare tunnel instead of a
+	// quick tunnel. Only valid with ProviderCloudflare.
+	Named *NamedCloudflare
+}
+
+// NamedCloudflare identifies a named Cloudflare tunnel provisioned outside
+// agnt: the tunnel, its DNS route and its credential file are created with
+// the account API token on a workstation, and agnt only runs the tunnel. The
+// account token never reaches agnt.
+type NamedCloudflare struct {
+	// TunnelID is the tunnel UUID. It appears in the hostname's DNS CNAME
+	// and is not a secret. Running by UUID with a credentials file needs no
+	// origin cert, which running by name would.
+	TunnelID string
+	// Hostname is the public hostname routed to the tunnel. cloudflared does
+	// not print it, so it is the tunnel's public URL once connected.
+	Hostname string
+	// CredentialsFile is the path to the tunnel credential JSON. agnt never
+	// reads it; it only checks the file is private to its owner.
+	CredentialsFile string
 }
 
 // Tunnel represents a running tunnel instance.
@@ -150,6 +173,14 @@ func (t *Tunnel) Start(ctx context.Context) error {
 	t.procMu.Lock()
 	t.cancel = cancel
 	t.procMu.Unlock()
+
+	if t.config.Named != nil && t.config.Provider != ProviderCloudflare {
+		err := fmt.Errorf("named tunnels are cloudflare-only, got provider %s", t.config.Provider)
+		t.setState(StateFailed)
+		t.setError(err)
+		t.closeDone()
+		return err
+	}
 
 	switch t.config.Provider {
 	case ProviderCloudflare:
@@ -333,7 +364,14 @@ func (t *Tunnel) startCloudflare(ctx context.Context) error {
 	}
 
 	localURL := fmt.Sprintf("http://%s:%d", t.config.LocalHost, t.config.LocalPort)
-	cmd := exec.CommandContext(ctx, binary, "tunnel", "--url", localURL)
+	args, err := cloudflareArgs(localURL, t.config.Named)
+	if err != nil {
+		t.setState(StateFailed)
+		t.setError(err)
+		t.closeDone()
+		return err
+	}
+	cmd := exec.CommandContext(ctx, binary, args...)
 
 	// Capture stderr (cloudflared logs to stderr)
 	stderr, err := cmd.StderrPipe()
@@ -374,10 +412,61 @@ func (t *Tunnel) startCloudflare(ctx context.Context) error {
 	return nil
 }
 
+// cloudflareArgs builds the cloudflared command line: a quick tunnel when
+// named is nil, otherwise `tunnel run` for the named tunnel by UUID.
+func cloudflareArgs(localURL string, named *NamedCloudflare) ([]string, error) {
+	if named == nil {
+		return []string{"tunnel", "--url", localURL}, nil
+	}
+	if named.TunnelID == "" || named.Hostname == "" || named.CredentialsFile == "" {
+		return nil, fmt.Errorf("named cloudflare tunnel needs a tunnel id, hostname and credentials file")
+	}
+	if err := checkCredentialsFile(named.CredentialsFile); err != nil {
+		return nil, err
+	}
+	return []string{
+		"tunnel", "--no-autoupdate", "run",
+		"--credentials-file", named.CredentialsFile,
+		"--url", localURL,
+		named.TunnelID,
+	}, nil
+}
+
+// checkCredentialsFile refuses a credential file that is missing, not a
+// regular file, or readable by anyone but its owner. A world-readable tunnel
+// credential lets any local user run the tunnel; refusing to start keeps the
+// fix (chmod 600) in front of the operator instead of shipping the leak.
+func checkCredentialsFile(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("tunnel credentials file: %w", err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("tunnel credentials file %s is not a regular file", path)
+	}
+	// Windows has no POSIX mode bits to check. WSL reports /mnt/c files as
+	// 0777 and is refused here: keep the credential under the WSL home.
+	if runtime.GOOS != "windows" && info.Mode().Perm()&0o077 != 0 {
+		return fmt.Errorf("tunnel credentials file %s is mode %04o; it must be private to its owner (chmod 600)", path, info.Mode().Perm())
+	}
+	return nil
+}
+
+// cloudflaredRegistered is the line cloudflared logs once an edge connection
+// for a named tunnel is up. It is the tunnel's own readiness signal.
+const cloudflaredRegistered = "Registered tunnel connection"
+
 func (t *Tunnel) parseCloudflareOutput(r io.Reader) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := scanner.Text()
+		if named := t.config.Named; named != nil {
+			if strings.Contains(line, cloudflaredRegistered) && t.PublicURL() == "" {
+				t.setPublicURL("https://" + named.Hostname)
+				t.markConnected()
+			}
+			continue
+		}
 		if match := cloudflareURLPattern.FindString(line); match != "" {
 			t.setPublicURL(match)
 			t.markConnected()
