@@ -541,8 +541,11 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 		// This tells backend apps the host the client originally connected to
 		req.Header.Set("X-Forwarded-Host", originalHost)
 
-		// Set protocol - proxy is HTTP
-		req.Header.Set("X-Forwarded-Proto", "http")
+		// The proxy listener is plain HTTP, but a request that arrived through
+		// the named tunnel was HTTPS at the edge. Apps building absolute URLs
+		// (OAuth redirect_uri above all) from forwarded headers need the
+		// scheme the browser used, or the redirect URI stops matching.
+		req.Header.Set("X-Forwarded-Proto", forwardedProto(req.Context()))
 
 		// Rewrite Origin ONLY when the inbound Origin is the proxy's own listen
 		// origin — i.e. the origin agnt itself introduced by fronting the backend

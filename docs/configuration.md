@@ -257,6 +257,13 @@ While the tunnel is connected, the proxy rewrites Location headers and absolute
 links to `https://<hostname>`. This is the same `public-url` behaviour a quick
 tunnel has, and it applies to local browsing too.
 
+Requests that come through the tunnel reach the app with
+`X-Forwarded-Proto: https` and `X-Forwarded-Host: <hostname>`, so an app that
+builds its OAuth `redirect_uri` from forwarded headers produces the `https://`
+URI it registered. Requests on the proxy's own port get `http`. The scheme is
+set by the listener the request arrived on; a client-sent `X-Forwarded-Proto`
+is always overwritten.
+
 **Provisioning stays outside agnt.** Creating the tunnel, its DNS route and its
 credential file needs the Cloudflare account API token, which agnt never holds.
 Do it once from a workstation, either with `cloudflared tunnel create <name>` and

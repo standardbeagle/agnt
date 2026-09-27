@@ -96,8 +96,9 @@ func (ps *ProxyServer) startNamedTunnel(ctx context.Context, handler http.Handle
 			ps.logNamedTunnel(DiagnosticWarning, "named_tunnel_access_denied",
 				fmt.Sprintf("Cloudflare Access refused a request for %s: %v", name, err))
 		})
-		handler = setup.access.Guard(handler)
+		handler = setup.access.Guard(markTunnelled(handler))
 	} else {
+		handler = markTunnelled(handler)
 		ps.logNamedTunnel(DiagnosticWarning, "named_tunnel_unauthenticated",
 			fmt.Sprintf("named tunnel %s is public with no Access check (allow-unauthenticated)", name))
 	}
@@ -153,6 +154,29 @@ func (ps *ProxyServer) startNamedTunnel(ctx context.Context, handler http.Handle
 				fmt.Sprintf("named tunnel %s exited: %s", name, tun.Info().Error))
 		}
 	}()
+}
+
+// tunnelledKey marks a request context as having arrived through the named
+// tunnel's ingress listener.
+type tunnelledKey struct{}
+
+// markTunnelled tags every request served by the tunnel ingress. The tag is
+// set by the listener the request arrived on, never derived from headers, so
+// a local request cannot claim to be tunnelled.
+func markTunnelled(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), tunnelledKey{}, true)))
+	})
+}
+
+// forwardedProto is the scheme the client used to reach the proxy: https
+// through the named tunnel (TLS terminates at Cloudflare's edge), http on the
+// proxy's own listener.
+func forwardedProto(ctx context.Context) string {
+	if tunnelled, _ := ctx.Value(tunnelledKey{}).(bool); tunnelled {
+		return "https"
+	}
+	return "http"
 }
 
 func (ps *ProxyServer) logNamedTunnel(level ProxyDiagnosticLevel, event, msg string) {

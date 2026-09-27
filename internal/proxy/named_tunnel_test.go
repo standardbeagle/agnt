@@ -58,6 +58,7 @@ func startNamedTunnelProxy(t *testing.T, allowUnauth bool) (ps *ProxyServer, f *
 	t.Helper()
 	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("X-Seen-Proto", r.Header.Get("X-Forwarded-Proto"))
 		io.WriteString(w, "backend-ok")
 	}))
 	t.Cleanup(backend.Close)
@@ -155,6 +156,43 @@ func TestNamedTunnelIngressRequiresAccess(t *testing.T) {
 	if c, err := net.DialTimeout("tcp", host, time.Second); err == nil {
 		c.Close()
 		t.Fatalf("ingress %s still accepting after Stop", host)
+	}
+}
+
+// The backend must see the scheme the browser used: https through the
+// tunnel, http on the proxy's own port, whatever the client claims.
+func TestNamedTunnelForwardedProto(t *testing.T) {
+	ps, f, ingress := startNamedTunnelProxy(t, false)
+	seen := func(url, jwt, claimed string) string {
+		t.Helper()
+		req, _ := http.NewRequest(http.MethodGet, url+"/", nil)
+		if jwt != "" {
+			req.Header.Set(AccessJWTHeader, jwt)
+		}
+		if claimed != "" {
+			req.Header.Set("X-Forwarded-Proto", claimed)
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("GET %s: %d", url, resp.StatusCode)
+		}
+		return resp.Header.Get("X-Seen-Proto")
+	}
+	if got := seen(ingress, f.sign("k1", f.claims(nil), nil), ""); got != "https" {
+		t.Errorf("tunnelled request forwarded proto %q, want https", got)
+	}
+	if got := seen(ingress, f.sign("k1", f.claims(nil), nil), "http"); got != "https" {
+		t.Errorf("tunnelled request with a client-set proto forwarded %q, want https", got)
+	}
+	if got := seen("http://"+ps.ListenAddr, "", ""); got != "http" {
+		t.Errorf("local request forwarded proto %q, want http", got)
+	}
+	if got := seen("http://"+ps.ListenAddr, "", "https"); got != "http" {
+		t.Errorf("local request claiming https forwarded %q, want http", got)
 	}
 }
 
