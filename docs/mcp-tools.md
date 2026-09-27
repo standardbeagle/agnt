@@ -967,6 +967,11 @@ tunnel {action: "start", provider: "cloudflare", local_port: 12345, proxy_id: "d
 tunnel {action: "start", provider: "tailscale",  local_port: 12345, proxy_id: "dev"}
 ```
 
+For a stable public hostname protected by Cloudflare Access, declare a named
+tunnel on the proxy in `.agnt.kdl` instead (`cloudflare-tunnel`,
+`docs/configuration.md` § Named Cloudflare Tunnel). The `tunnel` tool starts
+quick tunnels only, with no Access check.
+
 For the tailnet alone, `bind_address: "tailscale"` needs no tunnel process: the
 proxy listens on this node's tailnet IPv4 and keeps its own port, so it answers
 at `http://<magicdns-name>:<port>`. It is the one non-loopback bind that does

@@ -199,6 +199,75 @@ proxies {
 applies them. A proxy started through the `proxy` MCP tool has no config node,
 so the command refuses it rather than writing keys nothing reads.
 
+## Named Cloudflare Tunnel (`proxies.<id>.cloudflare-tunnel` in `.agnt.kdl`)
+
+Runs a named Cloudflare tunnel in front of one proxy, so the proxy is public at
+a stable hostname you own instead of a random `*.trycloudflare.com` name. A
+stable hostname is what OAuth redirect URIs and Cloudflare Access policies need.
+
+```kdl
+proxies {
+    dev {
+        url "http://localhost:5173"
+        cloudflare-tunnel {
+            id "6ff42ae2-765d-4adf-8112-31c55c1551ef"      // tunnel UUID
+            hostname "dev.example.com"
+            credentials-file "~/.config/cloudflared/dev.json"
+            access {
+                team-domain "yourteam.cloudflareaccess.com"
+                aud "<Access application Audience tag>"
+            }
+        }
+    }
+}
+```
+
+| Key | Required | Description |
+|---|---|---|
+| `id` | yes | Tunnel UUID. It is the target of the hostname's CNAME and is not a secret. agnt runs the tunnel by UUID, so no origin cert (`cert.pem`) is needed on the machine. |
+| `hostname` | yes | Bare DNS name routed to the tunnel (no scheme, port or path). Becomes the proxy's public URL once the tunnel registers. |
+| `credentials-file` | yes | Tunnel credential JSON. `~/` expands to the home directory; a relative path resolves against the project. agnt never reads it, but refuses to start the tunnel when the file is readable by group or others (`chmod 600`). |
+| `access { team-domain aud }` | one of these two | The Cloudflare Access application protecting `hostname`. `team-domain` must be `<team>.cloudflareaccess.com`. |
+| `allow-unauthenticated true` | one of these two | Serve the tunnel with no Access check. Exists so an unauthenticated public dev proxy is a written decision, not a default. |
+
+**Fail closed.** A block with neither `access` nor `allow-unauthenticated`, or
+with both, fails config parsing.
+
+**What agnt enforces.** cloudflared is pointed at a dedicated loopback ingress
+listener, not at the proxy port. That listener checks the
+`Cf-Access-Jwt-Assertion` header on every request, including WebSocket upgrades:
+RS256 only, signed by a key from the team's JWKS
+(`https://<team-domain>/cdn-cgi/access/certs`), issuer is the team, audience
+includes `aud`, and the token is inside its validity window. Anything else gets a
+constant `403`. A missing or misconfigured Access application therefore fails
+closed at the origin instead of serving the proxy to anyone who finds the
+hostname. Access at Cloudflare's edge is the login layer; the origin check is
+defence in depth behind it. Local browsing on the proxy's own loopback port is
+not behind Access.
+
+Denials are surfaced as `tunnel` proxy diagnostics, at most once per reason per
+minute. JWKS keys are cached, and an unknown key id refetches them at most every
+30 seconds, so key rotation is picked up without a restart.
+
+**Lifecycle.** The tunnel starts with the proxy and stops with it. Proxy restart,
+`RESTART-ALL` and config reconcile carry the block to the replacement proxy, and
+editing any key restarts the proxy. A tunnel that fails to start or exits is
+reported as a `named_tunnel_failed` diagnostic; the proxy keeps serving locally.
+While the tunnel is connected, the proxy rewrites Location headers and absolute
+links to `https://<hostname>`. This is the same `public-url` behaviour a quick
+tunnel has, and it applies to local browsing too.
+
+**Provisioning stays outside agnt.** Creating the tunnel, its DNS route and its
+credential file needs the Cloudflare account API token, which agnt never holds.
+Do it once from a workstation, either with `cloudflared tunnel create <name>` and
+`cloudflared tunnel route dns <name> <hostname>`, or through the API. Then create
+a self-hosted Access application for `hostname` in Zero Trust and copy its
+Audience (AUD) tag into `aud`.
+
+Scope: `.agnt.kdl` only. A proxy started through the `proxy` MCP tool has no
+config node and cannot declare one. Quick tunnels started with the `tunnel` tool
+(`cloudflare`, `ngrok`, `tailscale`) are unchanged and have no Access check.
+
 ## Alert Push Channels (`internal/config/agnt.go`, `alerts.push` in `.agnt.kdl`)
 
 Controls which incident-pinger channels push alerts to the AI client. The
