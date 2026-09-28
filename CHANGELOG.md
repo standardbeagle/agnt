@@ -1,5 +1,85 @@
 # Changelog - agnt
 
+## [0.16.0] - 2026-09-28
+
+Headline: **dev sign-in and protected sharing.** Sign the app you are building
+in as any test user, from the browser, the terminal, or your agent, and put a
+dev proxy on a stable hostname behind Cloudflare Access or on your tailnet.
+Guide: https://dev.standardbeagle.com/agnt/features/dev-auth
+
+### Added: dev sign-in and protected sharing
+- **Dev OIDC issuer with personas** (`dev-oidc` in `.agnt.kdl`). Every proxy
+  of the project serves a dev-only OIDC provider at `/__agnt/oidc/`
+  (discovery, authorize, token incl. refresh, userinfo, jwks, logout). Test
+  users (`personas`) with roles and extra claims live in the file; the RS256
+  signing key is generated per daemon and never written to disk.
+- **Switch persona anywhere.** A persona chip in the indicator panel,
+  `:as <persona>` in the `agnt run` overlay, and the new `devauth` MCP tool
+  (`personas`, `as`, `token`) all make the same switch: set the persona,
+  expire the app's session cookies, send the app back through its login.
+- **Sign in over the tailnet.** On a `bind "tailscale"` proxy the issuer
+  identifies the browser's owner with `tailscale whois` and grants only the
+  personas `allow` lists for that login.
+- **Listener-scoped trust.** Loopback gets every persona (and
+  `default-persona` skips the picker for agent logins); tailnet and
+  Cloudflare Access callers get only what `allow` grants their verified
+  identity; anything else, including an unauthenticated tunnel, gets `403`.
+- **Named Cloudflare tunnel with Access** (`cloudflare-tunnel` in a proxy
+  block). Runs a named tunnel by UUID at a hostname you own. The block fails
+  closed without `access { team-domain aud }` or an explicit
+  `allow-unauthenticated true`, and a dedicated origin listener re-verifies
+  the `Cf-Access-Jwt-Assertion` on every request, WebSockets included.
+  Tunnelled requests reach the app as `X-Forwarded-Proto: https`.
+- **Tailnet proxies.** `bind "tailscale"` serves a proxy on this node's
+  tailnet address; `:tailscale` in the overlay moves a proxy there, and
+  `tunnel`/`tailscale-url` palette commands manage sharing.
+
+### Added
+- `verify_change` MCP tool rechecks the session's recorded findings after a
+  fix. Agents are steered to audit first and drill into failures second.
+- `auditCSS` reports modern-CSS opportunities.
+- `demo` MCP tool and demo-engine upgrades for narrated demo videos:
+  schema validator (`make demo-check`), `--inspect` contact sheets, cached
+  TTS and assembly, brand overlay and EBU R128 loudness, walkthrough-driven
+  segments, `make demo-publish`.
+- Overlay: edit `.agnt.kdl` in a panel with `:config`, a notification stack
+  above the status bar, and proxies addressed by their `.agnt.kdl` name.
+- Proxy `status-url` (display-only), `listen-port`, and atomic multi-property
+  config edits; the daemon reconciles proxies against `.agnt.kdl` by name.
+- Project detection: apps inside a multi-project root, published ports from
+  compose files, `.slnx` solutions, and more project shapes auto-configured.
+- `automation.max-sessions` caps concurrent chromedp browser sessions.
+- Public walkthrough plane: guarded subresource route for live-upstream
+  shares, HMAC-bound subresource URLs, rate caps on the artifact route and
+  per-origin outbound, `public-plane {}` rate-limit config,
+  `--rotate-on-resume`.
+- Alerts use a severity-scaled batch window, so fatal errors reach the agent
+  fast.
+
+### Changed
+- Every HTTP listener goes through one bounded server constructor
+  (timeouts, header cap, connection cap). `agnt publish serve` binds loopback
+  by default.
+- A scope failure returns the candidate sessions instead of an error.
+
+### Fixed
+- MCP schemas: explicit output schemas and normalized boolean subschemas, so
+  Claude's SDK client no longer rejects tools.
+- Overlay terminal fidelity: escape sequences read to their end, a lone Esc
+  is released, mouse reports are swallowed, cursor restored by CUP, open
+  menus are not repainted over, and the child is repainted from the virtual
+  screen.
+- `agnt daemon restart` returns and leaves the new daemon detached.
+- Session process-group reaps refuse groups the session does not own and
+  record every reap.
+- Fractional timeouts in config are refused or honoured, never silently 0.
+- Proxy: untargeted exec stays out of the chrome shell, stopping a proxy
+  retires the right one, only the proxy's own Origin is rewritten, and the
+  injected public URL is tied to the tunnel that supplied it.
+- Publish: two-poll confirm before mass revoke, fingerprint before the first
+  pass, `503` for feedback with nowhere to store it.
+- `replaytest` resolves its store directory explicitly, never from cwd.
+
 ## [0.15.4] - 2026-08-07
 
 ### Fixed
