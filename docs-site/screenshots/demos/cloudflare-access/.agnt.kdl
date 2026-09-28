@@ -1,0 +1,20 @@
+// cloudflare-access demo: one proxy, public at agnt-demo.sbdev.io through a
+// named Cloudflare tunnel, behind the "agnt demo" Access application.
+// The tunnel id and the Access aud are identifiers, not secrets; the tunnel
+// credential lives outside the repo, mode 0600.
+proxies {
+    staging {
+        url "http://127.0.0.1:8031"
+        listen-port 18211
+        autostart true
+        cloudflare-tunnel {
+            id "4094b6b3-731e-4a83-8511-874ab7ed3182"
+            hostname "agnt-demo.sbdev.io"
+            credentials-file "~/.config/cloudflared/agnt-demo-access.json"
+            access {
+                team-domain "sbdev.cloudflareaccess.com"
+                aud "8cd5c6fd0119566d90c320e2becee9885e7ea652ae264261fce2f94383d3444a"
+            }
+        }
+    }
+}

@@ -1,0 +1,135 @@
+{
+  "name": "cloudflare-access",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "fps": 25,
+  "brand": {
+    "image": "../../assets/sb-logo.png",
+    "position": "top-right",
+    "width": 220,
+    "opacity": 0.85
+  },
+  "setup": {
+    "upstream": "./upstream.mjs",
+    "waitFor": "http://127.0.0.1:8031/",
+    "agntConfig": true
+  },
+  "segments": [
+    {
+      "id": "card-intro",
+      "type": "card",
+      "dur": 4.2,
+      "kicker": "agnt demo · named tunnel + Access",
+      "title": "Share the dev build. Not with everyone.",
+      "sub": "A stable hostname you own, Cloudflare Access in front, and the Access token checked again at the origin."
+    },
+    {
+      "id": "config",
+      "type": "cli",
+      "settings": {
+        "FontSize": 17
+      },
+      "tape": [
+        "Hide",
+        "Type \"clear\"",
+        "Enter",
+        "Show",
+        "Type \"cat .agnt.kdl\"",
+        "Sleep 500ms",
+        "Enter",
+        "Sleep 7s"
+      ]
+    },
+    {
+      "id": "curl",
+      "type": "cli",
+      "settings": {
+        "FontSize": 17,
+        "TypingSpeed": "25ms"
+      },
+      "tape": [
+        "Hide",
+        "Type \"INGRESS=$(ps -eo args | grep -o '[c]loudflared.*--url http://127.0.0.1:[0-9]*' | grep -o '[0-9]*$'); HDR=$HOME/.config/cloudflared/agnt-demo-access.headers; clear\"",
+        "Enter",
+        "Show",
+        "Type \"# 1. a stranger hits the public hostname\"",
+        "Enter",
+        "Type \"curl -so /dev/null -w '%{http_code} %{redirect_url}\\n' https://agnt-demo.sbdev.io/ | cut -c1-80\"",
+        "Sleep 400ms",
+        "Enter",
+        "Sleep 4.5s",
+        "Type \"# 2. skip Cloudflare, forge the Access header, hit agnt's ingress directly\"",
+        "Enter",
+        "Type \"curl -so /dev/null -w '%{http_code}\\n' -H 'Cf-Access-Jwt-Assertion: forged' http://127.0.0.1:$INGRESS/\"",
+        "Sleep 400ms",
+        "Enter",
+        "Sleep 5s",
+        "Type \"# 3. an allowed caller (here, an Access service token)\"",
+        "Enter",
+        "Type \"curl -s -H @$HDR https://agnt-demo.sbdev.io/ | grep -o 'https://agnt-demo[^<]*'\"",
+        "Sleep 400ms",
+        "Enter",
+        "Sleep 5s"
+      ]
+    },
+    {
+      "id": "page",
+      "type": "browser",
+      "raw": true,
+      "url": "https://agnt-demo.sbdev.io/",
+      "script": "./segments/page.mjs",
+      "keep": [
+        [
+          "mark:login-0.3",
+          "end"
+        ]
+      ]
+    },
+    {
+      "id": "card-outro",
+      "type": "card",
+      "dur": 4.2,
+      "kicker": "",
+      "title": "One block in .agnt.kdl",
+      "sub": "Fails closed without Access · https-aware · follows the proxy — github.com/standardbeagle/agnt"
+    }
+  ],
+  "narration": {
+    "voice": "en-US-AndrewNeural",
+    "rate": "+4%",
+    "segments": [
+      {
+        "id": "n1",
+        "at": "config+0.5",
+        "text": "One block in the project config runs a named Cloudflare tunnel, at a hostname you own, behind Cloudflare Access."
+      },
+      {
+        "id": "n2",
+        "at": "curl+6.5",
+        "text": "A stranger gets the Access login."
+      },
+      {
+        "id": "n3",
+        "at": "curl+20.5",
+        "text": "Go around Cloudflare with a forged token, and agnt's origin check refuses it."
+      },
+      {
+        "id": "n4",
+        "at": "curl+32",
+        "text": "An allowed caller gets through."
+      },
+      {
+        "id": "n5",
+        "at": "page+0.5",
+        "text": "In a browser, that stranger sees Cloudflare's login page."
+      },
+      {
+        "id": "n6",
+        "at": "page+11.9",
+        "text": "And the app sees the request the way the browser made it: https, at the public hostname."
+      }
+    ]
+  }
+}
