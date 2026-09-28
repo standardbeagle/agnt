@@ -238,7 +238,9 @@ proxies {
 | `port` | int | — | Direct target port (shorthand for `http://localhost:PORT`) |
 | `target` | string | — | Deprecated. Use `url` instead |
 | `host` | string | `localhost` | Target hostname |
-| `bind` | string | `127.0.0.1` | Listen address. `0.0.0.0` to expose on all interfaces (for tunnel/mobile testing) |
+| `bind` | string | `127.0.0.1` | Listen address. `"tailscale"` serves on this node's tailnet address only. Any other non-loopback address needs `allow-external true` |
+| `listen-port` | int | — | Fixed port for the proxy itself (stable URLs for OAuth redirect URIs and bookmarks) |
+| `cloudflare-tunnel` | block | — | Named Cloudflare tunnel at a hostname you own, behind Cloudflare Access. See [Dev Sign-in & Protected Sharing](./features/dev-auth.md#named-cloudflare-tunnel-with-access) |
 | `websocket` | bool | `false` | Enable WebSocket proxying |
 | `max-log-size` | int | `1000` | Maximum traffic log entries to keep |
 
@@ -291,6 +293,42 @@ proxies {
     }
 }
 ```
+
+## dev-oidc
+
+A dev-only OIDC issuer served at `/__agnt/oidc/` on every proxy of the project, with test users (personas) you switch between from the indicator, `:as <persona>` in the overlay, or the `devauth` MCP tool.
+
+```kdl
+dev-oidc {
+    clients {
+        my-app {
+            redirect-uri "http://localhost:*/api/auth/callback/dev-oidc"
+            secret "dev-only"
+            login-path "/auth/signin"
+        }
+    }
+    personas {
+        standard {
+            email "std@example.com"
+        }
+        admin {
+            email "admin@example.com"
+            roles "admin"
+        }
+    }
+    default-persona "standard"
+}
+```
+
+| Property | Description |
+|---|---|
+| `issuer` | Token `iss` and the app's authority. Default: the proxy's own origin + `/__agnt/oidc` |
+| `clients.<id>` | `redirect-uri` (exact, or a whole-port `*` on localhost), `secret` (omit for a PKCE public client), `audience`, `login-path`, `session-cookies` |
+| `personas.<name>` | `email` (required), `name`, `roles`, `claims { key "value" }` |
+| `default-persona` | Signs local logins in without the picker |
+| `allow` | Personas granted to a verified remote identity (Tailscale login or Cloudflare Access email). No entry, no persona |
+
+Write nested blocks one node per line: the parser rejects `} }` on one line. See [Dev Sign-in & Protected Sharing](./features/dev-auth.md) for who gets which persona over loopback, the tailnet, and a Cloudflare tunnel.
 
 ## hooks
 

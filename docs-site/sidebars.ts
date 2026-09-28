@@ -17,6 +17,7 @@ const sidebars: SidebarsConfig = {
         'features/walkthroughs',
         'features/replay-testing',
         'features/remote-sessions',
+        'features/dev-auth',
       ],
     },
     {
@@ -34,6 +35,7 @@ const sidebars: SidebarsConfig = {
       items: [
         'demos/index',
         'demos/debug-to-e2e',
+        'demos/dev-oidc-personas',
       ],
     },
     'roadmap',

@@ -1,0 +1,23 @@
+WEBVTT
+
+00:00:04.750 --> 00:00:08.498
+Declare test users once, in the project's agnt config.
+
+00:00:19.047 --> 00:00:21.605
+The app signs in through agnt's dev issuer.
+
+00:00:21.605 --> 00:00:27.230
+Over the tailnet, agnt asks Tailscale who you are, and offers only the personas you're allowed.
+
+00:00:31.321 --> 00:00:33.302
+Signed in as the standard user.
+
+00:00:36.293 --> 00:00:39.488
+To check the admin view, switch persona from the indicator.
+
+00:00:39.488 --> 00:00:41.711
+The app signs in again, as admin.
+
+00:00:46.221 --> 00:00:48.947
+Agents get the same switch through the devauth tool.
+
