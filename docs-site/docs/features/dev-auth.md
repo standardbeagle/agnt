@@ -157,6 +157,12 @@ proxies {
 }
 ```
 
+<DemoVideo
+  src="/video/cloudflare-access.webm"
+  poster="/img/cloudflare-access-poster.webp"
+  captions="/video/cloudflare-access.vtt"
+  label="Demo: a proxy declared with a cloudflare-tunnel block at agnt-demo.sbdev.io. curl without login gets a 302 to the Cloudflare Access login; a forged Access header sent straight to agnt's ingress gets 403; an Access service token gets through. In the browser, the Access login page, then the app showing it was reached over https at the public hostname." />
+
 - **Fail closed.** The block needs either `access { ... }` or an explicit
   `allow-unauthenticated true`. Without one of them, the config doesn't parse.
 - **Checked at the origin too.** cloudflared talks to a dedicated loopback

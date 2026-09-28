@@ -25,6 +25,7 @@ and agent replies you see travelled the same transport your own sessions use.
 | [Drag until it breaks](./drag-resize.md) | The workbench's edge drag handle in one continuous pull — findings bloom live, then Send-to-agent hands off the measured break | 0:29 |
 | [Break your API on purpose](./chaos-testing.md) | Chaos latency + 500 rules at the proxy; the page swallows the failures, the incident inbox doesn't | 0:48 |
 | [Sign in as anyone. No IdP.](./dev-oidc-personas.md) | A real app on a build box, over the tailnet: dev OIDC persona picker, then Standard → Admin from the indicator's persona chip | 0:58 |
+| [Share the dev build. Not with everyone.](./cloudflare-access.md) | A named Cloudflare tunnel behind Access: a stranger gets the login, a forged token sent around Cloudflare gets 403 at the origin, an allowed caller gets through | 1:10 |
 | [The defect is three pages in](./navigate-defect.md) | "Take me there" — the agent drives the browser to a panel two levels down and measures the defect on arrival | 0:31 |
 | [From bug report to e2e coverage](./debug-to-e2e.md) | Floating-panel bug report → layout diagnostics + CSS audit → site-wide regression check (red → fix → green) → e2e tests for every failure path of a dynamic form | 1:37 |
 

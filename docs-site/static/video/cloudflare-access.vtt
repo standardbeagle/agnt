@@ -1,0 +1,20 @@
+WEBVTT
+
+00:00:04.750 --> 00:00:11.611
+One block in the project config runs a named Cloudflare tunnel, at a hostname you own, behind Cloudflare Access.
+
+00:00:18.870 --> 00:00:20.887
+A stranger gets the Access login.
+
+00:00:32.870 --> 00:00:37.651
+Go around Cloudflare with a forged token, and agnt's origin check refuses it.
+
+00:00:44.370 --> 00:00:45.978
+An allowed caller gets through.
+
+00:00:48.310 --> 00:00:51.913
+In a browser, that stranger sees Cloudflare's login page.
+
+00:00:59.710 --> 00:01:05.369
+And the app sees the request the way the browser made it: https, at the public hostname.
+

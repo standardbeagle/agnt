@@ -36,6 +36,7 @@ const sidebars: SidebarsConfig = {
         'demos/index',
         'demos/debug-to-e2e',
         'demos/dev-oidc-personas',
+        'demos/cloudflare-access',
       ],
     },
     'roadmap',
