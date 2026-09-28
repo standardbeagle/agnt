@@ -9,6 +9,7 @@ The version number is managed across multiple files:
 ### Core Binaries
 - `cmd/agnt/main.go` - appVersion variable
 - `internal/daemon/daemon.go` - Version variable
+- `internal/daemonclient/upgrade.go` - Version variable
 
 ### npm Packages
 - `npm/agnt/package.json` - Primary npm package
@@ -19,9 +20,6 @@ The version number is managed across multiple files:
 - `python/agnt/pyproject.toml` - Primary Python package version
 - `python/agnt/src/agnt/__init__.py` - __version__ variable
 - `python/pyproject.toml` - Deprecated wrapper (version + dependency)
-
-### Documentation
-- `CLAUDE.md` - Project overview version
 
 ## Automated Version Management
 
@@ -66,11 +64,10 @@ agnt --version
 
 # Check all version files
 grep -h 'appVersion = ' cmd/agnt/main.go
-grep -h 'var Version = ' internal/daemon/daemon.go
+grep -h 'var Version = ' internal/daemon/daemon.go internal/daemonclient/upgrade.go
 grep -h '"version"' npm/agnt/package.json npm/devtool-mcp/package.json package.json
 grep -h '^version = ' python/agnt/pyproject.toml python/pyproject.toml
 grep -h '__version__ = ' python/agnt/src/agnt/__init__.py
-grep '^\*\*Version\*\*:' CLAUDE.md
 ```
 
 ## Publishing the Release
