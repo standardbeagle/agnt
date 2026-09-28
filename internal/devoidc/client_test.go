@@ -42,3 +42,20 @@ func TestFetchState(t *testing.T) {
 		t.Fatalf("issuer-less proxy: %v", err)
 	}
 }
+
+func TestOriginForListenAddr(t *testing.T) {
+	for addr, want := range map[string]string{
+		"127.0.0.1:4242":     "http://localhost:4242",
+		"[::1]:80":           "http://localhost:80",
+		"0.0.0.0:31536":      "http://localhost:31536",
+		":31536":             "http://localhost:31536",
+		"100.87.26.14:31536": "http://100.87.26.14:31536",
+	} {
+		if got, err := OriginForListenAddr(addr); err != nil || got != want {
+			t.Errorf("OriginForListenAddr(%q) = %q, %v; want %q", addr, got, err, want)
+		}
+	}
+	if _, err := OriginForListenAddr(""); err == nil {
+		t.Error("empty listen address accepted")
+	}
+}

@@ -420,3 +420,45 @@ func TestAsCommand(t *testing.T) {
 		t.Fatalf("exec failure must surface: %v", err)
 	}
 }
+
+func TestDevOIDCTailnetWarning(t *testing.T) {
+	write := func(body string) string {
+		p := filepath.Join(t.TempDir(), config.AgntConfigFileName)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	const block = `dev-oidc {
+    %s
+    clients {
+        web {
+            redirect-uri "http://localhost:*/cb"
+        }
+    }
+    personas {
+        std {
+            email "s@x.com"
+        }
+    }
+    %s
+}`
+	url := "http://build1.example.ts.net:31536"
+	loopbackNoAllow := write(fmt.Sprintf(block, `issuer "http://localhost:31536/__agnt/oidc"`, ""))
+	w := devOIDCTailnetWarning(loopbackNoAllow, url)
+	if !strings.Contains(w, "issuer http://localhost:31536/__agnt/oidc is loopback") ||
+		!strings.Contains(w, url+"/__agnt/oidc") || !strings.Contains(w, "allow is empty") {
+		t.Fatalf("warning: %q", w)
+	}
+	fine := write(fmt.Sprintf(block, `issuer "`+url+`/__agnt/oidc"`, "allow {\n        \"andy@x.com\" \"std\"\n    }"))
+	if w := devOIDCTailnetWarning(fine, url); w != "" {
+		t.Fatalf("tailnet issuer + allow list: unexpected warning %q", w)
+	}
+	defaultIssuer := write(fmt.Sprintf(block, "", "allow {\n        \"andy@x.com\" \"std\"\n    }"))
+	if w := devOIDCTailnetWarning(defaultIssuer, url); w != "" {
+		t.Fatalf("default issuer follows the bind, so no warning: %q", w)
+	}
+	if w := devOIDCTailnetWarning(write("project {\n    name \"x\"\n}"), url); w != "" {
+		t.Fatalf("no dev-oidc block: %q", w)
+	}
+}

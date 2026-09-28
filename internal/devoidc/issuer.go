@@ -61,7 +61,7 @@ type Config struct {
 	Clients        map[string]Client
 	Personas       map[string]Persona
 	DefaultPersona string
-	Allow          map[string][]string // verified Access email -> persona names
+	Allow          map[string][]string // verified Access email or Tailscale login -> persona names
 }
 
 // Caller says how a request reached the issuer. The proxy fills it in from
@@ -73,6 +73,18 @@ type Caller struct {
 	// AccessEmail: the verified Cloudflare Access email, for requests that
 	// arrived through a named tunnel. Empty otherwise.
 	AccessEmail string
+	// TailnetLogin: the Tailscale login (an email) of the person whose
+	// device made the request, for a proxy bound to its tailnet address.
+	// tailscaled authenticates it; empty for tagged devices and non-peers.
+	TailnetLogin string
+}
+
+// identity is the verified person behind a remote caller, looked up in Allow.
+func (c Caller) identity() string {
+	if c.AccessEmail != "" {
+		return c.AccessEmail
+	}
+	return c.TailnetLogin
 }
 
 // AllowedPersonas returns the persona names this caller may assume, sorted.
@@ -83,9 +95,9 @@ func (c *Config) AllowedPersonas(caller Caller) []string {
 		for name := range c.Personas {
 			names = append(names, name)
 		}
-	case caller.AccessEmail != "":
+	case caller.identity() != "":
 		for email, list := range c.Allow {
-			if strings.EqualFold(email, caller.AccessEmail) {
+			if strings.EqualFold(email, caller.identity()) {
 				for _, name := range list {
 					if _, ok := c.Personas[name]; ok {
 						names = append(names, name)

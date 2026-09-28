@@ -2,6 +2,7 @@ package overlay
 
 import (
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -183,6 +184,9 @@ func (r *InputRouter) runTailscaleCommand(args string) error {
 		Level: LevelInfo,
 		Text:  fmt.Sprintf("%s now serves on %s", target.ID, target.TailscaleURL),
 	})
+	if warning := devOIDCTailnetWarning(configPath, target.TailscaleURL); warning != "" {
+		r.overlay.Notify(Notification{Level: LevelWarn, Text: warning})
+	}
 	return nil
 }
 
@@ -203,11 +207,11 @@ func (r *InputRouter) runAsCommand(args string) error {
 	if err != nil {
 		return err
 	}
-	port, err := listenPortOf(target)
+	origin, err := devoidc.OriginForListenAddr(target.ListenAddr)
 	if err != nil {
 		return err
 	}
-	st, err := devoidc.FetchState("http://localhost:" + strconv.Itoa(port))
+	st, err := devoidc.FetchState(origin)
 	if err != nil {
 		return err
 	}
@@ -219,4 +223,28 @@ func (r *InputRouter) runAsCommand(args string) error {
 	}
 	r.overlay.Notify(Notification{Level: LevelInfo, Text: fmt.Sprintf("%s: signing in as %s", target.ID, persona)})
 	return nil
+}
+
+// devOIDCTailnetWarning names what a tailnet rebind leaves broken in the
+// project's dev-oidc block: an issuer pinned to a loopback URL the proxy no
+// longer answers on, or an empty allow list, which gives tailnet callers no
+// persona. Returns "" when there is nothing to say.
+func devOIDCTailnetWarning(configPath, tailnetURL string) string {
+	cfg, err := config.LoadAgntConfigFile(configPath)
+	if err != nil || cfg == nil || cfg.DevOIDC == nil {
+		return ""
+	}
+	var problems []string
+	if u, err := url.Parse(cfg.DevOIDC.Issuer); err == nil && cfg.DevOIDC.Issuer != "" {
+		if h := u.Hostname(); h == "localhost" || strings.HasPrefix(h, "127.") || h == "::1" {
+			problems = append(problems, fmt.Sprintf("issuer %s is loopback; set it to %s/__agnt/oidc (and the app's issuer to match)", cfg.DevOIDC.Issuer, strings.TrimSuffix(tailnetURL, "/")))
+		}
+	}
+	if len(cfg.DevOIDC.Allow) == 0 {
+		problems = append(problems, "allow is empty, so no tailnet user gets a persona; add allow { \"<tailscale login>\" \"<persona>\" }")
+	}
+	if len(problems) == 0 {
+		return ""
+	}
+	return "dev-oidc: " + strings.Join(problems, "; ")
 }

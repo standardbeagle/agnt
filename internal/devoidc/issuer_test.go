@@ -541,3 +541,35 @@ func TestSignInSwitchSignInAgain(t *testing.T) {
 		t.Fatalf("login after switch: %v", second)
 	}
 }
+
+func TestTailnetCaller(t *testing.T) {
+	f := newFixture(t, testConfig())
+	f.caller.Store(&Caller{TailnetLogin: "Both@Example.com"})
+	var st State
+	_ = json.NewDecoder(f.get("/state", nil).Body).Decode(&st)
+	if strings.Join(st.Names(), ",") != "admin,standard" || st.Persona != "" {
+		t.Fatalf("listed tailnet login: %+v (no default persona remotely)", st)
+	}
+	// Tailnet callers may mint, but only their own personas.
+	resp := f.post("/mint", url.Values{"client": {"web"}, "persona": {"admin"}}, "", "")
+	if resp.StatusCode != 200 {
+		t.Fatalf("tailnet mint: %d", resp.StatusCode)
+	}
+	f.caller.Store(&Caller{TailnetLogin: "andy@example.com"}) // admin only
+	if r := f.post("/mint", url.Values{"client": {"web"}, "persona": {"standard"}}, "", ""); r.StatusCode != 403 {
+		t.Fatalf("tailnet mint outside allowed personas: %d, want 403", r.StatusCode)
+	}
+	f.caller.Store(&Caller{TailnetLogin: "stranger@example.com"})
+	if r := f.get("/state", nil); r.StatusCode != 403 {
+		t.Fatalf("unlisted tailnet login: %d, want 403", r.StatusCode)
+	}
+	// The tailnet persona cookie is not Secure: the tailnet listener is plain
+	// HTTP, and a Secure cookie would never come back.
+	f.caller.Store(&Caller{TailnetLogin: "both@example.com"})
+	r := f.post("/switch", url.Values{"persona": {"admin"}}, "", "")
+	for _, c := range r.Cookies() {
+		if c.Name == PersonaCookie && c.Secure {
+			t.Fatal("tailnet persona cookie marked Secure")
+		}
+	}
+}

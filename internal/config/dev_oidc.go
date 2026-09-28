@@ -23,8 +23,10 @@ type DevOIDCConfig struct {
 	// DefaultPersona is used silently for local logins with no persona
 	// cookie, so automated and agent logins never stop at the picker.
 	DefaultPersona string `kdl:"default-persona"`
-	// Allow maps a verified Cloudflare Access email to the personas that
-	// person may assume through a named tunnel. No entry, no persona.
+	// Allow maps a verified identity to the personas that person may assume
+	// remotely: a Cloudflare Access email through a named tunnel, or a
+	// Tailscale login on a proxy bound to its tailnet address. No entry, no
+	// persona.
 	Allow map[string][]string `kdl:"allow"`
 }
 
@@ -111,7 +113,7 @@ func (c *DevOIDCConfig) Validate() error {
 	}
 	for _, email := range sortedKeys(c.Allow) {
 		if !strings.Contains(email, "@") {
-			return fmt.Errorf("dev-oidc: allow key %q must be an Access email", email)
+			return fmt.Errorf("dev-oidc: allow key %q must be an email (a Cloudflare Access email or a Tailscale login)", email)
 		}
 		if len(c.Allow[email]) == 0 {
 			return fmt.Errorf("dev-oidc: allow %q lists no personas", email)

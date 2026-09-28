@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -68,7 +67,7 @@ func (dt *DaemonTools) makeDevAuthHandler() func(context.Context, *mcp.CallToolR
 		if err != nil {
 			return fail[DevAuthOutput](fmt.Sprintf("proxy %s: %v", in.ProxyID, err))
 		}
-		origin, err := devAuthOrigin(getString(status, "listen_addr"))
+		origin, err := devoidc.OriginForListenAddr(getString(status, "listen_addr"))
 		if err != nil {
 			return fail[DevAuthOutput](fmt.Sprintf("proxy %s: %v", in.ProxyID, err))
 		}
@@ -83,16 +82,6 @@ func (dt *DaemonTools) makeDevAuthHandler() func(context.Context, *mcp.CallToolR
 			return fail[DevAuthOutput](fmt.Sprintf("unknown action %q (use: personas, as, token)", in.Action))
 		}
 	}
-}
-
-// devAuthOrigin is the proxy's loopback origin, where the MCP process is a
-// local caller of the issuer.
-func devAuthOrigin(listenAddr string) (string, error) {
-	_, port, err := net.SplitHostPort(listenAddr)
-	if err != nil || port == "" {
-		return "", fmt.Errorf("no listen address (%q)", listenAddr)
-	}
-	return "http://localhost:" + port, nil
 }
 
 var devAuthHTTP = &http.Client{Timeout: 5 * time.Second}

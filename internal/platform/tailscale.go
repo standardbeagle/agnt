@@ -137,3 +137,66 @@ func parseTailscaleSelfIdentities(output []byte) []string {
 	}
 	return ids
 }
+
+// TailscaleWhois returns the login name of the human who owns the tailnet
+// node at ip, e.g. "user@example.com", as tailscaled authenticates it: the
+// address maps to a WireGuard key, and the key to its owner. Returns "" when
+// tailscale is unavailable, the lookup fails or times out, ip is not a
+// tailnet peer, or the node is tagged (tagged devices belong to the tailnet,
+// not to a person, so they carry no identity to authorize).
+//
+// If ctx has no deadline, a 2s timeout is applied.
+func TailscaleWhois(ctx context.Context, ip string) string {
+	if _, err := netip.ParseAddr(ip); err != nil {
+		return ""
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, 2*time.Second)
+		defer cancel()
+	}
+	output, err := exec.CommandContext(ctx, "tailscale", "whois", "--json", ip).Output()
+	if err != nil {
+		return ""
+	}
+	return parseTailscaleWhois(output)
+}
+
+// parseTailscaleWhois extracts UserProfile.LoginName from `tailscale whois
+// --json`, refusing tagged nodes. Split out for testability.
+func parseTailscaleWhois(output []byte) string {
+	var who struct {
+		Node struct {
+			Tags []string `json:"Tags"`
+		} `json:"Node"`
+		UserProfile struct {
+			LoginName string `json:"LoginName"`
+		} `json:"UserProfile"`
+	}
+	if err := json.Unmarshal(output, &who); err != nil {
+		return ""
+	}
+	if len(who.Node.Tags) > 0 {
+		return ""
+	}
+	login := strings.TrimSpace(who.UserProfile.LoginName)
+	if login == "" || login == "tagged-devices" || !strings.Contains(login, "@") {
+		return ""
+	}
+	return login
+}
+
+// tailnetRange6 is the ULA block tailscale assigns node IPv6 addresses from.
+var tailnetRange6 = netip.MustParsePrefix("fd7a:115c:a1e0::/48")
+
+// IsTailnetPeerAddress reports whether addr (IPv4 or IPv6) is inside a range
+// tailscale assigns node addresses from. Unlike IsTailnetAddress it accepts
+// IPv6, because it classifies a connection's peer, not a bind address.
+func IsTailnetPeerAddress(addr string) bool {
+	parsed, err := netip.ParseAddr(addr)
+	if err != nil {
+		return false
+	}
+	parsed = parsed.Unmap()
+	return (parsed.Is4() && tailnetRange.Contains(parsed)) || tailnetRange6.Contains(parsed)
+}

@@ -63,14 +63,3 @@ func TestDevAuthNoIssuerIsReportedPlainly(t *testing.T) {
 		t.Fatalf("a proxied (issuer-less) prefix must say how to enable dev-oidc: %+v", res)
 	}
 }
-
-func TestDevAuthOrigin(t *testing.T) {
-	for addr, want := range map[string]string{"127.0.0.1:4242": "http://localhost:4242", "[::1]:80": "http://localhost:80"} {
-		if got, err := devAuthOrigin(addr); err != nil || got != want {
-			t.Errorf("devAuthOrigin(%q) = %q, %v", addr, got, err)
-		}
-	}
-	if _, err := devAuthOrigin(""); err == nil {
-		t.Error("empty listen address accepted")
-	}
-}

@@ -91,7 +91,7 @@ func TestDevOIDCValidateRefusals(t *testing.T) {
 		"persona without email": {func(c *DevOIDCConfig) { c.Personas["std"].Email = " " }, "needs an email"},
 		"reserved claim":        {func(c *DevOIDCConfig) { c.Personas["std"].Claims = map[string]string{"sub": "root"} }, "reserved claim"},
 		"unknown default":       {func(c *DevOIDCConfig) { c.DefaultPersona = "ghost" }, "default-persona"},
-		"allow not an email":    {func(c *DevOIDCConfig) { c.Allow = map[string][]string{"andy": {"std"}} }, "Access email"},
+		"allow not an email":    {func(c *DevOIDCConfig) { c.Allow = map[string][]string{"andy": {"std"}} }, "must be an email"},
 		"allow empty":           {func(c *DevOIDCConfig) { c.Allow = map[string][]string{"a@x.com": nil} }, "no personas"},
 		"allow unknown persona": {func(c *DevOIDCConfig) { c.Allow = map[string][]string{"a@x.com": {"root"}} }, "undeclared persona"},
 	}

@@ -412,12 +412,13 @@ func loginPath(cfg *Config, clientID string) string {
 }
 
 // mint returns an access token for a persona without a browser flow, for
-// API tests driven by an agent. Local callers only: they can already sign in
-// as any persona through authorize, so this grants nothing new, while an
-// Access caller over the tunnel never gets it.
+// API tests driven by an agent. Local and tailnet callers only, and only for
+// personas they may already sign in as through authorize, so it grants
+// nothing new. An Access caller over the public tunnel never gets it.
 func (h *handler) mint(w http.ResponseWriter, r *http.Request) {
-	if !h.m.Caller(r).Local {
-		http.Error(w, "mint is only available on the local listener", http.StatusForbidden)
+	caller := h.m.Caller(r)
+	if !caller.Local && caller.TailnetLogin == "" {
+		http.Error(w, "mint is only available on the local or tailnet listener", http.StatusForbidden)
 		return
 	}
 	if !h.m.SameOrigin(r) {
@@ -428,7 +429,12 @@ func (h *handler) mint(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "bad form", http.StatusBadRequest)
 		return
 	}
-	tok, err := h.is.MintAccessToken(h.issuer(), r.PostForm.Get("client"), r.PostForm.Get("persona"))
+	persona := r.PostForm.Get("persona")
+	if _, known := h.is.Config().Personas[persona]; known && !slices.Contains(h.is.Config().AllowedPersonas(caller), persona) {
+		http.Error(w, "persona not available to you", http.StatusForbidden)
+		return
+	}
+	tok, err := h.is.MintAccessToken(h.issuer(), r.PostForm.Get("client"), persona)
 	if err != nil {
 		tokenError(w, http.StatusBadRequest, "invalid_request", err.Error())
 		return

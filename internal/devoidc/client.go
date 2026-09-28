@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -93,4 +94,20 @@ func SwitchScript(persona, client string) string {
   f.submit();
   return 'switching';
 })()`, Prefix+"/switch", p, c)
+}
+
+// OriginForListenAddr is the origin a local tool uses to reach a proxy's
+// issuer: http://localhost:<port> for a loopback (or wildcard) listener, and
+// the bound address itself otherwise, e.g. a tailnet IP, which is the only
+// address a tailnet-bound proxy answers on.
+func OriginForListenAddr(listenAddr string) (string, error) {
+	host, port, err := net.SplitHostPort(listenAddr)
+	if err != nil || port == "" {
+		return "", fmt.Errorf("no listen address (%q)", listenAddr)
+	}
+	ip := net.ParseIP(host)
+	if host == "" || host == "localhost" || (ip != nil && (ip.IsLoopback() || ip.IsUnspecified())) {
+		return "http://localhost:" + port, nil
+	}
+	return "http://" + net.JoinHostPort(host, port), nil
 }
