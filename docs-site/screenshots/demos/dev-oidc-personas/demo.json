@@ -1,0 +1,87 @@
+{
+  "name": "dev-oidc-personas",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "fps": 25,
+  "brand": {
+    "image": "../../assets/sb-logo.png",
+    "position": "top-right",
+    "width": 220,
+    "opacity": 0.85
+  },
+  "segments": [
+    {
+      "id": "card-intro",
+      "type": "card",
+      "dur": 4.2,
+      "kicker": "agnt demo · dev OIDC",
+      "title": "Sign in as anyone. No IdP.",
+      "sub": "Personas live in .agnt.kdl. The dev proxy serves the OIDC issuer — here over the tailnet, from a build box."
+    },
+    {
+      "id": "config",
+      "type": "cli",
+      "tape": [
+        "Hide",
+        "Type \"clear\"",
+        "Enter",
+        "Show",
+        "Type \"cat story.agnt.kdl\"",
+        "Sleep 500ms",
+        "Enter",
+        "Sleep 7s"
+      ],
+      "settings": {
+        "FontSize": 17
+      }
+    },
+    {
+      "id": "signin",
+      "type": "browser",
+      "raw": true,
+      "url": "http://build1-wsl.raccoon-torino.ts.net:31536/auth/signin",
+      "script": "./segments/signin.mjs"
+    },
+    {
+      "id": "card-outro",
+      "type": "card",
+      "dur": 4.2,
+      "kicker": "",
+      "title": "One block. Every role.",
+      "sub": "Persona chip · :as in the overlay · devauth for agents — github.com/standardbeagle/agnt"
+    }
+  ],
+  "narration": {
+    "voice": "en-US-AndrewNeural",
+    "rate": "+4%",
+    "segments": [
+      {
+        "id": "n1",
+        "at": "config+0.5",
+        "text": "Declare test users once, in the project's agnt config."
+      },
+      {
+        "id": "n2",
+        "at": "signin+mark:picker",
+        "text": "The app signs in through agnt's dev issuer. Over the tailnet, agnt asks Tailscale who you are, and offers only the personas you're allowed."
+      },
+      {
+        "id": "n3",
+        "at": "signin+mark:standard",
+        "text": "Signed in as the standard user."
+      },
+      {
+        "id": "n4",
+        "at": "signin+mark:chip",
+        "text": "To check the admin view, switch persona from the indicator. The app signs in again, as admin."
+      },
+      {
+        "id": "n5",
+        "at": "signin+mark:admin",
+        "text": "Agents get the same switch through the devauth tool."
+      }
+    ]
+  }
+}

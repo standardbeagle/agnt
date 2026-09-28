@@ -1,0 +1,31 @@
+// .agnt.kdl (excerpt) — the story app on build1
+proxies {
+    dev {
+        bind "tailscale"
+        script "dev"
+        listen-port 31536
+    }
+}
+dev-oidc {
+    clients {
+        story-web {
+            redirect-uri "http://build1-wsl.raccoon-torino.ts.net:31536/api/auth/callback/dev-oidc"
+            secret "dev-only"
+            login-path "/auth/signin"
+        }
+    }
+    personas {
+        standard {
+            email "dev-standard@example.com"
+            name "Dev Standard"
+        }
+        admin {
+            email "dev-admin@example.com"
+            name "Dev Admin"
+            roles "admin" "user"
+        }
+    }
+    allow {
+        "you@example.com" "standard" "admin"
+    }
+}
