@@ -272,6 +272,14 @@ Structured data consumes fewer tokens than natural language descriptions:
 
 Instead of dumping 100 lines of nested React errors into the context, agnt consolidates verbose output into concise, actionable data.
 
+### 6. Sign In as Anyone
+
+Declare test users in `.agnt.kdl` and agnt serves a dev OIDC issuer on your proxy. Switch between a standard user and an admin from the indicator's persona chip, `:as admin` in the terminal, or the `devauth` tool for your agent. No real IdP accounts involved.
+
+![The story app signs in through agnt's dev issuer over the tailnet, then switches from Dev Standard to Dev Admin from the persona chip](assets/dev-oidc-personas-demo.webp)
+
+Works over loopback, over your tailnet (`bind "tailscale"`, identity from `tailscale whois`), and behind a named Cloudflare tunnel with Access verified at the origin. See [Dev Sign-in & Protected Sharing](https://dev.standardbeagle.com/agnt/features/dev-auth).
+
 ## MCP Tools
 
 | Tool | Description |
@@ -287,7 +295,9 @@ Instead of dumping 100 lines of nested React errors into the context, agnt conso
 | `api_audit` | API-efficiency audit: waterfall, N+1, duplicate, chatty-load |
 | `loading_audit` | Loading-UX audit: spinner cascade + concurrent fragmentation |
 | `snapshot` | Visual regression: baseline/compare screenshots |
-| `tunnel` | Tunnel management: cloudflare/ngrok for mobile testing |
+| `tunnel` | Tunnel management: cloudflare/ngrok (public) or tailscale (tailnet-only) |
+| `devauth` | Dev OIDC personas: list, switch the browser, mint a token |
+| `verify_change` | Recheck the session's recorded findings after a fix |
 | `daemon` | Manage background daemon service |
 | `watch` | Stream daemon events via `agnt monitor` |
 | `channel_reply` | Send messages to developer's browser overlay (channel mode only) |
