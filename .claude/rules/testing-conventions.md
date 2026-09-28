@@ -1,132 +1,63 @@
 ---
-description: Ratified repo-wide testing conventions — node-driven JS runtime test tier, and the cross-package test-harness file shape. Reference only.
+paths:
+  - "**/*_test.go"
+  - "internal/testutil/**"
+  - "internal/daemon/test_helpers.go"
+  - "internal/sshclient/testharness_*.go"
+  - "internal/proxy/scripts/**"
+  - "Makefile"
 ---
 
 # Testing Conventions
 
-Two de facto conventions, ratified 2026-08-19 (task `01KYR0XXXQJVF5SWS86N97RW3Y`),
-after two earlier tasks gave opposite answers on each and the tree has since
-converged. This doc records the converged shape; it is not a place to
-re-litigate the underlying fixes.
-
 ## 1. Node-driven JS runtime test tier (env-gated, source-guarded)
 
-Some shipped browser JS carries behavior the Go source of the test cannot
-express — grapheme-cluster / surrogate-pair boundaries, `TextEncoder` byte
-counting, DOM-stub interaction. A test that must assert on that behavior may
-**extract the real production function and execute it under `node`**. This tier
-is **permitted**, and its canonical shape has four required parts:
+A Go test may extract a real shipped JS function and run it under `node` when the behaviour cannot be expressed in Go (grapheme/surrogate boundaries, `TextEncoder` byte counts). Required shape:
 
-1. **Env-gate `AGNT_JS_RUNTIME_TESTS=1`.** The default `go test` suite must not
-   depend on `node` being installed. When the env var is unset the node case
-   `t.Skip`s **loudly** — the skip message names the always-on source guard
-   that still ran, so a node-less box loses the node assertion but is never
-   left silently uncovered.
-2. **A paired always-on source guard.** Every node case has a sibling test that
-   runs unconditionally (no env-gate, no node) and asserts the basic invariant
-   directly against the source or a pure-Go reimplementation. Losing node is
-   losing *one* assertion, never losing *all* coverage of the property.
-3. **Extraction and execution failure must be LOUD.** `extractJSFunc`
-   `t.Fatalf`s on unbalanced braces; a malformed-but-balanced extraction that
-   is invalid JS surfaces as a `node` `SyntaxError` through `CombinedOutput`
-   → `t.Fatalf("node driver failed: …")`. A skipped-because-no-node run is the
-   only silent path, and only when the env var is unset.
-4. **Extract the real production code, do not rewrite it.** `extractJSFunc`
-   pulls the actual shipped function body out of the bundle by header +
-   brace-matching. A hand-copied reimplementation would test the copy, not the
-   artifact.
+1. **Env-gate `AGNT_JS_RUNTIME_TESTS=1`**, not a build tag. Unset → loud `t.Skip` naming the paired guard that still ran. `make test` must never need node.
+2. **Paired always-on source guard** asserting the basic invariant without node.
+3. **Loud failure**: `extractJSFunc` `t.Fatalf`s on unbalanced braces; node errors surface via `CombinedOutput` → `t.Fatalf`.
+4. **Extract the shipped function** by header + brace matching. Never hand-copy it.
 
-**Env-gate is canonical, not a build tag.** The 2026-07-29 task snapshot
-proposed a build tag; the de facto convention that shipped uses an env-gate,
-and it achieves the same goal (default suite independent of node) while being
-easier to flip on locally for a single ad-hoc run
-(`AGNT_JS_RUNTIME_TESTS=1 go test ./internal/proxy/scripts/`) than editing a
-`-tags` invocation. Ratify the env-gate as the canonical form.
+Existing pairs live in `internal/proxy/scripts/` (`walkthrough_player_test.go`, `walkthrough_reveal_boundary_test.go`, `walkthrough_live_gesture_label_test.go`, `demo_indicator_test.go`).
 
-Instances on the current tree (`internal/proxy/scripts/`):
+### 1a. DOM-shaped assertions belong in the vitest + jsdom tier
 
-| Node case (env-gated) | Always-on source guard |
-|---|---|
-| `TestPlayerByteTruncationIsClusterSafe` (`walkthrough_player_test.go`) | `TestPlayerCapsAndClampsAreByteDenominated` |
-| `TestPlayerRevealNoSplitSurrogateFrames` (`walkthrough_reveal_boundary_test.go`) | `TestPlayerRevealAdvancesOnClusterBoundary` |
-| `TestLiveWalkthroughGestureLabelByteRefused` (`walkthrough_live_gesture_label_test.go`) | `TestLiveWalkthroughGestureLabelCapIsByteDenominated` |
-| `TestDemoIndicatorExhaustionAndPlacementUnderNode` (`demo_indicator_test.go`) | `TestDemoIndicatorExhaustedBudgetStillCarriesTheBadge`, `…FirstChildPlacementIsGatedOnStyling` |
+Anything that reads a document (stylesheets, computed styles, attributes, element walks) goes in `internal/proxy/scripts/jstest` (`make test-js`), not a node driver with a stubbed `document`.
 
-All four are already env-gated with a paired guard as of ratification; no gate
-alignment was required.
+1. `load-audit.js` evaluates the shipped bytes. No wrapper, no copy.
+2. Outside `make test`; `make test-js` loud-skips without npm.
+3. The Go source guard keeps the contract (fields, scoring, caps) and says in its doc comment that behaviour is proven in the JS tier. `TestModernCSS_EveryFeatureHasDOMCoverage` fails when a detection ships with no JS case.
+4. Pair every detection with a near-miss negative, and mutation-verify the negatives.
+5. jsdom drops unparseable declarations and folds numeric `calc()`. Where that matters, assert the value survived before asserting on the result.
 
-### 1a. DOM-shaped assertions belong in the vitest + jsdom tier, not a node driver
-
-Ratified 2026-09-06 (modern-CSS opportunity scan, `internal/proxy/scripts/audit-css.js`).
-
-The §1 pattern extracts a *function* and drives it under node. That works for a
-pure function (byte counting, cluster boundaries) and stops working the moment
-the thing under test reads a document: stylesheets, computed styles, attributes,
-element walks. Stubbing a `document` by hand to reach that code is a
-re-implementation of the browser wearing a test's clothes — it passes against a
-stub that behaves how the author *assumed* a browser behaves.
-
-The tier that owns those assertions is `internal/proxy/scripts/jstest`
-(vitest, `environment: 'jsdom'`, run with `make test-js`). Its rules:
-
-1. **Load the shipped bytes.** `load-audit.js` reads the real `.js` files and
-   evaluates them into the test's window. No module wrapper, no copy.
-2. **Still outside the Go suite.** `make test` must never need node, so
-   `make test-js` is a separate target that loud-skips without npm — the same
-   independence §1's env-gate buys, achieved with a target instead.
-3. **The always-on Go source guard stays.** It owns the *contract* (field
-   presence, advisory/scoring rules, caps); the JS tier owns the *behaviour*.
-   Say so in the Go guard's doc comment so a reader knows where matching is
-   proven, and keep a drift guard that fails when a feature ships with no case
-   in the JS tier (`TestModernCSS_EveryFeatureHasDOMCoverage`).
-4. **Pair every detection with its near-miss.** A scan that fires on everything
-   is as useless as one that fires on nothing, and only the negative case tells
-   them apart. Mutation-verify the negatives: a threshold or guard that can be
-   deleted with the suite still green is not being tested by it.
-5. **Assert the premise when jsdom's fidelity is load-bearing.** jsdom drops
-   declarations it cannot parse and folds numeric `calc()`, so a rule that never
-   made it into the sheet would make a negative pass for the wrong reason.
-   Where that matters, assert the value survived before asserting on the result.
-
-jsdom answers for the DOM and CSSOM. Layout, paint and renderer timing are not
-its job — those stay in the `chromee2e` tier, which is deliberately absent from
-the default suite (AGENTS.md § Testing).
+Layout, paint and renderer timing belong to the `chromee2e` tier.
 
 ## 2. A cross-package test harness is a plain `.go` file fenced by `*testing.T`
 
-A helper that must be importable from another package's `_test.go` but must
-never be reachable from production is a **plain `.go` file** (not `_test.go`,
-which cannot be imported across packages), fenced by a `*testing.T` parameter.
-Production code cannot construct a `*testing.T`, so the parameter is a
-compile-time fence against production import — no build tag needed.
+A helper imported by another package's tests but never by production is a plain `.go` file (not `_test.go`) taking a `*testing.T` parameter. Production cannot construct one, so no build tag is needed. Instances: `internal/daemon/test_helpers.go` (`NewForTest`), `internal/testutil/testutil.go`, `internal/sshclient/testharness_reconnect.go`. What `NewForTest` skips is owned by `daemon-architecture.md` § Test startup contract.
 
-This ratifies the "flagged for promotion, not yet promoted" note in
-`lessons-ssh-transport.md` § 9. Three independent instances established the
-shape before ratification:
+## 3. Hermetic tests
 
-| Harness | File |
-|---|---|
-| `NewForTest(t, cfg)` | `internal/daemon/test_helpers.go` |
-| shared test utilities | `internal/testutil/testutil.go` |
-| `SSHDFreezeHarness` | `internal/sshclient/testharness_reconnect.go` |
+- **Never write into the repo tree.** Pass an explicit `t.TempDir()` destination into the code under test. `os.Chdir` is process-global and is not isolation; a cwd-relative write in production code is a parameter waiting to be extracted.
+- **A test that spawns a binary sets `cmd.Dir`.** Parent `t.TempDir()`/`t.Setenv`/`os.Chdir` do not constrain a child. Assert positively that the child's write landed under `cmd.Dir`.
+- **Build spawned binaries fresh**, into a temp dir, once per test binary (`sync.Once`). A stale prebuilt binary triggers the client/daemon version-skew upgrade path.
+- **Helper resource fields default to a per-test isolate.** Any socket path, port, pid/lock file or state dir whose empty value falls through to a production default is a cross-binary collision (and fights a real dev daemon). `NewForTest` defaults `SocketPath` to `t.TempDir()/d.sock`.
+- Tests that start real OS processes must not use `t.Parallel()` (PID-reuse race kills unrelated processes).
 
-The daemon case additionally documents its own startup contract in
-`daemon-architecture.md` § Test startup contract; that section stays the
-source of truth for *what* `NewForTest` skips, while this entry owns the
-general file-shape rule.
+## 4. Time
+
+- No absolute wall-clock value is a primary invariant. `require.Eventually` is fine as generous headroom.
+- Assertions on count or spacing of time-driven events (tickers, keepalives, heartbeats) are judged against **recorded actual timestamps**, not `interval × assumed promptness`. A loaded `-p 1` suite routinely drifts past nominal.
+- Backoff/retry/jitter: inject base delay and jitter source; assert the schedule's shape in microseconds, never sleep it out.
+- A liveness bound ("eventually happens") may be a generous fixed ceiling. A latency SLO must be baseline-calibrated in the same run.
+- Readiness tests: inject the ready signal with a never-firing deadline and assert the outcome, plus a mutation-guard crash case (`sleep 0.3; exit 1`).
+
+## 5. Real browsers
+
+Real-Chrome tests are `//go:build chromee2e` and loud-skip without a browser (`skipIfNoBrowser`). Gate on the DOM signal you assert on, never on `location.href` alone. Run via `make test-chrome-e2e` on an unloaded machine only.
 
 ## See also
 
-- `AGENTS.md` § Testing — the `-p 1` full-suite contract and the `--no-verify`
-  sanctions (RED-first and the GREEN `-race`-flake case).
-- `.claude/rules/testing-parallel-package-flakes.md` — both sanctioned
-  `--no-verify` cases (RED-first TDD, GREEN `-race`-flake) in one place.
-- `.claude/rules/daemon-architecture.md` § Test startup contract — the daemon
-  harness's skip list.
-
-<!-- provenance: written_at 2026-08-19; source_event task
-     01KYR0XXXQJVF5SWS86N97RW3Y (convention ratification).
-     Two-sides-disagreement origin commits: 22ba23f2, ccc2466b.
-     Current-pattern commits: 0359b637 (surrogate-pair fix + env-gate),
-     fbc3ca10 (GREEN-past-`-race`-flake harvest), 2cae85df (the GREEN
-     `--no-verify` case in testing-parallel-package-flakes.md). -->
+- `testing-parallel-package-flakes.md` — `-p 1` gate and the sanctioned `--no-verify` cases.
+- `flake-triage` skill — diagnosing a failing or flaky test.
