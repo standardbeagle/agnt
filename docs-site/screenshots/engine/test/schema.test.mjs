@@ -103,3 +103,13 @@ test('null / non-object input fails loud without throwing', () => {
   assert.equal(validateDemoSpec(null).ok, false);
   assert.equal(validateDemoSpec(42).ok, false);
 });
+
+test('setup.agntConfig must be a boolean when present', () => {
+  const s = valid();
+  s.setup = {agntConfig: 'yes'};
+  const r = validateDemoSpec(s);
+  assert.equal(r.ok, false);
+  assert.ok(r.errors.some((e) => /setup\.agntConfig/.test(e)), JSON.stringify(r.errors));
+  s.setup.agntConfig = true;
+  assert.equal(validateDemoSpec(s).ok, true, JSON.stringify(validateDemoSpec(s).errors));
+});

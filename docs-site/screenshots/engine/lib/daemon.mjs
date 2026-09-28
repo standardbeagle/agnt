@@ -39,6 +39,16 @@ export const proxyStart = ({id, target, port}, socketPath) =>
 
 export const proxyStop = (id, socketPath) => request(`PROXY STOP ${id};;`, socketPath);
 
+// AUTOSTART RECONCILE <projectPath>: start what the project's own .agnt.kdl
+// declares — for proxy blocks only a config file can carry (cloudflare-tunnel,
+// bind, dev-oidc). Returns the reconcile plan ({start_proxies, ...}).
+export const reconcileProject = async (projectPath, socketPath) => {
+  const res = await request(`AUTOSTART RECONCILE ${projectPath}`, socketPath, 30000);
+  if (res.startsWith('ERR')) throw new Error(`AUTOSTART RECONCILE ${projectPath}: ${res}`);
+  // JSON replies arrive framed as "JSON -- <len>\n<base64>".
+  return JSON.parse(Buffer.from(res.split('\n').pop(), 'base64').toString());
+};
+
 // PROXY EXEC <id> with raw JS as data payload — runs in the content frame by
 // default, same path as MCP proxy {action:"exec"/"navigate"}.
 export const exec = async (proxyId, code, socketPath) => {

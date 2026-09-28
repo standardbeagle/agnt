@@ -12,7 +12,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import {chromium} from 'playwright';
-import {toast as daemonToast, proxyStart, proxyStop, ping, chaosAddRule, chaosClear, exec as daemonExec,
+import {toast as daemonToast, proxyStart, proxyStop, ping, reconcileProject, chaosAddRule, chaosClear, exec as daemonExec,
   walkthrough as daemonWalkthrough} from './daemon.mjs';
 import {CHROMIUM_LAUNCH_OPTIONS, spawnLogged, waitForURL, writeJSON} from './util.mjs';
 
@@ -150,7 +150,11 @@ export class BrowserDriver {
 // Bring up the live stack per demo setup config. Returns {proxyURL, stop()}.
 export const setupLiveStack = async (demoDir, setup, env) => {
   const children = [];
+  const configProxies = [];
   const stop = async () => {
+    for (const id of configProxies) {
+      try { await proxyStop(id, env.AGNT_SOCKET); } catch { /* already gone */ }
+    }
     if (setup.proxy?.stop !== false && env.PROXY_ID) {
       try { await proxyStop(env.PROXY_ID, env.AGNT_SOCKET); } catch { /* already gone */ }
     }
@@ -161,6 +165,18 @@ export const setupLiveStack = async (demoDir, setup, env) => {
     const up = spawnLogged('node', [path.resolve(demoDir, setup.upstream)], 'upstream');
     children.push(up);
     await waitForURL(setup.waitFor, 20000);
+  }
+
+  if (setup.agntConfig) {
+    // The demo dir's own .agnt.kdl, so the recording exercises config-only
+    // proxy blocks (named tunnels, tailnet binds). Stopped on teardown so a
+    // public tunnel never outlives the recording.
+    await ping(env.AGNT_SOCKET).catch(() => {
+      throw new Error('agnt daemon socket not reachable — start the daemon first (agnt daemon start)');
+    });
+    const plan = await reconcileProject(demoDir, env.AGNT_SOCKET);
+    configProxies.push(...(plan.start_proxies || []), ...(plan.restart_proxies || []));
+    console.log('  .agnt.kdl proxies:', configProxies.join(', ') || '(none started)');
   }
 
   if (setup.proxy) {

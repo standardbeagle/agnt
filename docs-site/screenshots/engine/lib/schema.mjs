@@ -77,6 +77,7 @@ function validateSetup(setup, err) {
   if (!isObject(setup)) { err('setup: must be an object'); return; }
   if (setup.upstream !== undefined && !isString(setup.upstream)) err('setup.upstream: must be a string');
   if (setup.waitFor !== undefined && !isString(setup.waitFor)) err('setup.waitFor: must be a string URL');
+  if (setup.agntConfig !== undefined && typeof setup.agntConfig !== 'boolean') err('setup.agntConfig: must be a boolean');
   if (setup.proxy !== undefined) {
     const p = setup.proxy;
     if (!isObject(p)) { err('setup.proxy: must be an object'); return; }
