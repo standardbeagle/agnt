@@ -970,7 +970,9 @@ devauth {action: "token", proxy_id: "dev", persona: "standard", client: "story-w
 
 `as` submits the issuer's switch form in the page through `proxy exec`, the
 same request the indicator's persona chip makes. `token` uses a mint endpoint
-that answers only local callers. A proxy without `dev-oidc` returns an error
+that answers local callers, and tailnet callers for the personas `allow` gives
+them. The tool reaches the proxy on its real listen address, so a
+tailnet-bound proxy works too. A proxy without `dev-oidc` returns an error
 saying to declare the block.
 
 ## Tunnel Integration

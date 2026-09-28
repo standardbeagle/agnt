@@ -322,7 +322,7 @@ line.
 
 | Key | Description |
 |---|---|
-| `issuer` | The `iss` of every token and the authority your app is configured with. Default: the proxy's own `http://localhost:<port>/__agnt/oidc`. Set it to the tunnel hostname when the browser reaches the app through a `cloudflare-tunnel`. |
+| `issuer` | The `iss` of every token and the authority your app is configured with. Default: the proxy's own origin + `/__agnt/oidc`: `http://localhost:<port>` on loopback, `http://<MagicDNS name>:<port>` with `bind "tailscale"`. Set it explicitly to the tunnel hostname when the browser reaches the app through a `cloudflare-tunnel`. |
 | `clients.<id>.redirect-uri` | Registered redirect URIs. Exact match, except a whole-port `*` on `localhost`/`127.0.0.1`/`[::1]` (the proxy port is not known in advance). No other wildcards. |
 | `clients.<id>.secret` | Makes the client confidential. A dev-only literal: it protects nothing outside this issuer, so it may live in the checked-in file. Omit it for a public client, which must then use PKCE (S256). |
 | `clients.<id>.audience` | The access token's `aud`. Default: the client id. |
@@ -330,7 +330,7 @@ line.
 | `clients.<id>.session-cookies` | App cookies expired on a switch (at `Path=/`), so the app forgets the previous persona's session. |
 | `personas.<name>` | `email` (required), `name` (display), `roles` (the `roles` claim), `claims { key "value" }` (extra string claims; the standard ones such as `sub` and `email` are reserved). |
 | `default-persona` | Used without asking for local logins that have not picked one, so automated and agent logins never stop at the picker. |
-| `allow` | Through a named tunnel: which verified Cloudflare Access emails may assume which personas. No entry, no persona. |
+| `allow` | Who may assume which personas remotely, keyed by verified identity: a Cloudflare Access email through a named tunnel, or a Tailscale login (`tailscale whois` shows it; usually an email) on a tailnet-bound proxy. No entry, no persona. |
 
 Endpoints live under `/__agnt/oidc/` on each proxy: discovery at
 `/.well-known/openid-configuration`, then `authorize`, `token`
@@ -354,6 +354,14 @@ arrived on:
   `X-Forwarded-For`, `Forwarded`, `Tailscale-User-Login`, `ngrok-*`). The
   headers are only ever used to refuse, so sending them cannot grant access; they
   catch a tunnel agnt did not start.
+- **A proxy bound to its tailnet address** (`bind "tailscale"`): only the
+  personas `allow` grants to the Tailscale login of the device's owner, as
+  `tailscale whois` reports it for the connection's peer address. The peer
+  must be a tailnet address, the `Host` must be one of this node's own tailnet
+  names (MagicDNS name or tailscale IP), no quick tunnel or static
+  `public-url` may be bound, and no reverse-proxy header may be present.
+  Tagged devices have no person behind them and get none. `default-persona`
+  does not apply here: the first sign-in shows the picker.
 - **A `cloudflare-tunnel` with `access`**: only the personas `allow` grants to
   the verified Access email, taken from the Access token the ingress already
   checked, never from a header. An Access token without an email (a service
@@ -374,6 +382,45 @@ A discovery request that arrives locally is answered with local back-channel
 endpoints (`token`, `jwks`, `userinfo`), and `iss` stays the configured issuer.
 Libraries that insist the discovery URL equals the issuer are not supported yet
 through a tunnel; locally they work with the default issuer.
+
+**Over the tailnet** (for example, working on a remote box over SSH and
+browsing from your own machine), bind the proxy with `bind "tailscale"`, leave
+`issuer` unset or set it to `http://<MagicDNS name>:<port>/__agnt/oidc`, and
+list your Tailscale login in `allow`. The browser and the app's backend then
+use the same issuer URL: the backend's calls reach the proxy from this node's
+own tailnet address, which `tailscale whois` maps to the node's owner, so the
+node owner must be in `allow` too (it usually is: it is you). `:tailscale`
+warns when the block still pins a loopback issuer or has an empty `allow`.
+
+```kdl
+proxies {
+    dev {
+        script "dev"
+        bind "tailscale"
+        listen-port 31536
+    }
+}
+dev-oidc {
+    clients {
+        my-app {
+            redirect-uri "http://build1.example.ts.net:31536/api/auth/callback/dev-oidc"
+            secret "dev-only"
+        }
+    }
+    personas {
+        standard {
+            email "std@example.com"
+        }
+        admin {
+            email "admin@example.com"
+            roles "admin"
+        }
+    }
+    allow {
+        "you@example.com" "standard" "admin"
+    }
+}
+```
 
 **Switching.** The indicator's tab bar shows `as: <persona>`; pick another and
 the page is sent through the app's `login-path` and signs in again. `:as admin`

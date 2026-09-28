@@ -237,3 +237,17 @@ never serves the issuer.
 - Persist the signing key per project so a daemon restart keeps sessions.
 - Service-token (`common_name`) callers for machine-to-machine tests over the
   tunnel.
+
+## 9. Addendum (2026-09-28): tailnet callers
+
+Working on a remote box over SSH means browsing its proxy over the tailnet.
+A tailnet-bound proxy now identifies callers the way the Access tunnel does:
+the connection's peer address must be a tailnet address, `Host` must be one of
+the node's own tailnet names, no quick tunnel / static public-url / relay
+header, and `tailscale whois <peer>` must name a person (tagged devices are
+refused). That login is looked up in the same `allow` list. `mint` is open to
+local and tailnet callers, limited to their allowed personas. The default
+issuer follows the bind (`http://<MagicDNS name>:<port>/__agnt/oidc`), and the
+devauth tool and `:as` reach the proxy on its real listen address.
+`:tailscale` warns when the dev-oidc block still pins a loopback issuer or has
+an empty `allow`.
