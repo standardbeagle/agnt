@@ -4,12 +4,15 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/debug"
 )
 
 // decodePageImage resolves the raw PNG bytes for a capture. It accepts either
@@ -31,6 +34,10 @@ func decodePageImage(page PageCapture) ([]byte, error) {
 type Manager struct {
 	storage *Storage
 	differ  *Differ
+
+	// projectDir is the directory git commands run in for getGitInfo. Empty
+	// means the process's own cwd (exec.Cmd's default when Dir is unset).
+	projectDir string
 }
 
 // NewManager creates a new snapshot manager
@@ -46,6 +53,15 @@ func NewManager(storagePath string, diffThreshold float64) (*Manager, error) {
 		storage: storage,
 		differ:  differ,
 	}, nil
+}
+
+// SetProjectDir sets the directory getGitInfo runs `git` in — the project
+// whose commit/branch a baseline should be stamped with, as opposed to
+// wherever the daemon process happens to have started. Callers that know the
+// project (e.g. the MCP server's resolved cwd) should call this once after
+// NewManager; leaving it unset falls back to the process's own cwd.
+func (m *Manager) SetProjectDir(dir string) {
+	m.projectDir = dir
 }
 
 // CreateBaseline captures screenshots and saves them as a baseline
@@ -163,7 +179,7 @@ func (m *Manager) CompareToBaseline(baselineName string, currentPages []PageCapt
 		if err != nil {
 			return nil, fmt.Errorf("invalid screenshot path: %w", err)
 		}
-		diffPercentage, diffImg, err := m.differ.Compare(baselinePath, currentPath)
+		diffPercentage, diffImg, err := m.differ.Compare(baselinePath, currentPath, baseline.Config.IgnoreRegions...)
 		if err != nil {
 			result.Pages = append(result.Pages, PageComparison{
 				URL:         baselinePage.URL,
@@ -270,24 +286,70 @@ func (m *Manager) generateDiffDescription(diffPercentage float64) string {
 }
 
 func (m *Manager) getGitInfo() (commit, branch string) {
-	// Try to get git commit
-	if cmd := exec.Command("git", "rev-parse", "HEAD"); cmd.Run() == nil {
-		if output, err := cmd.Output(); err == nil {
-			commit = strings.TrimSpace(string(output))
-			if len(commit) > 7 {
-				commit = commit[:7]
+	commit = m.gitOutput("rev-parse", "HEAD")
+	if len(commit) > 7 {
+		commit = commit[:7]
+	}
+	branch = m.gitOutput("rev-parse", "--abbrev-ref", "HEAD")
+	return
+}
+
+// gitOutput runs `git <args>` in m.projectDir (process cwd when unset) and
+// returns trimmed stdout, or "" on failure. A git-reported failure (e.g. not
+// a git directory — ExitError) is the expected, non-git case and is
+// swallowed silently. Anything else (git not installed, permission denied)
+// is unexpected and gets logged rather than silently dropped; getGitInfo has
+// no error return, so "" is still what the caller sees.
+func (m *Manager) gitOutput(args ...string) string {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = m.projectDir
+	// cmd.Dir is not actually authoritative for git: GIT_DIR/GIT_WORK_TREE/
+	// GIT_INDEX_FILE (and friends), when present in the process environment
+	// — e.g. because this process was itself launched from a git hook —
+	// override directory-based repo discovery and silently point git at a
+	// DIFFERENT repository than m.projectDir. Strip them so cmd.Dir wins.
+	cmd.Env = gitCleanEnv()
+	output, err := cmd.Output()
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			debug.Log("snapshot", "git %s failed: %v", strings.Join(args, " "), err)
+		}
+		return ""
+	}
+	return strings.TrimSpace(string(output))
+}
+
+// gitLocationEnvPrefixes are the GIT_* environment variables that override
+// directory-based repository discovery.
+var gitLocationEnvPrefixes = []string{
+	"GIT_DIR=",
+	"GIT_WORK_TREE=",
+	"GIT_INDEX_FILE=",
+	"GIT_OBJECT_DIRECTORY=",
+	"GIT_ALTERNATE_OBJECT_DIRECTORIES=",
+	"GIT_CEILING_DIRECTORIES=",
+}
+
+// gitCleanEnv returns the process environment with the location-controlling
+// GIT_* variables removed, so a git subprocess run with an explicit cmd.Dir
+// always operates on that directory's repository.
+func gitCleanEnv() []string {
+	src := os.Environ()
+	clean := make([]string, 0, len(src))
+	for _, kv := range src {
+		drop := false
+		for _, prefix := range gitLocationEnvPrefixes {
+			if strings.HasPrefix(kv, prefix) {
+				drop = true
+				break
 			}
 		}
-	}
-
-	// Try to get git branch
-	if cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD"); cmd.Run() == nil {
-		if output, err := cmd.Output(); err == nil {
-			branch = strings.TrimSpace(string(output))
+		if !drop {
+			clean = append(clean, kv)
 		}
 	}
-
-	return
+	return clean
 }
 
 // PageCapture represents a page to capture or that was captured

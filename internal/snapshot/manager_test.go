@@ -7,6 +7,7 @@ import (
 	"image/color"
 	"image/png"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -426,6 +427,125 @@ func TestGetGitInfo_NonGitDir(t *testing.T) {
 	}
 	_ = branch
 	assert.NotPanics(t, func() { m.getGitInfo() })
+}
+
+// runGit runs a git command in dir, failing the test loudly on error — used
+// to build a throwaway repo to exercise getGitInfo against.
+func runGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	cmd := exec.Command("git", args...)
+	cmd.Dir = dir
+	// This test binary can itself run inside a git hook (e.g. the
+	// pre-commit hook running `go test`), which sets GIT_DIR/GIT_WORK_TREE
+	// in the environment. Those override cmd.Dir's repo, so a throwaway
+	// `git init` here would silently operate on the ENCLOSING repo instead
+	// of dir — exactly the bug gitCleanEnv (manager.go) exists to prevent.
+	// Use the same sanitized environment the code under test uses.
+	cmd.Env = gitCleanEnv()
+	out, err := cmd.CombinedOutput()
+	require.NoErrorf(t, err, "git %v: %s", args, out)
+}
+
+// TestGetGitInfo_ProjectDir builds a real git repo in an isolated temp dir
+// (never the process cwd, per the hermetic-test rule) and points the
+// manager at it via SetProjectDir, without touching os.Chdir. This proves
+// two things the old implementation got wrong: (1) `git` runs against the
+// configured project directory, not wherever the process happens to be
+// running, and (2) the commit/branch are actually captured — the old code
+// called cmd.Run() then cmd.Output() on the same *exec.Cmd, and the second
+// call always failed with "exec: already started", so GitCommit/GitBranch
+// were unconditionally empty.
+func TestGetGitInfo_ProjectDir(t *testing.T) {
+	repoDir := t.TempDir()
+	runGit(t, repoDir, "init", "-q", "-b", "main")
+	runGit(t, repoDir, "config", "user.email", "test@example.com")
+	runGit(t, repoDir, "config", "user.name", "Test")
+	require.NoError(t, os.WriteFile(filepath.Join(repoDir, "f.txt"), []byte("x"), 0o644))
+	runGit(t, repoDir, "add", "f.txt")
+	runGit(t, repoDir, "commit", "-q", "-m", "initial")
+
+	wantHead := exec.Command("git", "rev-parse", "HEAD")
+	wantHead.Dir = repoDir
+	wantHead.Env = gitCleanEnv()
+	wantOut, err := wantHead.Output()
+	require.NoError(t, err)
+	wantCommit := strings.TrimSpace(string(wantOut))[:7]
+
+	m, err := NewManager(t.TempDir(), 0.01)
+	require.NoError(t, err)
+	m.SetProjectDir(repoDir)
+
+	commit, branch := m.getGitInfo()
+	assert.Equal(t, wantCommit, commit)
+	assert.Equal(t, "main", branch)
+}
+
+// TestGetGitInfo_ProjectDirNotGit confirms a non-git project dir yields
+// empty commit/branch without error, distinct from the repo case above —
+// both routed through the same SetProjectDir path, never process cwd.
+func TestGetGitInfo_ProjectDirNotGit(t *testing.T) {
+	dir := t.TempDir()
+	m, err := NewManager(t.TempDir(), 0.01)
+	require.NoError(t, err)
+	m.SetProjectDir(dir)
+
+	commit, branch := m.getGitInfo()
+	assert.Empty(t, commit)
+	assert.Empty(t, branch)
+}
+
+// TestGetGitInfo_IgnoresInheritedGitDir pins the fix that surfaced when this
+// suite ran inside the repo's own pre-commit hook: the hook sets GIT_DIR in
+// its environment, which every child `git` process inherits and — because
+// GIT_DIR overrides directory-based repo discovery — silently redirects to
+// the ENCLOSING repo regardless of cmd.Dir. A non-git projectDir must stay
+// non-git even when the test process's own environment carries a real,
+// unrelated GIT_DIR (set here to prove the point without needing to run
+// under an actual hook).
+func TestGetGitInfo_IgnoresInheritedGitDir(t *testing.T) {
+	t.Setenv("GIT_DIR", findThisRepoGitDir(t))
+	t.Setenv("GIT_WORK_TREE", ".")
+
+	dir := t.TempDir()
+	m, err := NewManager(t.TempDir(), 0.01)
+	require.NoError(t, err)
+	m.SetProjectDir(dir)
+
+	commit, branch := m.getGitInfo()
+	assert.Empty(t, commit, "an inherited GIT_DIR must not leak the enclosing repo's commit")
+	assert.Empty(t, branch, "an inherited GIT_DIR must not leak the enclosing repo's branch")
+}
+
+// findThisRepoGitDir resolves this repo's real .git directory so
+// TestGetGitInfo_IgnoresInheritedGitDir can point GIT_DIR at something that
+// actually resolves (a worktree's GIT_DIR is a file, not a directory, but
+// `git rev-parse --git-dir` always returns something git itself accepts).
+func findThisRepoGitDir(t *testing.T) string {
+	t.Helper()
+	cmd := exec.Command("git", "rev-parse", "--absolute-git-dir")
+	out, err := cmd.Output()
+	require.NoError(t, err)
+	return strings.TrimSpace(string(out))
+}
+
+// TestGitCleanEnv confirms every location-controlling GIT_* variable is
+// stripped, and everything else survives untouched.
+func TestGitCleanEnv(t *testing.T) {
+	t.Setenv("GIT_DIR", "/somewhere/.git")
+	t.Setenv("GIT_WORK_TREE", "/somewhere")
+	t.Setenv("GIT_INDEX_FILE", "/somewhere/.git/index")
+	t.Setenv("GIT_OBJECT_DIRECTORY", "/somewhere/.git/objects")
+	t.Setenv("GIT_ALTERNATE_OBJECT_DIRECTORIES", "/elsewhere/.git/objects")
+	t.Setenv("GIT_CEILING_DIRECTORIES", "/somewhere")
+	t.Setenv("GIT_AUTHOR_NAME", "kept") // not a location var — must survive
+
+	env := gitCleanEnv()
+	for _, kv := range env {
+		for _, prefix := range gitLocationEnvPrefixes {
+			assert.False(t, strings.HasPrefix(kv, prefix), "gitCleanEnv left %q in the environment", kv)
+		}
+	}
+	assert.Contains(t, env, "GIT_AUTHOR_NAME=kept")
 }
 
 func TestManager_Delegators(t *testing.T) {

@@ -168,11 +168,20 @@ Available tools:
 		tools.RegisterChannelReplyTool(server, dt)
 	}
 
+	// Resolve working directory once — used for the snapshot manager's git
+	// info, channel sink scoping, and session registration so all three
+	// operate on the same project path.
+	cwd, cwdErr := os.Getwd()
+	if cwdErr != nil {
+		cwd = "."
+	}
+
 	// Register snapshot tools (visual regression testing)
 	snapshotManager, err := snapshot.NewManager("", 0.01) // Default path and 1% threshold
 	if err != nil {
 		log.Printf("Warning: Failed to initialize snapshot manager: %v", err)
 	} else {
+		snapshotManager.SetProjectDir(cwd)
 		tools.RegisterSnapshotTools(server, snapshotManager, dt)
 	}
 
@@ -184,13 +193,6 @@ Available tools:
 	// of channel mode. Rides the STREAM-EVENTS transport.
 	digestCancel := dt.StartIncidentDigestSink(server)
 	defer digestCancel()
-
-	// Resolve working directory once — used for both channel sink scoping and
-	// session registration so both operate on the same project path.
-	cwd, cwdErr := os.Getwd()
-	if cwdErr != nil {
-		cwd = "."
-	}
 
 	// When channel mode is active, subscribe a ChannelSink to the daemon's
 	// event stream. Events that pass severity/type filtering and deduplication
