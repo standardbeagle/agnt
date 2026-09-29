@@ -147,8 +147,12 @@ func TestClient_CurrentPage_GetIsLeanAndComplete(t *testing.T) {
 	ps, err := d.proxym.Get("lean")
 	require.NoError(t, err)
 	pt := ps.PageTracker()
-	require.Eventually(t, func() bool { return len(pt.GetActiveSessions()) == 1 },
-		3*time.Second, 20*time.Millisecond, "doc request must create a session")
+	// The client can hold a response before ServeHTTP has recorded that
+	// resource, so wait for both recordings rather than for the session alone.
+	require.Eventually(t, func() bool {
+		ss := pt.GetActiveSessions()
+		return len(ss) == 1 && len(ss[0].Resources) == 2
+	}, 3*time.Second, 20*time.Millisecond, "doc request must create a session holding both resources")
 	for i := 0; i < 3; i++ {
 		pt.TrackError(proxy.FrontendError{Message: "Uncaught ReferenceError: x", Error: "ReferenceError: x is not defined", URL: "/"}, "")
 	}
