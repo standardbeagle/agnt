@@ -21,8 +21,13 @@ func NewDiffer(threshold float64) *Differ {
 	return &Differ{threshold: threshold}
 }
 
-// Compare compares two images and returns diff percentage and diff image
-func (d *Differ) Compare(baselinePath, currentPath string) (float64, image.Image, error) {
+// Compare compares two images and returns diff percentage and diff image.
+// Pixels falling inside any of ignoreRegions are excluded from both the
+// pixel-diff count and totalPixels, so a region that legitimately changes
+// between captures (a clock, an ad slot) never contributes to
+// diffPercentage; the diff image still renders them dimmed, not red, so a
+// human reviewing the image can see what was excluded and why.
+func (d *Differ) Compare(baselinePath, currentPath string, ignoreRegions ...IgnoreRegion) (float64, image.Image, error) {
 	// Load baseline image
 	baseline, err := loadImage(baselinePath)
 	if err != nil {
@@ -55,6 +60,22 @@ func (d *Differ) Compare(baselinePath, currentPath string) (float64, image.Image
 			baselineColor := baseline.At(x, y)
 			currentColor := current.At(x, y)
 
+			if inAnyRegion(ignoreRegions, x, y) {
+				// Excluded region: render dimmed like a match, but don't
+				// count it toward totalPixels or diffPixels either way —
+				// it must not affect diffPercentage regardless of whether
+				// the pixels actually match.
+				r, g, b, a := currentColor.RGBA()
+				diff.Set(x, y, color.RGBA{
+					R: uint8(r >> 9),
+					G: uint8(g >> 9),
+					B: uint8(b >> 9),
+					A: uint8(a >> 8),
+				})
+				totalPixels--
+				continue
+			}
+
 			if colorsEqual(baselineColor, currentColor) {
 				// No difference - show current pixel dimmed
 				r, g, b, a := currentColor.RGBA()
@@ -72,7 +93,10 @@ func (d *Differ) Compare(baselinePath, currentPath string) (float64, image.Image
 		}
 	}
 
-	diffPercentage := float64(diffPixels) / float64(totalPixels)
+	diffPercentage := 0.0
+	if totalPixels > 0 {
+		diffPercentage = float64(diffPixels) / float64(totalPixels)
+	}
 
 	return diffPercentage, diff, nil
 }
@@ -125,6 +149,16 @@ func colorsEqual(c1, c2 color.Color) bool {
 		abs(g1, g2) <= tolerance &&
 		abs(b1, b2) <= tolerance &&
 		abs(a1, a2) <= tolerance
+}
+
+// inAnyRegion reports whether (x, y) falls inside any of regions.
+func inAnyRegion(regions []IgnoreRegion, x, y int) bool {
+	for _, r := range regions {
+		if r.Contains(x, y) {
+			return true
+		}
+	}
+	return false
 }
 
 func abs(a, b uint32) uint32 {
