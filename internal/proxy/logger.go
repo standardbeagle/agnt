@@ -233,6 +233,22 @@ func (tl *TrafficLogger) LogSketchCapture(entry SketchCapture) {
 	})
 }
 
+// LogAuditCapture adds an indicator-panel audit-result attachment entry.
+func (tl *TrafficLogger) LogAuditCapture(entry GenericCapture) {
+	tl.log(LogEntry{
+		Type:         LogTypeAuditCapture,
+		AuditCapture: &entry,
+	})
+}
+
+// LogStyleEditCapture adds an indicator-panel style-edit attachment entry.
+func (tl *TrafficLogger) LogStyleEditCapture(entry GenericCapture) {
+	tl.log(LogEntry{
+		Type:             LogTypeStyleEditCapture,
+		StyleEditCapture: &entry,
+	})
+}
+
 // LogDesignState adds a design state entry.
 func (tl *TrafficLogger) LogDesignState(entry DesignState) {
 	tl.log(LogEntry{

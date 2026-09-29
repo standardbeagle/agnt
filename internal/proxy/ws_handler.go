@@ -129,6 +129,23 @@ func (ps *ProxyServer) errorHandler(w http.ResponseWriter, r *http.Request, err 
 	http.Error(w, userMsg, http.StatusBadGateway)
 }
 
+// tlsSkipWarningToastJSON builds the TLS-cert-skip warning sent to a
+// newly-connected browser client. It uses the same {type, payload:{...}}
+// shape as BroadcastToastOpts (ws_broadcast.go) — toast.js reads
+// message.payload.type, not a flat message.toast, so a flat shape here was
+// silently swallowed by every client.
+func tlsSkipWarningToastJSON() ([]byte, error) {
+	return json.Marshal(map[string]interface{}{
+		"type": "toast",
+		"payload": map[string]interface{}{
+			"type":     "warning",
+			"title":    "Self-Signed Certificate",
+			"message":  "This proxy is bypassing TLS certificate verification. The backend is using a self-signed or invalid certificate.",
+			"duration": 8000,
+		},
+	})
+}
+
 // handleWebSocket handles WebSocket connections for frontend metrics.
 func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	debug.Log("proxy", "WebSocket connection attempt from %s to proxy %s", r.RemoteAddr, ps.ID)
@@ -166,13 +183,7 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 	// Warn the browser if TLS cert verification was bypassed for this proxy.
 	if ps.tlsCertSkipped.Load() {
-		if warn, err := json.Marshal(map[string]interface{}{
-			"type":     "toast",
-			"toast":    "warning",
-			"title":    "Self-Signed Certificate",
-			"message":  "This proxy is bypassing TLS certificate verification. The backend is using a self-signed or invalid certificate.",
-			"duration": 8000,
-		}); err == nil {
+		if warn, err := tlsSkipWarningToastJSON(); err == nil {
 			// Best-effort browser toast; if the control-lane write fails the
 			// conn is already going away, so degrade quietly to the debug log.
 			if werr := asyncConn.WriteSync(warn); werr != nil {
@@ -261,6 +272,8 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		if handler, ok := wsMessageHandlers[msg.Type]; ok {
 			handler(connState, &msg)
+		} else {
+			connState.logUnknownMessageType(msg.Type)
 		}
 	}
 }
