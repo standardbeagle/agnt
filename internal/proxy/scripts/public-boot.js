@@ -9,6 +9,7 @@
 //
 //   read token from window.location  →  fetch /s/{token}/walkthrough.json
 //     →  window.__walkthroughViewer.create(wt).start()
+//   read token from window.location  →  window.__feedbackClient.init({endpoint}).mount()
 //
 // It ships in every role bundle like its three siblings, so it MUST be inert
 // everywhere but the public plane. Two independent gates, both required:
@@ -81,6 +82,21 @@
       try { console.warn('[WalkthroughPublic] ' + msg, err || ''); } catch (e) {}
     }
 
+    // mountFeedback wires the feedback widget to this share's own feedback
+    // route. Independent of whether the walkthrough itself loaded — a visitor
+    // hitting a broken artifact is exactly the visitor most likely to want to
+    // report it, so this does not gate on boot() succeeding.
+    function mountFeedback(token) {
+      if (!token) { return null; }
+      var fc = window.__feedbackClient;
+      if (!fc || typeof fc.init !== 'function') {
+        warn('feedback client missing from the public bundle');
+        return null;
+      }
+      var client = fc.init({ endpoint: '/s/' + token + '/feedback' });
+      return typeof client.mount === 'function' ? client.mount({}) : null;
+    }
+
     // boot fetches the published artifact for token and starts the player.
     // Returns the player, or null when the plane/route/payload is not bootable —
     // the caller (and the tests) can distinguish "did not boot" from "booted".
@@ -130,11 +146,13 @@
     }
 
     var booted = null;
+    var feedbackWidget = null;
 
     function autoBoot() {
       var token = shareToken(window.location && window.location.pathname);
       if (!token) { return; }
       boot(token);
+      feedbackWidget = mountFeedback(token);
     }
 
     // Gate 1 is checked BEFORE any listener is registered, so a dev-proxied page
@@ -156,8 +174,10 @@
       shareToken: shareToken,
       isPublicPlane: isPublicPlane,
       boot: boot,
+      mountFeedback: mountFeedback,
       player: function () { return booted; },
-      version: 'p12'
+      feedback: function () { return feedbackWidget; },
+      version: 'p13'
     };
   } catch (e) {
     try { console.error('[WalkthroughPublic] init failed:', e); } catch (e2) {}

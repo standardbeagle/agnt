@@ -362,17 +362,20 @@ var moduleOrder = []moduleEntry{
 	// is called, so it is safe to ship in every bundle; the RolePublic allowlist
 	// selects it as one of the three public members.
 	{"walkthrough-viewer", nil},
-	// feedback-client is the third public member (P4) — a thin stub that buffers
-	// visitor feedback. Dependency-free, no dev-control surface, inert until
+	// feedback-client is the third public member (P4): buffers visitor feedback,
+	// POSTs it to the share's own /s/{token}/feedback route, and (via mount())
+	// renders the minimal rating + comment widget public-boot attaches on load.
+	// Dependency-free, no dev-control surface, inert until
 	// window.__feedbackClient.init() is called.
 	{"feedback-client", nil},
 	// public-boot is the fourth public member: the glue that reads the share
-	// token from window.location, fetches /s/{token}/walkthrough.json, and starts
-	// the viewer. It must load AFTER variant-engine + walkthrough-viewer (it
-	// calls both at DOMContentLoaded), and it is the ONE public module that runs
-	// on its own — double-gated on the RolePublic version marker and the
+	// token from window.location, fetches /s/{token}/walkthrough.json, starts
+	// the viewer, and mounts the feedback widget against that same token. It
+	// must load AFTER variant-engine + walkthrough-viewer + feedback-client (it
+	// calls all three at DOMContentLoaded), and it is the ONE public module that
+	// runs on its own — double-gated on the RolePublic version marker and the
 	// /s/{token} route so it stays inert in every dev bundle.
-	{"public-boot", []string{"variant-engine", "walkthrough-viewer"}},
+	{"public-boot", []string{"variant-engine", "walkthrough-viewer", "feedback-client"}},
 	{"palette", []string{"core", "utils"}},
 	{"style-editor", []string{"core", "utils"}},
 	// override-store injects the delta stylesheet; transform renders the
