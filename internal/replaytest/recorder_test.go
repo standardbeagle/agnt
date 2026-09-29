@@ -43,7 +43,31 @@ func TestRecorderCoalescesIdenticalRecordings(t *testing.T) {
 	sc := AssembleScenario("x", "http://h", []proxy.LogEntry{mk(), mk(), mk()})
 	require.Len(t, sc.Recordings, 1)
 	assert.Equal(t, 3, sc.Recordings[0].Hits)
-	assert.Len(t, sc.Blobs, 3) // each HTTP entry out-lines its own blob
+	// Each HTTP entry out-lines its own blob during assembly, but coalescing
+	// only keeps one Recording — the other two blob:N entries are orphaned
+	// and must be garbage-collected, not kept forever in the persisted
+	// scenario file.
+	assert.Len(t, sc.Blobs, 1)
+	assert.Equal(t, "pong", sc.Blobs[sc.Recordings[0].BodyRef])
+}
+
+// TestRecorderGCsOrphanBlobsAcrossDistinctRecordings confirms the blob GC
+// keys off which Recordings actually survive, not just a per-group count —
+// two distinct (non-coalescing) recordings each keep their own blob, while a
+// third, duplicate recording's blob is collected.
+func TestRecorderGCsOrphanBlobsAcrossDistinctRecordings(t *testing.T) {
+	entries := []proxy.LogEntry{
+		{Type: proxy.LogTypeHTTP, HTTP: &proxy.HTTPLogEntry{Method: "GET", URL: "/api/a", StatusCode: 200, ResponseBody: "a"}},
+		{Type: proxy.LogTypeHTTP, HTTP: &proxy.HTTPLogEntry{Method: "GET", URL: "/api/a", StatusCode: 200, ResponseBody: "a"}},
+		{Type: proxy.LogTypeHTTP, HTTP: &proxy.HTTPLogEntry{Method: "GET", URL: "/api/b", StatusCode: 200, ResponseBody: "b"}},
+	}
+	sc := AssembleScenario("x", "http://h", entries)
+	require.Len(t, sc.Recordings, 2)
+	assert.Len(t, sc.Blobs, 2, "one blob per surviving Recording, the duplicate's blob collected")
+	for _, r := range sc.Recordings {
+		_, ok := sc.Blobs[r.BodyRef]
+		assert.True(t, ok, "every surviving Recording's BodyRef must resolve")
+	}
 }
 
 func TestRecorderStripsSchemeAndHost(t *testing.T) {

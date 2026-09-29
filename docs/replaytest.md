@@ -57,10 +57,6 @@ them:
 (`client.ProxyLogQueryFull`). They require daemon mode — the legacy non-daemon
 server returns a clear "requires daemon mode" message if invoked without one.
 
-One minor remaining item: orphaned blobs from coalesced duplicate recordings are
-retained in the scenario JSON. This is harmless; a future GC pass could prune
-them.
-
 `refine` still requires `ANTHROPIC_API_KEY` or `CLAUDE_KEY` at runtime.
 `explore` returns a seed partition for the caller to fan out browser-debugger
 subagents. `replay` drives headless Chrome.
