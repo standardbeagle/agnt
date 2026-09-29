@@ -122,8 +122,17 @@ func TestActivityMonitorOutputPreview(t *testing.T) {
 	am.Write([]byte("line 4\n"))
 	am.Write([]byte("line 5\n"))
 
-	// Wait for debounce
-	time.Sleep(100 * time.Millisecond)
+	// A preview can fire mid-burst under load; wait for the one that follows
+	// the last write rather than sleeping a guess at the debounce.
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		if len(previewLines) == 0 {
+			return false
+		}
+		last := previewLines[len(previewLines)-1]
+		return len(last) > 0 && last[len(last)-1] == "line 5"
+	}, 5*time.Second, 5*time.Millisecond)
 
 	mu.Lock()
 	if len(previewLines) == 0 {
@@ -169,8 +178,11 @@ func TestActivityMonitorANSIStripping(t *testing.T) {
 	am.Write([]byte("\x1b[1;31mBold red\x1b[0m text\n"))
 	am.Write([]byte("Normal line\n"))
 
-	// Wait for debounce
-	time.Sleep(50 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(previewLines) >= 3
+	}, 5*time.Second, 5*time.Millisecond)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -323,7 +335,15 @@ func TestActivityMonitorLineWrapping(t *testing.T) {
 	// A 200-char line wraps across an 80-column screen (80 + 80 + 40).
 	am.Write([]byte(strings.Repeat("x", 200) + "\n"))
 
-	time.Sleep(50 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		total := 0
+		for _, l := range previewLines {
+			total += strings.Count(l, "x")
+		}
+		return total == 200
+	}, 5*time.Second, 5*time.Millisecond)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -474,8 +494,13 @@ func TestActivityMonitorAnimationWithNewline(t *testing.T) {
 	redraw("Complete!")
 	am.Write([]byte("\n"))
 
-	// Wait for debounce
-	time.Sleep(50 * time.Millisecond)
+	// The first frame can publish a preview on its own under load; wait for
+	// the one after the final write.
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(previewLines) == 1 && previewLines[0] == "Complete!"
+	}, 5*time.Second, 5*time.Millisecond)
 
 	mu.Lock()
 	defer mu.Unlock()
@@ -525,8 +550,11 @@ func TestActivityMonitorMixedAnimationAndLines(t *testing.T) {
 	// Another regular line
 	am.Write([]byte("Task complete\n"))
 
-	// Wait for debounce
-	time.Sleep(100 * time.Millisecond)
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(previewLines) == 3 && previewLines[2] == "Task complete"
+	}, 5*time.Second, 5*time.Millisecond)
 
 	mu.Lock()
 	defer mu.Unlock()
