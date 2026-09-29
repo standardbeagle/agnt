@@ -365,8 +365,7 @@ func TestProtectedWriter_CursorRestoreTracked(t *testing.T) {
 	pw.Write([]byte("\x1b[s"))
 
 	// Simulate saved position in protected row
-	pw.savedRow = 24
-	pw.savedCol = 1
+	pw.saved = trackedCursor{row: 24, col: 1}
 
 	// Restore tracks the saved position without clamping
 	pw.Write([]byte("\x1b[u"))

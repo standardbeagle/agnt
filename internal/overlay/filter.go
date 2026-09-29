@@ -8,6 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode"
 )
 
 // FilterConfig configures the PTY output filter behavior.
@@ -44,7 +45,19 @@ type ProtectedWriter struct {
 	oscBuf   []byte // OSC string accumulator
 	escBuf   []byte // Buffer for incomplete escape sequences
 
-	// Cursor tracking (1-indexed, 0 means unknown)
+	// Cursor model, guarded by mu. Every overlay draw restores the child's
+	// cursor from this model with an absolute CUP (cursorpark.go), and the
+	// child then redraws with relative moves from wherever that CUP put it —
+	// so this must track the host terminal exactly, xterm semantics included
+	// (pending wrap, clamping, the shared DECSC/SCOSC save slot). See
+	// cursortrack_test.go, which holds it to a vt10x terminal model.
+	cur      trackedCursor
+	saved    trackedCursor // DECSC (ESC 7) and SCOSC (CSI s) share one slot
+	altSaved trackedCursor // saved by ?1049h, restored by ?1049l
+
+	// Published copy of cur for lock-free readers (ChildCursor). Updated only
+	// after the bytes that moved the cursor have been written, so a reader
+	// never sees a position the host terminal has not reached yet.
 	cursorRow atomic.Int32
 	cursorCol atomic.Int32
 
@@ -64,10 +77,6 @@ type ProtectedWriter struct {
 	utf8Buf  [4]byte
 	utf8Len  int // bytes accumulated so far
 	utf8Need int // total bytes needed for current char
-
-	// Saved cursor position (for ESC[s / ESC[u)
-	savedRow int32
-	savedCol int32
 
 	// Redraw state
 	redrawNeeded atomic.Bool
@@ -108,8 +117,8 @@ func NewProtectedWriter(out io.Writer, width, height int, config FilterConfig) *
 		stopRedraw:   make(chan struct{}),
 	}
 	// Initialize cursor to top-left so scroll protection works immediately
-	pw.cursorRow.Store(1)
-	pw.cursorCol.Store(1)
+	pw.cur = trackedCursor{row: 1, col: 1}
+	pw.publishCursor()
 	pw.cursorVisible.Store(true)
 	pw.scrollTop = 1
 	pw.scrollBottom = height - config.ProtectBottomRows
@@ -132,9 +141,13 @@ func (pw *ProtectedWriter) SetSize(width, height int) {
 	pw.protectedRow = height - pw.config.ProtectBottomRows + 1
 	pw.scrollTop = 1
 	pw.scrollBottom = height - pw.config.ProtectBottomRows
+	pw.cur.row = clampInt(pw.cur.row, 1, max(height, 1))
+	pw.cur.col = clampInt(pw.cur.col, 1, max(width, 1))
+	pw.cur.wrapPending = false
 
 	// After resize, enforce scroll region
 	pw.enforceScrollRegion()
+	pw.publishCursor()
 }
 
 // Stop stops the periodic redraw goroutine.
@@ -184,6 +197,7 @@ func (pw *ProtectedWriter) Write(p []byte) (n int, err error) {
 	if out.Len() > 0 {
 		_, err = pw.out.Write(out.Bytes())
 	}
+	pw.publishCursor()
 
 	return len(p), err
 }
@@ -219,39 +233,37 @@ func (pw *ProtectedWriter) handleStateGround(out *bytes.Buffer, b byte) {
 		return
 	}
 
-	row := int(pw.cursorRow.Load())
-	col := int(pw.cursorCol.Load())
-
 	switch b {
-	case '\n': // Linefeed
-		// When cursor is at the bottom of the scroll region, linefeed
-		// causes the terminal to scroll content up -- the cursor row
-		// stays the same. Only increment row if not at the boundary.
-		if row > 0 && row < pw.scrollBottom {
-			pw.cursorRow.Store(int32(row + 1))
-		}
+	case '\n', '\v', '\f': // LF, VT, FF all index down
+		pw.lineFeed()
 		out.WriteByte(b)
 
 	case '\r': // Carriage return
-		pw.cursorCol.Store(1)
+		pw.cur.col = 1
+		pw.cur.wrapPending = false
 		out.WriteByte(b)
 
 	case '\b': // Backspace
-		if col > 1 {
-			pw.cursorCol.Store(int32(col - 1))
+		if pw.cur.col > 1 {
+			pw.cur.col--
 		}
+		pw.cur.wrapPending = false
+		out.WriteByte(b)
+
+	case '\t': // Horizontal tab: next 8-column stop, never past the edge
+		pw.cur.col = min(((pw.cur.col-1)/8+1)*8+1, pw.width)
+		pw.cur.wrapPending = false
 		out.WriteByte(b)
 
 	default:
 		// Accumulate UTF-8 bytes to detect character width.
-		// ASCII printable (0x20-0x7F): 1 column, emit immediately.
+		// ASCII printable (0x20-0x7E): 1 column, emit immediately.
 		// UTF-8 lead byte (0xC0+): start accumulating.
 		// UTF-8 continuation (0x80-0xBF): continue accumulating.
 		// When complete rune is assembled, advance column by its display width.
 
 		if b >= 0x20 && b < 0x7f {
-			// ASCII printable — 1 column
-			pw.advanceCol(out, row, col, 1)
+			pw.putChar(1)
 			out.WriteByte(b)
 			return
 		}
@@ -278,13 +290,7 @@ func (pw *ProtectedWriter) handleStateGround(out *bytes.Buffer, b byte) {
 			out.WriteByte(b)
 
 			if pw.utf8Len >= pw.utf8Need {
-				// Complete rune — decode and check width
-				r := decodeUTF8(pw.utf8Buf[:pw.utf8Len])
-				width := 1
-				if isWideChar(r) {
-					width = 2
-				}
-				pw.advanceCol(out, row, col, width)
+				pw.putChar(runeCells(decodeUTF8(pw.utf8Buf[:pw.utf8Len])))
 				pw.utf8Len = 0
 				pw.utf8Need = 0
 			}
@@ -318,39 +324,32 @@ func (pw *ProtectedWriter) handleStateEscape(out *bytes.Buffer, b byte) {
 		pw.state = stateAPC
 	case '7': // DECSC - save cursor
 		out.Write(pw.escBuf)
+		pw.saved = pw.cur
 		pw.state = stateGround
 	case '8': // DECRC - restore cursor
 		out.Write(pw.escBuf)
+		pw.restoreFrom(pw.saved)
 		pw.state = stateGround
 	case 'M': // RI - Reverse Index (scroll down)
 		out.Write(pw.escBuf)
-		row := int(pw.cursorRow.Load())
-		if row > 1 {
-			pw.cursorRow.Store(int32(row - 1))
-		}
+		pw.reverseIndex()
 		pw.state = stateGround
 	case 'D': // IND - Index (scroll up / move cursor down)
-		row := int(pw.cursorRow.Load())
 		out.Write(pw.escBuf)
-		// At scroll region bottom, IND scrolls -- cursor stays put
-		if row > 0 && row < pw.scrollBottom {
-			pw.cursorRow.Store(int32(row + 1))
-		}
+		pw.lineFeed()
 		pw.state = stateGround
 	case 'E': // NEL - Next Line
-		row := int(pw.cursorRow.Load())
 		out.Write(pw.escBuf)
-		// At scroll region bottom, NEL scrolls -- cursor stays on same row
-		if row > 0 && row < pw.scrollBottom {
-			pw.cursorRow.Store(int32(row + 1))
-		}
-		pw.cursorCol.Store(1)
+		pw.lineFeed()
+		pw.cur.col = 1
 		pw.state = stateGround
 	case 'c': // RIS - full reset
 		// Allow reset but re-enforce scroll region after
 		out.Write(pw.escBuf)
 		pw.scrollTop = 1
 		pw.scrollBottom = pw.height - pw.config.ProtectBottomRows
+		pw.cur = trackedCursor{row: 1, col: 1}
+		pw.saved = trackedCursor{}
 		pw.redrawNeeded.Store(true)
 		pw.state = stateGround
 	default:
@@ -383,8 +382,10 @@ func (pw *ProtectedWriter) handleStateCSI(out *bytes.Buffer, b byte) {
 	case b == ';':
 		pw.params = append(pw.params, 0) // Default parameter
 		pw.state = stateCSIParam
-	case b == '?' || b == '>' || b == '!' || b == '=':
-		// Private mode introducer
+	case b == '?' || b == '>' || b == '<' || b == '!' || b == '=':
+		// Private mode introducer. '<' included: CSI < u is the kitty
+		// keyboard pop, and dropping out of the parser here printed its
+		// final 'u' as a glyph in the cursor model.
 		pw.intermed = append(pw.intermed, b)
 	case b >= 0x20 && b <= 0x2f:
 		pw.intermed = append(pw.intermed, b)
@@ -506,6 +507,12 @@ func (pw *ProtectedWriter) finishParam() {
 func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 	// Check for private mode sequences
 	isPrivate := len(pw.intermed) > 0 && pw.intermed[0] == '?'
+	// Plain sequences carry no private marker or intermediate byte. Several
+	// finals are reused by other protocols once one is present — CSI > 1 u
+	// and CSI < u are the kitty keyboard protocol (Claude Code sends them),
+	// CSI ? s is XTSAVE, CSI SP q is DECSCUSR — and none of them moves the
+	// cursor.
+	plain := len(pw.intermed) == 0
 
 	switch final {
 	case 'r': // DECSTBM - Set Top and Bottom Margins (scroll region)
@@ -521,49 +528,59 @@ func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 			}
 			pw.scrollTop = top
 			pw.scrollBottom = bottom
+			// DECSTBM homes the cursor.
+			pw.moveTo(1, 1)
 			// Write modified scroll region
 			fmt.Fprintf(out, "\x1b[%d;%dr", top, bottom)
 			return
 		}
 
 	case 'H', 'f': // CUP/HVP - Cursor Position
-		row := 1
-		col := 1
-		if len(pw.params) >= 1 && pw.params[0] > 0 {
-			row = pw.params[0]
+		if plain {
+			pw.moveTo(pw.param(0, 1), pw.param(1, 1))
 		}
-		if len(pw.params) >= 2 && pw.params[1] > 0 {
-			col = pw.params[1]
-		}
-		pw.cursorRow.Store(int32(row))
-		pw.cursorCol.Store(int32(col))
 
 	case 'A': // CUU - Cursor Up
-		n := 1
-		if len(pw.params) >= 1 && pw.params[0] > 0 {
-			n = pw.params[0]
+		if plain {
+			pw.cursorUp(pw.param(0, 1))
 		}
-		row := int(pw.cursorRow.Load()) - n
-		if row < 1 {
-			row = 1
-		}
-		pw.cursorRow.Store(int32(row))
-		// Pass through
 
-	case 'B': // CUD - Cursor Down
-		n := 1
-		if len(pw.params) >= 1 && pw.params[0] > 0 {
-			n = pw.params[0]
+	case 'B', 'e': // CUD - Cursor Down, VPR - Line Position Relative
+		if plain {
+			pw.cursorDown(pw.param(0, 1))
 		}
-		row := int(pw.cursorRow.Load()) + n
-		pw.cursorRow.Store(int32(row))
+
+	case 'C', 'a': // CUF - Cursor Forward, HPR - Character Position Relative
+		if plain {
+			pw.moveTo(pw.cur.row, pw.cur.col+pw.param(0, 1))
+		}
+
+	case 'D': // CUB - Cursor Backward
+		if plain {
+			pw.moveTo(pw.cur.row, pw.cur.col-pw.param(0, 1))
+		}
+
+	case 'E': // CNL - Cursor Next Line
+		if plain {
+			pw.cursorDown(pw.param(0, 1))
+			pw.cur.col = 1
+		}
+
+	case 'F': // CPL - Cursor Previous Line
+		if plain {
+			pw.cursorUp(pw.param(0, 1))
+			pw.cur.col = 1
+		}
+
+	case 'G', '`': // CHA - Cursor Horizontal Absolute, HPA
+		if plain {
+			pw.moveTo(pw.cur.row, pw.param(0, 1))
+		}
 
 	case 'd': // VPA - Vertical Position Absolute
-		row := 1
-		if len(pw.params) >= 1 && pw.params[0] > 0 {
-			row = pw.params[0]
+		if plain {
+			pw.moveTo(pw.param(0, 1), pw.cur.col)
 		}
-		pw.cursorRow.Store(int32(row))
 
 	case 'J': // ED - Erase in Display
 		mode := 0
@@ -579,7 +596,14 @@ func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 	case 'h', 'l': // SM/RM - Set/Reset Mode
 		if isPrivate && len(pw.params) > 0 {
 			switch pw.params[0] {
-			case 1049, 47, 1047: // Alternate screen buffer sequences
+			case 1049: // Alternate screen with its own cursor save
+				if final == 'h' {
+					pw.altSaved = pw.cur
+				} else {
+					pw.restoreFrom(pw.altSaved)
+				}
+				pw.inAltScreen.Store(final == 'h')
+			case 47, 1047: // Alternate screen buffer sequences
 				pw.inAltScreen.Store(final == 'h')
 			case 25: // DECTCEM - cursor visibility
 				pw.cursorVisible.Store(final == 'h')
@@ -587,17 +611,15 @@ func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 		}
 		// Pass through
 
-	case 's': // SCP - Save Cursor Position
-		pw.savedRow = pw.cursorRow.Load()
-		pw.savedCol = pw.cursorCol.Load()
-		// Pass through
-
-	case 'u': // RCP - Restore Cursor Position
-		if pw.savedRow > 0 {
-			pw.cursorRow.Store(pw.savedRow)
-			pw.cursorCol.Store(pw.savedCol)
+	case 's': // SCOSC - Save Cursor Position (same slot as DECSC)
+		if plain {
+			pw.saved = pw.cur
 		}
-		// Pass through
+
+	case 'u': // SCORC - Restore Cursor Position
+		if plain {
+			pw.restoreFrom(pw.saved)
+		}
 
 	case 'c': // DA - Device Attributes response
 		if isPrivate {
@@ -613,21 +635,120 @@ func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 	out.Write(pw.escBuf)
 }
 
-// advanceCol advances the cursor column by width, handling line wrap.
-func (pw *ProtectedWriter) advanceCol(out *bytes.Buffer, row, col, width int) {
-	if col <= 0 {
+// trackedCursor is the host terminal's cursor as the child's bytes leave it.
+type trackedCursor struct {
+	row, col int // 1-indexed; 0 only in a never-written save slot
+	// wrapPending is xterm's "last column flag": after a glyph lands in the
+	// rightmost column the cursor stays there, and the wrap happens only
+	// when the next glyph arrives. A full-width line followed by CRLF
+	// therefore moves down one row, not two.
+	wrapPending bool
+}
+
+// param returns CSI parameter i, or def when it is absent or zero.
+func (pw *ProtectedWriter) param(i, def int) int {
+	if i < len(pw.params) && pw.params[i] > 0 {
+		return pw.params[i]
+	}
+	return def
+}
+
+// moveTo places the cursor, clamped to the host screen, and clears any
+// pending wrap — every explicit cursor movement does.
+func (pw *ProtectedWriter) moveTo(row, col int) {
+	pw.cur.row = clampInt(row, 1, max(pw.height, 1))
+	pw.cur.col = clampInt(col, 1, max(pw.width, 1))
+	pw.cur.wrapPending = false
+}
+
+// cursorUp stops at the scroll region's top margin when starting inside it.
+func (pw *ProtectedWriter) cursorUp(n int) {
+	limit := 1
+	if pw.cur.row >= pw.scrollTop {
+		limit = pw.scrollTop
+	}
+	pw.moveTo(max(pw.cur.row-n, limit), pw.cur.col)
+}
+
+// cursorDown stops at the scroll region's bottom margin when starting inside it.
+func (pw *ProtectedWriter) cursorDown(n int) {
+	limit := pw.height
+	if pw.cur.row <= pw.scrollBottom {
+		limit = pw.scrollBottom
+	}
+	pw.moveTo(min(pw.cur.row+n, limit), pw.cur.col)
+}
+
+// lineFeed moves down one row; at the region's bottom margin the terminal
+// scrolls instead and the cursor stays put.
+func (pw *ProtectedWriter) lineFeed() {
+	if pw.cur.row != pw.scrollBottom && pw.cur.row < pw.height {
+		pw.cur.row++
+	}
+	pw.cur.wrapPending = false
+}
+
+// reverseIndex moves up one row; at the region's top margin the terminal
+// scrolls down instead and the cursor stays put.
+func (pw *ProtectedWriter) reverseIndex() {
+	if pw.cur.row != pw.scrollTop && pw.cur.row > 1 {
+		pw.cur.row--
+	}
+	pw.cur.wrapPending = false
+}
+
+// putChar advances past a glyph occupying cells columns, with autowrap.
+func (pw *ProtectedWriter) putChar(cells int) {
+	if cells == 0 {
+		return // combining mark / format char: attaches to the previous cell
+	}
+	if pw.cur.wrapPending {
+		pw.cur.col = 1
+		pw.lineFeed()
+	}
+	if cells == 2 && pw.cur.col == pw.width {
+		// A wide glyph that does not fit in the last column wraps first.
+		pw.cur.col = 1
+		pw.lineFeed()
+	}
+	if pw.cur.col+cells-1 >= pw.width {
+		pw.cur.col = pw.width
+		pw.cur.wrapPending = true
 		return
 	}
-	newCol := col + width
-	if newCol > pw.width {
-		newCol = 1 + (width - 1)
-		newRow := row + 1
-		// At scroll region bottom, wrap causes scroll -- cursor stays on same row
-		if newRow <= pw.scrollBottom {
-			pw.cursorRow.Store(int32(newRow))
-		}
+	pw.cur.col += cells
+}
+
+// restoreFrom applies DECRC/SCORC. Restoring a never-written slot homes the
+// cursor, as xterm does.
+func (pw *ProtectedWriter) restoreFrom(c trackedCursor) {
+	if c.row == 0 {
+		pw.moveTo(1, 1)
+		return
 	}
-	pw.cursorCol.Store(int32(newCol))
+	pw.moveTo(c.row, c.col)
+	pw.cur.wrapPending = c.wrapPending
+}
+
+// publishCursor exposes the model to lock-free readers. Caller holds mu.
+func (pw *ProtectedWriter) publishCursor() {
+	pw.cursorRow.Store(int32(pw.cur.row))
+	pw.cursorCol.Store(int32(pw.cur.col))
+}
+
+// runeCells is the number of terminal cells r occupies.
+func runeCells(r rune) int {
+	if unicode.In(r, unicode.Mn, unicode.Me, unicode.Cf) {
+		return 0
+	}
+	if isWideChar(r) {
+		return 2
+	}
+	return 1
+}
+
+func clampInt(v, lo, hi int) int {
+	return max(lo, min(v, hi))
 }
 
 // decodeUTF8 decodes a UTF-8 byte sequence into a rune.
@@ -657,7 +778,7 @@ func (pw *ProtectedWriter) enforceScrollRegion() {
 	if bottom < 1 {
 		bottom = 1
 	}
-	row, col := int(pw.cursorRow.Load()), int(pw.cursorCol.Load())
+	row, col := pw.cur.row, pw.cur.col
 	if row < 1 || col < 1 {
 		// Position unknown: DECSC/DECRC is the only option left.
 		fmt.Fprintf(pw.out, "\x1b7\x1b[1;%dr\x1b8", bottom)
