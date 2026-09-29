@@ -82,6 +82,9 @@ type ScriptController interface {
 	StopTunnel(id string) error
 	// StartTunnel opens a tunnel in front of a proxy, returning its public URL.
 	StartTunnel(provider, proxyID string, localPort int) (string, error)
+	// ProxyURL returns the current URL of the project's proxy declared as
+	// configName in .agnt.kdl, scheme included, as the daemon reports it.
+	ProxyURL(configName string) (string, error)
 	// ReconcileConfig live-applies the project's .agnt.kdl.
 	ReconcileConfig() error
 	// ProjectPath is the directory holding the project's .agnt.kdl.

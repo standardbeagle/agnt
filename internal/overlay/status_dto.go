@@ -82,6 +82,7 @@ type proxyDTO struct {
 	ConfigName    string   `json:"config_name"`
 	TargetURL     string   `json:"target_url"`
 	ListenAddr    string   `json:"listen_addr"`
+	URL           string   `json:"url"`
 	Status        string   `json:"status"`
 	WaitingFor    []string `json:"waiting_for"`
 	TunnelURL     string   `json:"tunnel_url"`
@@ -100,6 +101,7 @@ func (d proxyDTO) toInfo() ProxyInfo {
 		ConfigName:    d.ConfigName,
 		TargetURL:     d.TargetURL,
 		ListenAddr:    d.ListenAddr,
+		URL:           d.URL,
 		State:         d.Status,
 		WaitingOn:     d.WaitingFor,
 		ErrorCount:    d.Stats.ErrorCount,

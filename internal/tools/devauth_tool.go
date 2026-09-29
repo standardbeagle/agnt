@@ -67,7 +67,7 @@ func (dt *DaemonTools) makeDevAuthHandler() func(context.Context, *mcp.CallToolR
 		if err != nil {
 			return fail[DevAuthOutput](fmt.Sprintf("proxy %s: %v", in.ProxyID, err))
 		}
-		origin, err := devoidc.OriginForListenAddr(getString(status, "listen_addr"))
+		origin, err := devoidc.OriginForProxyURL(getString(status, "url"))
 		if err != nil {
 			return fail[DevAuthOutput](fmt.Sprintf("proxy %s: %v", in.ProxyID, err))
 		}

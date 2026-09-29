@@ -726,6 +726,25 @@ func (c *DaemonScriptController) ReconcileConfig() error {
 	return err
 }
 
+// ProxyURL returns the current URL of the project's proxy declared as
+// configName, as PROXY LIST reports it.
+func (c *DaemonScriptController) ProxyURL(configName string) (string, error) {
+	result, err := c.conn.RequestJSON(protocol.VerbProxy, protocol.DirectoryFilter{Directory: c.projectPath}, protocol.SubVerbList)
+	if err != nil {
+		return "", err
+	}
+	var wrap struct {
+		Proxies []proxyDTO `json:"proxies"`
+	}
+	decodeResult(result, &wrap)
+	for _, p := range wrap.Proxies {
+		if p.ConfigName == configName {
+			return p.URL, nil
+		}
+	}
+	return "", fmt.Errorf("no running proxy declared as %q", configName)
+}
+
 // ProjectPath returns the directory whose .agnt.kdl this controller edits.
 func (c *DaemonScriptController) ProjectPath() string {
 	return c.projectPath

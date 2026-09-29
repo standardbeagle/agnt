@@ -169,9 +169,11 @@ func (r *InputRouter) runTailscaleCommand(args string) error {
 		return fmt.Errorf("no project directory to write %s into", config.AgntConfigFileName)
 	}
 	configPath := filepath.Join(projectPath, config.AgntConfigFileName)
+	// Only the bind is written. The daemon reports the rebound proxy's URL,
+	// and only the proxy knows its scheme: https when the tailnet issues it a
+	// certificate, http otherwise.
 	if err := config.SetProxyProperties(configPath, target.ConfigName, [][2]string{
 		{"bind", proxypkg.BindTailscale},
-		{"status-url", target.TailscaleURL},
 	}); err != nil {
 		return err
 	}
@@ -180,11 +182,15 @@ func (r *InputRouter) runTailscaleCommand(args string) error {
 		// way; only the live rebind failed. Say which half happened.
 		return fmt.Errorf("wrote the tailnet bind to %s but could not apply it live: %w", config.AgntConfigFileName, err)
 	}
+	proxyURL, err := r.scriptController.ProxyURL(target.ConfigName)
+	if err != nil || proxyURL == "" {
+		return fmt.Errorf("rebound %s to the tailnet, but could not read back its URL: %v", target.ID, err)
+	}
 	r.overlay.Notify(Notification{
 		Level: LevelInfo,
-		Text:  fmt.Sprintf("%s now serves on %s", target.ID, target.TailscaleURL),
+		Text:  fmt.Sprintf("%s now serves on %s", target.ID, proxyURL),
 	})
-	if warning := devOIDCTailnetWarning(configPath, target.TailscaleURL); warning != "" {
+	if warning := devOIDCTailnetWarning(configPath, proxyURL); warning != "" {
 		r.overlay.Notify(Notification{Level: LevelWarn, Text: warning})
 	}
 	return nil
@@ -207,7 +213,7 @@ func (r *InputRouter) runAsCommand(args string) error {
 	if err != nil {
 		return err
 	}
-	origin, err := devoidc.OriginForListenAddr(target.ListenAddr)
+	origin, err := devoidc.OriginForProxyURL(target.URL)
 	if err != nil {
 		return err
 	}
@@ -227,7 +233,8 @@ func (r *InputRouter) runAsCommand(args string) error {
 
 // devOIDCTailnetWarning names what a tailnet rebind leaves broken in the
 // project's dev-oidc block: an issuer pinned to a loopback URL the proxy no
-// longer answers on, or an empty allow list, which gives tailnet callers no
+// longer answers on, an issuer or redirect URI on the proxy's host with the
+// other scheme, or an empty allow list, which gives tailnet callers no
 // persona. Returns "" when there is nothing to say.
 func devOIDCTailnetWarning(configPath, tailnetURL string) string {
 	cfg, err := config.LoadAgntConfigFile(configPath)
@@ -240,6 +247,11 @@ func devOIDCTailnetWarning(configPath, tailnetURL string) string {
 			problems = append(problems, fmt.Sprintf("issuer %s is loopback; set it to %s/__agnt/oidc (and the app's issuer to match)", cfg.DevOIDC.Issuer, strings.TrimSuffix(tailnetURL, "/")))
 		}
 	}
+	var redirects []string
+	for _, c := range cfg.DevOIDC.Clients {
+		redirects = append(redirects, c.RedirectURIs...)
+	}
+	problems = append(problems, devoidc.SchemeMismatches(tailnetURL, cfg.DevOIDC.Issuer, redirects)...)
 	if len(cfg.DevOIDC.Allow) == 0 {
 		problems = append(problems, "allow is empty, so no tailnet user gets a persona; add allow { \"<tailscale login>\" \"<persona>\" }")
 	}

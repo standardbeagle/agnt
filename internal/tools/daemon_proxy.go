@@ -2,9 +2,9 @@ package tools
 
 import (
 	"context"
+	"net/url"
 
 	"fmt"
-	"net"
 
 	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/go-sdk/mcp"
@@ -13,25 +13,23 @@ import (
 )
 
 // proxyAccessURL renders the human-facing "access at" URL for a started proxy.
-// listenAddr is a full host:port (net.Listener.Addr().String(), e.g.
-// "127.0.0.1:47341"); a public URL (set explicitly, or by the tunnel tool via
-// SetPublicURL) wins when present. Concatenating listenAddr onto a
-// "http://localhost" literal produced the bogus "http://localhost127.0.0.1:47341"
-// — the scheme is all the prefix needs.
-func proxyAccessURL(listenAddr, bindAddress, publicURL string) string {
+// proxyURL is the daemon's url field, scheme included (https for a tailnet
+// proxy serving the tailnet certificate); a public URL (set explicitly, or by
+// the tunnel tool via SetPublicURL) wins when present.
+func proxyAccessURL(proxyURL, bindAddress, publicURL string) string {
 	switch {
 	case publicURL != "":
 		return publicURL
 	case bindAddress == "0.0.0.0":
 		// Bound on all interfaces: surface only the port and let the operator
 		// substitute their reachable IP rather than echoing "0.0.0.0".
-		port := listenAddr
-		if _, p, err := net.SplitHostPort(listenAddr); err == nil {
-			port = p
+		port := proxyURL
+		if u, err := url.Parse(proxyURL); err == nil {
+			port = u.Port()
 		}
 		return fmt.Sprintf("http://<your-ip>:%s", port)
 	default:
-		return "http://" + listenAddr
+		return proxyURL
 	}
 }
 
@@ -105,7 +103,7 @@ func (dt *DaemonTools) handleProxyStart(input ProxyInput) (*mcp.CallToolResult, 
 	bindAddress := getString(result, "bind_address")
 	publicURL := getString(result, "public_url")
 
-	accessURL := proxyAccessURL(listenAddr, bindAddress, publicURL)
+	accessURL := proxyAccessURL(getString(result, "url"), bindAddress, publicURL)
 
 	return nil, ProxyOutput{
 		ID:          getString(result, "id"),

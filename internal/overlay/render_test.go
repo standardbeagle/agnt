@@ -342,8 +342,8 @@ func TestDrawIndicator_MultipleProxyURLs(t *testing.T) {
 	status := Status{
 		DaemonConnected: ConnectionConnected,
 		Proxies: []ProxyInfo{
-			{ID: "a", ListenAddr: "127.0.0.1:54321"},
-			{ID: "b", ListenAddr: "127.0.0.1:54322"},
+			{ID: "a", ListenAddr: "127.0.0.1:54321", URL: "http://127.0.0.1:54321"},
+			{ID: "b", ListenAddr: "127.0.0.1:54322", URL: "http://127.0.0.1:54322"},
 			{ID: "c", TunnelURL: "https://haam2.sbdev.io"},
 		},
 	}

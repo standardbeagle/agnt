@@ -777,9 +777,9 @@ func printDaemonStatusTo(h *daemonSessionHandle, w io.Writer) {
 			for _, p := range proxyList {
 				if pm, ok := p.(map[string]interface{}); ok {
 					id := getString(pm, "id")
-					listenAddr := getString(pm, "listen_addr")
-					if id != "" && listenAddr != "" {
-						fmt.Fprintf(w, "[proxy: %s] http://%s\n", id, overlay.NormalizeListenAddr(listenAddr))
+					proxyURL := getString(pm, "url")
+					if id != "" && proxyURL != "" {
+						fmt.Fprintf(w, "[proxy: %s] %s\n", id, overlay.NormalizeURL(proxyURL))
 					}
 				}
 			}
@@ -1103,9 +1103,9 @@ func printDaemonStatus(h *daemonSessionHandle) {
 			for _, p := range proxyList {
 				if pm, ok := p.(map[string]interface{}); ok {
 					id := getString(pm, "id")
-					listenAddr := getString(pm, "listen_addr")
-					if id != "" && listenAddr != "" {
-						fmt.Fprintf(os.Stderr, "[proxy: %s] http://%s\n", id, overlay.NormalizeListenAddr(listenAddr))
+					proxyURL := getString(pm, "url")
+					if id != "" && proxyURL != "" {
+						fmt.Fprintf(os.Stderr, "[proxy: %s] %s\n", id, overlay.NormalizeURL(proxyURL))
 					}
 				}
 			}

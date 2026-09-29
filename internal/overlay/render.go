@@ -460,8 +460,8 @@ func (r *Renderer) DrawIndicator(status Status) {
 		} else if p.StatusURL != "" {
 			displayURL = p.StatusURL
 			urlColor = FgMagenta
-		} else if p.ListenAddr != "" {
-			displayURL = "http://" + NormalizeListenAddr(p.ListenAddr)
+		} else if p.URL != "" {
+			displayURL = NormalizeURL(p.URL)
 		}
 		if displayURL == "" {
 			continue
@@ -474,7 +474,7 @@ func (r *Renderer) DrawIndicator(status Status) {
 	}
 
 	for _, au := range aggregatedURLs {
-		normalized := normalizeProcessURL(au.URL)
+		normalized := NormalizeURL(au.URL)
 		if normalized != "" {
 			urlParts = append(urlParts, fmt.Sprintf("%s%s%s", FgCyan+Underline, normalized, Reset))
 		}
@@ -593,10 +593,10 @@ func NormalizeListenAddr(addr string) string {
 	return "localhost" + port
 }
 
-// normalizeProcessURL normalizes a URL from process output.
-// It converts IP addresses to localhost and returns a clickable URL.
+// NormalizeURL makes a proxy or process URL clickable: it keeps the scheme and
+// turns a wildcard or loopback host into localhost.
 // E.g., "http://127.0.0.1:3847" → "http://localhost:3847"
-func normalizeProcessURL(urlStr string) string {
+func NormalizeURL(urlStr string) string {
 	// Extract protocol and address
 	protocol := "http://"
 	addr := urlStr
@@ -1465,7 +1465,7 @@ func (r *Renderer) drawProxiesSection(row, col, width, bottom int, proxies []Pro
 			break
 		}
 		r.moveTo(row, col+1)
-		url := NormalizeListenAddr(p.ListenAddr)
+		url := NormalizeURL(p.URL)
 		var meta []string
 		if p.Uptime != "" {
 			meta = append(meta, "up "+p.Uptime)
@@ -1863,7 +1863,7 @@ func (r *Renderer) drawProxyPanelContent(startRow, col, width, maxRows int, pane
 	row++
 
 	// URLs
-	proxyURL := "http://" + NormalizeListenAddr(proxy.ListenAddr)
+	proxyURL := NormalizeURL(proxy.URL)
 	r.moveTo(row, col)
 	r.write(FgBrightCyan + Underline + proxyURL + Reset)
 	row++

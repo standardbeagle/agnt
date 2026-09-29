@@ -66,7 +66,11 @@ type ProxyInfo struct {
 	// address they actually reach the proxy on. A live tunnel still wins.
 	StatusURL       string
 	LinkedProcessID string // ID of process this proxy targets (if any)
-	TailscaleURL    string // Tailscale DNS URL if available (e.g., http://machine.tailnet.ts.net:port)
+	// URL is the proxy's real address as the daemon reports it, scheme
+	// included: https at the MagicDNS name for a tailnet proxy serving the
+	// tailnet certificate. Display and dial this, never http + ListenAddr.
+	URL          string
+	TailscaleURL string // Tailscale DNS URL if available (e.g., http://machine.tailnet.ts.net:port)
 
 	// State is the runtime state reported by the daemon. Values:
 	//   "running"                   — forwarding requests normally

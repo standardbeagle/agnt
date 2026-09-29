@@ -89,15 +89,13 @@ func (dt *DaemonTools) handleCurrentPageList(input CurrentPageInput) (*mcp.CallT
 	if *output.Count == 0 {
 
 		proxyStatus, statusErr := dt.client.ProxyStatus(input.ProxyID)
-		listenAddr := ""
+		proxyURL := ""
 		if statusErr == nil {
-			if addr, ok := proxyStatus["listen_addr"].(string); ok {
-				listenAddr = addr
-			}
+			proxyURL = getString(proxyStatus, "url")
 		}
 		hint := fmt.Sprintf("No page sessions found for proxy %q. ", input.ProxyID)
-		if listenAddr != "" {
-			hint += fmt.Sprintf("Open http://%s in a browser to start capturing page data. ", normalizeAddr(listenAddr))
+		if proxyURL != "" {
+			hint += fmt.Sprintf("Open %s in a browser to start capturing page data. ", normalizeAddr(proxyURL))
 		}
 		hint += "Page sessions are created when a browser loads an HTML page through the proxy."
 		output.Hint = hint

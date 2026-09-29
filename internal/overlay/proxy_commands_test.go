@@ -30,6 +30,10 @@ type fakeProxyController struct {
 	reconciled bool
 	reconcile  error
 
+	proxyURLName string // config name ProxyURL was asked for
+	proxyURL     string // what the daemon reports after the rebind
+	proxyURLErr  error
+
 	execProxyID string
 	execCode    string
 	execErr     error
@@ -59,6 +63,22 @@ func (f *fakeProxyController) StartTunnel(provider, proxyID string, localPort in
 func (f *fakeProxyController) ReconcileConfig() error {
 	f.reconciled = true
 	return f.reconcile
+}
+
+func (f *fakeProxyController) ProxyURL(configName string) (string, error) {
+	f.proxyURLName = configName
+	return f.proxyURL, f.proxyURLErr
+}
+
+// notificationTexts returns the text of every notification the command raised.
+func notificationTexts(r *InputRouter) []string {
+	r.overlay.notifications.mu.Lock()
+	defer r.overlay.notifications.mu.Unlock()
+	var out []string
+	for _, e := range r.overlay.notifications.entries {
+		out = append(out, e.Text)
+	}
+	return out
 }
 
 func routerWithProxies(t *testing.T, ctrl ScriptController, proxies ...ProxyInfo) *InputRouter {
@@ -142,7 +162,7 @@ func TestTailscaleCommandSavesConfigName(t *testing.T) {
 				name = "web"
 				proxies = append(proxies, ProxyInfo{ID: "project-1234:api", ConfigName: "api"})
 			}
-			ctrl := &fakeProxyController{projectPath: dir}
+			ctrl := &fakeProxyController{projectPath: dir, proxyURL: "https://box.tail1234.ts.net:19191"}
 			if err := routerWithProxies(t, ctrl, proxies...).runTailscaleCommand(name); err != nil {
 				t.Fatal(err)
 			}
@@ -150,17 +170,19 @@ func TestTailscaleCommandSavesConfigName(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(cfg.Proxies) != 1 || cfg.Proxies["web"].StatusURL != web.TailscaleURL || cfg.Proxies["web"].Port != 5173 {
-				t.Fatalf("pin must update the original web node: %+v", cfg.Proxies)
+			if len(cfg.Proxies) != 1 || cfg.Proxies["web"].Bind != proxy.BindTailscale || cfg.Proxies["web"].Port != 5173 {
+				t.Fatalf("rebind must update the original web node: %+v", cfg.Proxies)
 			}
-			if !ctrl.reconciled {
-				t.Fatal("pin did not request a live update")
+			if !ctrl.reconciled || ctrl.proxyURLName != "web" {
+				t.Fatalf("rebind must apply live and read back the web proxy's URL: reconciled=%v asked=%q", ctrl.reconciled, ctrl.proxyURLName)
 			}
+			// After the rebind the daemon reports the proxy's real URL, and the
+			// status bar shows it — https when the tailnet issues certificates.
 			var buf bytes.Buffer
-			web.StatusURL = cfg.Proxies["web"].StatusURL
+			web.URL = ctrl.proxyURL
 			NewRenderer(&buf, 200, 24).DrawIndicator(Status{DaemonConnected: ConnectionConnected, Proxies: []ProxyInfo{web}})
-			if !strings.Contains(buf.String(), web.StatusURL) || strings.Contains(buf.String(), "localhost") {
-				t.Fatalf("status bar did not display the saved URL: %q", buf.String())
+			if !strings.Contains(buf.String(), web.URL) || strings.Contains(buf.String(), "localhost") {
+				t.Fatalf("status bar did not display the proxy URL: %q", buf.String())
 			}
 		})
 	}
@@ -246,7 +268,7 @@ func TestTailscaleCommand_WritesConfigAndAppliesIt(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte("proxies {\n    dev {\n        url \"http://localhost:5173\"\n    }\n}\n"), 0o644); err != nil {
 		t.Fatalf("fixture: %v", err)
 	}
-	ctrl := &fakeProxyController{projectPath: dir}
+	ctrl := &fakeProxyController{projectPath: dir, proxyURL: "https://box.tail1234.ts.net:19191"}
 	r := routerWithProxies(t, ctrl, ProxyInfo{
 		ID:           "dev",
 		ConfigName:   "dev",
@@ -262,8 +284,14 @@ func TestTailscaleCommand_WritesConfigAndAppliesIt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("config no longer parses: %v", err)
 	}
-	if got := cfg.Proxies["dev"].StatusURL; got != "http://box.tail1234.ts.net:19191" {
-		t.Errorf("status-url = %q, want the tailnet address", got)
+	// No status-url: the daemon reports the rebound proxy's real URL, scheme
+	// included, and a pinned http:// guess would go stale the moment the
+	// proxy serves the tailnet certificate.
+	if got := cfg.Proxies["dev"].StatusURL; got != "" {
+		t.Errorf("status-url = %q, want none", got)
+	}
+	if texts := notificationTexts(r); len(texts) == 0 || !strings.Contains(texts[0], "https://box.tail1234.ts.net:19191") {
+		t.Errorf("notification must name the URL the proxy now serves: %q", texts)
 	}
 	// Persisted AND applied: writing only the file would leave the overlay
 	// unchanged until the next restart.
@@ -304,7 +332,7 @@ func TestTailscaleCommand_ReportsWhichHalfFailed(t *testing.T) {
 		t.Errorf("error hides that the file was already written: %v", err)
 	}
 	cfg, cerr := config.LoadAgntConfigFile(configPath)
-	if cerr != nil || cfg.Proxies["dev"].StatusURL == "" {
+	if cerr != nil || cfg.Proxies["dev"].Bind != proxy.BindTailscale {
 		t.Error("the write half should have survived the apply failure")
 	}
 }
@@ -317,7 +345,7 @@ func TestTailscaleCommand_BindsTheProxyToTheTailnet(t *testing.T) {
 	if err := os.WriteFile(configPath, []byte("proxies {\n    dev {\n        url \"http://localhost:5173\"\n    }\n}\n"), 0o644); err != nil {
 		t.Fatalf("fixture: %v", err)
 	}
-	ctrl := &fakeProxyController{projectPath: dir}
+	ctrl := &fakeProxyController{projectPath: dir, proxyURL: "http://box.tail1234.ts.net:19191"}
 	r := routerWithProxies(t, ctrl, ProxyInfo{
 		ID:           "dev",
 		ConfigName:   "dev",
@@ -379,8 +407,8 @@ func TestAsCommand(t *testing.T) {
 		w.Write([]byte("<html>app</html>"))
 	}))
 	t.Cleanup(app.Close)
-	withIssuer := ProxyInfo{ID: "dev", ListenAddr: strings.TrimPrefix(issuer.URL, "http://")}
-	withoutIssuer := ProxyInfo{ID: "plain", ListenAddr: strings.TrimPrefix(app.URL, "http://")}
+	withIssuer := ProxyInfo{ID: "dev", URL: issuer.URL}
+	withoutIssuer := ProxyInfo{ID: "plain", URL: app.URL}
 
 	ctrl := &fakeProxyController{}
 	r := routerWithProxies(t, ctrl, withIssuer)
@@ -460,5 +488,59 @@ func TestDevOIDCTailnetWarning(t *testing.T) {
 	}
 	if w := devOIDCTailnetWarning(write("project {\n    name \"x\"\n}"), url); w != "" {
 		t.Fatalf("no dev-oidc block: %q", w)
+	}
+	// Rebound onto a tailnet that issues certificates: the proxy now serves
+	// https, and a block written for http names a broken issuer and callback.
+	httpsURL := "https://build1.example.ts.net:31536"
+	stale := write(`dev-oidc {
+    issuer "http://build1.example.ts.net:31536/__agnt/oidc"
+    clients {
+        web {
+            redirect-uri "http://build1.example.ts.net:31536/cb"
+        }
+    }
+    personas {
+        std {
+            email "s@x.com"
+        }
+    }
+    allow {
+        "andy@x.com" "std"
+    }
+}`)
+	w = devOIDCTailnetWarning(stale, httpsURL)
+	for _, want := range []string{"issuer http://build1.example.ts.net:31536/__agnt/oidc should be https://", "redirect-uri http://build1.example.ts.net:31536/cb should be https://"} {
+		if !strings.Contains(w, want) {
+			t.Errorf("warning %q must contain %q", w, want)
+		}
+	}
+}
+
+// The daemon's url is the proxy's real address, scheme included; the overlay
+// displays and dials it instead of rebuilding http:// from listen_addr.
+func TestProxyDTOCarriesURL(t *testing.T) {
+	var dto proxyDTO
+	if !decodeResult(map[string]interface{}{
+		"id": "dev", "listen_addr": "100.87.26.14:31536", "url": "https://build1.tnet.ts.net:31536",
+	}, &dto) {
+		t.Fatal("decode")
+	}
+	info := dto.toInfo()
+	if info.URL != "https://build1.tnet.ts.net:31536" {
+		t.Fatalf("URL = %q", info.URL)
+	}
+	var buf bytes.Buffer
+	NewRenderer(&buf, 200, 24).DrawIndicator(Status{DaemonConnected: ConnectionConnected, Proxies: []ProxyInfo{info}})
+	if !strings.Contains(buf.String(), "https://build1.tnet.ts.net:31536") || strings.Contains(buf.String(), "http://100.87") {
+		t.Fatalf("status bar must show the proxy URL, not http + listen_addr: %q", buf.String())
+	}
+	for addr, want := range map[string]string{
+		"http://127.0.0.1:4242":            "http://localhost:4242",
+		"http://0.0.0.0:8080":              "http://localhost:8080",
+		"https://build1.tnet.ts.net:31536": "https://build1.tnet.ts.net:31536",
+	} {
+		if got := NormalizeURL(addr); got != want {
+			t.Errorf("NormalizeURL(%q) = %q, want %q", addr, got, want)
+		}
 	}
 }
