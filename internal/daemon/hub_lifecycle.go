@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/scope"
@@ -99,56 +100,106 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 		runningProxies = d.proxym.ListScoped(scope.Project(projectPath))
 	}
 
-	// Build restart manifests from running resources
+	// Build restart manifests from running resources. Where the daemon still
+	// holds the declared .agnt.kdl config for a script/proxy (scriptConfigs /
+	// proxyConfigs, populated by the autostart and explicit-start paths), the
+	// manifest carries that config and restart reuses the exact same
+	// construction helpers autostart uses (StartScriptExplicit,
+	// buildProxyServerConfig) — so env, ports, url-matchers, auto-restart,
+	// bind/status/public URL, skip-tls-verify and the cloudflare-tunnel block
+	// all survive RESTART-ALL. Only resources with no stored config (ad-hoc
+	// MCP-started processes/proxies never declared in .agnt.kdl) fall back to
+	// the narrower manifest rebuilt from the live ManagedProcess/ProxyServer.
 	type procManifest struct {
 		ID          string
+		Name        string
 		Command     string
 		Args        []string
+		Env         []string
 		ProjectPath string
 		WorkingDir  string
+		ScriptCfg   *config.ScriptConfig // nil when not config-declared
 	}
 	type proxyManifest struct {
 		ID            string
+		Name          string
 		TargetURL     string
-		Port          int
 		MaxLogSize    int
 		ProjectPath   string
 		BindAddress   string
 		AllowExternal bool
 		NamedTunnel   *proxy.NamedTunnelConfig
+		Cfg           *config.ProxyConfig // nil when not config-declared
 	}
 
 	var procsToRestart []procManifest
 	var proxiesToRestart []proxyManifest
 
-	for _, p := range runningProcs {
-		if p.State().String() == "running" {
-			procsToRestart = append(procsToRestart, procManifest{
-				ID:          p.ID,
-				Command:     p.Command,
-				Args:        p.Args,
-				ProjectPath: p.ProjectPath,
-				WorkingDir:  p.WorkingDir,
-			})
-			// Mark this stop as daemon-initiated so the health.OutageClassifier
-			// biases the imminent outage toward Rebuild rather than Crash.
-			d.healthTracker.MarkDaemonInitiatedStop(p.ID)
+	// Per-project config cache: RESTART-ALL may span many projects (global)
+	// or just one; load each project's .agnt.kdl at most once regardless of
+	// how many of its scripts/proxies are being restarted.
+	loadedConfigs := make(map[string]*config.AgntConfig)
+	loadProjectConfig := func(projectPath string) *config.AgntConfig {
+		norm := normalizePath(projectPath)
+		if cfg, ok := loadedConfigs[norm]; ok {
+			return cfg
 		}
+		cfg, err := config.LoadAgntConfig(projectPath)
+		if err != nil {
+			debug.Warn("daemon", "RESTART-ALL: failed to load .agnt.kdl for %s: %v", projectPath, err)
+			cfg = nil
+		}
+		loadedConfigs[norm] = cfg
+		return cfg
+	}
+
+	for _, p := range runningProcs {
+		if p.State().String() != "running" {
+			continue
+		}
+		name := stripProcessPrefix(p.ID)
+		var scriptCfg *config.ScriptConfig
+		if v, ok := d.scriptConfigs.Load(p.ID); ok {
+			scriptCfg = v.(*config.ScriptConfig)
+		}
+		procsToRestart = append(procsToRestart, procManifest{
+			ID:          p.ID,
+			Name:        name,
+			Command:     p.Command,
+			Args:        p.Args,
+			Env:         p.Env,
+			ProjectPath: p.ProjectPath,
+			WorkingDir:  p.WorkingDir,
+			ScriptCfg:   scriptCfg,
+		})
+		// Mark this stop as daemon-initiated so the health.OutageClassifier
+		// biases the imminent outage toward Rebuild rather than Crash.
+		d.healthTracker.MarkDaemonInitiatedStop(p.ID)
 	}
 
 	for _, p := range runningProxies {
-		if p.IsRunning() {
-			proxiesToRestart = append(proxiesToRestart, proxyManifest{
-				ID:            p.ID,
-				TargetURL:     p.TargetURL.String(),
-				Port:          0, // Will use auto-port
-				MaxLogSize:    int(p.Logger().Stats().MaxSize),
-				ProjectPath:   p.Path,
-				BindAddress:   p.BindAddress,
-				AllowExternal: p.AllowExternal,
-				NamedTunnel:   p.NamedTunnelConfig(),
-			})
+		if !p.IsRunning() {
+			continue
 		}
+		var name string
+		var proxyCfg *config.ProxyConfig
+		if v, ok := d.proxyConfigs.Load(p.ID); ok {
+			name = v.(configuredProxy).name
+			if agc := loadProjectConfig(p.Path); agc != nil {
+				proxyCfg = agc.Proxies[name]
+			}
+		}
+		proxiesToRestart = append(proxiesToRestart, proxyManifest{
+			ID:            p.ID,
+			Name:          name,
+			TargetURL:     p.TargetURL.String(),
+			MaxLogSize:    int(p.Logger().Stats().MaxSize),
+			ProjectPath:   p.Path,
+			BindAddress:   p.BindAddress,
+			AllowExternal: p.AllowExternal,
+			NamedTunnel:   p.NamedTunnelConfig(),
+			Cfg:           proxyCfg,
+		})
 	}
 
 	// Stop the snapshotted resources (global daemon-wide, or project-scoped).
@@ -166,8 +217,25 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 	var proxyRestarted, proxyFailed int
 
 	for _, pm := range procsToRestart {
-		// Use startScriptWithRetry for EADDRINUSE recovery
-		_, startupErr := d.startScriptWithRetry(ctx, pm.ID, pm.ProjectPath, pm.WorkingDir, pm.Command, pm.Args, nil, nil, false)
+		var startupErr *StartupError
+		if pm.ScriptCfg != nil {
+			// Config-declared script: reuse the exact autostart construction
+			// path (env, expected ports, url-matchers, auto-restart, hooks)
+			// instead of the narrower ad-hoc manifest.
+			var proxyConfigs map[string]*config.ProxyConfig
+			if agc := loadProjectConfig(pm.ProjectPath); agc != nil {
+				proxyConfigs = agc.Proxies
+			}
+			if err := d.StartScriptExplicit(ctx, pm.Name, pm.ScriptCfg, pm.ProjectPath, proxyConfigs); err != nil {
+				startupErr = &StartupError{ProcessID: pm.ID, ErrorType: "restart_failed", Message: err.Error()}
+			}
+		} else {
+			// Ad-hoc process with no stored config: best-effort rebuild from
+			// the live ManagedProcess. Carries Env forward (previously
+			// dropped as nil); ExpectedPorts/AutoRestart are inherently
+			// unknown for a process .agnt.kdl never declared.
+			_, startupErr = d.startScriptWithRetry(ctx, pm.ID, pm.ProjectPath, pm.WorkingDir, pm.Command, pm.Args, pm.Env, nil, false)
+		}
 		if startupErr != nil {
 			debug.Error("daemon", "Failed to restart process %s: %v", pm.ID, startupErr)
 			d.startupErrorStore.Add(&StartupLogEntry{
@@ -187,16 +255,26 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 
 	// Restart proxies
 	for _, pm := range proxiesToRestart {
-		proxyServer, err := d.proxym.Create(ctx, proxy.ProxyConfig{
-			ID:            pm.ID,
-			TargetURL:     pm.TargetURL,
-			ListenPort:    pm.Port,
-			MaxLogSize:    pm.MaxLogSize,
-			Path:          pm.ProjectPath,
-			BindAddress:   pm.BindAddress,
-			AllowExternal: pm.AllowExternal,
-			NamedTunnel:   pm.NamedTunnel,
-		})
+		var proxyServerConfig proxy.ProxyConfig
+		if pm.Cfg != nil {
+			// Config-declared proxy: reuse the same construction helper the
+			// autostart/explicit-start event path uses, so listen-port,
+			// skip-tls-verify, bind, status/public URL and the
+			// cloudflare-tunnel block all survive the restart.
+			proxyServerConfig = buildProxyServerConfig(pm.ID, pm.TargetURL, pm.ProjectPath, pm.Cfg)
+		} else {
+			proxyServerConfig = proxy.ProxyConfig{
+				ID:            pm.ID,
+				TargetURL:     pm.TargetURL,
+				ListenPort:    -1, // hash-based auto-port, matches buildProxyServerConfig's default
+				MaxLogSize:    pm.MaxLogSize,
+				Path:          pm.ProjectPath,
+				BindAddress:   pm.BindAddress,
+				AllowExternal: pm.AllowExternal,
+				NamedTunnel:   pm.NamedTunnel,
+			}
+		}
+		proxyServer, err := d.proxym.Create(ctx, proxyServerConfig)
 		if err != nil {
 			debug.Error("daemon", "Failed to restart proxy %s: %v", pm.ID, err)
 			d.recordStartupEntry(pm.ID, "", "error", "proxy_restart_failed",
