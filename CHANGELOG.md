@@ -33,6 +33,15 @@ Guide: https://dev.standardbeagle.com/agnt/features/dev-auth
 - **Tailnet proxies.** `bind "tailscale"` serves a proxy on this node's
   tailnet address; `:tailscale` in the overlay moves a proxy there, and
   `tunnel`/`tailscale-url` palette commands manage sharing.
+- **HTTPS on the tailnet.** When the tailnet issues HTTPS certificates and
+  this user may fetch the node's (`sudo tailscale set --operator=$USER`), a
+  tailnet-bound proxy serves `https://<MagicDNS name>:<port>` with it,
+  renews it in the background, and tells the app `X-Forwarded-Proto: https`.
+  Otherwise it stays on http and its start diagnostic says why. Proxy
+  payloads carry the real `url`, and every consumer (overlay, MCP tools,
+  `devauth`, automation, doctor) uses it; `dev_oidc_scheme_mismatch` flags
+  dev-oidc URLs left on `http://`. `:tailscale` no longer pins a
+  `status-url`.
 
 ### Added
 - `verify_change` MCP tool rechecks the session's recorded findings after a

@@ -134,6 +134,26 @@ That owner is usually you, so one `allow` entry covers both the browser and the
 backend. `:tailscale` in the overlay warns when the block still pins a loopback
 issuer or has an empty `allow`.
 
+### HTTPS when the tailnet issues certificates
+
+If HTTPS is enabled for your tailnet, a tailnet-bound proxy serves
+`https://<MagicDNS name>:<port>` with the node's real certificate: no browser
+warnings, and secure cookies and strict OAuth libraries work. agnt checks when
+the proxy starts, so there is nothing to configure beyond one-time Tailscale
+setup:
+
+- HTTPS on for the tailnet (Tailscale admin console → DNS → HTTPS
+  certificates).
+- On Linux, let your user fetch certificates without root:
+  `sudo tailscale set --operator=$USER`.
+
+When either is missing, the proxy serves plain `http` and its start diagnostic
+says which one. The app is told `X-Forwarded-Proto: https`, the default issuer
+follows the scheme, and agnt warns (`dev_oidc_scheme_mismatch`) when an issuer
+or redirect URI in `.agnt.kdl` still says `http://` for the proxy's host. Point
+the app's own base URL (`NEXTAUTH_URL` and similar) at the `https://` address
+too.
+
 ## Named Cloudflare tunnel with Access
 
 A quick tunnel gives you a random `*.trycloudflare.com` name, which is no good

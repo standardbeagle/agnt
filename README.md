@@ -278,7 +278,7 @@ Declare test users in `.agnt.kdl` and agnt serves a dev OIDC issuer on your prox
 
 ![The story app signs in through agnt's dev issuer over the tailnet, then switches from Dev Standard to Dev Admin from the persona chip](assets/dev-oidc-personas-demo.webp)
 
-Works over loopback, over your tailnet (`bind "tailscale"`, identity from `tailscale whois`), and behind a named Cloudflare tunnel with Access verified at the origin. See [Dev Sign-in & Protected Sharing](https://dev.standardbeagle.com/agnt/features/dev-auth).
+Works over loopback, over your tailnet (`bind "tailscale"`, identity from `tailscale whois`, served over HTTPS with the node's certificate when the tailnet issues one), and behind a named Cloudflare tunnel with Access verified at the origin. See [Dev Sign-in & Protected Sharing](https://dev.standardbeagle.com/agnt/features/dev-auth).
 
 ## MCP Tools
 

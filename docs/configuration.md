@@ -135,11 +135,12 @@ proxies {
 ```
 
 **Display order** in the status bar: a live tunnel's URL, then `status-url`,
-then loopback. The overlay also auto-detects this node's tailnet name and shows
-it in the proxy detail panel; that detection is never promoted into the status
-bar on its own, so the bar does not change under you merely for having tailscale
-installed. `:tailscale` in the overview palette writes the detected address
-into this key, along with the bind that makes it answer (see below).
+then the proxy's own URL as the daemon reports it (`url` in `PROXY LIST`,
+scheme included, so a tailnet proxy serving the tailnet certificate shows as
+`https://<MagicDNS name>:<port>`). The overlay also auto-detects this node's
+tailnet name and shows it in the proxy detail panel; that detection is never
+promoted into the status bar on its own. A tailnet-bound proxy needs no
+`status-url`: its own URL already names the tailnet address.
 
 **`status-url` is not `public-url`.** They look interchangeable and are not:
 
@@ -190,14 +191,46 @@ proxies {
     dev {
         url "http://localhost:5173"
         bind "tailscale"
-        status-url "http://box.tail1234.ts.net:19191"
+        listen-port 19191
     }
 }
 ```
 
-`:tailscale [proxy]` in the overview palette writes both keys in one edit and
-applies them. A proxy started through the `proxy` MCP tool has no config node,
-so the command refuses it rather than writing keys nothing reads.
+`:tailscale [proxy]` in the overview palette writes the bind, applies it, and
+reports the URL the proxy then serves (with any dev-oidc URLs that no longer
+match it). A proxy started through the `proxy` MCP tool has no config node, so
+the command refuses it rather than writing keys nothing reads.
+
+### HTTPS on the tailnet
+
+When the tailnet issues HTTPS certificates (HTTPS enabled on the DNS page of
+the Tailscale admin console) and this user may fetch this node's certificate,
+a tailnet-bound proxy serves TLS with it at `https://<MagicDNS name>:<port>`.
+Nothing to configure: agnt decides when the proxy is created.
+
+- **Detection.** `tailscale status` must list this node's MagicDNS name in
+  `CertDomains`, and `tailscale cert` must hand over the certificate. A non-root
+  user needs to be tailscale's operator for that:
+  `sudo tailscale set --operator=$USER`. The certificate and key are read from
+  the command's stdout and never written to disk.
+- **Otherwise plain http, with the reason.** The proxy starts either way. On
+  start it logs `tailnet_https` (serving https) or `tailnet_https_unavailable`
+  with why not, for example the operator command above. Those diagnostics reach
+  the agent and the session log.
+- **Renewal.** Within 30 days of expiry the next TLS handshake starts one
+  background refetch; tailscaled renews the certificate itself. Handshakes keep
+  getting the current certificate meanwhile, and a failed refetch is logged
+  (`tailnet_https_renew_failed`) and retried after an hour.
+- **What changes for the app.** Requests that arrive over TLS reach the app
+  with `X-Forwarded-Proto: https`. The certificate names the MagicDNS host, not
+  the `100.x` address, so browse `https://<name>:<port>`; plain `http://` on
+  the same port gets a `400`.
+- **Every URL follows.** The daemon reports the proxy's `url`
+  (`https://<name>:<port>`) in `PROXY START/STATUS/LIST`, and the overlay, the
+  MCP tools, `devauth`, browser automation and doctor all use it. The dev-oidc
+  issuer default becomes `https://<name>:<port>/__agnt/oidc`.
+- **Certificate Transparency.** Issuing the certificate publishes this node's
+  MagicDNS name in the public CT logs, as with any Tailscale HTTPS certificate.
 
 ## Named Cloudflare Tunnel (`proxies.<id>.cloudflare-tunnel` in `.agnt.kdl`)
 
@@ -322,7 +355,7 @@ line.
 
 | Key | Description |
 |---|---|
-| `issuer` | The `iss` of every token and the authority your app is configured with. Default: the proxy's own origin + `/__agnt/oidc`: `http://localhost:<port>` on loopback, `http://<MagicDNS name>:<port>` with `bind "tailscale"`. Set it explicitly to the tunnel hostname when the browser reaches the app through a `cloudflare-tunnel`. |
+| `issuer` | The `iss` of every token and the authority your app is configured with. Default: the proxy's own origin + `/__agnt/oidc`: `http://localhost:<port>` on loopback; with `bind "tailscale"`, `https://<MagicDNS name>:<port>` when the proxy serves the tailnet certificate (see *HTTPS on the tailnet*), else `http://<MagicDNS name>:<port>`. Set it explicitly to the tunnel hostname when the browser reaches the app through a `cloudflare-tunnel`. |
 | `clients.<id>.redirect-uri` | Registered redirect URIs. Exact match, except a whole-port `*` on `localhost`/`127.0.0.1`/`[::1]` (the proxy port is not known in advance). No other wildcards. |
 | `clients.<id>.secret` | Makes the client confidential. A dev-only literal: it protects nothing outside this issuer, so it may live in the checked-in file. Omit it for a public client, which must then use PKCE (S256). |
 | `clients.<id>.audience` | The access token's `aud`. Default: the client id. |
@@ -385,12 +418,17 @@ through a tunnel; locally they work with the default issuer.
 
 **Over the tailnet** (for example, working on a remote box over SSH and
 browsing from your own machine), bind the proxy with `bind "tailscale"`, leave
-`issuer` unset or set it to `http://<MagicDNS name>:<port>/__agnt/oidc`, and
-list your Tailscale login in `allow`. The browser and the app's backend then
-use the same issuer URL: the backend's calls reach the proxy from this node's
-own tailnet address, which `tailscale whois` maps to the node's owner, so the
-node owner must be in `allow` too (it usually is: it is you). `:tailscale`
-warns when the block still pins a loopback issuer or has an empty `allow`.
+`issuer` unset or set it to the proxy's URL + `/__agnt/oidc`, and list your
+Tailscale login in `allow`. The browser and the app's backend then use the same
+issuer URL: the backend's calls reach the proxy from this node's own tailnet
+address, which `tailscale whois` maps to the node's owner, so the node owner
+must be in `allow` too (it usually is: it is you). Use the proxy's scheme
+everywhere: `https://` when it serves the tailnet certificate, and the app's
+own base URL (`NEXTAUTH_URL` and the like) too. `:tailscale` warns when the
+block still pins a loopback issuer, has an empty `allow`, or names the proxy's
+host with the other scheme; the daemon logs the last case as
+`dev_oidc_scheme_mismatch` whenever it applies the block, with the corrected
+URLs.
 
 ```kdl
 proxies {
@@ -403,7 +441,7 @@ proxies {
 dev-oidc {
     clients {
         my-app {
-            redirect-uri "http://build1.example.ts.net:31536/api/auth/callback/dev-oidc"
+            redirect-uri "https://build1.example.ts.net:31536/api/auth/callback/dev-oidc"
             secret "dev-only"
         }
     }

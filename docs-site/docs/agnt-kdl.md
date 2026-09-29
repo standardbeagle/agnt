@@ -238,7 +238,7 @@ proxies {
 | `port` | int | — | Direct target port (shorthand for `http://localhost:PORT`) |
 | `target` | string | — | Deprecated. Use `url` instead |
 | `host` | string | `localhost` | Target hostname |
-| `bind` | string | `127.0.0.1` | Listen address. `"tailscale"` serves on this node's tailnet address only. Any other non-loopback address needs `allow-external true` |
+| `bind` | string | `127.0.0.1` | Listen address. `"tailscale"` serves on this node's tailnet address only, over HTTPS with the node's certificate when the tailnet issues one. Any other non-loopback address needs `allow-external true` |
 | `listen-port` | int | — | Fixed port for the proxy itself (stable URLs for OAuth redirect URIs and bookmarks) |
 | `cloudflare-tunnel` | block | — | Named Cloudflare tunnel at a hostname you own, behind Cloudflare Access. See [Dev Sign-in & Protected Sharing](./features/dev-auth.md#named-cloudflare-tunnel-with-access) |
 | `websocket` | bool | `false` | Enable WebSocket proxying |
