@@ -2,6 +2,7 @@ package overlay
 
 import (
 	"fmt"
+	"io"
 	"sync"
 )
 
@@ -23,13 +24,29 @@ import (
 // output stream; parkCursor reads that state and restores it with an absolute
 // CUP, leaving the terminal's save slot to the child.
 //
+// The position read at build time can go stale before the draw reaches the
+// terminal: the child keeps writing while the overlay formats its bytes. So
+// a draw that runs while the child is live goes out through writeOverChild,
+// which holds the child's output for the duration of the write and appends a
+// corrective CUP when the child moved in between. Without that, a child chunk
+// landing in the gap leaves the cursor where the child *was*, and a renderer
+// that redraws with relative moves (Claude Code, Ink) then erases and
+// repaints the wrong rows.
+//
 // When no cursor source is registered (unit tests, non-PTY callers) this falls
 // back to the historical SCP/RCP pair — correct on its own, since in that case
 // there is no child TUI to collide with.
 
-// childCursorSource reports the child PTY's cursor row/column (1-indexed) and
-// whether the child currently has the cursor visible.
-type childCursorSource func() (row, col int, visible bool)
+// childCursorSource is the authority on the child PTY's cursor: the
+// ProtectedWriter in production.
+type childCursorSource interface {
+	// ChildCursor reports the cursor row/column (1-indexed) and whether the
+	// child currently has the cursor visible.
+	ChildCursor() (row, col int, visible bool)
+	// WriteOverChild writes p to w with the child's output held, followed by
+	// a restore to the child's current cursor if it no longer matches parked.
+	WriteOverChild(w io.Writer, p []byte, parked parkedCursor) (int, error)
+}
 
 // There is exactly one child PTY and one host terminal per process, so the
 // cursor authority is process-wide rather than per-renderer: ScreenManager,
@@ -42,10 +59,20 @@ var (
 // SetChildCursorSource registers the PTY output filter as the authority on
 // where the child's cursor is. Wired by the run pipeline. Passing nil restores
 // the SCP/RCP fallback.
-func SetChildCursorSource(src childCursorSource) {
+func SetChildCursorSource(src *ProtectedWriter) {
 	childCursorMu.Lock()
 	defer childCursorMu.Unlock()
+	if src == nil {
+		childCursorFn = nil // never store a typed nil in the interface
+		return
+	}
 	childCursorFn = src
+}
+
+func currentChildCursorSource() childCursorSource {
+	childCursorMu.RLock()
+	defer childCursorMu.RUnlock()
+	return childCursorFn
 }
 
 // parkedCursor is the child cursor state captured by parkCursor, re-emitted by
@@ -59,14 +86,11 @@ type parkedCursor struct {
 // parkCursor returns the sequence to emit *before* drawing over the child,
 // plus the token that restores the child's cursor afterwards.
 func parkCursor() (string, parkedCursor) {
-	childCursorMu.RLock()
-	src := childCursorFn
-	childCursorMu.RUnlock()
-
+	src := currentChildCursorSource()
 	if src == nil {
 		return CursorSave + CursorHide, parkedCursor{}
 	}
-	row, col, visible := src()
+	row, col, visible := src.ChildCursor()
 	if row < 1 || col < 1 {
 		// The filter has not seen enough output to know where the child is.
 		return CursorSave + CursorHide, parkedCursor{}
@@ -86,4 +110,19 @@ func (p parkedCursor) restore() string {
 	// The child had the cursor hidden. Forcing it visible leaves a stray block
 	// cursor parked in the middle of the child's frame.
 	return seq
+}
+
+// writeOverChild sends a draw that ends in parked.restore() to w. With a
+// cursor authority registered the write is atomic with respect to child
+// output and the restore is corrected to where the child is *now*.
+func writeOverChild(w io.Writer, p []byte, parked parkedCursor) {
+	if len(p) == 0 {
+		return
+	}
+	src := currentChildCursorSource()
+	if src == nil || !parked.tracked {
+		_, _ = w.Write(p)
+		return
+	}
+	_, _ = src.WriteOverChild(w, p, parked)
 }

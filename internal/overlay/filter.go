@@ -226,6 +226,9 @@ func (pw *ProtectedWriter) processStateByte(out *bytes.Buffer, b byte) {
 
 // handleStateGround processes bytes in ground state.
 func (pw *ProtectedWriter) handleStateGround(out *bytes.Buffer, b byte) {
+	if pw.utf8Len > 0 && (b < 0x80 || b >= 0xC0) {
+		pw.flushPartialUTF8(out) // sequence cut short by a non-continuation byte
+	}
 	if b == 0x1b { // ESC
 		pw.state = stateEscape
 		pw.escBuf = pw.escBuf[:0]
@@ -260,7 +263,10 @@ func (pw *ProtectedWriter) handleStateGround(out *bytes.Buffer, b byte) {
 		// ASCII printable (0x20-0x7E): 1 column, emit immediately.
 		// UTF-8 lead byte (0xC0+): start accumulating.
 		// UTF-8 continuation (0x80-0xBF): continue accumulating.
-		// When complete rune is assembled, advance column by its display width.
+		// When complete rune is assembled, emit it and advance the column by
+		// its display width. The bytes are held until then so a character
+		// split across two PTY reads never reaches the terminal in halves
+		// with an overlay draw between them (see WriteOverChild).
 
 		if b >= 0x20 && b < 0x7f {
 			pw.putChar(1)
@@ -279,7 +285,6 @@ func (pw *ProtectedWriter) handleStateGround(out *bytes.Buffer, b byte) {
 			} else {
 				pw.utf8Need = 4
 			}
-			out.WriteByte(b)
 			return
 		}
 
@@ -287,9 +292,9 @@ func (pw *ProtectedWriter) handleStateGround(out *bytes.Buffer, b byte) {
 			// UTF-8 continuation byte
 			pw.utf8Buf[pw.utf8Len] = b
 			pw.utf8Len++
-			out.WriteByte(b)
 
 			if pw.utf8Len >= pw.utf8Need {
+				out.Write(pw.utf8Buf[:pw.utf8Len])
 				pw.putChar(runeCells(decodeUTF8(pw.utf8Buf[:pw.utf8Len])))
 				pw.utf8Len = 0
 				pw.utf8Need = 0
@@ -792,6 +797,39 @@ func (pw *ProtectedWriter) EnforceScrollRegion() {
 	pw.mu.Lock()
 	defer pw.mu.Unlock()
 	pw.enforceScrollRegion()
+}
+
+// flushPartialUTF8 emits an incomplete UTF-8 sequence as-is. The terminal
+// shows it as one replacement glyph.
+func (pw *ProtectedWriter) flushPartialUTF8(out *bytes.Buffer) {
+	out.Write(pw.utf8Buf[:pw.utf8Len])
+	pw.putChar(1)
+	pw.utf8Len = 0
+	pw.utf8Need = 0
+}
+
+// WriteOverChild writes an overlay draw to w while holding the child's
+// output, so no child bytes can land between the draw and its cursor
+// restore. p ends in parked.restore(); if the child's cursor has moved or
+// changed visibility since parked was read, a corrective restore to the
+// current position follows.
+//
+// Known limit: a CUP clears the terminal's pending-wrap flag, so a child
+// parked on the last column with a wrap pending will overwrite that column
+// instead of wrapping. Renderers that end full-width lines with CRLF (Ink,
+// Bubble Tea) never rely on the pending wrap across frames.
+func (pw *ProtectedWriter) WriteOverChild(w io.Writer, p []byte, parked parkedCursor) (int, error) {
+	pw.mu.Lock()
+	defer pw.mu.Unlock()
+	now := parkedCursor{row: pw.cur.row, col: pw.cur.col, visible: pw.cursorVisible.Load(), tracked: true}
+	if now != parked {
+		fix := now.restore()
+		if !now.visible && parked.visible {
+			fix += CursorHide
+		}
+		p = append(p[:len(p):len(p)], fix...)
+	}
+	return w.Write(p)
 }
 
 // ChildCursor reports the child's tracked cursor position (1-indexed) and

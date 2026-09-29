@@ -214,7 +214,7 @@ func (s *StartupSplash) render(msg string) {
 	sb.WriteString(line)
 	sb.WriteString(parked.restore())
 
-	s.out.Write([]byte(sb.String()))
+	writeOverChild(s.out, []byte(sb.String()), parked)
 }
 
 // clear removes the splash text by clearing the row it occupied.
@@ -231,5 +231,5 @@ func (s *StartupSplash) clear() {
 	sb.WriteString(ClearLine)
 	sb.WriteString(parked.restore())
 
-	s.out.Write([]byte(sb.String()))
+	writeOverChild(s.out, []byte(sb.String()), parked)
 }

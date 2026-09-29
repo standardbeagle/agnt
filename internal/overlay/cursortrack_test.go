@@ -165,3 +165,66 @@ func vtRow(term vt10x.Terminal, y, w int) string {
 	}
 	return strings.TrimRight(b.String(), " ")
 }
+
+// The restore CUP is read when a draw is built, but the child keeps writing
+// while the overlay formats its bytes. A child chunk landing in that gap must
+// not send the cursor back to where the child *was*.
+func TestDrawRestoresTheChildsCursorAsOfTheWrite(t *testing.T) {
+	const w, h = 40, 12
+	host := vt10x.New(vt10x.WithSize(w, h))
+	pw := newTrackedFilter(t, &bytes.Buffer{}, w, h)
+	pw.out = host
+	pw.EnforceScrollRegion()
+	if _, err := pw.Write([]byte("\x1b[8;5H")); err != nil {
+		t.Fatalf("filter write: %v", err)
+	}
+
+	park, parked := parkCursor()
+	draw := park + "\x1b[12;1Hstatus" + parked.restore()
+
+	// Child output in the gap between building the draw and writing it.
+	if _, err := pw.Write([]byte("\x1b[3A\x1b[G")); err != nil {
+		t.Fatalf("filter write: %v", err)
+	}
+	writeOverChild(host, []byte(draw), parked)
+
+	if cur := host.Cursor(); cur.Y+1 != 5 || cur.X+1 != 1 {
+		t.Fatalf("after the draw the terminal cursor is at (%d,%d); the child left it at (5,1)", cur.Y+1, cur.X+1)
+	}
+}
+
+// A character split across two PTY reads must reach the terminal whole: an
+// overlay draw landing between the halves would corrupt the glyph and shift
+// every column after it.
+func TestSplitUTF8IsHeldUntilComplete(t *testing.T) {
+	var out bytes.Buffer
+	pw := NewProtectedWriter(&out, 40, 12, FilterConfig{ProtectBottomRows: 1})
+	rule := []byte("─") // e2 94 80
+	if _, err := pw.Write(append([]byte("ab"), rule[:2]...)); err != nil {
+		t.Fatalf("filter write: %v", err)
+	}
+	if got := out.String(); got != "ab" {
+		t.Fatalf("partial UTF-8 leaked before completion: %q", got)
+	}
+	if _, err := pw.Write(append(rule[2:3:3], 'c')); err != nil {
+		t.Fatalf("filter write: %v", err)
+	}
+	if got := out.String(); got != "ab─c" {
+		t.Fatalf("output %q, want %q", got, "ab─c")
+	}
+	if _, col, _ := pw.ChildCursor(); col != 5 {
+		t.Errorf("cursor col %d, want 5", col)
+	}
+
+	// A sequence cut short by ESC is flushed as-is and occupies one cell.
+	out.Reset()
+	if _, err := pw.Write(append(rule[:2:2], "\x1b[K"...)); err != nil {
+		t.Fatalf("filter write: %v", err)
+	}
+	if got, want := out.String(), string(rule[:2])+"\x1b[K"; got != want {
+		t.Errorf("truncated sequence output %q, want %q", got, want)
+	}
+	if _, col, _ := pw.ChildCursor(); col != 6 {
+		t.Errorf("cursor col %d after truncated sequence, want 6", col)
+	}
+}

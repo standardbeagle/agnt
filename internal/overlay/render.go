@@ -567,7 +567,7 @@ func (r *Renderer) DrawIndicator(status Status) {
 	buf := r.buf
 	r.buf = nil
 	r.mu.Unlock()
-	r.flushBuffer(buf)
+	writeOverChild(r.out, buf.Bytes(), parked)
 }
 
 // NormalizeListenAddr converts wildcard and loopback addresses to localhost for clickable URLs.
@@ -753,7 +753,7 @@ func (r *Renderer) ClearIndicator() {
 	buf := r.buf
 	r.buf = nil
 	r.mu.Unlock()
-	r.flushBuffer(buf)
+	writeOverChild(r.out, buf.Bytes(), parked)
 }
 
 // ClearScreen clears the entire screen and resets cursor to home.
@@ -2236,7 +2236,7 @@ func (r *Renderer) DrawStatusBarMessage(message string) {
 	buf := r.buf
 	r.buf = nil
 	r.mu.Unlock()
-	r.flushBuffer(buf)
+	writeOverChild(r.out, buf.Bytes(), parked)
 }
 
 // padToWidth truncates s to width display cells and pads it with spaces to
@@ -2280,8 +2280,10 @@ func (r *Renderer) DrawNotifications(views []NotificationView, prevRows int) int
 	}
 	rows := len(lines)
 
+	var parked parkedCursor
 	if rows > 0 || prevRows > 0 {
-		park, parked := parkCursor()
+		var park string
+		park, parked = parkCursor()
 		r.write(park)
 		// Clear rows the previous paint used that this one does not.
 		for i := rows; i < prevRows; i++ {
@@ -2306,7 +2308,7 @@ func (r *Renderer) DrawNotifications(views []NotificationView, prevRows int) int
 	buf := r.buf
 	r.buf = nil
 	r.mu.Unlock()
-	r.flushBuffer(buf)
+	writeOverChild(r.out, buf.Bytes(), parked)
 	return rows
 }
 
@@ -2357,7 +2359,7 @@ func (r *Renderer) ClearStatusBarMessage() {
 	buf := r.buf
 	r.buf = nil
 	r.mu.Unlock()
-	r.flushBuffer(buf)
+	writeOverChild(r.out, buf.Bytes(), parked)
 }
 
 // drawConfigPanelContent renders the .agnt.kdl editor: the buffer with a block

@@ -20,7 +20,7 @@ func newTrackedFilter(t *testing.T, out *bytes.Buffer, w, h int) *ProtectedWrite
 	t.Helper()
 	pw := NewProtectedWriter(out, w, h, FilterConfig{ProtectBottomRows: 1})
 	t.Cleanup(func() { SetChildCursorSource(nil) })
-	SetChildCursorSource(pw.ChildCursor)
+	SetChildCursorSource(pw)
 	return pw
 }
 
