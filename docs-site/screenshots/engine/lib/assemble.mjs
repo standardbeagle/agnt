@@ -2,7 +2,7 @@
 // browser takes) → title cards → concat → optional edge-tts narration with
 // burned + WebVTT captions. Generalized from narrate-assemble.mjs; that
 // one-shot script stays untouched.
-import {execFileSync} from 'node:child_process';
+import {execFileSync, spawnSync} from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import {CHROMIUM_LAUNCH_OPTIONS, ff, probeDur, normalize, readJSON, writeJSON, ttsKey, mezzKey, fileFastKey} from './util.mjs';
@@ -18,6 +18,20 @@ import {CHROMIUM_LAUNCH_OPTIONS, ff, probeDur, normalize, readJSON, writeJSON, t
 // unreadable cache entry falls through to a miss (regenerate); it is never a
 // hard error. Cache writes are best-effort. Cache is per-demo + unbounded — out/
 // is gitignored and hand-cleanable, so there is no eviction machinery.
+
+// Run edge-tts for one line. Fails loud with its stderr, exit status or kill
+// signal, and the line — a bare execFileSync throw hid why lines failed
+// intermittently (service 403/429, supervisor kill).
+export const runEdgeTTS = (voice, rate, spoken, mp3Out, srtOut, spawn = spawnSync) => {
+  const r = spawn('edge-tts',
+    ['--voice', voice, '--rate', rate, '--text', spoken, '--write-media', mp3Out, '--write-subtitles', srtOut],
+    {encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe']});
+  if (r.error) throw new Error(`edge-tts could not start: ${r.error.message}`);
+  if (r.status !== 0) {
+    throw new Error(`edge-tts failed (${r.signal ? 'signal ' + r.signal : 'exit ' + r.status}) ` +
+      `voice=${voice} rate=${rate} text="${spoken.slice(0, 60)}"\n${(r.stderr || '').trim()}`);
+  }
+};
 
 // Synthesize one narration line (mp3 + srt) with a hit skipping edge-tts.
 export const cachedTTS = (voice, rate, spoken, {cacheDir, mp3Out, srtOut}, deps) => {
@@ -314,8 +328,7 @@ export const assemble = async (spec, {demoDir, workDir, outDir}) => {
       const srt = path.join(workDir, 'vo-' + n.id + '.srt');
       const spoken = n.text.replace(/\bagnt\b/gi, 'agent');
       cachedTTS(spec.narration.voice, spec.narration.rate, spoken, {cacheDir, mp3Out: mp3, srtOut: srt}, {
-        run: (voice, rate, sp, mp3Out, srtOut) => execFileSync('edge-tts',
-          ['--voice', voice, '--rate', rate, '--text', sp, '--write-media', mp3Out, '--write-subtitles', srtOut]),
+        run: runEdgeTTS,
       });
       const dur = probeDur(mp3);
       let cues = parseSRT(srt);
