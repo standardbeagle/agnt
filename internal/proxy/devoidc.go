@@ -53,11 +53,16 @@ func (ps *ProxyServer) SetDevOIDC(is *devoidc.Issuer) {
 // DevOIDCIssuer returns the installed issuer, nil when the project has none.
 func (ps *ProxyServer) DevOIDCIssuer() *devoidc.Issuer { return ps.devOIDC.issuer.Load() }
 
-// DevOIDCOrigin is the origin the proxy's own listener answers on, the
-// default issuer origin: http://localhost:<port> on loopback, or
-// http://<MagicDNS name>:<port> when bound to the tailnet address.
-func (ps *ProxyServer) DevOIDCOrigin() string {
+// ListenerOrigin is the origin the proxy's own listener answers on:
+// http://localhost:<port> on loopback; on a tailnet bind the MagicDNS name,
+// https://<name>:<port> when it serves the tailnet certificate and
+// http://<name>:<port> when it does not. It is also the default dev-oidc
+// issuer origin.
+func (ps *ProxyServer) ListenerOrigin() string {
 	port := strconv.Itoa(ps.BoundPort())
+	if ps.tailnetTLS != nil {
+		return "https://" + net.JoinHostPort(ps.tailnetTLS.domain, port)
+	}
 	if ps.boundToTailnet() {
 		host, _, _ := net.SplitHostPort(ps.liveAddr())
 		for id := range ps.tailnetIdentitySet(context.Background()).hosts {
@@ -87,7 +92,7 @@ func (ps *ProxyServer) serveDevOIDC(w http.ResponseWriter, r *http.Request) {
 		ps.handleProxy(w, r)
 		return
 	}
-	origin := ps.DevOIDCOrigin()
+	origin := ps.ListenerOrigin()
 	m := ps.devOIDC.mount.Load()
 	if m == nil || m.issuer != is || m.origin != origin {
 		m = &devOIDCMount{issuer: is, origin: origin, handler: is.Handler(devoidc.Mount{

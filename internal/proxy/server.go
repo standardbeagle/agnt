@@ -119,7 +119,13 @@ type ProxyServer struct {
 	// Start and cleared by Stop. Tunnels started through the TUNNEL verb are
 	// owned by the daemon's tunnel manager instead and bind via SetTunnelURL.
 	namedTunnelSetup *namedTunnelSetup
-	tunnel           atomic.Pointer[namedTunnel]
+
+	// tailnetTLS serves HTTPS with the tailnet certificate on a tailnet bind
+	// (nil = plain HTTP). tailnetHTTPSReason says why a tailnet bind is on
+	// plain HTTP; it is reported on start. Both are set at construction.
+	tailnetTLS         *tailnetTLS
+	tailnetHTTPSReason string
+	tunnel             atomic.Pointer[namedTunnel]
 
 	// devOIDC is the project's dev OIDC issuer mounted at /__agnt/oidc/.
 	devOIDC devOIDCState
@@ -205,7 +211,14 @@ type ProxyConfig struct {
 	// re-checked against the tailnet range either way, so a stub cannot hand
 	// the proxy a posture the real lookup would refuse.
 	TailnetIP func(context.Context) string
-	PublicURL string // Optional public URL for tunnel services (e.g., "https://abc123.trycloudflare.com")
+	// TailnetCertDomain and TailnetCert decide whether a tailnet bind serves
+	// HTTPS: the first says whether the tailnet issues a certificate for this
+	// node (platform.TailscaleCertDomain), the second fetches it
+	// (platform.TailscaleCert). Zero values are the production path; tests
+	// inject stubs. Consulted only for BindTailscale.
+	TailnetCertDomain func(context.Context) string
+	TailnetCert       func(context.Context, string) (*tls.Certificate, error)
+	PublicURL         string // Optional public URL for tunnel services (e.g., "https://abc123.trycloudflare.com")
 	// StatusURL is a display-only address surfaced to the overlay. Unlike
 	// PublicURL it is never consulted by the URL rewriter or the origin
 	// check — it changes what the developer is shown, not what is served.
@@ -348,6 +361,11 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 		}
 		bindAddress, tailnetBind = resolved, true
 	}
+	var tailnetTLSState *tailnetTLS
+	var tailnetHTTPSReason string
+	if tailnetBind {
+		tailnetTLSState, tailnetHTTPSReason = detectTailnetTLS(config.TailnetCertDomain, config.TailnetCert)
+	}
 
 	// Reject non-localhost bind addresses unless explicitly allowed
 	if isExternalBindAddress(bindAddress) && !tailnetBind {
@@ -411,6 +429,21 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 	ps.authBreakout.Store(config.AuthBreakout)
 
 	ps.namedTunnelSetup = namedSetup
+	ps.tailnetTLS = tailnetTLSState
+	ps.tailnetHTTPSReason = tailnetHTTPSReason
+	if tailnetTLSState != nil {
+		tailnetTLSState.onRenewError = func(err error) {
+			ps.logger.LogDiagnostic(ProxyDiagnostic{
+				Timestamp: time.Now(),
+				Level:     DiagnosticWarning,
+				Category:  "proxy",
+				Event:     "tailnet_https_renew_failed",
+				Message:   fmt.Sprintf("renewing the tailnet certificate for %s failed; still serving the current one: %v", tailnetTLSState.domain, err),
+				Target:    tailnetTLSState.domain,
+				Data:      map[string]any{"proxy_id": ps.ID},
+			})
+		}
+	}
 
 	// Push chaos state to connected browser clients whenever any control
 	// surface (MCP, hub, browser panel) mutates the engine.
@@ -549,7 +582,7 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 		// the named tunnel was HTTPS at the edge. Apps building absolute URLs
 		// (OAuth redirect_uri above all) from forwarded headers need the
 		// scheme the browser used, or the redirect URI stops matching.
-		req.Header.Set("X-Forwarded-Proto", forwardedProto(req.Context()))
+		req.Header.Set("X-Forwarded-Proto", forwardedProto(req))
 
 		// Rewrite Origin ONLY when the inbound Origin is the proxy's own listen
 		// origin — i.e. the origin agnt itself introduced by fronting the backend
@@ -691,7 +724,7 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 
 	// Start server in goroutine using existing listener, capped to a bounded
 	// number of concurrent connections.
-	go ps.runServer(ctx, proxyCaps.LimitListener(listener))
+	go ps.runServer(ctx, ps.wrapTLS(proxyCaps.LimitListener(listener)))
 
 	// Start backend health probe (non-zero interval means enabled)
 	ps.backendHealthy.Store(true)
@@ -716,10 +749,48 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 		Data: map[string]any{
 			"proxy_id":    ps.ID,
 			"listen_addr": ps.ListenAddr,
+			"url":         ps.ListenerOrigin(),
 		},
 	})
+	ps.logTailnetHTTPS()
 
 	return nil
+}
+
+// wrapTLS puts the tailnet certificate on the listener when this proxy
+// serves HTTPS on its tailnet bind.
+func (ps *ProxyServer) wrapTLS(l net.Listener) net.Listener {
+	if ps.tailnetTLS == nil {
+		return l
+	}
+	return ps.tailnetTLS.wrap(l)
+}
+
+// logTailnetHTTPS reports, on a tailnet bind, which scheme the proxy serves
+// and why, so a proxy left on plain HTTP says what would change that.
+func (ps *ProxyServer) logTailnetHTTPS() {
+	switch {
+	case ps.tailnetTLS != nil:
+		ps.logger.LogDiagnostic(ProxyDiagnostic{
+			Timestamp: time.Now(),
+			Level:     DiagnosticInfo,
+			Category:  "proxy",
+			Event:     "tailnet_https",
+			Message:   fmt.Sprintf("proxy %s serves %s with the tailnet certificate", ps.ID, ps.ListenerOrigin()),
+			Target:    ps.ListenerOrigin(),
+			Data:      map[string]any{"proxy_id": ps.ID},
+		})
+	case ps.tailnetHTTPSReason != "":
+		ps.logger.LogDiagnostic(ProxyDiagnostic{
+			Timestamp: time.Now(),
+			Level:     DiagnosticWarning,
+			Category:  "proxy",
+			Event:     "tailnet_https_unavailable",
+			Message:   fmt.Sprintf("proxy %s serves plain http on the tailnet: %s", ps.ID, ps.tailnetHTTPSReason),
+			Target:    ps.ListenerOrigin(),
+			Data:      map[string]any{"proxy_id": ps.ID},
+		})
+	}
 }
 
 // setBoundAddr publishes the current live listen address atomically.
@@ -857,7 +928,7 @@ func (ps *ProxyServer) runServer(ctx context.Context, listener net.Listener) {
 			// Re-cap on restart exactly as at initial bind (same Streaming caps),
 			// so an auto-restart never silently drops the bounds.
 			restartCaps := httpcaps.Streaming()
-			listener = restartCaps.LimitListener(newListener)
+			listener = ps.wrapTLS(restartCaps.LimitListener(newListener))
 			ps.setBoundAddr(newAddr)
 			ps.httpServer.Store(restartCaps.Apply(&http.Server{
 				Addr:    newAddr,

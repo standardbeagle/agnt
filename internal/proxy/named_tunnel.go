@@ -170,10 +170,13 @@ func markTunnelled(next http.Handler) http.Handler {
 }
 
 // forwardedProto is the scheme the client used to reach the proxy: https
-// through the named tunnel (TLS terminates at Cloudflare's edge), http on the
-// proxy's own listener.
-func forwardedProto(ctx context.Context) string {
-	if tunnelled, _ := ctx.Value(tunnelledKey{}).(bool); tunnelled {
+// through the named tunnel (TLS terminates at Cloudflare's edge) or on a
+// tailnet listener serving the tailnet certificate, http otherwise.
+func forwardedProto(r *http.Request) string {
+	if r.TLS != nil {
+		return "https"
+	}
+	if tunnelled, _ := r.Context().Value(tunnelledKey{}).(bool); tunnelled {
 		return "https"
 	}
 	return "http"

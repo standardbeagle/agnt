@@ -88,8 +88,8 @@ func TestDevOIDCTailnetCaller(t *testing.T) {
 	}
 	close(done)
 
-	if o := ps.DevOIDCOrigin(); o != "http://build1.example.ts.net:31536" {
-		t.Fatalf("DevOIDCOrigin on a tailnet bind = %q, want the MagicDNS origin", o)
+	if o := ps.ListenerOrigin(); o != "http://build1.example.ts.net:31536" {
+		t.Fatalf("ListenerOrigin on a tailnet bind = %q, want the MagicDNS origin", o)
 	}
 }
 

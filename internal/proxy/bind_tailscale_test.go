@@ -11,13 +11,19 @@ func stubTailnetIP(addr string) func(context.Context) string {
 	return func(context.Context) string { return addr }
 }
 
+// noTailnetHTTPS stands in for a tailnet without HTTPS certificates, so a
+// bind test never asks the real tailscale for one (on a machine where this
+// user is tailscale's operator, that would issue a real certificate).
+func noTailnetHTTPS(context.Context) string { return "" }
+
 func TestNewProxyServer_BindTailscaleResolvesToTheNodeAddress(t *testing.T) {
 	ps, err := NewProxyServer(ProxyConfig{
-		ID:          "p",
-		TargetURL:   "http://localhost:3000",
-		ListenPort:  12345,
-		BindAddress: BindTailscale,
-		TailnetIP:   stubTailnetIP("100.101.102.103"),
+		ID:                "p",
+		TargetURL:         "http://localhost:3000",
+		ListenPort:        12345,
+		BindAddress:       BindTailscale,
+		TailnetIP:         stubTailnetIP("100.101.102.103"),
+		TailnetCertDomain: noTailnetHTTPS,
 		// No AllowExternal: a tailnet address is its own posture, and the
 		// gate that gatekeeps 0.0.0.0 must not also block this.
 	})
@@ -54,10 +60,11 @@ func TestNewProxyServer_BindTailscaleRefusesAnAddressOutsideTheTailnet(t *testin
 	for _, addr := range []string{"192.168.1.10", "0.0.0.0", "8.8.8.8"} {
 		t.Run(addr, func(t *testing.T) {
 			_, err := NewProxyServer(ProxyConfig{
-				ID:          "p",
-				TargetURL:   "http://localhost:3000",
-				BindAddress: BindTailscale,
-				TailnetIP:   stubTailnetIP(addr),
+				ID:                "p",
+				TargetURL:         "http://localhost:3000",
+				BindAddress:       BindTailscale,
+				TailnetIP:         stubTailnetIP(addr),
+				TailnetCertDomain: noTailnetHTTPS,
 			})
 			if err == nil {
 				t.Fatalf("bind %q was accepted as a tailnet address", addr)
