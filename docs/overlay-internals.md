@@ -104,10 +104,10 @@ reaches the terminal.
 
 **ProtectedWriter** (`internal/overlay/filter.go`):
 - Parses ANSI sequences
-- Blocks alt screen (`\x1b[?1049h`)
-- Enforces scroll region (`\x1b[r` → `\x1b[1;Nr`)
-- Clamps cursor moves to protected bottom row
+- Enforces scroll region (`\x1b[r` → `\x1b[1;Nr`); suppresses echoed DA1 replies
+- Holds a UTF-8 character split across PTY reads until it is complete; malformed UTF-8 goes out as U+FFFD
+- Feeds every byte it sends to the host (filtered child output, its own DECSTBM + CUP) into an embedded vt10x terminal, `hostModel`. That model's cursor, DECTCEM and alt-screen state are published after each write and are what overlay draws restore to (`cursorpark.go`). Emulator replies to DSR/DA go to `io.Discard`.
 
 **OutputGate** (`internal/overlay/gate.go`):
 - Freeze/unfreeze for menu display
-- Discards output when frozen (not buffered)
+- Buffers output in a ring while frozen (oldest bytes dropped when full) and flushes it on unfreeze

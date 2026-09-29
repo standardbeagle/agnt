@@ -320,6 +320,7 @@ func TestProtectedWriter_CursorDown_StopsAtRegionBottom(t *testing.T) {
 	var buf bytes.Buffer
 	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
+	pw.EnforceScrollRegion() // the host has no protected region until the writer sets one
 
 	// Set cursor position to row 22 first
 	pw.Write([]byte("\x1b[22;1H"))

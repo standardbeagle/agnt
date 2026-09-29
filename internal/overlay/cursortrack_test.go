@@ -95,7 +95,7 @@ func TestCursorTrackerXtermEdges(t *testing.T) {
 		{"wide glyph in the last column wraps first", "\x1b[2;40H界", 3, 3},
 		{"wide glyph filling the last two columns leaves a pending wrap", "\x1b[2;39H界", 2, 40},
 		{"pending wrap resolves on the next glyph", "\x1b[2;39H界b", 3, 2},
-		{"variation selector takes no cell", "\x1b[2;1H⚠️x", 2, 3},
+		{"VS16 makes a narrow base two cells wide", "\x1b[2;1H⚠️x", 2, 4},
 		{"kitty keyboard push/pop/query never restore", "\x1b[4;10H\x1b[s\x1b[8;2H\x1b[>1u\x1b[<u\x1b[?u", 8, 2},
 		{"XTSAVE is not SCOSC", "\x1b[4;10H\x1b[?1s\x1b[8;2H\x1b[u", 1, 1},
 		{"1049 keeps its own save slot", "\x1b[4;10H\x1b7\x1b[5;5H\x1b[?1049h\x1b[2;2H\x1b[?1049l", 5, 5},
@@ -224,15 +224,79 @@ func TestSplitUTF8IsHeldUntilComplete(t *testing.T) {
 		t.Errorf("cursor col %d, want 5", col)
 	}
 
-	// A sequence cut short by ESC is flushed as-is and occupies one cell.
+	// A sequence cut short by ESC reaches the terminal as one U+FFFD, so the
+	// terminal and the host model draw the same single replacement cell.
 	out.Reset()
 	if _, err := pw.Write(append(rule[:2:2], "\x1b[K"...)); err != nil {
 		t.Fatalf("filter write: %v", err)
 	}
-	if got, want := out.String(), string(rule[:2])+"\x1b[K"; got != want {
+	if got, want := out.String(), "\uFFFD\x1b[K"; got != want {
 		t.Errorf("truncated sequence output %q, want %q", got, want)
 	}
 	if _, col, _ := pw.ChildCursor(); col != 6 {
 		t.Errorf("cursor col %d after truncated sequence, want 6", col)
+	}
+}
+
+// The host model is a full emulator, and an emulator answers DSR and DA
+// queries. Those answers must go nowhere: the host terminal answers the child
+// itself, and a second answer would reach the child as typed input or the
+// screen as garbage.
+func TestHostModelRepliesNeverReachTheHost(t *testing.T) {
+	var out bytes.Buffer
+	pw := NewProtectedWriter(&out, 40, 12, FilterConfig{ProtectBottomRows: 1})
+	queries := "\x1b[6n\x1b[5n\x1b[c\x1b[>c\x1b]10;?\x07"
+	if _, err := pw.Write([]byte(queries)); err != nil {
+		t.Fatalf("filter write: %v", err)
+	}
+	if got := out.String(); got != queries {
+		t.Errorf("host received %q, want exactly the child's queries %q", got, queries)
+	}
+}
+
+// An overlay draw ends in a CUP, which clears the terminal's pending wrap.
+// The model must lose it too, or the next glyph wraps in the model and not on
+// the host.
+func TestOverlayDrawClearsPendingWrapInTheModel(t *testing.T) {
+	const w, h = 40, 12
+	host := vt10x.New(vt10x.WithSize(w, h))
+	pw := newTrackedFilter(t, &bytes.Buffer{}, w, h)
+	pw.out = host
+	pw.EnforceScrollRegion()
+	r := NewRenderer(host, w, h)
+
+	for _, c := range []string{"\x1b[5;1H" + strings.Repeat("a", w), "x", "\r\n", "y"} {
+		r.DrawIndicator(Status{})
+		if _, err := pw.Write([]byte(c)); err != nil {
+			t.Fatalf("filter write: %v", err)
+		}
+		cur := host.Cursor()
+		if row, col, _ := pw.ChildCursor(); row != cur.Y+1 || col != cur.X+1 {
+			t.Fatalf("after %q: model at (%d,%d), terminal at (%d,%d)", c, row, col, cur.Y+1, cur.X+1)
+		}
+	}
+}
+
+// A resize clamps the host's cursor and resets its scroll region; the writer
+// re-enforces the region and re-places the cursor from the model.
+func TestResizeKeepsTheModelOnTheHost(t *testing.T) {
+	host := vt10x.New(vt10x.WithSize(40, 12))
+	pw := NewProtectedWriter(host, 40, 12, FilterConfig{ProtectBottomRows: 1})
+	pw.EnforceScrollRegion()
+	if _, err := pw.Write([]byte("\x1b[5;35Habc")); err != nil {
+		t.Fatalf("filter write: %v", err)
+	}
+	host.Resize(30, 8)
+	pw.SetSize(30, 8)
+	if _, err := pw.Write([]byte("\n\n\nq")); err != nil {
+		t.Fatalf("filter write: %v", err)
+	}
+	cur := host.Cursor()
+	row, col, _ := pw.ChildCursor()
+	if row != cur.Y+1 || col != cur.X+1 {
+		t.Fatalf("model at (%d,%d), terminal at (%d,%d)", row, col, cur.Y+1, cur.X+1)
+	}
+	if row != 7 {
+		t.Errorf("cursor row %d, want 7: line feeds stop at the protected region's bottom", row)
 	}
 }

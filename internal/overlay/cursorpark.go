@@ -19,10 +19,11 @@ import (
 // The indicator redraw runs on a 200ms ticker with no knowledge of the child's
 // frame boundaries, so this is a race the child always eventually loses.
 //
-// So we never touch the save slot. The PTY output filter already tracks the
-// child's cursor row/column and its DECTCEM visibility from the child's own
-// output stream; parkCursor reads that state and restores it with an absolute
-// CUP, leaving the terminal's save slot to the child.
+// So we never touch the save slot. The PTY output filter feeds everything it
+// sends to the host terminal into a terminal emulator, whose cursor row/column
+// and DECTCEM visibility are the host's; parkCursor reads that state and
+// restores it with an absolute CUP, leaving the terminal's save slot to the
+// child.
 //
 // The position read at build time can go stale before the draw reaches the
 // terminal: the child keeps writing while the overlay formats its bytes. So
@@ -91,10 +92,6 @@ func parkCursor() (string, parkedCursor) {
 		return CursorSave + CursorHide, parkedCursor{}
 	}
 	row, col, visible := src.ChildCursor()
-	if row < 1 || col < 1 {
-		// The filter has not seen enough output to know where the child is.
-		return CursorSave + CursorHide, parkedCursor{}
-	}
 	return CursorHide, parkedCursor{row: row, col: col, visible: visible, tracked: true}
 }
 

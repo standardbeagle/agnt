@@ -2,6 +2,7 @@ package overlay
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -143,6 +144,7 @@ func TestProtectedWriter_StatusBarDoesNotOverflow(t *testing.T) {
 	// 80-col terminal, 1 protected row
 	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
+	pw.EnforceScrollRegion() // the host has no protected region until the writer sets one
 
 	// Move to last safe row
 	pw.Write([]byte("\x1b[23;1H"))
@@ -286,6 +288,7 @@ func TestProtectedWriter_LinefeedAtScrollBoundary(t *testing.T) {
 	// 80x24, 1 protected row → scroll region 1-23
 	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
+	pw.EnforceScrollRegion() // the host has no protected region until the writer sets one
 
 	// Move cursor to scroll region bottom (row 23)
 	pw.Write([]byte("\x1b[23;1H"))
@@ -315,6 +318,7 @@ func TestProtectedWriter_SpinnerThenMultilineOutput(t *testing.T) {
 	// Small terminal: 80x10, 1 protected row → scroll region 1-9
 	pw := NewProtectedWriter(&buf, 80, 10, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
+	pw.EnforceScrollRegion() // the host has no protected region until the writer sets one
 
 	// Fill terminal to push cursor to the scroll boundary
 	for i := 0; i < 8; i++ {
@@ -359,15 +363,11 @@ func TestProtectedWriter_CursorRestoreTracked(t *testing.T) {
 	var buf bytes.Buffer
 	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
+	pw.EnforceScrollRegion()
 
-	// Save cursor at a safe position
+	// Save the cursor in the protected row, move away, restore.
+	pw.Write([]byte("\x1b[24;1H\x1b[s"))
 	pw.Write([]byte("\x1b[23;1H"))
-	pw.Write([]byte("\x1b[s"))
-
-	// Simulate saved position in protected row
-	pw.saved = trackedCursor{row: 24, col: 1}
-
-	// Restore tracks the saved position without clamping
 	pw.Write([]byte("\x1b[u"))
 
 	row := int(pw.cursorRow.Load())
@@ -376,30 +376,44 @@ func TestProtectedWriter_CursorRestoreTracked(t *testing.T) {
 	}
 }
 
-// TestProtectedWriter_ScrollRegionTrackingAfterReset verifies that scroll
-// region bounds are updated when a DECSTBM command is processed.
+// TestProtectedWriter_ScrollRegionTrackingAfterReset verifies that the
+// child's DECSTBM reaches the host clamped above the protected rows, and that
+// the cursor model honours the region it set.
 func TestProtectedWriter_ScrollRegionTrackingAfterReset(t *testing.T) {
 	var buf bytes.Buffer
 	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
+	pw.EnforceScrollRegion()
 
-	// Default scroll region should be 1-23
-	if pw.scrollTop != 1 || pw.scrollBottom != 23 {
-		t.Errorf("Initial scroll region should be 1-23, got %d-%d", pw.scrollTop, pw.scrollBottom)
+	// A line feed at the bottom margin scrolls; the cursor stays put.
+	lfAt := func(row int) int {
+		t.Helper()
+		pw.Write([]byte(fmt.Sprintf("\x1b[%d;1H\n", row)))
+		return int(pw.cursorRow.Load())
+	}
+	if got := lfAt(23); got != 23 {
+		t.Errorf("Initial region: LF at row 23 should stay on 23, got %d", got)
 	}
 
-	// Set scroll region to 5-20
+	buf.Reset()
 	pw.Write([]byte("\x1b[5;20r"))
-
-	if pw.scrollTop != 5 || pw.scrollBottom != 20 {
-		t.Errorf("After DECSTBM 5;20, scroll region should be 5-20, got %d-%d", pw.scrollTop, pw.scrollBottom)
+	if got := buf.String(); got != "\x1b[5;20r" {
+		t.Errorf("DECSTBM 5;20 inside the child area should pass through, got %q", got)
+	}
+	if got := lfAt(20); got != 20 {
+		t.Errorf("After DECSTBM 5;20, LF at row 20 should stay on 20, got %d", got)
 	}
 
-	// Reset scroll region (no params)
+	buf.Reset()
 	pw.Write([]byte("\x1b[r"))
-
-	if pw.scrollTop != 1 || pw.scrollBottom != 23 {
-		t.Errorf("After DECSTBM reset, scroll region should be 1-23, got %d-%d", pw.scrollTop, pw.scrollBottom)
+	if got := buf.String(); got != "\x1b[1;23r" {
+		t.Errorf("DECSTBM reset should be rewritten to 1;23, got %q", got)
+	}
+	if got := lfAt(20); got != 21 {
+		t.Errorf("After DECSTBM reset, LF at row 20 should move to 21, got %d", got)
+	}
+	if got := lfAt(23); got != 23 {
+		t.Errorf("After DECSTBM reset, LF at row 23 should stay on 23, got %d", got)
 	}
 }
 
@@ -417,6 +431,7 @@ func TestProtectedWriter_RapidCRLinefeedCycleNearBottom(t *testing.T) {
 	var buf bytes.Buffer
 	pw := NewProtectedWriter(&buf, 80, 10, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
+	pw.EnforceScrollRegion() // the host has no protected region until the writer sets one
 
 	// Move to scroll boundary (row 9 in 10-row terminal with 1 protected)
 	pw.Write([]byte("\x1b[9;1H"))
