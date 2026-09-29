@@ -9,7 +9,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -656,37 +655,25 @@ func setupAlertScanner(projectPath, sessionCode string, netOverlay *Overlay, dae
 		},
 	}
 
-	// Apply config overrides
+	// Apply config overrides via the shared builder (also used by the
+	// daemon's per-project process-output scanner —
+	// internal/daemon/daemon.go::buildProjectAlertScanner). A bad pattern
+	// regex or an unrecognized severity string must not fail silently
+	// (AGENTS.md "No silent failures"): debug.Log alone never reaches the
+	// agent or session log, so surface it with notifyUser too.
 	if agntCfg.Alerts != nil {
-		if agntCfg.Alerts.BatchWindow > 0 {
-			scannerCfg.BatchWindow = time.Duration(agntCfg.Alerts.BatchWindow) * time.Second
+		fromCfg := overlay.AlertScannerConfigFromAlerts(agntCfg.Alerts, func(patternID, reason string) {
+			debug.Log("alerts", "custom pattern %q: %s", patternID, reason)
+			notifyUser(overlay.LevelWarn, "alerts: custom pattern %q: %s", patternID, reason)
+		})
+		if fromCfg.BatchWindow > 0 {
+			scannerCfg.BatchWindow = fromCfg.BatchWindow
 		}
-		if agntCfg.Alerts.DedupeWindow > 0 {
-			scannerCfg.DedupeWindow = time.Duration(agntCfg.Alerts.DedupeWindow) * time.Second
+		if fromCfg.DedupeWindow > 0 {
+			scannerCfg.DedupeWindow = fromCfg.DedupeWindow
 		}
-		scannerCfg.DisabledIDs = agntCfg.Alerts.Disable
-
-		// Convert custom patterns from config
-		for id, pcfg := range agntCfg.Alerts.Patterns {
-			compiled, err := regexp.Compile(pcfg.Pattern)
-			if err != nil {
-				debug.Log("alerts", "invalid pattern %q: %v", id, err)
-				continue
-			}
-			sev := overlay.AlertSeverityError
-			switch pcfg.Severity {
-			case "warning":
-				sev = overlay.AlertSeverityWarning
-			case "info":
-				sev = overlay.AlertSeverityInfo
-			}
-			scannerCfg.Patterns = append(scannerCfg.Patterns, &overlay.AlertPattern{
-				ID:       id,
-				Pattern:  compiled,
-				Severity: sev,
-				Category: "custom",
-			})
-		}
+		scannerCfg.DisabledIDs = fromCfg.DisabledIDs
+		scannerCfg.Patterns = fromCfg.Patterns
 	}
 
 	return overlay.NewAlertScanner(scannerCfg)

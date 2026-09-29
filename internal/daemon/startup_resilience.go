@@ -382,7 +382,7 @@ func (d *Daemon) startScriptWithRetry(
 				Timestamp: time.Now(),
 			},
 		}, projectPath)
-		d.alertScanner.ProcessLineWithLifetime(line, processID, lifetimeOwner)
+		d.alertScannerFor(projectPath).ProcessLineWithLifetime(line, processID, lifetimeOwner)
 	}
 
 	// Start the process
