@@ -1503,7 +1503,22 @@
   // EXPORT
   // ============================================================================
 
-  window.__devtool_diagnostics = {
+  // core.js pre-installs window.__devtool_diagnostics with the proxy_diagnostic
+  // buffer API (getHistory/getRecent/getByCategory/subscribe/getConnectionState/
+  // getStats/setDebug/reconnect/log) before this module loads. Overwriting it
+  // wholesale — the prior behaviour — silently dropped that API in the content
+  // frame: reconnect() disappeared and the diagnostic buffer became
+  // unreachable. Merge onto the existing object instead of replacing it, so
+  // both APIs live under the one name. The only name collision is `clear`:
+  // core's clears the diagnostic-event buffer, this module's clears active
+  // visual overlay modes. Keep core's under its own buffer-scoped name
+  // (clearHistory) so neither caller silently gets the other's behaviour.
+  var existingDiagnostics = window.__devtool_diagnostics || {};
+  if (typeof existingDiagnostics.clear === 'function' && !existingDiagnostics.clearHistory) {
+    existingDiagnostics.clearHistory = existingDiagnostics.clear;
+  }
+
+  var visualDiagnostics = {
     // Structure & Layout
     outlineAll: outlineAll,
     showSemanticElements: showSemanticElements,
@@ -1554,6 +1569,18 @@
     // State (for debugging)
     state: state
   };
+
+  // Merge: visual-overlay methods win their own names (the majority of this
+  // object's surface); core's buffer methods fill in whatever visualDiagnostics
+  // does not define, so getHistory/getRecent/getByCategory/subscribe/
+  // getConnectionState/getStats/setDebug/reconnect/log/clearHistory survive.
+  var merged = existingDiagnostics;
+  for (var key in visualDiagnostics) {
+    if (Object.prototype.hasOwnProperty.call(visualDiagnostics, key)) {
+      merged[key] = visualDiagnostics[key];
+    }
+  }
+  window.__devtool_diagnostics = merged;
 
   console.log('[DevTool] Diagnostics module loaded');
 })();
