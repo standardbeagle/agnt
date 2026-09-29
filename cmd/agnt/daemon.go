@@ -118,10 +118,16 @@ func getSocketPath(cmd *cobra.Command) string {
 func newDaemonConfig(appCfg *config.Config, socketPath, publicAddr string) daemon.DaemonConfig {
 	return daemon.DaemonConfig{
 		SocketPath: socketPath,
+		// Thread the operator's settings{} block through to the process
+		// manager. DefaultConfig() seeds Settings with the same values that
+		// used to be hardcoded here (0 / DefaultBufferSize /
+		// DefaultGracefulTimeout), and kdlConfigToConfig only overrides a
+		// field when the KDL value is positive, so this is a strict
+		// superset of the old hardcoded behavior — never zero/negative.
 		ProcessConfig: process.ManagerConfig{
-			DefaultTimeout:    0,
-			MaxOutputBuffer:   process.DefaultBufferSize,
-			GracefulTimeout:   config.DefaultGracefulTimeout,
+			DefaultTimeout:    appCfg.Settings.DefaultTimeout,
+			MaxOutputBuffer:   appCfg.Settings.MaxOutputBuffer,
+			GracefulTimeout:   appCfg.Settings.GracefulTimeout,
 			HealthCheckPeriod: 10 * time.Second,
 		},
 		MaxClients:        100,
