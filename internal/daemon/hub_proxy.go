@@ -151,6 +151,7 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 	resp := map[string]interface{}{
 		"id":          proxyServer.ID,
 		"listen_addr": proxyServer.ListenAddr,
+		"url":         proxyServer.URL(),
 		"target_url":  proxyServer.TargetURL.String(),
 		"status":      "running",
 	}
@@ -217,6 +218,7 @@ func (d *Daemon) hubHandleProxyStatus(conn *hubpkg.Connection, cmd *hubproto.Com
 	resp := map[string]interface{}{
 		"id":             p.ID,
 		"listen_addr":    p.ListenAddr,
+		"url":            p.URL(),
 		"target_url":     p.TargetURL.String(),
 		"status":         proxyRuntimeStatus(stats),
 		"uptime":         formatProxyUptime(stats.Uptime),
@@ -290,6 +292,7 @@ func (d *Daemon) hubHandleProxyList(conn *hubpkg.Connection, cmd *hubproto.Comma
 		entry := map[string]interface{}{
 			"id":             p.ID,
 			"listen_addr":    p.ListenAddr,
+			"url":            p.URL(),
 			"target_url":     p.TargetURL.String(),
 			"status":         proxyRuntimeStatus(stats),
 			"running":        stats.Running,
@@ -607,6 +610,7 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 		"id":          proxyID,
 		"target_url":  targetURL,
 		"listen_addr": newProxy.ListenAddr,
+		"url":         newProxy.URL(),
 		"restarted":   true,
 		"success":     true,
 		"message":     fmt.Sprintf("Proxy %q restarted successfully", proxyID),

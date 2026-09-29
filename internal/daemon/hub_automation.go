@@ -67,7 +67,7 @@ func (d *Daemon) hubHandleAutomationStart(ctx context.Context, conn *hubpkg.Conn
 		if err != nil {
 			return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("proxy %q not found: %v", config.ProxyID, err))
 		}
-		proxyURL = "http://" + p.ListenAddr
+		proxyURL = p.URL()
 	}
 
 	// Set headless mode (default true)

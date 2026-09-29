@@ -88,8 +88,7 @@ func (d *Daemon) hubHandleBrowserStart(ctx context.Context, conn *hubpkg.Connect
 			proxyStarted = true
 		}
 
-		// Use proxy's listen address as the URL
-		proxyURL = fmt.Sprintf("http://%s", proxyServer.ListenAddr)
+		proxyURL = proxyServer.URL()
 		url = proxyURL
 	}
 

@@ -362,6 +362,7 @@ func (ps *ProxyServer) Stats() ProxyStats {
 		ID:            ps.ID,
 		TargetURL:     ps.TargetURL.String(),
 		ListenAddr:    ps.ListenAddr,
+		URL:           ps.URL(),
 		Path:          ps.Path,
 		BindAddress:   ps.BindAddress,
 		PublicURL:     ps.GetPublicURL(),
@@ -420,6 +421,7 @@ type ProxyStats struct {
 	ID            string        `json:"id"`
 	TargetURL     string        `json:"target_url"`
 	ListenAddr    string        `json:"listen_addr"`
+	URL           string        `json:"url"`                    // What a client dials: scheme + host + port (see ProxyServer.URL)
 	Path          string        `json:"path,omitempty"`         // Working directory where proxy was created
 	BindAddress   string        `json:"bind_address,omitempty"` // Bind address (127.0.0.1 or 0.0.0.0)
 	PublicURL     string        `json:"public_url,omitempty"`   // Public URL for tunnels

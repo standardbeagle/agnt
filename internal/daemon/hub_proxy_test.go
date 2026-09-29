@@ -152,6 +152,11 @@ func TestHubHandleProxyStart(t *testing.T) {
 		if !strings.Contains(addr, ":") {
 			t.Errorf("resp.listen_addr %q should be host:port", addr)
 		}
+		// url is what a client dials: scheme and host included, so a
+		// tailnet proxy serving https is not dialed as http.
+		if got, want := resp["url"], "http://"+addr; got != want {
+			t.Errorf("resp.url: got %v, want %q", got, want)
+		}
 		if got, ok := resp["target_url"].(string); !ok || got != backend.URL {
 			t.Errorf("resp.target_url: got %v (ok=%v), want %q", resp["target_url"], ok, backend.URL)
 		}
@@ -261,6 +266,9 @@ func TestHubHandleProxyStats(t *testing.T) {
 		statusResp, err := client.ProxyStatus(proxyID)
 		if err != nil {
 			t.Fatalf("ProxyStatus failed: %v", err)
+		}
+		if got, want := statusResp["url"], "http://"+listenAddr; got != want {
+			t.Errorf("status url: got %v, want %q", got, want)
 		}
 
 		// total_requests must be readable from the top level as a number

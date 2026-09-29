@@ -345,7 +345,7 @@ func checkProxyHealth(ctx context.Context, pm *proxy.ProxyManager, projectPath s
 			})
 			continue
 		}
-		url := "http://" + p.ListenAddr
+		url := p.URL()
 		resp, err := client.Get(url)
 		if err != nil {
 			unreachable = append(unreachable, map[string]interface{}{

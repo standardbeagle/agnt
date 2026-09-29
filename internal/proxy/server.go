@@ -839,6 +839,18 @@ func (ps *ProxyServer) BoundPort() int {
 	return port
 }
 
+// URL is the address a client dials to reach this proxy: https at the
+// MagicDNS name when a tailnet bind serves the tailnet certificate (the
+// certificate names that host, not the address), http at the bound address
+// otherwise. Every caller that connects to the proxy or shows where it is
+// uses this, so the scheme cannot be assumed wrong.
+func (ps *ProxyServer) URL() string {
+	if ps.tailnetTLS != nil {
+		return ps.ListenerOrigin()
+	}
+	return "http://" + ps.liveAddr()
+}
+
 // runServer runs the HTTP server with automatic restart on crash
 func (ps *ProxyServer) runServer(ctx context.Context, listener net.Listener) {
 	// Stop the chaos engine's background goroutines when the server exits.

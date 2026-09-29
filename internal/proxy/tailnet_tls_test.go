@@ -167,6 +167,12 @@ func TestTailnetTLS_ServesTheTailnetCertificate(t *testing.T) {
 	if got, want := ps.ListenerOrigin(), "https://"+tailnetTestDomain+":"+port; got != want {
 		t.Errorf("ListenerOrigin = %q, want %q", got, want)
 	}
+	if got, want := ps.URL(), "https://"+tailnetTestDomain+":"+port; got != want {
+		t.Errorf("URL = %q, want %q (the certificate names the host, not the address)", got, want)
+	}
+	if got := ps.Stats().URL; got != ps.URL() {
+		t.Errorf("Stats().URL = %q, want %q", got, ps.URL())
+	}
 
 	roots := x509.NewCertPool()
 	roots.AddCert(cert.Leaf)
