@@ -1513,11 +1513,16 @@
       description: 'Comprehensive quality audit with grade (A-F)',
       async: true,
       fn: function() {
+        // auditPageQuality is the SEO/meta audit alone (same function the
+        // 'seo' action below calls) — it has no A-F grade. The comprehensive,
+        // all-eight-audits grade this label promises is auditAll
+        // (docs/mcp-tools.md "Scored audits"): DOM, CSS, performance,
+        // security, SEO, accessibility, API efficiency, loading.
         var w = targetWindow();
-        if (w.__devtool && w.__devtool.auditPageQuality) {
-          return w.__devtool.auditPageQuality();
+        if (w.__devtool && w.__devtool.auditAll) {
+          return w.__devtool.auditAll();
         }
-        return Promise.resolve({ error: 'Page quality audit not available' });
+        return Promise.resolve({ error: 'Full page audit not available' });
       }
     },
     {
