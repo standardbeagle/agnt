@@ -11,6 +11,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/rivo/uniseg"
 	"github.com/standardbeagle/vt10x"
 )
 
@@ -647,93 +648,57 @@ func isLocalhostURL(urlStr string) bool {
 		strings.Contains(urlStr, "[::1]")
 }
 
-// estimateVisibleLength estimates the visible cell width of a string with ANSI codes.
-// Emoji and other wide characters count as 2 cells (matching terminal rendering).
+// estimateVisibleLength is the number of terminal cells s occupies, ANSI
+// escapes excluded. Widths are per grapheme cluster from uniseg, the table the
+// host model (vt10x) draws with, so a ZWJ emoji is two cells, VS16 widens its
+// base, and a combining mark takes none.
 func (r *Renderer) estimateVisibleLength(s string) int {
-	inEscape := false
-	length := 0
-	for _, ch := range s {
-		if ch == '\x1b' {
-			inEscape = true
+	width, state := 0, -1
+	for len(s) > 0 {
+		if s[0] == '\x1b' {
+			s, state = s[ansiEscapeLen(s):], -1 // the state carries a lookahead into the skipped bytes
 			continue
 		}
-		if inEscape {
-			if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') {
-				inEscape = false
-			}
-			continue
-		}
-		if isWideChar(ch) {
-			length += 2
-		} else {
-			length++
-		}
+		var w int
+		_, s, w, state = uniseg.FirstGraphemeClusterInString(s, state)
+		width += w
 	}
-	return length
+	return width
 }
 
-// isWideChar returns true for characters that occupy 2 cells in a terminal.
-// Based on Unicode East Asian Width: only W (Wide) and F (Fullwidth) characters.
-// BMP symbols like ⚙ (U+2699), ⚠ (U+26A0), ✗, ● are narrow (1 cell).
-func isWideChar(ch rune) bool {
-	// Supplementary emoji (U+1F300–U+1FBFF): all wide
-	if ch >= 0x1F300 && ch <= 0x1FBFF {
-		return true
+// ansiEscapeLen is the length of the escape sequence at the start of s: up to
+// and including the first ASCII letter, which ends the SGR and cursor
+// sequences the overlay composes.
+func ansiEscapeLen(s string) int {
+	for i := 1; i < len(s); i++ {
+		if c := s[i]; (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') {
+			return i + 1
+		}
 	}
-	// CJK Unified Ideographs (U+4E00–U+9FFF)
-	if ch >= 0x4E00 && ch <= 0x9FFF {
-		return true
-	}
-	// CJK Extension A (U+3400–U+4DBF)
-	if ch >= 0x3400 && ch <= 0x4DBF {
-		return true
-	}
-	// CJK Compatibility Ideographs (U+F900–U+FAFF)
-	if ch >= 0xF900 && ch <= 0xFAFF {
-		return true
-	}
-	// Fullwidth forms (U+FF01–U+FF60)
-	if ch >= 0xFF01 && ch <= 0xFF60 {
-		return true
-	}
-	// Hangul Syllables (U+AC00–U+D7AF)
-	if ch >= 0xAC00 && ch <= 0xD7AF {
-		return true
-	}
-	// CJK Extension B+ (U+20000–U+2FA1F)
-	if ch >= 0x20000 && ch <= 0x2FA1F {
-		return true
-	}
-	return false
+	return len(s)
 }
 
-// truncateANSI truncates a string containing ANSI escape codes to maxVisible
-// visible characters. ANSI sequences are preserved up to the cut point, and a
-// Reset is appended to close any open attributes.
+// truncateANSI truncates a string containing ANSI escape codes to at most
+// maxVisible terminal cells. A grapheme cluster that does not fit is dropped
+// whole. ANSI sequences are preserved up to the cut point, and a Reset is
+// appended to close any open attributes.
 func (r *Renderer) truncateANSI(s string, maxVisible int) string {
 	var buf strings.Builder
-	inEscape := false
-	visible := 0
-	for _, ch := range s {
-		if visible >= maxVisible && !inEscape {
+	visible, state := 0, -1
+	for len(s) > 0 && visible < maxVisible {
+		if s[0] == '\x1b' {
+			n := ansiEscapeLen(s)
+			buf.WriteString(s[:n])
+			s, state = s[n:], -1
+			continue
+		}
+		cluster, rest, w, next := uniseg.FirstGraphemeClusterInString(s, state)
+		if visible+w > maxVisible {
 			break
 		}
-		buf.WriteRune(ch)
-		if ch == '\x1b' {
-			inEscape = true
-			continue
-		}
-		if inEscape {
-			if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') {
-				inEscape = false
-			}
-			continue
-		}
-		if isWideChar(ch) {
-			visible += 2
-		} else {
-			visible++
-		}
+		buf.WriteString(cluster)
+		visible += w
+		s, state = rest, next
 	}
 	buf.WriteString(Reset)
 	return buf.String()
