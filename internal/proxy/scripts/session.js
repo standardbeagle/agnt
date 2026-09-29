@@ -18,6 +18,11 @@
   // Send session request and return promise
   function sendSessionRequest(action, params) {
     return new Promise(function(resolve, reject) {
+      if (!core || !core.send) {
+        reject(new Error('Session request failed: not connected'));
+        return;
+      }
+
       var requestId = generateRequestId();
       var timeoutMs = 10000; // 10 second timeout
 
@@ -34,12 +39,21 @@
         timeout: timeout
       };
 
-      // Send request via WebSocket
-      core.send('session_request', {
+      // Send request via WebSocket. core.send() returns false (no throw)
+      // when the socket is not open — mirrors indicator-data.js's
+      // chaosRequest guard: a false send must reject immediately instead of
+      // silently waiting out the full 10s timeout for a request that was
+      // never actually on the wire.
+      var sent = core.send('session_request', {
         request_id: requestId,
         action: action,
         params: params || {}
       });
+      if (!sent) {
+        clearTimeout(timeout);
+        delete pendingRequests[requestId];
+        reject(new Error('Session request failed: not connected'));
+      }
     });
   }
 
