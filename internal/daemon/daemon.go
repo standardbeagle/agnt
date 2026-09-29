@@ -989,6 +989,7 @@ func (d *Daemon) AutoRestarter() *ProcessAutoRestarter {
 // the loser, which double-starts the scanner's goroutine-on-first-alert
 // lazily — harmless today but wasteful and worth avoiding).
 func (d *Daemon) alertScannerFor(projectPath string) *overlay.AlertScanner {
+	projectPath = normalizePath(projectPath)
 	if v, ok := d.alertScanners.Load(projectPath); ok {
 		return v.(*overlay.AlertScanner)
 	}
@@ -1000,6 +1001,21 @@ func (d *Daemon) alertScannerFor(projectPath string) *overlay.AlertScanner {
 	scanner := d.buildProjectAlertScanner(projectPath)
 	d.alertScanners.Store(projectPath, scanner)
 	return scanner
+}
+
+// retireAlertScanner drops a project's cached scanner so the next output line
+// rebuilds it from the current `.agnt.kdl`. Stop flushes the old scanner's
+// pending batch, and can block on PTY-bound delivery, so it runs off the
+// caller's path; the swap itself is immediate. A line already holding the old
+// pointer when it stops is dropped by the stopped guard — the window is one
+// in-flight line per process.
+func (d *Daemon) retireAlertScanner(projectPath string) {
+	d.alertScannerMu.Lock()
+	old, ok := d.alertScanners.LoadAndDelete(normalizePath(projectPath))
+	d.alertScannerMu.Unlock()
+	if ok {
+		go old.(*overlay.AlertScanner).Stop()
+	}
 }
 
 // buildProjectAlertScanner constructs the process-output AlertScanner for one
@@ -1014,6 +1030,8 @@ func (d *Daemon) buildProjectAlertScanner(projectPath string) *overlay.AlertScan
 	cfg, err := config.LoadAgntConfig(projectPath)
 	if err != nil {
 		debug.Warn("daemon", "alerts: failed to load config for %q, using defaults: %v", projectPath, err)
+		d.recordStartupEntry("", "", "warning", "alert_config_load_failed",
+			fmt.Sprintf("project %q alert scanner using defaults: .agnt.kdl failed to load: %v", projectPath, err), 0)
 	}
 
 	scannerCfg := overlay.AlertScannerConfig{
@@ -1145,6 +1163,11 @@ func (d *Daemon) ApplyAlertsConfig(projectPath string, cfg *config.AlertsConfig)
 		pushCfg = cfg.GetPushConfig()
 	}
 	projectPath = normalizePath(projectPath)
+	if projectPath != "" {
+		// The process-output scanner is built once per project from this same
+		// block; rebuild it so enabled/patterns/disable/windows edits apply.
+		d.retireAlertScanner(projectPath)
+	}
 	if projectPath != "" && pushCfg == nil {
 		d.alertPushConfigs.Delete(projectPath)
 	} else if projectPath != "" {

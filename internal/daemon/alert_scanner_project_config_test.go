@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -72,6 +73,49 @@ func TestBuildProjectAlertScanner_HonorsCustomPatternAndDisableList(t *testing.T
 	require.NotEmpty(t, matches)
 	assert.Equal(t, "my-custom", matches[len(matches)-1].Pattern.ID,
 		"the project's custom pattern must be the one that matched")
+}
+
+// TestApplyAlertsConfig_RebuildsProjectScanner proves an edited `alerts` block
+// reaches the per-project scanner. The scanner is built once, on the project's
+// first output line; ApplyAlertsConfig runs on session connect and on every
+// AUTOSTART RECONCILE, so without retiring the cached scanner there, a
+// `.agnt.kdl` edit changed retention/push/hold but left the scanner on the
+// config it was built with until the daemon restarted.
+func TestApplyAlertsConfig_RebuildsProjectScanner(t *testing.T) {
+	d, _ := newBootedDaemon(t)
+	dir := shortTempDir(t)
+	// No .agnt.kdl yet: defaults, scanner enabled.
+
+	before := d.alertScannerFor(dir)
+	assert.Same(t, before, d.alertScannerFor(dir+string(filepath.Separator)),
+		"lookup must key on the normalized path, or the retire below misses the cached scanner")
+
+	writeAlertsConfig(t, dir, "    enabled false")
+	d.ApplyAlertsConfig(dir, loadAlertsForTest(t, dir))
+
+	after := d.alertScannerFor(dir)
+	t.Cleanup(after.Stop)
+	require.NotSame(t, before, after, "an applied alerts block must retire the cached scanner")
+
+	after.ProcessLine("panic: must not scan after enabled false", "proc-1")
+	before.ProcessLine("panic: retired scanner must not scan either", "proc-1")
+	time.Sleep(100 * time.Millisecond)
+	assert.Empty(t, after.RecentMatches(time.Time{}), "rebuilt scanner must carry the new enabled=false")
+	assert.Empty(t, before.RecentMatches(time.Time{}), "retired scanner must be stopped")
+
+	// Another project's scanner is untouched by this project's apply.
+	other := shortTempDir(t)
+	otherScanner := d.alertScannerFor(other)
+	t.Cleanup(otherScanner.Stop)
+	d.ApplyAlertsConfig(dir, loadAlertsForTest(t, dir))
+	assert.Same(t, otherScanner, d.alertScannerFor(other), "apply must retire only its own project's scanner")
+}
+
+func loadAlertsForTest(t *testing.T, dir string) *config.AlertsConfig {
+	t.Helper()
+	cfg, err := config.LoadAgntConfig(dir)
+	require.NoError(t, err)
+	return cfg.Alerts
 }
 
 // TestAlertScannerFor_IsolatesPerProject proves two projects with
