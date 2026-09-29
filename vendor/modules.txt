@@ -410,8 +410,8 @@ github.com/standardbeagle/go-sdk/internal/xcontext
 github.com/standardbeagle/go-sdk/jsonrpc
 github.com/standardbeagle/go-sdk/mcp
 github.com/standardbeagle/go-sdk/oauthex
-# github.com/standardbeagle/vt10x v0.1.0-agnt.2
-## explicit; go 1.14
+# github.com/standardbeagle/vt10x v0.1.0-agnt.3
+## explicit; go 1.18
 github.com/standardbeagle/vt10x
 # github.com/stretchr/testify v1.11.1
 ## explicit; go 1.17

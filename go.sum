@@ -185,6 +185,8 @@ github.com/standardbeagle/vt10x v0.1.0-agnt.1 h1:uvRCqVXTs1BqHe1seipBKXQvNBna6H2
 github.com/standardbeagle/vt10x v0.1.0-agnt.1/go.mod h1:7m1uU1KC+D9DPb3xFeivgi7SKnnDHTIX0oET0fpyfRs=
 github.com/standardbeagle/vt10x v0.1.0-agnt.2 h1:2dAl2BxCWzjg/j2QQB5hlir2abzk/6Cqb4JO7JAJ/fI=
 github.com/standardbeagle/vt10x v0.1.0-agnt.2/go.mod h1:00hg3HPwExoncuKfxVY8Qb+7tNbkZ/hyAXymZTgW9n4=
+github.com/standardbeagle/vt10x v0.1.0-agnt.3 h1:fl3l7EtMwByAvxsJsxPK3+mpUJ/7up8iDV3g51pQda0=
+github.com/standardbeagle/vt10x v0.1.0-agnt.3/go.mod h1:Td3NgqNxTtHF2hik/7jAA8+tBO1cvivqWHmME//Cdb8=
 github.com/stretchr/objx v0.5.2 h1:xuMeJ0Sdp5ZMRXx/aWO6RZxdr3beISkG5/G/aIRr3pY=
 github.com/stretchr/objx v0.5.2/go.mod h1:FRsXN1f5AsAjCGJKqEizvkpNtU+EGNCLh3NxZ/8L+MA=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=
