@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
@@ -25,6 +26,7 @@ func (d *Daemon) applyDevOIDC(server *proxy.ProxyServer) {
 		return
 	}
 	server.SetDevOIDC(d.devIssuerFor(server.Path, cfg.DevOIDC, server))
+	warnDevOIDCScheme(server, cfg.DevOIDC)
 }
 
 // applyDevOIDCProject re-applies the dev-oidc block to every running proxy
@@ -36,7 +38,40 @@ func (d *Daemon) applyDevOIDCProject(projectPath string, cfg *config.AgntConfig)
 	}
 	for _, p := range d.proxym.ListScoped(scope.Project(projectPath)) {
 		p.SetDevOIDC(d.devIssuerFor(projectPath, cfg.DevOIDC, p))
+		warnDevOIDCScheme(p, cfg.DevOIDC)
 	}
+}
+
+// devOIDCSchemeMismatches lists the block's issuer and redirect URIs that name
+// the proxy's host with the other scheme (see devoidc.SchemeMismatches).
+func devOIDCSchemeMismatches(proxyURL string, block *config.DevOIDCConfig) []string {
+	if block == nil {
+		return nil
+	}
+	var redirects []string
+	for _, c := range block.Clients {
+		if c != nil {
+			redirects = append(redirects, c.RedirectURIs...)
+		}
+	}
+	return devoidc.SchemeMismatches(proxyURL, block.Issuer, redirects)
+}
+
+// warnDevOIDCScheme reports a dev-oidc block that no longer matches the
+// proxy's scheme, typically http URLs left over after a tailnet proxy began
+// serving the tailnet certificate. Sign-in fails against those URLs, so the
+// mismatch must reach the agent, not only the debug log.
+func warnDevOIDCScheme(server *proxy.ProxyServer, block *config.DevOIDCConfig) {
+	mismatches := devOIDCSchemeMismatches(server.URL(), block)
+	if len(mismatches) == 0 {
+		return
+	}
+	server.Logger().LogDiagnostic(proxy.ProxyDiagnostic{
+		Timestamp: time.Now(), Level: proxy.DiagnosticWarning, Category: "dev-oidc",
+		Event:   "dev_oidc_scheme_mismatch",
+		Message: fmt.Sprintf("dev-oidc URLs in .agnt.kdl do not match %s: %s", server.URL(), strings.Join(mismatches, "; ")),
+		Data:    map[string]any{"proxy_id": server.ID},
+	})
 }
 
 // devIssuerFor returns the project's issuer updated to block, creating it on

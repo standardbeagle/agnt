@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/standardbeagle/agnt/internal/config"
@@ -56,5 +57,33 @@ func TestDevIssuerConfigTranslation(t *testing.T) {
 	}
 	if cfg.Issuer != "https://dev.example.com/__agnt/oidc" || cfg.DefaultPersona != "standard" || cfg.Allow["a@x.com"][0] != "standard" {
 		t.Fatalf("config: %+v", cfg)
+	}
+}
+
+// A project whose dev-oidc block was written for an http tailnet proxy is
+// told, on every apply, which URLs broke when the proxy moved to https: the
+// app signs in against them, and nothing else would say why login fails.
+func TestDevOIDCSchemeMismatches(t *testing.T) {
+	block := &config.DevOIDCConfig{
+		Issuer: "http://build1.tnet.ts.net:31536/__agnt/oidc",
+		Clients: map[string]*config.DevOIDCClient{
+			"story-web": {RedirectURIs: []string{
+				"http://build1.tnet.ts.net:31536/api/auth/callback/dev-oidc",
+				"http://localhost:*/api/auth/callback/dev-oidc",
+			}},
+		},
+	}
+	got := devOIDCSchemeMismatches("https://build1.tnet.ts.net:31536", block)
+	if len(got) != 2 {
+		t.Fatalf("want issuer + one redirect-uri, got %q", got)
+	}
+	if !strings.Contains(strings.Join(got, " "), "should be https://build1.tnet.ts.net:31536/api/auth/callback/dev-oidc") {
+		t.Errorf("mismatch must name the fixed URL: %q", got)
+	}
+	if m := devOIDCSchemeMismatches("http://build1.tnet.ts.net:31536", block); len(m) != 0 {
+		t.Errorf("http proxy, http block: %q", m)
+	}
+	if m := devOIDCSchemeMismatches("https://build1.tnet.ts.net:31536", nil); len(m) != 0 {
+		t.Errorf("no block: %q", m)
 	}
 }
