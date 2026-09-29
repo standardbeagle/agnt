@@ -118,9 +118,17 @@ Available tools:
 - daemon: Manage the background daemon service`,
 	}
 
-	// Load .agnt.kdl and apply channel capability when enabled.
+	// Load .agnt.kdl and apply channel capability when enabled. A parse
+	// failure here used to fall back to DefaultAgntConfig() silently — the
+	// whole config (scripts, proxies, alerts, hook-rules, everything) then
+	// went unconfigured with no signal to the operator beyond a debug log.
+	// Surface it loudly: stderr for whoever is watching this process, plus
+	// selflog so it survives to `agnt hook log` / the overlay status notice
+	// even when nobody is.
 	agntCfg, cfgErr := config.LoadAgntConfig(".")
 	if cfgErr != nil {
+		fmt.Fprintf(os.Stderr, "agnt: .agnt.kdl failed to parse, running with defaults (scripts/proxies/alerts/hook-rules will NOT apply): %v\n", cfgErr)
+		selflog.Record("mcp", ".agnt.kdl failed to parse, running with defaults: %v", cfgErr)
 		agntCfg = config.DefaultAgntConfig()
 	}
 	serverOpts = tools.ChannelServerOptions(serverOpts, agntCfg.Channel)
