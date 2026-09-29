@@ -16,7 +16,15 @@ set -e
 
 echo "Running pre-commit checks..."
 
+# git exports GIT_DIR / GIT_INDEX_FILE (and in a worktree, a GIT_DIR that
+# resolves to the shared config) to hooks. Every child process inherits them,
+# and they override directory-based repo discovery — so a test that runs
+# `git init` / `git config` in a temp dir silently writes into THIS repo
+# instead. That once flipped core.bare=true and set a fake user.* identity
+# in the shared config, stamping every later commit in every worktree.
+# The hook's own git calls below run before the unset.
 STAGED_GO_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.go$' | grep -v '^vendor/' || true)
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES GIT_COMMON_DIR GIT_PREFIX
 
 if [ -z "$STAGED_GO_FILES" ]; then
     echo "No Go files staged, skipping Go checks."
