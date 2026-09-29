@@ -362,7 +362,22 @@
   // VOICE COMMANDS
   // ============================================================================
 
+  // executeVoiceCommand below does a first-match-wins linear scan, so a
+  // pattern that is a plain substring of a later, more specific phrase makes
+  // that later entry unreachable — "select" (tool) shadowed "select all"
+  // (action), and "text" (tool) shadowed "text field" (tool: input), for
+  // every utterance containing the shorter word. The fix is ORDER, not the
+  // patterns themselves: every multi-word phrase must be tested before any
+  // pattern that matches one of its own words alone. See
+  // voice-command-order.test.js for the regression coverage.
   var commandPatterns = [
+    // Multi-word phrases that a same-section single-word pattern below would
+    // otherwise shadow. Order within this block does not matter to each
+    // other (the phrases do not overlap one another), only relative to the
+    // single-word patterns further down.
+    { pattern: /\b(select all)\b/i, action: function() { return { action: 'selectAll' }; } },
+    { pattern: /\b(input field|text field)\b/i, action: function() { return { tool: 'input' }; } },
+
     // Tool selection
     { pattern: /\b(select|selection|pointer)\b/i, action: function() { return { tool: 'select' }; } },
     { pattern: /\b(rectangle|rect|box)\b/i, action: function() { return { tool: 'rectangle' }; } },
@@ -373,7 +388,7 @@
     { pattern: /\b(text|label)\b/i, action: function() { return { tool: 'text' }; } },
     { pattern: /\b(note|sticky|sticky note)\b/i, action: function() { return { tool: 'note' }; } },
     { pattern: /\b(button)\b/i, action: function() { return { tool: 'button' }; } },
-    { pattern: /\b(input|input field|text field)\b/i, action: function() { return { tool: 'input' }; } },
+    { pattern: /\b(input)\b/i, action: function() { return { tool: 'input' }; } },
     { pattern: /\b(image|picture|placeholder)\b/i, action: function() { return { tool: 'image' }; } },
     { pattern: /\b(eraser|erase|delete tool)\b/i, action: function() { return { tool: 'eraser' }; } },
 
@@ -383,7 +398,6 @@
     { pattern: /\b(save|send|done|finish)\b/i, action: function() { return { action: 'save' }; } },
     { pattern: /\b(clear|clear all|delete all)\b/i, action: function() { return { action: 'clear' }; } },
     { pattern: /\b(close|exit|cancel)\b/i, action: function() { return { action: 'close' }; } },
-    { pattern: /\b(select all)\b/i, action: function() { return { action: 'selectAll' }; } },
     { pattern: /\b(delete|remove)\b/i, action: function() { return { action: 'delete' }; } },
 
     // Colors
