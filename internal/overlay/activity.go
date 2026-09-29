@@ -373,12 +373,7 @@ func (am *ActivityMonitor) screenTail() []string {
 	for y := 0; y < rows; y++ {
 		var sb strings.Builder
 		for x := 0; x < cols; x++ {
-			g := am.screen.Cell(x, y)
-			if g.Char == 0 {
-				sb.WriteRune(' ')
-			} else {
-				sb.WriteRune(g.Char)
-			}
+			sb.WriteString(glyphText(am.screen.Cell(x, y)))
 		}
 		raw = append(raw, sb.String())
 	}

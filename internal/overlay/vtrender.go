@@ -113,6 +113,21 @@ func writeColor(buf *bytes.Buffer, c vt10x.Color, fg bool) {
 	}
 }
 
+// glyphText is the text one screen cell contributes to output. A wide
+// character's second cell contributes nothing — its head already covers both
+// columns — a never-written cell is a space, and anything else is its whole
+// grapheme cluster (Glyph.Char alone drops the rest of a ZWJ or combining
+// sequence). Every consumer that turns cells back into text goes through here.
+func glyphText(g vt10x.Glyph) string {
+	if g.IsWideContinuation() {
+		return ""
+	}
+	if g.Char == 0 {
+		return " "
+	}
+	return g.Text()
+}
+
 // isBlank reports whether a cell would render identically to an erased cell,
 // so a run of them at end-of-line can be replaced by a single EL.
 func isBlank(g vt10x.Glyph) bool {
@@ -174,11 +189,7 @@ func RenderScreenANSI(v vt10x.View, maxRows int) []byte {
 			st := styleOf(g)
 			writeSGR(&buf, cur, st, first)
 			cur, first = st, false
-			ch := g.Char
-			if ch == 0 {
-				ch = ' '
-			}
-			buf.WriteRune(ch)
+			buf.WriteString(glyphText(g))
 		}
 	}
 
