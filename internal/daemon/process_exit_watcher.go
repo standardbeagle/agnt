@@ -295,10 +295,12 @@ func (d *Daemon) watchProcessExit(proc *goprocess.ManagedProcess) {
 				if isIntentionalStop && scriptCfg.Hooks.OnStop != "" {
 					if err := RunLifecycleHook(scriptCfg.Hooks.OnStop, scriptName, "stop", scriptCfg, info.ExitCode); err != nil {
 						debug.Warn("daemon", "on-stop hook for %s: %v", scriptName, err)
+						d.startupLog(proc.ProjectPath).Warn(scriptName, "hook_failed", fmt.Sprintf("on-stop hook: %v", err))
 					}
 				} else if !isIntentionalStop && scriptCfg.Hooks.OnCrash != "" {
 					if err := RunLifecycleHook(scriptCfg.Hooks.OnCrash, scriptName, "crash", scriptCfg, info.ExitCode); err != nil {
 						debug.Warn("daemon", "on-crash hook for %s: %v", scriptName, err)
+						d.startupLog(proc.ProjectPath).Warn(scriptName, "hook_failed", fmt.Sprintf("on-crash hook: %v", err))
 					}
 				}
 			}

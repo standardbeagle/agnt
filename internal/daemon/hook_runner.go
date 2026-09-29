@@ -80,15 +80,23 @@ func buildHookEnv(scriptCfg *config.ScriptConfig, scriptID, event string, exitCo
 	return env
 }
 
-// runLifecycleHookAsync runs a lifecycle hook in a goroutine, logging errors.
-// Use when the caller must not block.
-func runLifecycleHookAsync(cmd, scriptID, event string, scriptCfg *config.ScriptConfig, exitCode int) {
+// runLifecycleHookAsync runs a lifecycle hook in a goroutine. Use when the
+// caller must not block. onFailure, if non-nil, is invoked with the error on
+// a non-nil result — in addition to the always-on debug.Warn, which alone is
+// not visible to the agent/session log (daemon-architecture.md § Silent
+// Failure Prohibition). Callers with a project context pass a closure that
+// records the failure on the project's startup log; hook_runner.go itself
+// stays decoupled from *Daemon.
+func runLifecycleHookAsync(cmd, scriptID, event string, scriptCfg *config.ScriptConfig, exitCode int, onFailure func(error)) {
 	if cmd == "" {
 		return
 	}
 	go func() {
 		if err := RunLifecycleHook(cmd, scriptID, event, scriptCfg, exitCode); err != nil {
 			debug.Warn("daemon", "lifecycle hook %s/%s: %v", scriptID, event, err)
+			if onFailure != nil {
+				onFailure(err)
+			}
 		}
 	}()
 }

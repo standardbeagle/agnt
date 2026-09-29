@@ -452,6 +452,7 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string, myState *process
 				}
 				if err := RunLifecycleHook(scriptCfg.Hooks.OnRestart, restartScriptName, "restart", scriptCfg, exitCode); err != nil {
 					debug.Warn("daemon", "on-restart hook for %s: %v", restartScriptName, err)
+					r.daemon.startupLog(myState.projectPath).Warn(restartScriptName, "hook_failed", fmt.Sprintf("on-restart hook: %v", err))
 				}
 			}
 		}
