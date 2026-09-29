@@ -11,7 +11,7 @@ response.
   **ships today** and points at the spec for the full contract; it does not
   restate it.
 - **MCP tool surface:** [`mcp-tools.md` → `publish` Tool](mcp-tools.md#publish-tool)
-- **Config surface:** [`configuration.md` → Public Walkthrough Feedback](configuration.md#public-walkthrough-feedback-internalconfigfeedbackgo-feedback-in-agntkdl)
+- **Config surface:** [`configuration.md` → Public Walkthrough Feedback](configuration.md#public-walkthrough-feedback-internalconfigfeedbackgo-feedback-in-global-configkdl)
 
 **Four things that will bite you — read these before you hand out a link:**
 
@@ -382,7 +382,7 @@ the variant set, or the token, and it cannot read anything back.
 | Retention (age) | 90 days | `retention-days` |
 
 Retention is **500 rows OR 90 days, whichever comes first.** These limits are
-configurable and honored by the live limiter — see [`configuration.md`](configuration.md#public-walkthrough-feedback-internalconfigfeedbackgo-feedback-in-agntkdl).
+configurable and honored by the live limiter — see [`configuration.md`](configuration.md#public-walkthrough-feedback-internalconfigfeedbackgo-feedback-in-global-configkdl).
 
 ### Storage & restart
 
@@ -744,9 +744,14 @@ On a suspected token leak or abuse:
 ## 11. Config example
 
 A KDL `feedback` block that parses against `internal/config` (all keys optional;
-omitted/invalid values fall back to the spec defaults shown):
+omitted/invalid values fall back to the spec defaults shown). **This is a
+global setting** — it lives in `~/.config/agnt/config.kdl`, the same file
+`agnt publish serve` and the daemon both load at startup, never in a
+project's `.agnt.kdl` (which has no `feedback` field and fails to parse if
+you write this block there):
 
 ```kdl
+// ~/.config/agnt/config.kdl
 feedback {
     rate-per-minute 10
     burst 5
@@ -785,4 +790,4 @@ amplification rationale: [`configuration.md`](configuration.md#public-plane-bloc
 under the same transport/connection caps.
 
 Full config reference:
-[`configuration.md`](configuration.md#public-walkthrough-feedback-internalconfigfeedbackgo-feedback-in-agntkdl).
+[`configuration.md`](configuration.md#public-walkthrough-feedback-internalconfigfeedbackgo-feedback-in-global-configkdl).

@@ -356,7 +356,7 @@ __devtool.auditAll()  // 8 weighted audits: dom, css, perf, security, seo,
 
 ## Configuration
 
-Create `.agnt.kdl` in your project root to auto-start scripts, proxies, and configure browser notifications:
+Create `.agnt.kdl` in your project root to auto-start scripts and proxies:
 
 ```kdl
 // Scripts to run via daemon process manager
@@ -390,23 +390,9 @@ proxies {
         max-log-size 2000
     }
 }
-
-// Browser notifications when AI responds
-hooks {
-    on-response {
-        toast true                 // Show toast notification
-        indicator true             // Flash bug indicator
-        sound false                // Play notification sound
-    }
-}
-
-// Toast appearance
-toast {
-    duration 4000
-    position "bottom-right"        // top-right, top-left, bottom-right, bottom-left
-    max-visible 3
-}
 ```
+
+Browser-side error/diagnostic delivery to the agent is configured via `alerts {}`, not a toast/hook block — see `docs/configuration.md`.
 
 Run `/setup-project` in Claude Code to interactively generate this configuration.
 
