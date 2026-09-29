@@ -101,6 +101,13 @@ func (d *Daemon) RunAutostartNonInteractive(ctx context.Context, projectPath str
 
 	// If the policy is "prompt", temporarily override to "skip" for this call.
 	if agntConfig.EffectivePortConflictPolicy() == "prompt" {
+		// Project is nil whenever .agnt.kdl declares no `project {}` block —
+		// EffectivePortConflictPolicy already treats a nil Project as
+		// "prompt", so this branch is reachable with Project == nil and must
+		// allocate before writing into it.
+		if agntConfig.Project == nil {
+			agntConfig.Project = &config.AgntProjectMeta{}
+		}
 		agntConfig.Project.PortConflict = "skip"
 		d.nonInteractiveConfigOverride.Store(projectPath, agntConfig)
 		defer d.nonInteractiveConfigOverride.Delete(projectPath)
@@ -168,17 +175,19 @@ func (d *Daemon) RunAutostartAsync(
 	// the debug file.
 	d.surfaceConfigWarnings(projectPath, agntConfig.Warnings)
 
-	// Apply alerts subsystem config (hold buffer, transport thresholds).
-	// Safe to run on every autostart; latest values win.
-	d.ApplyAlertsConfig(projectPath, agntConfig.Alerts)
+	d.applyProjectRuntimeConfig(projectPath, agntConfig)
 
-	// Apply the chromedp automation concurrency ceiling. Daemon-global,
-	// last-writer-wins on session connect — same reconfigure shape as
-	// ApplyAlertsConfig. This is what makes automation.max-sessions actually
-	// drive the SessionManager's cap rather than being parsed and ignored.
-	if d.sessionm != nil {
-		d.sessionm.SetMaxSessions(agntConfig.Automation.MaxSessionsOrDefault())
-	}
+	// Honor this project's session.orphan-pgid-scan setting the first time
+	// we see a concrete projectPath and its .agnt.kdl. The daemon's only
+	// other orphan-pgid scan runs once at Start() with projectPath=""
+	// (daemon.go), before any project is known — pgidOwnershipCheck then has
+	// an empty knownProjects set and can never honor (or even read) any
+	// project's opt-out. RunAutostartAsync is invoked on every session
+	// connect and every live reconcile, so this is the first point a
+	// project's real setting is available; scanning here — once per project
+	// per daemon lifetime — is what makes the opt-out (and the default
+	// enabled scan) actually take effect instead of being silently ignored.
+	d.projectOrphanPGIDScanOnce(projectPath)
 
 	// Step 3: Port pre-flight check
 	autostartScripts := agntConfig.GetAutostartScripts()
@@ -237,6 +246,26 @@ func (d *Daemon) RunAutostartAsync(
 	return result
 }
 
+// applyProjectRuntimeConfig applies the daemon-global runtime config values
+// that live in .agnt.kdl but are not scripts/proxies: alerts (hold buffer,
+// transport thresholds) and the chromedp automation concurrency ceiling.
+// Idempotent, last-writer-wins — safe to call on every autostart AND on
+// every live reconcile, including a reconcile whose script/proxy plan is
+// empty (ReconcileProjectConfig calls this directly so an alerts-only or
+// automation.max-sessions-only edit still takes effect: those fields are
+// not part of ReconcilePlan's diff, and RunAutostart used to be the only
+// caller of this logic, so a reconcile with no script/proxy delta used to
+// skip calling RunAutostart entirely and these settings never applied).
+func (d *Daemon) applyProjectRuntimeConfig(projectPath string, cfg *config.AgntConfig) {
+	if cfg == nil {
+		return
+	}
+	d.ApplyAlertsConfig(projectPath, cfg.Alerts)
+	if d.sessionm != nil {
+		d.sessionm.SetMaxSessions(cfg.Automation.MaxSessionsOrDefault())
+	}
+}
+
 // collectManagedPIDs returns a set of all PIDs currently managed by the daemon,
 // plus any child/descendant processes spawned by managed processes.
 func (d *Daemon) collectManagedPIDs() map[int]bool {
@@ -292,7 +321,27 @@ func (d *Daemon) registerAndStartScripts(ctx context.Context, cfg *config.AgntCo
 
 	for name, scriptCfg := range cfg.Scripts {
 		processID := makeProcessID(projectPath, name)
-		d.scriptConfigs.Store(processID, scriptCfg)
+		// Do not stamp the new config snapshot over a script that is still
+		// Running/Starting under whatever config it actually launched with.
+		// reconcile_apply.go's signature diff reads scriptConfigs to decide
+		// whether the running process matches the current config; storing
+		// the new value here unconditionally — before startOneScript's
+		// idempotent already-running fast path even runs — would let a
+		// second RunAutostart call (session reconnect, periodic reconcile)
+		// stamp an edited config as "applied" even though nothing actually
+		// restarted, permanently masking the pending change. The snapshot
+		// is corrected in StartScriptExplicit, at the point the process is
+		// genuinely (re)started.
+		alreadyLive := false
+		if entry, ok := d.scriptRegistry.Get(name, projectPath); ok {
+			switch entry.State() {
+			case script.StateRunning, script.StateStarting:
+				alreadyLive = true
+			}
+		}
+		if !alreadyLive {
+			d.scriptConfigs.Store(processID, scriptCfg)
+		}
 		if _, err := d.registerScriptEntry(name, projectPath, scriptConfigToEntry(scriptCfg)); err != nil {
 			log.Error(name, "register_failed", fmt.Sprintf("failed to register script: %v", err))
 		}
@@ -729,9 +778,6 @@ func (d *Daemon) StartScriptExplicit(ctx context.Context, name string, scriptCfg
 	// Make process ID unique per project to avoid collisions between sessions
 	processID := makeProcessID(projectPath, name)
 
-	// Store agnt-specific config for later use (e.g., restart with URLMatchers)
-	d.scriptConfigs.Store(processID, scriptCfg)
-
 	// Register in ScriptRegistry before starting (idempotent; a changed config
 	// replaces the stale entry rather than erroring)
 	entry, regErr := d.registerScriptEntry(name, projectPath, scriptConfigToEntry(scriptCfg))
@@ -746,11 +792,47 @@ func (d *Daemon) StartScriptExplicit(ctx context.Context, name string, scriptCfg
 	}
 	d.registerIncidentProcessOwner(processID, entry.Owner())
 
-	// Check ScriptRegistry state: if already running/starting, skip
+	// Check ScriptRegistry state OR ProcessManager ground truth: skip if
+	// either says already running/starting. Neither is sufficient alone:
+	//   - entry.State() misses the case where registerScriptEntry's Upsert
+	//     just swapped in a brand-new Entry (State reset to pending)
+	//     because the incoming script.Config differs at all from what was
+	//     stored — exactly the case right above this line, on every call
+	//     carrying an edited config for an already-running script. Falling
+	//     through there would let this function store the edited config as
+	//     the "running" snapshot below even though the OS process never
+	//     actually restarted (ProcessManager.StartOrReuse would quietly
+	//     reuse it), permanently masking the pending edit from reconcile's
+	//     signature diff.
+	//   - ProcessManager alone misses a caller that manages a script purely
+	//     through the ScriptRegistry without a real OS process registered
+	//     yet (e.g. TestDaemon_AutostartSkipsRunningScript pre-sets
+	//     entry.SetState(StateRunning) with no ProcessManager entry at all).
+	skip := false
 	if state := entry.State(); state == script.StateRunning || state == script.StateStarting {
-		debug.Log("daemon", "StartScriptExplicit: script %s already %s, skipping", name, state)
+		skip = true
+	}
+	if !skip {
+		if proc, err := d.hub.ProcessManager().Get(processID); err == nil {
+			switch proc.State() {
+			case process.StateRunning, process.StateStarting:
+				skip = true
+			}
+		}
+	}
+	if skip {
+		debug.Log("daemon", "StartScriptExplicit: script %s already running, skipping", name)
 		return nil
 	}
+
+	// Store agnt-specific config for later use (e.g., restart with
+	// URLMatchers). Deliberately AFTER the already-running check above:
+	// reconcile_apply.go's signature diff reads this cache to decide
+	// whether the running process matches the current config. Storing it
+	// before the skip check would stamp an edited config as "applied" on a
+	// call that never actually relaunched the process (see the matching
+	// comment in registerAndStartScripts).
+	d.scriptConfigs.Store(processID, scriptCfg)
 
 	// Resolve working directory and environment
 	workingDir := resolveWorkingDir(projectPath, scriptCfg.Cwd)
@@ -858,7 +940,9 @@ func (d *Daemon) StartScriptExplicit(ctx context.Context, name string, scriptCfg
 
 	// Fire on-start lifecycle hook if configured.
 	if scriptCfg.Hooks != nil && scriptCfg.Hooks.OnStart != "" {
-		runLifecycleHookAsync(scriptCfg.Hooks.OnStart, name, "start", scriptCfg, 0)
+		runLifecycleHookAsync(scriptCfg.Hooks.OnStart, name, "start", scriptCfg, 0, func(err error) {
+			d.startupLog(projectPath).Warn(name, "hook_failed", fmt.Sprintf("on-start hook: %v", err))
+		})
 	}
 	return nil
 }

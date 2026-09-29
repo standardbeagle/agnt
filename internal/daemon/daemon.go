@@ -885,9 +885,14 @@ func (d *Daemon) Start() error {
 	// dead but whose members are still running. These are leftovers from
 	// a daemon crash mid-session: the session-pgid tracker from Slice A
 	// was in memory, so it could not fire. No project path is known yet
-	// at daemon startup -- the scan runs with default config (enabled).
-	// Per-project overrides via session.orphan-pgid-scan still apply if
-	// the daemon is later reinvoked with a projectPath.
+	// at daemon startup, so this pass runs with the default (enabled) and
+	// an empty knownProjects set — it can reap only pgids whose ownership
+	// evidence needs no project match. The daemon is never "reinvoked"
+	// with a projectPath later: instead, RunAutostartAsync
+	// (daemon_autostart.go) runs a second, project-scoped scan — deduped to
+	// once per project — the first time it loads that project's real
+	// .agnt.kdl, which is the actual point session.orphan-pgid-scan's
+	// per-project opt-out takes effect.
 	d.startupOrphanPGIDScan("")
 
 	// Restore proxies from persisted state

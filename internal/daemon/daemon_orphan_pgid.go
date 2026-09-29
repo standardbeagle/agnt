@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -196,6 +197,34 @@ func (d *Daemon) startupOrphanPGIDScan(projectPath string) int {
 		debug.Info("daemon", "startup orphan-pgid scan: reaped %d/%d orphan group(s)", killed, len(orphans))
 	}
 	return killed
+}
+
+// projectOrphanScanDone dedups projectOrphanPGIDScanOnce across the many
+// times RunAutostartAsync runs for the same project over a daemon's
+// lifetime (every session connect, every live reconcile). Keyed by daemon
+// instance + normalized project path so multiple *Daemon instances in the
+// same test binary never share state. Package-level rather than a Daemon
+// struct field: daemon.go's struct is out of scope for this fix (shared,
+// high-churn file — see AGENTS.md task scoping), and this map is small,
+// append-only, and harmless for the life of the process.
+var projectOrphanScanDone sync.Map
+
+// projectOrphanPGIDScanOnce runs startupOrphanPGIDScan for projectPath at
+// most once per (daemon instance, project) pair. Wired from
+// RunAutostartAsync, which is the first point in the daemon's lifecycle a
+// concrete projectPath and its real .agnt.kdl are available — the daemon's
+// other orphan-pgid scan runs once at Start() with projectPath == "" before
+// any project is known, so it can never honor (or even read) a project's
+// session.orphan-pgid-scan opt-out. See the call site in daemon_autostart.go.
+func (d *Daemon) projectOrphanPGIDScanOnce(projectPath string) {
+	if projectPath == "" {
+		return
+	}
+	key := fmt.Sprintf("%p:%s", d, normalizePath(projectPath))
+	if _, already := projectOrphanScanDone.LoadOrStore(key, struct{}{}); already {
+		return
+	}
+	d.startupOrphanPGIDScan(projectPath)
 }
 
 // liveSessionPGIDs returns the pgids of every currently-registered session
