@@ -53,8 +53,41 @@
     var WS_URL = protocol + '//' + window.location.host + '/__devtool_metrics';
     var ws = null;
     var reconnectAttempts = 0;
-    var MAX_RECONNECT_ATTEMPTS = 5;
+    // Unbounded exponential backoff (never gives up — a dev server can be down
+    // for minutes across a rebuild): 1s, 2s, 4s, ... capped at 30s per attempt.
+    // Previously MAX_RECONNECT_ATTEMPTS=5 meant the socket gave up for good
+    // after ~15s and the indicator dot latched "disconnected" forever, even
+    // after the dev server came back — reconnect() was the only way out.
+    var RECONNECT_BASE_DELAY_MS = 1000;
+    var RECONNECT_MAX_DELAY_MS = 30000;
     var reconnectTimer = null;
+
+    // reconnectDelay returns the backoff for the Nth reconnect attempt
+    // (1-based): base * 2^(attempt-1), capped. Pure function so it is testable
+    // without a timer.
+    function reconnectDelay(attempt) {
+      var exp = Math.min(attempt - 1, 10); // caps the multiplier well before overflow
+      return Math.min(RECONNECT_BASE_DELAY_MS * Math.pow(2, exp), RECONNECT_MAX_DELAY_MS);
+    }
+
+    // retryNow cancels any pending backoff wait and reconnects immediately.
+    // A no-op while already connected. `connect` is declared further down
+    // (hoisted as a function declaration, later reassigned to
+    // connectWithDiagnostics) so this can reference it before that point in
+    // the file.
+    function retryNow(reason) {
+      try {
+        if (ws && ws.readyState === WebSocket.OPEN) return;
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = null;
+        }
+        addDiagnostic('websocket', 'retry_now', { reason: reason });
+        connect();
+      } catch (e) {
+        reportInternalError('retry_now_failed', e);
+      }
+    }
 
     // Session ID - unique per browser tab/window, persists across page navigations
     var COOKIE_NAME = '__devtool_sid';
@@ -304,14 +337,12 @@
           try {
             console.log('[DevTool] Metrics connection closed');
 
-            if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-              reconnectAttempts++;
-              var delay = 1000 * reconnectAttempts;
-              console.log('[DevTool] Reconnecting in ' + delay + 'ms (attempt ' + reconnectAttempts + ')');
-              reconnectTimer = setTimeout(connect, delay);
-            } else {
-              console.warn('[DevTool] Max reconnection attempts reached');
-            }
+            // Unbounded backoff — never gives up. A dev server restart can
+            // easily outlast a fixed attempt cap.
+            reconnectAttempts++;
+            var delay = reconnectDelay(reconnectAttempts);
+            console.log('[DevTool] Reconnecting in ' + delay + 'ms (attempt ' + reconnectAttempts + ')');
+            reconnectTimer = setTimeout(connect, delay);
             // After the retry timer is armed, so listeners see "connecting"
             // rather than a spurious "disconnected" flicker.
             notifyConnectionState();
@@ -1212,16 +1243,15 @@
             });
             console.log('[DevTool] Metrics connection closed');
 
-            if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-              reconnectAttempts++;
-              var delay = 1000 * reconnectAttempts;
-              addDiagnostic('websocket', 'reconnect_scheduled', { delay: delay, attempt: reconnectAttempts });
-              console.log('[DevTool] Reconnecting in ' + delay + 'ms (attempt ' + reconnectAttempts + ')');
-              reconnectTimer = setTimeout(connectWithDiagnostics, delay);
-            } else {
-              addDiagnostic('websocket', 'reconnect_exhausted', { maxAttempts: MAX_RECONNECT_ATTEMPTS });
-              console.warn('[DevTool] Max reconnection attempts reached');
-            }
+            // Unbounded backoff — never gives up. A dev server restart or a
+            // rebuild can easily outlast a fixed attempt cap, and the prior
+            // 5-attempt/~15s cap left the indicator latched "disconnected"
+            // until the visitor manually called reconnect().
+            reconnectAttempts++;
+            var delay = reconnectDelay(reconnectAttempts);
+            addDiagnostic('websocket', 'reconnect_scheduled', { delay: delay, attempt: reconnectAttempts });
+            console.log('[DevTool] Reconnecting in ' + delay + 'ms (attempt ' + reconnectAttempts + ')');
+            reconnectTimer = setTimeout(connectWithDiagnostics, delay);
             // After the retry timer is armed, so listeners see "connecting"
             // rather than a spurious "disconnected" flicker.
             notifyConnectionState();
@@ -1300,6 +1330,23 @@
       if (__wantsTransport) {
         addDiagnostic('core', 'initializing', { version: window.__devtool_version || 'unknown', role: __frameRole || 'standalone' });
         connect();
+        // Skip the rest of the backoff wait the moment the tab has a real
+        // reason to believe the network/server is back: the OS reports the
+        // link up, or the tab regains focus after being backgrounded (both
+        // are exactly the moments a stalled dev-server rebuild tends to
+        // finish). Never fires while already connected.
+        try {
+          if (typeof window.addEventListener === 'function') {
+            window.addEventListener('online', function() { retryNow('online'); });
+          }
+          if (typeof document.addEventListener === 'function') {
+            document.addEventListener('visibilitychange', function() {
+              if (document.visibilityState === 'visible') { retryNow('visibilitychange'); }
+            });
+          }
+        } catch (e) {
+          reportInternalError('retry_listeners_failed', e);
+        }
       } else {
         addDiagnostic('core', 'telemetry_suppressed', { role: __frameRole });
       }
@@ -1410,7 +1457,9 @@
               readyState: ws ? ws.readyState : -1,
               readyStateLabel: ws ? states[ws.readyState] || 'UNKNOWN' : 'NO_SOCKET',
               reconnectAttempts: reconnectAttempts,
-              maxReconnectAttempts: MAX_RECONNECT_ATTEMPTS,
+              // Backoff is unbounded (reconnectDelay), so there is no cap to
+              // report; nextReconnectDelayMs is what a viewer actually waits.
+              nextReconnectDelayMs: reconnectDelay(reconnectAttempts + 1),
               wsUrl: WS_URL
             };
           },
