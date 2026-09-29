@@ -308,7 +308,6 @@ type Overlay struct {
 	gate *OutputGate
 
 	// Callbacks
-	onAction         func(Action) error
 	onFreeze         func()               // Called when screen should freeze (stop PTY output)
 	onUnfreeze       func()               // Called when screen should unfreeze (send SIGWINCH)
 	onBeforeUnfreeze func(panelID string) // Called before gate unfreeze with the active process panel ID
@@ -342,9 +341,6 @@ type Config struct {
 	// Version string to display in dashboard
 	Version string
 
-	// Action callback
-	OnAction func(Action) error
-
 	// Freeze/unfreeze callbacks for screen management
 	OnFreeze   func() // Called when menu opens (freeze PTY output)
 	OnUnfreeze func() // Called when menu closes (send SIGWINCH to redraw)
@@ -370,7 +366,6 @@ func New(ptmx PtyReadWriter, width, height int, cfg Config) *Overlay {
 		width:      width,
 		height:     height,
 		renderer:   renderer,
-		onAction:   cfg.OnAction,
 		onFreeze:   cfg.OnFreeze,
 		onUnfreeze: cfg.OnUnfreeze,
 	}

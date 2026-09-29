@@ -498,17 +498,9 @@ func runACPOverlay(ctx context.Context, conn *acp.ClientSideConnection, client *
 	lineEditor := NewLineEditor(rawWriter, "> ")
 	replAdapter := NewREPLAdapter(lineEditor)
 
-	var statusFetcher *overlay.StatusFetcher
-
 	cfg := overlay.DefaultConfig()
 	cfg.ShowIndicator = showIndicator
 	cfg.Version = appVersion
-	cfg.OnAction = func(action overlay.Action) error {
-		if action == overlay.ActionRefreshStatus && statusFetcher != nil {
-			statusFetcher.Refresh()
-		}
-		return nil
-	}
 
 	termOverlay = overlay.New(replAdapter, width, height, cfg)
 	termOverlay.SetGate(outputGate)
@@ -544,7 +536,7 @@ func runACPOverlay(ctx context.Context, conn *acp.ClientSideConnection, client *
 		inputRouter.SetSummarizer(summarizer)
 	}
 
-	statusFetcher = overlay.NewStatusFetcher(daemonClient, termOverlay, 2*time.Second)
+	statusFetcher := overlay.NewStatusFetcher(daemonClient, termOverlay, 2*time.Second)
 	statusFetcher.Start(ctx)
 	defer statusFetcher.Stop()
 	inputRouter.SetStatusFetcher(statusFetcher)

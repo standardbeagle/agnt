@@ -1871,8 +1871,8 @@ func writeIfLive(ctx context.Context, w io.Writer, data []byte) {
 // overlayCore bundles the overlay component chain shared by the PTY pipeline
 // (setupTerminalOverlay) and the AI REPL (runAiClaudeOverlay): output gate,
 // terminal overlay, input router, the shared daemon connection with its
-// adapters, the AI summarizer, and the status fetcher (wired into
-// ActionRefreshStatus). Callers own lifecycle (Start/Stop the fetcher,
+// adapters, the AI summarizer, and the status fetcher (the input router
+// refreshes it directly after commands). Callers own lifecycle (Start/Stop the fetcher,
 // Close the conn) and wire their bespoke bits (output filter, gate
 // callbacks, resize) on top.
 type overlayCore struct {
@@ -1893,12 +1893,6 @@ func newOverlayCore(backend overlay.PtyReadWriter, width, height int, showIndica
 	cfg := overlay.DefaultConfig()
 	cfg.ShowIndicator = showIndicator
 	cfg.Version = appVersion
-	cfg.OnAction = func(action overlay.Action) error {
-		if action == overlay.ActionRefreshStatus && c.statusFetcher != nil {
-			c.statusFetcher.Refresh()
-		}
-		return nil
-	}
 
 	c.term = overlay.New(backend, width, height, cfg)
 	c.term.SetGate(c.gate)
