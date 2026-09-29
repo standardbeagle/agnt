@@ -248,3 +248,14 @@ func TestReplaytestRecordThenStop(t *testing.T) {
 	require.NoError(t, err)
 	assert.True(t, again.IsError)
 }
+
+// TestReplaytestReadDir pins the read-path directory resolution: an explicit
+// directory always wins, and an empty one falls through to getProjectPath()
+// — the same explicit, audited resolver every other read/filter tool in this
+// package uses — never an implicit relative path handed straight to
+// replaytest.NewStore (the bug this replaced: NewStore("") silently resolved
+// ".agnt/replaytests" against the daemon process's own cwd).
+func TestReplaytestReadDir(t *testing.T) {
+	assert.Equal(t, "/tmp/explicit-project", replaytestReadDir("/tmp/explicit-project"))
+	assert.Equal(t, getProjectPath(), replaytestReadDir(""))
+}

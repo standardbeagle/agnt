@@ -19,19 +19,41 @@ const errCollectorJS = `window.__rt_errors=[];` +
 	`window.addEventListener('error',function(e){window.__rt_errors.push(String(e.message));});` +
 	`window.addEventListener('unhandledrejection',function(e){window.__rt_errors.push(String(e.reason));});`
 
+// ProxyResolver resolves a proxy id to its daemon-reported status, which
+// carries the proxy's actual listen URL (the "url" field — see
+// internal/daemon/hub_proxy.go's PROXY STATUS response). *daemonclient.Client
+// and *daemonclient.ResilientClient both satisfy this (they already do, as
+// replaytestLogClient in internal/tools); tests inject a fake.
+type ProxyResolver interface {
+	ProxyStatus(id string) (map[string]interface{}, error)
+}
+
 // Driver runs the chromedp seed lane: it injects the worker bundle (which mocks
 // the network entirely in-page) before navigation, drives a Scenario's Steps,
 // evaluates Assertions, captures JS errors, and returns a *Report. It is THIN —
 // all request matching and response mutation lives in the worker bundle.
 type Driver struct {
-	proxyID string
+	proxyID  string
+	resolver ProxyResolver
 }
 
 // NewDriver returns a seed-lane driver. proxyID may be "" when the bundle fully
-// mocks the network in-page (the default); when set, the chromedp session is
-// routed through that proxy.
+// mocks the network in-page (the default, and the only case this constructor
+// supports) — no proxy routing is required, so no resolver is needed. When
+// proxyID is set, use NewDriverWithProxy instead: chromedp's
+// --proxy-server flag needs the proxy's actual listen URL, not its id, and
+// resolving that requires a daemon round trip this constructor has no way to
+// make.
 func NewDriver(proxyID string) *Driver {
 	return &Driver{proxyID: proxyID}
+}
+
+// NewDriverWithProxy returns a seed-lane driver that routes chromedp through
+// the given proxy id, resolved to its listen URL via resolver at RunSeed
+// time (proxy addresses can change between daemon restarts, so resolution is
+// not cached across Driver instances).
+func NewDriverWithProxy(proxyID string, resolver ProxyResolver) *Driver {
+	return &Driver{proxyID: proxyID, resolver: resolver}
 }
 
 // RunSeed injects the worker bundle for the given preset, drives the scenario's
@@ -41,6 +63,11 @@ func (d *Driver) RunSeed(ctx context.Context, sc *Scenario, preset string) (*Rep
 	js, err := GenerateBundle(sc, preset)
 	if err != nil {
 		return nil, fmt.Errorf("generate bundle: %w", err)
+	}
+
+	proxyURL, err := d.resolveProxyURL()
+	if err != nil {
+		return nil, err
 	}
 
 	rep := NewReport(sc.Name)
@@ -53,7 +80,7 @@ func (d *Driver) RunSeed(ctx context.Context, sc *Scenario, preset string) (*Rep
 	sess := cdp.NewSession(cdp.SessionConfig{
 		ID:       "replay-seed-" + label,
 		Headless: true,
-		ProxyURL: proxyURLFor(d.proxyID),
+		ProxyURL: proxyURL,
 		Timeout:  30 * time.Second,
 	})
 	if err := sess.Start(ctx); err != nil {
@@ -198,13 +225,26 @@ func (d *Driver) evalAssertions(sess *cdp.AutomationSession, step Step) []string
 	return failures
 }
 
-// proxyURLFor maps a proxyID to a ProxyServer URL. An empty proxyID means the
-// bundle mocks the network in-page and no proxy routing is required.
-func proxyURLFor(proxyID string) string {
-	if proxyID == "" {
-		return ""
+// resolveProxyURL turns d.proxyID into the actual URL chromedp's
+// --proxy-server flag needs. An empty proxyID means the bundle mocks the
+// network in-page and no proxy routing is required, so "" (no flag) is
+// correct and expected — not an error.
+func (d *Driver) resolveProxyURL() (string, error) {
+	if d.proxyID == "" {
+		return "", nil
 	}
-	return proxyID
+	if d.resolver == nil {
+		return "", fmt.Errorf("replay against proxy %q requires a proxy resolver (use NewDriverWithProxy)", d.proxyID)
+	}
+	status, err := d.resolver.ProxyStatus(d.proxyID)
+	if err != nil {
+		return "", fmt.Errorf("resolve proxy %q: %w", d.proxyID, err)
+	}
+	url, _ := status["url"].(string)
+	if url == "" {
+		return "", fmt.Errorf("resolve proxy %q: status response has no url", d.proxyID)
+	}
+	return url, nil
 }
 
 // joinURL joins a base URL with a step selector treated as a path/href. A blank

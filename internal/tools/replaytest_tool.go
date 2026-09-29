@@ -43,7 +43,7 @@ type ReplaytestInput struct {
 	Action        string `json:"action" jsonschema:"Operation to perform: record, stop, refine, replay, explore, list, or show."`
 	Name          string `json:"name,omitempty" jsonschema:"Scenario name to record, show, refine, or replay."`
 	ProxyID       string `json:"proxy_id,omitempty" jsonschema:"Proxy id the scenario records or replays against."`
-	Preset        string `json:"preset,omitempty" jsonschema:"Optional fuzz preset to run alongside the baseline on replay (e.g. latency, error5xx). When empty, replay runs the baseline only."`
+	Preset        string `json:"preset,omitempty" jsonschema:"Optional fuzz preset to run alongside the baseline on replay: empty_array, http_error, truncated_json, null_fields, reordered, or type_flip. When empty, replay runs the baseline only."`
 	ExploreAgents int    `json:"explore_agents,omitempty" jsonschema:"Number of exploration seeds to partition the scenario into for the explore action."`
 	Directory     string `json:"directory,omitempty" jsonschema:"Project directory whose scenario store to use. Defaults to the caller's session project."`
 }
@@ -134,6 +134,23 @@ func replaytestDir(explicit string) string {
 	return ""
 }
 
+// replaytestReadDir resolves the store directory for a read-only action
+// (list/show), which — unlike record/replay/refine — is allowed a cwd
+// fallback. explicit has already been through replaytestDir once in handle(),
+// so it is either a caller-supplied directory or an AGNT_PROJECT_PATH
+// resolution; only when both are absent does this fall through to
+// getProjectPath(), the same resolver every other read/filter tool in this
+// package uses. Constructing NewStore(explicit) directly when explicit=="" —
+// the bug this replaces — silently handed Store a relative ".agnt/replaytests"
+// that resolved against the daemon process's own cwd at file-open time,
+// never audited or logged.
+func replaytestReadDir(explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	return getProjectPath()
+}
+
 func (h *replaytestHandler) handle(ctx context.Context, in ReplaytestInput) (*mcp.CallToolResult, ReplaytestOutput, error) {
 	if !replaytestGatedActions[in.Action] && !replaytestFreeActions[in.Action] {
 		return fail[ReplaytestOutput]("unknown action: " + in.Action)
@@ -174,7 +191,11 @@ func (h *replaytestHandler) handle(ctx context.Context, in ReplaytestInput) (*mc
 
 	switch in.Action {
 	case "list":
-		names, err := replaytest.NewStore(in.Directory).List()
+		// Unlike write actions, list is allowed a cwd fallback — but that
+		// fallback must go through getProjectPath(), the same explicit,
+		// audited resolver every other read/filter tool in this package
+		// uses, never an implicit relative path handed to Store.
+		names, err := replaytest.NewStore(replaytestReadDir(in.Directory)).List()
 		if err != nil {
 			return fail[ReplaytestOutput]("failed to list scenarios: " + err.Error())
 		}
@@ -184,7 +205,7 @@ func (h *replaytestHandler) handle(ctx context.Context, in ReplaytestInput) (*mc
 		if in.Name == "" {
 			return fail[ReplaytestOutput]("provide a scenario name to show")
 		}
-		sc, err := replaytest.NewStore(in.Directory).LoadScenario(in.Name)
+		sc, err := replaytest.NewStore(replaytestReadDir(in.Directory)).LoadScenario(in.Name)
 		if err != nil {
 			return fail[ReplaytestOutput]("failed to load scenario: " + err.Error())
 		}
@@ -224,6 +245,16 @@ func (h *replaytestHandler) handleReplay(ctx context.Context, in ReplaytestInput
 	}
 
 	driver := replaytest.NewDriver(in.ProxyID)
+	if in.ProxyID != "" {
+		if h.clientFn == nil {
+			return fail[ReplaytestOutput]("replay against proxy_id " + in.ProxyID + " requires daemon mode — no daemon client is available to resolve its URL")
+		}
+		client, err := h.clientFn()
+		if err != nil {
+			return fail[ReplaytestOutput]("failed to reach daemon: " + err.Error())
+		}
+		driver = replaytest.NewDriverWithProxy(in.ProxyID, client)
+	}
 	agg := replaytest.NewReport(sc.Name)
 	for _, p := range presets {
 		rep, err := driver.RunSeed(ctx, sc, p)
@@ -534,7 +565,7 @@ Examples:
   replaytest {action: "list"}
   replaytest {action: "show", name: "checkout"}
   replaytest {action: "replay", name: "checkout"}
-  replaytest {action: "replay", name: "checkout", preset: "latency"}
+  replaytest {action: "replay", name: "checkout", preset: "http_error"}
   replaytest {action: "explore", name: "checkout", explore_agents: 4}
   replaytest {action: "refine", name: "checkout"}`,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in ReplaytestInput) (*mcp.CallToolResult, ReplaytestOutput, error) {
