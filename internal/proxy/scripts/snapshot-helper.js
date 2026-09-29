@@ -104,38 +104,32 @@
     });
   }
 
+  // There is no daemon-side handler for a baseline/compare request sent
+  // over this socket (nothing owns storing or diffing it out here), and the
+  // MCP `snapshot` tool already does this correctly, end to end, against
+  // real on-disk baseline storage: `snapshot {action: "screenshot", ...}`
+  // captures via the daemon's proxy-exec path, then
+  // `snapshot {action: "baseline"|"compare", pages: [...]}` stores/diffs
+  // it. Sending a fire-and-forget message here and claiming success back
+  // to the caller would be a lie — nothing on the other end ever
+  // acknowledges it, still less saves or compares anything. Reject instead
+  // of pretending, so a caller finds the real path.
+  function noDaemonSnapshotHandler(action) {
+    return Promise.reject(new Error(
+      'window.__devtool_snapshot.' + action + '() has no daemon-side handler. ' +
+      'Use the MCP "snapshot" tool instead: snapshot {action: "screenshot", proxy_id: "..."} ' +
+      'then snapshot {action: "baseline"|"compare", pages: [...]}.'
+    ));
+  }
+
   // Create a baseline from current page
   function createBaseline(name) {
-    return captureCurrentPage().then(function(page) {
-      core.send('snapshot_baseline', {
-        name: name,
-        pages: [page],
-        timestamp: Date.now()
-      });
-
-      return {
-        success: true,
-        message: 'Baseline "' + name + '" captured',
-        page: page
-      };
-    });
+    return noDaemonSnapshotHandler('createBaseline');
   }
 
   // Compare current page to baseline
   function compareToBaseline(baselineName) {
-    return captureCurrentPage().then(function(page) {
-      core.send('snapshot_compare', {
-        baseline: baselineName,
-        pages: [page],
-        timestamp: Date.now()
-      });
-
-      return {
-        success: true,
-        message: 'Comparison to "' + baselineName + '" requested',
-        page: page
-      };
-    });
+    return noDaemonSnapshotHandler('compareToBaseline');
   }
 
   // Capture multiple pages (for multi-page baselines)
