@@ -41,6 +41,14 @@ func formatProxyEventText(event ProxyEvent, summarizer *overlay.AuditSummarizer)
 		return formatBrowserErrorText(event)
 	case "http_error":
 		return formatHTTPErrorText(event)
+	case "responsive_request":
+		return formatResponsiveRequestText(event)
+	case "responsive_state":
+		// Panel telemetry only (current width + shift count) — every settled
+		// width fires one of these, so it stays proxylog-only and never
+		// reaches the agent's stdin. Not an "unhandled" case: explicitly
+		// silent, not a debug.Error.
+		return ""
 	default:
 		debug.Error("overlay", "unhandled proxy event type: %s (proxy_id=%s)", event.Type, event.ProxyID)
 		return ""
@@ -740,6 +748,54 @@ Locate the source if needed:
 		valueOr(data.ComputedBefore["width"], "?"), valueOr(data.ComputedAfter["width"], "?"),
 		valueOr(data.ComputedBefore["height"], "?"), valueOr(data.ComputedAfter["height"], "?"),
 		data.OID, event.ProxyID, event.ProxyID)
+}
+
+// formatResponsiveRequestText turns a responsive_request event (a handoff
+// from the browser's responsive-mode panel, fired when the user asks the
+// agent to fix layout shifts found at a viewport width) into a fix request
+// for the AI agent. Mirrors formatDesignEditText's shape: what broke, at
+// what width, plus the tools to look closer.
+func formatResponsiveRequestText(event ProxyEvent) string {
+	var data struct {
+		URL    string                   `json:"url"`
+		Width  int                      `json:"width"`
+		Shifts []map[string]interface{} `json:"shifts"`
+	}
+	if err := json.Unmarshal(event.Data, &data); err != nil {
+		debug.Warn("overlay", "failed to parse responsive_request: %v", err)
+		return ""
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "[📱 Responsive Mode: Layout Fix Requested]\n\n**Width:** %dpx\n**URL:** %s\n", data.Width, data.URL)
+
+	if len(data.Shifts) == 0 {
+		b.WriteString("\n(No layout-shift findings were attached — the user flagged this width directly.)\n")
+	} else {
+		fmt.Fprintf(&b, "\n**Layout shifts found (%d):**\n", len(data.Shifts))
+		for _, shift := range data.Shifts {
+			fmt.Fprintf(&b, "- [%s] %s `%s`: %s\n",
+				shiftField(shift, "severity"), shiftField(shift, "type"),
+				shiftField(shift, "selector"), shiftField(shift, "message"))
+		}
+	}
+
+	fmt.Fprintf(&b, "\nFix these at %dpx without regressing other widths. Look closer with:\n"+
+		"- Resize + screenshot: proxy {action: \"exec\", id: %q, code: \"__devtool.resize(%d, window.innerHeight)\"}\n"+
+		"- Recent panel state: proxylog {proxy_id: %q, types: [\"responsive_state\"], limit: 5}",
+		data.Width, event.ProxyID, data.Width, event.ProxyID)
+
+	return b.String()
+}
+
+// shiftField reads a string field out of a loosely-typed layout-shift
+// finding map (JS sends id/type/severity/selector/message/width/isNew, not
+// all of which are guaranteed present).
+func shiftField(shift map[string]interface{}, key string) string {
+	if s, ok := shift[key].(string); ok {
+		return s
+	}
+	return ""
 }
 
 // formatDeltaLines renders a property→value delta map as stably ordered
