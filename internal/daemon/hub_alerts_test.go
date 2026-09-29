@@ -8,6 +8,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/daemonclient"
 
 	"github.com/standardbeagle/agnt/internal/config"
+	"github.com/standardbeagle/agnt/internal/incident"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -144,4 +145,47 @@ func TestStartupLog_IncludesNotices(t *testing.T) {
 	assert.Equal(t, "proxy", first["domain"])
 	assert.Equal(t, "error", first["severity"])
 	assert.Contains(t, first["remediation"], "allow-external")
+}
+
+// TestAlertsReport_SessionBoundConnectionReachesIncidentBus proves ALERTS
+// REPORT dual-writes into the incident pipeline when the reporting connection
+// is a registered session (the `agnt run` path).
+func TestAlertsReport_SessionBoundConnectionReachesIncidentBus(t *testing.T) {
+	// No t.Parallel(): shares the daemon's global alert ring buffer.
+	daemon, sockPath := newBootedDaemon(t)
+
+	proj := normalizePath(t.TempDir())
+	client := registerSessionClient(t, sockPath, "sess-pty", proj)
+
+	reportAlert(t, client, proj, "ReferenceError: x is not defined", "error")
+
+	require.Eventually(t, func() bool {
+		entries, _ := daemon.incidentBus.QuerySession("sess-pty", incident.QueryFilter{})
+		return len(entries) == 1
+	}, 2*time.Second, 20*time.Millisecond, "session-bound ALERTS REPORT never reached get_incidents")
+}
+
+// TestAlertsReport_SessionlessConnectionFansOutByProject proves the
+// error_queue MCP path (connection not session-bound) reaches every session
+// attached to the reported project, and no session on another project.
+func TestAlertsReport_SessionlessConnectionFansOutByProject(t *testing.T) {
+	daemon, sockPath := newBootedDaemon(t)
+
+	proj := normalizePath(t.TempDir())
+	otherProj := normalizePath(t.TempDir())
+	_ = registerSessionClient(t, sockPath, "sess-a", proj)
+	_ = registerSessionClient(t, sockPath, "sess-b", otherProj)
+
+	reporter := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
+	require.NoError(t, reporter.Connect())
+	t.Cleanup(func() { _ = reporter.Close() })
+	reportAlert(t, reporter, proj, "Deploy failed: migration timed out", "error")
+
+	require.Eventually(t, func() bool {
+		entries, _ := daemon.incidentBus.QuerySession("sess-a", incident.QueryFilter{})
+		return len(entries) == 1
+	}, 2*time.Second, 20*time.Millisecond, "sessionless ALERTS REPORT never reached the project's session")
+
+	entriesB, _ := daemon.incidentBus.QuerySession("sess-b", incident.QueryFilter{})
+	assert.Empty(t, entriesB, "must not leak into a session on a different project")
 }

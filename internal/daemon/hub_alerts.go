@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/alert"
+	"github.com/standardbeagle/agnt/internal/incident"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
@@ -64,6 +66,45 @@ func (d *Daemon) hubHandleAlertsReport(conn *hubpkg.Connection, cmd *hubproto.Co
 	// Retention trigger 1 (PTY-reported path): a clean build retires the
 	// process's stale errors, same as the daemon-scanner path.
 	d.maybeRetireOnBuildSuccess(payload.PatternID, payload.ScriptID, ts)
+
+	// Mirror into the incident pipeline (get_incidents). REPORT used to write
+	// only alertStore, so PTY-reported alerts (agnt run) and the error_queue
+	// MCP tool, whose description promises get_incidents visibility, never
+	// arrived there. Same dual-write ingestProcessAlert does for the daemon
+	// scanner. Dedup applies per session (fingerprint = source, category,
+	// canonical message, location).
+	if d.incidentBus != nil {
+		m := &alert.AlertMatch{
+			Pattern: &alert.AlertPattern{
+				ID:          payload.PatternID,
+				Severity:    alert.AlertSeverity(payload.Severity),
+				Category:    payload.Category,
+				Description: payload.Description,
+			},
+			Line:      payload.Line,
+			Timestamp: ts,
+			ScriptID:  payload.ScriptID,
+		}
+		// One fresh event per target so sessions never share an incident ID.
+		newEvent := func(sessionID string) incident.IncidentEvent {
+			ev := incident.FromAlertMatch(m, payload.ScriptID)
+			ev.Ctx.ProjectPath = payload.ProjectPath
+			ev.Ctx.SessionID = sessionID
+			return ev
+		}
+		if sc := conn.SessionCode(); sc != "" {
+			// agnt run reports over its own session-bound connection.
+			d.incidentBus.Publish(newEvent(sc))
+		} else if payload.ProjectPath != "" && d.sessionRegistry != nil {
+			// MCP connections (error_queue) are not session-bound; the bus
+			// drops sessionless events, so fan out to every session attached
+			// to the reported project. No attached session: nothing live to
+			// notify; alertStore above still records it.
+			for _, s := range d.sessionRegistry.List(payload.ProjectPath, false) {
+				d.incidentBus.Publish(newEvent(s.Code))
+			}
+		}
+	}
 
 	return conn.WriteOK("alert stored")
 }
