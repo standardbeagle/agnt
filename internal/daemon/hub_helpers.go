@@ -16,6 +16,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/daemon/health"
 
 	"github.com/standardbeagle/agnt/internal/config"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/incident"
 	"github.com/standardbeagle/agnt/internal/protocol"
@@ -325,6 +326,7 @@ func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
 	d.applyAuthBreakout(server)
 	d.applyDevOIDC(server)
 	d.wireSecretSink(server)
+	d.wireProxySessionClient(server)
 	if d.eventHub == nil {
 		return
 	}
@@ -353,6 +355,20 @@ func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
 			// Drop without emission — used for diagnostic suppression
 			// markers we never want to re-emit.
 		}
+	})
+}
+
+// wireProxySessionClient gives the browser-facing `__devtool.session.*` /
+// `__devtool.store.*` API a way to reach the daemon it is already running
+// inside of. The factory dials the daemon's own control socket (the same
+// one `d.hub` is serving on) as an ordinary daemonclient.Client, so the
+// browser-side request rides the same IPC path an external `agnt` CLI
+// invocation would use. Called from wireProxyLogger, the single chokepoint
+// every proxy-creation path funnels through.
+func (d *Daemon) wireProxySessionClient(server *proxy.ProxyServer) {
+	socketPath := d.config.SocketPath
+	server.SetSessionClientFactory(func() (proxy.SessionClient, error) {
+		return daemonclient.NewClientWithPath(socketPath), nil
 	})
 }
 

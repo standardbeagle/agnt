@@ -233,6 +233,15 @@ func (ps *ProxyServer) SetSessionClientFactory(factory SessionClientFactory) {
 	ps.sessionClientFactory = factory
 }
 
+// HasSessionClientFactory reports whether a session client factory is wired,
+// i.e. whether `__devtool.session.*` / `__devtool.store.*` calls against this
+// proxy can reach the daemon at all. Used by daemon-side wiring tests and by
+// diagnostics that want to tell "not configured" apart from "configured but
+// failing".
+func (ps *ProxyServer) HasSessionClientFactory() bool {
+	return ps.sessionClientFactory != nil
+}
+
 // OverlayNotifier returns the overlay notifier for direct access.
 func (ps *ProxyServer) OverlayNotifier() *OverlayNotifier {
 	return ps.overlayNotifier
