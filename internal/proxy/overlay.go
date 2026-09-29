@@ -154,26 +154,6 @@ func (n *OverlayNotifier) NotifyResponsiveState(proxyID string, state *Responsiv
 	})
 }
 
-// NotifyInteraction sends an interaction event to the overlay.
-func (n *OverlayNotifier) NotifyInteraction(proxyID string, interaction *InteractionEvent) error {
-	return n.send(OverlayEvent{
-		Type:      "interaction",
-		ProxyID:   proxyID,
-		Timestamp: time.Now(),
-		Data:      interaction,
-	})
-}
-
-// NotifyCustom sends a custom event to the overlay.
-func (n *OverlayNotifier) NotifyCustom(proxyID, eventType string, data interface{}) error {
-	return n.send(OverlayEvent{
-		Type:      eventType,
-		ProxyID:   proxyID,
-		Timestamp: time.Now(),
-		Data:      data,
-	})
-}
-
 // NotifyBrowserError sends a browser JS error to the overlay for auto-forwarding.
 func (n *OverlayNotifier) NotifyBrowserError(proxyID string, err FrontendError) error {
 	return n.send(OverlayEvent{
@@ -222,65 +202,5 @@ func (n *OverlayNotifier) send(event OverlayEvent) error {
 	defer resp.Body.Close()
 
 	debug.Log("overlay-notifier", "%s event delivered to overlay (status=%d)", event.Type, resp.StatusCode)
-	return nil
-}
-
-// TypeToOverlay sends a type command to the overlay.
-// The overlay will inject this text into the PTY.
-func (n *OverlayNotifier) TypeToOverlay(text string, enter bool) error {
-	n.mu.RLock()
-	if !n.enabled || n.client == nil {
-		n.mu.RUnlock()
-		return nil
-	}
-	client := n.client
-	n.mu.RUnlock()
-
-	data, err := json.Marshal(map[string]interface{}{
-		"text":    text,
-		"enter":   enter,
-		"instant": true,
-	})
-	if err != nil {
-		return err
-	}
-
-	// Use dummy host - actual connection is via Unix socket
-	resp, err := client.Post("http://localhost/type", "application/json", bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	return nil
-}
-
-// SendKeyToOverlay sends a key to the overlay.
-func (n *OverlayNotifier) SendKeyToOverlay(key string, ctrl, alt, shift bool) error {
-	n.mu.RLock()
-	if !n.enabled || n.client == nil {
-		n.mu.RUnlock()
-		return nil
-	}
-	client := n.client
-	n.mu.RUnlock()
-
-	data, err := json.Marshal(map[string]interface{}{
-		"key":   key,
-		"ctrl":  ctrl,
-		"alt":   alt,
-		"shift": shift,
-	})
-	if err != nil {
-		return err
-	}
-
-	// Use dummy host - actual connection is via Unix socket
-	resp, err := client.Post("http://localhost/key", "application/json", bytes.NewReader(data))
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
 	return nil
 }
