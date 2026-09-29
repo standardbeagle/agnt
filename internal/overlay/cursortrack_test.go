@@ -62,6 +62,12 @@ func TestCursorTrackerMatchesTerminal(t *testing.T) {
 		"DECSTBM homes the cursor":    {"\x1b[7;7H", "\x1b[r", "x"},
 		"restore of empty slot":       {"\x1b[7;7H", "\x1b8"},
 		"pending wrap cleared by CUU": {"\x1b[5;1H", strings.Repeat("a", w), "\x1b[1A", "b"},
+		"ZWJ emoji is one wide cell":  {"\x1b[3;1H", "👩‍💻", "x"},
+		"flag is one wide cell":       {"\x1b[3;1H", "🇯🇵", "x"},
+		"skin tone joins its base":    {"\x1b[3;1H", "👍🏽", "x"},
+		"VS16 widens its base":        {"\x1b[3;1H", "⚠️", "x"},
+		"combining mark joins":        {"\x1b[3;1H", "e\u0301", "x"},
+		"cluster split across writes": {"\x1b[3;1H", "👩", "\u200d", "💻", "x"},
 		"sync update frame": {
 			"\x1b[?2026h\x1b[8;1H" + rule + "\r\n❯ \r\n" + rule, "\x1b[?2026l",
 			"\x1b[2A\x1b[G", "❯ hi",
@@ -72,10 +78,11 @@ func TestCursorTrackerMatchesTerminal(t *testing.T) {
 	}
 }
 
-// vt10x has no notion of wide glyphs, treats every CSI ... u as a cursor
-// restore, and lets CUD run past the bottom margin (xterm's CursorDown stops
-// at it when starting inside the region, per DEC), so these xterm behaviours
-// are asserted directly.
+// xterm edges the tracker must get right: margin-bounded CUD/CUU, wide glyphs
+// at the right edge, clusters, and CSI ... u sequences that are not SCORC.
+// Each case pins the xterm coordinates AND holds the tracker to a vt10x host
+// fed the same bytes (vt10x models all of these since v0.1.0-agnt.2), so the
+// expectation and the terminal model check each other.
 func TestCursorTrackerXtermEdges(t *testing.T) {
 	const w, h = 40, 12
 	cases := []struct {
@@ -95,12 +102,17 @@ func TestCursorTrackerXtermEdges(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			pw := NewProtectedWriter(&bytes.Buffer{}, w, h, FilterConfig{ProtectBottomRows: 1})
+			host := vt10x.New(vt10x.WithSize(w, h))
+			pw := NewProtectedWriter(host, w, h, FilterConfig{ProtectBottomRows: 1})
+			pw.EnforceScrollRegion()
 			if _, err := pw.Write([]byte(tc.in)); err != nil {
 				t.Fatalf("filter write: %v", err)
 			}
 			if row, col, _ := pw.ChildCursor(); row != tc.row || col != tc.col {
-				t.Errorf("cursor (%d,%d), want (%d,%d)", row, col, tc.row, tc.col)
+				t.Errorf("tracker cursor (%d,%d), want (%d,%d)", row, col, tc.row, tc.col)
+			}
+			if cur := host.Cursor(); cur.Y+1 != tc.row || cur.X+1 != tc.col {
+				t.Errorf("host terminal cursor (%d,%d), want (%d,%d)", cur.Y+1, cur.X+1, tc.row, tc.col)
 			}
 		})
 	}
@@ -157,11 +169,7 @@ func TestInkPromptRedrawSurvivesIndicatorDraws(t *testing.T) {
 func vtRow(term vt10x.Terminal, y, w int) string {
 	var b strings.Builder
 	for x := 0; x < w; x++ {
-		c := term.Cell(x, y).Char
-		if c == 0 {
-			c = ' '
-		}
-		b.WriteRune(c)
+		b.WriteString(glyphText(term.Cell(x, y)))
 	}
 	return strings.TrimRight(b.String(), " ")
 }
