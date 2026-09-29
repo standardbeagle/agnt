@@ -48,7 +48,7 @@ func TestParseAgntConfig_AIAdapters(t *testing.T) {
 
 func TestParseAgntConfig_AIAdaptersAbsent(t *testing.T) {
 	input := `ai {
-    skill "debugging"
+    context "React + FastAPI app."
 }`
 	cfg, err := ParseAgntConfig(input)
 	require.NoError(t, err)

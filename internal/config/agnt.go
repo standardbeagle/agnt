@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"strings"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/platform"
+	"github.com/standardbeagle/agnt/internal/selflog"
 )
 
 // AgntConfigFileName is the name of the agnt configuration file.
@@ -375,10 +377,20 @@ func (c *ChannelConfig) GetEvents() []string {
 }
 
 // AgntProjectMeta contains optional project metadata in .agnt.kdl.
+//
+// Removed fields: `type` and `name` were parsed but had no consumer — project
+// type is auto-detected, and nothing reads a configured project name. See
+// checkRemovedKeys for the friendly parse error a config still carrying
+// either key now gets.
 type AgntProjectMeta struct {
-	Type         string `kdl:"type"`
-	Name         string `kdl:"name"`
+	// PortConflict is the port-conflict policy: "prompt" (default), "fail",
+	// "skip", or "auto-kill". See EffectivePortConflictPolicy.
 	PortConflict string `kdl:"port-conflict"`
+}
+
+// validPortConflictPolicies is the accepted set for project.port-conflict.
+var validPortConflictPolicies = map[string]struct{}{
+	"prompt": {}, "fail": {}, "skip": {}, "auto-kill": {},
 }
 
 // ScriptConfig defines a script to run.
@@ -565,9 +577,6 @@ type ProxyConfig struct {
 	// proxy, making it public at the tunnel's hostname. See
 	// CloudflareTunnelConfig for the Access requirement.
 	CloudflareTunnel *CloudflareTunnelConfig `kdl:"cloudflare-tunnel"`
-
-	// Websocket enables WebSocket proxying
-	Websocket bool `kdl:"websocket"`
 
 	// WaitFor lists script ids that must reach Running Healthy (or
 	// Running With Errors) before this proxy begins forwarding
@@ -846,9 +855,6 @@ type AutoForwardConfig struct {
 	// Sources specifies which error sources to forward. Default: ["browser", "http"].
 	Sources []string `kdl:"sources"`
 
-	// Debounce is the minimum seconds between forwarded errors. Default: 10.
-	Debounce int `kdl:"debounce"`
-
 	// Severity is the minimum severity to forward: "error" or "warning". Default: "error".
 	Severity string `kdl:"severity"`
 }
@@ -867,14 +873,6 @@ func (c *AutoForwardConfig) GetSources() []string {
 		return []string{"browser", "http"}
 	}
 	return c.Sources
-}
-
-// GetDebounceSeconds returns the debounce interval (defaults to 10).
-func (c *AutoForwardConfig) GetDebounceSeconds() int {
-	if c == nil || c.Debounce <= 0 {
-		return 10
-	}
-	return c.Debounce
 }
 
 // GetSeverity returns the minimum severity (defaults to "error").
@@ -1037,11 +1035,15 @@ func (c *AlertsConfig) IsEnabled() bool {
 }
 
 // AIConfig configures AI agent behavior for run and ai commands.
+//
+// Removed fields: `skill` and `env` were parsed and validated but had no
+// consumer anywhere (BuildSystemPrompt never reads them, and no agent
+// adapter looked up a skill/persona by name). `env` additionally invited
+// secrets into .agnt.kdl, which violates secret hygiene — env vars belong in
+// the shell or process manager, never in checked-in config. See
+// checkRemovedKeys for the friendly parse error a config still carrying
+// either key now gets.
 type AIConfig struct {
-	// Skill is a skill/persona name to use (e.g., "code-review", "debugging")
-	Skill string `kdl:"skill"`
-	// Env are environment variables to set for AI commands
-	Env map[string]string `kdl:"env"`
 	// Context is a brief project description injected at the top of the system
 	// prompt, before the agnt tools list. Use it to tell the AI what the project
 	// is, which ports/URLs to use, and any other startup context.
@@ -1195,8 +1197,28 @@ func LoadAgntConfigFile(path string) (*AgntConfig, error) {
 func ParseAgntConfig(data string) (*AgntConfig, error) {
 	cfg := DefaultAgntConfig()
 
+	if err := checkRemovedKeys(data); err != nil {
+		return nil, err
+	}
+
 	if err := kdl.Unmarshal([]byte(data), cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse KDL config: %w", err)
+	}
+
+	if err := validateProjectMeta(cfg.Project); err != nil {
+		return nil, err
+	}
+
+	if err := validateHookRules(cfg.HookRules); err != nil {
+		return nil, err
+	}
+
+	if err := validateShims(cfg.Shims); err != nil {
+		return nil, err
+	}
+
+	if err := validateAlerts(cfg.Alerts); err != nil {
+		return nil, err
 	}
 
 	// Validate dependencies if any scripts have them
@@ -1247,8 +1269,11 @@ func ParseAgntConfig(data string) (*AgntConfig, error) {
 
 	// Deprecation notice: the incident pipeline is now unconditional; the
 	// `incident-pipeline` flag is accepted for back-compat but does nothing.
+	// Recorded via selflog (not debug.Log alone) so it survives outside debug
+	// mode — the doc comment on DeprecatedIncidentPipeline promises this is
+	// visible, and debug.Log-only silently broke that promise.
 	if cfg.Alerts != nil && cfg.Alerts.DeprecatedIncidentPipeline {
-		debug.Log("config", "WARNING: alerts.incident-pipeline is deprecated and ignored — the incident pipeline is always active")
+		selflog.Record("config", "alerts.incident-pipeline is deprecated and ignored — the incident pipeline is always active")
 	}
 
 	debug.Log("config", "ParseAgntConfig: parsed %d scripts, %d proxies", len(cfg.Scripts), len(cfg.Proxies))
@@ -1513,7 +1538,208 @@ func validateChannelConfig(cfg *ChannelConfig) error {
 	}
 	for _, ev := range cfg.Events {
 		if _, ok := validEventTypes[ev]; !ok {
-			return fmt.Errorf("channel: unknown event type %q (valid: error, diagnostic, interaction)", ev)
+			return fmt.Errorf("channel: unknown event type %q (valid: error, diagnostic, interaction, http, custom, panel_message, responsive_request)", ev)
+		}
+	}
+	return nil
+}
+
+// validateProjectMeta rejects an unknown project.port-conflict policy.
+func validateProjectMeta(p *AgntProjectMeta) error {
+	if p == nil || p.PortConflict == "" {
+		return nil
+	}
+	if _, ok := validPortConflictPolicies[p.PortConflict]; !ok {
+		return fmt.Errorf("project.port-conflict: unknown value %q (valid: prompt, fail, skip, auto-kill)", p.PortConflict)
+	}
+	return nil
+}
+
+// validHookBashActions is the accepted set for hook-rules.bash-patterns.*.action,
+// matching hookrules.Action (allow, soft-warn, block). Duplicated here rather
+// than imported: internal/hookrules already imports internal/config, so the
+// reverse import would cycle.
+var validHookBashActions = map[string]struct{}{
+	"allow": {}, "soft-warn": {}, "block": {},
+}
+
+// validShimActions is the accepted set for shims.rules.*.action, matching
+// shims.Action. Duplicated here rather than imported: internal/shims already
+// imports internal/config, so the reverse import would cycle.
+var validShimActions = map[string]struct{}{
+	"route": {}, "restart-watch": {}, "reroute": {}, "quiesce": {},
+	"ignore": {}, "block": {}, "pass": {},
+}
+
+// validateHookRules normalizes and validates hook-rules.bash-patterns.*.action.
+// The doc comment on HookBashPattern promises case-insensitive matching, but
+// nothing previously normalized the stored value — an operator writing
+// `action "Block"` silently fell through the exact-match switch in
+// cmd/agnt/hook_rules.go as an unrecognized action (implicit allow, no
+// protection, no error). Lowercasing here makes the doc's promise true and
+// an actually-unknown action a loud parse-time error instead of a silent
+// no-op at hook time.
+func validateHookRules(cfg *HookRulesConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	for name, r := range cfg.BashPatterns {
+		if r == nil || r.Action == "" {
+			continue
+		}
+		normalized := strings.ToLower(r.Action)
+		if _, ok := validHookBashActions[normalized]; !ok {
+			return fmt.Errorf("hook-rules.bash-patterns.%s.action: unknown value %q (valid: allow, soft-warn, block)", name, r.Action)
+		}
+		r.Action = normalized
+	}
+	return nil
+}
+
+// validateShims normalizes and validates shims.rules.*.action the same way
+// validateHookRules does for hook-rules — see that function's comment for
+// why normalization (not just validation) is required.
+func validateShims(cfg *ShimsConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	for name, r := range cfg.Rules {
+		if r == nil || r.Action == "" {
+			continue
+		}
+		normalized := strings.ToLower(r.Action)
+		if _, ok := validShimActions[normalized]; !ok {
+			return fmt.Errorf("shims.rules.%s.action: unknown value %q (valid: route, restart-watch, reroute, quiesce, ignore, block, pass)", name, r.Action)
+		}
+		r.Action = normalized
+	}
+	return nil
+}
+
+// validAlertPatternSeverities is the accepted set for alerts.patterns.*.severity,
+// per the AlertPatternConfig doc comment ("error", "warning", or "info").
+var validAlertPatternSeverities = map[string]struct{}{
+	"error": {}, "warning": {}, "info": {},
+}
+
+// validAutoForwardSources is the accepted set for alerts.auto-forward.sources —
+// the only two values cmd/agnt/overlay.go's processAutoForwardEvent classifies
+// an event into (source := "browser" or "http").
+var validAutoForwardSources = map[string]struct{}{
+	"browser": {}, "http": {},
+}
+
+// validAutoForwardSeverities is the accepted set for
+// alerts.auto-forward.severity, per the AutoForwardConfig doc comment
+// ("error" or "warning").
+var validAutoForwardSeverities = map[string]struct{}{
+	"error": {}, "warning": {},
+}
+
+// validAlertsPresets is the accepted set for alerts.preset, matching the
+// names PresetPushConfig recognizes.
+var validAlertsPresets = map[string]struct{}{
+	"claude-code": {}, "universal": {},
+}
+
+// validateAlerts validates the alerts {} block: pattern regexes compile,
+// pattern/preset/auto-forward enum fields hold known values.
+func validateAlerts(cfg *AlertsConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	if cfg.Preset != "" {
+		if _, ok := validAlertsPresets[cfg.Preset]; !ok {
+			return fmt.Errorf("alerts.preset: unknown value %q (valid: claude-code, universal)", cfg.Preset)
+		}
+	}
+	for id, p := range cfg.Patterns {
+		if p == nil {
+			continue
+		}
+		if p.Pattern == "" {
+			return fmt.Errorf("alerts.patterns.%s.pattern: empty", id)
+		}
+		if _, err := regexp.Compile(p.Pattern); err != nil {
+			return fmt.Errorf("alerts.patterns.%s.pattern: invalid regex %q: %w", id, p.Pattern, err)
+		}
+		if p.Severity != "" {
+			if _, ok := validAlertPatternSeverities[p.Severity]; !ok {
+				return fmt.Errorf("alerts.patterns.%s.severity: unknown value %q (valid: error, warning, info)", id, p.Severity)
+			}
+		}
+	}
+	if af := cfg.AutoForward; af != nil {
+		for _, s := range af.Sources {
+			if _, ok := validAutoForwardSources[s]; !ok {
+				return fmt.Errorf("alerts.auto-forward.sources: unknown value %q (valid: browser, http)", s)
+			}
+		}
+		if af.Severity != "" {
+			if _, ok := validAutoForwardSeverities[af.Severity]; !ok {
+				return fmt.Errorf("alerts.auto-forward.severity: unknown value %q (valid: error, warning)", af.Severity)
+			}
+		}
+	}
+	return nil
+}
+
+// removedTopLevelKeys names top-level .agnt.kdl blocks that once appeared in
+// `agnt init`'s template and README but were never wired to any consumer —
+// there is no browser toast/indicator implementation, so `hooks { on-response
+// {...} }` and `toast {...}` parsed and were silently ignored. Use
+// `alerts {}` for browser/process error delivery instead.
+var removedTopLevelKeys = map[string]string{
+	"hooks": "hooks.on-response (toast/indicator/sound) was never implemented — there is no browser toast for AI responses. Use `alerts {}` for browser/process error delivery instead.",
+	"toast": "toast notification settings were never implemented. Use `alerts {}` for browser/process error delivery instead.",
+}
+
+// removedNestedKeys names <parent-node>.<child-key> pairs removed from
+// AIConfig / AgntProjectMeta that once appeared in the template/README.
+var removedNestedKeys = map[string]map[string]string{
+	"ai": {
+		"skill": "ai.skill was parsed but had no consumer. Use ai.context or ai.append-system-prompt instead.",
+		"env":   "ai.env was parsed but had no consumer, and putting secrets in .agnt.kdl is unsafe. Set environment variables in your shell or process manager instead.",
+	},
+	"project": {
+		"type": "project.type was parsed but had no consumer. Project type is auto-detected.",
+		"name": "project.name was parsed but had no consumer.",
+	},
+}
+
+// checkRemovedKeys does a best-effort loose parse looking for keys that used
+// to exist on AgntConfig (and shipped in `agnt init`'s template / README) but
+// have since been deleted as dead fields (see config-contracts.md "Every
+// field needs a consumer"). A hit returns a "key X removed: reason" error
+// instead of letting kdl-go's generic unknown-field error stand — the
+// operator gets a fix, not a guess. Parse failures in the loose pass are
+// swallowed; the real syntax error surfaces from the strict kdl.Unmarshal
+// call that follows in ParseAgntConfig.
+func checkRemovedKeys(data string) error {
+	doc, err := kdl.Parse(strings.NewReader(data))
+	if err != nil || doc == nil {
+		return nil
+	}
+	for _, n := range doc.Nodes {
+		if n == nil || n.Name == nil {
+			continue
+		}
+		name := n.Name.String()
+		if reason, ok := removedTopLevelKeys[name]; ok {
+			return fmt.Errorf("key %q removed: %s", name, reason)
+		}
+		nested, ok := removedNestedKeys[name]
+		if !ok {
+			continue
+		}
+		for _, c := range n.Children {
+			if c == nil || c.Name == nil {
+				continue
+			}
+			cname := c.Name.String()
+			if reason, ok := nested[cname]; ok {
+				return fmt.Errorf("key %q removed: %s", name+"."+cname, reason)
+			}
 		}
 	}
 	return nil
@@ -1535,8 +1761,9 @@ func DefaultAgntConfigKDL() string {
 
 // Optional project metadata
 // project {
-//     type "node"
-//     name "my-project"
+//     // What to do when an autostart script's port is already taken:
+//     // "prompt" (default, interactive), "fail", "skip", or "auto-kill"
+//     port-conflict "prompt"
 // }
 
 // Scripts to run (use daemon process management)
@@ -1609,22 +1836,6 @@ proxies {
     // }
 }
 
-// Hook configuration for notifications
-hooks {
-    on-response {
-        toast true
-        indicator true
-        sound false
-    }
-}
-
-// Toast notification settings
-toast {
-    duration 4000
-    position "bottom-right"
-    max-visible 3
-}
-
 // Process output alert monitoring
 // alerts {
 //     enabled true
@@ -1635,7 +1846,6 @@ toast {
 //     // auto-forward {
 //     //     enabled true
 //     //     sources "browser" "http"
-//     //     debounce 10
 //     //     severity "error"
 //     // }
 //
@@ -1652,15 +1862,9 @@ toast {
 // }
 
 // AI configuration for agnt run and agnt ai commands
+// Never put secrets (API keys, tokens) in this file — use your shell or
+// process manager's environment instead.
 // ai {
-//     // Skill/persona to use (e.g., "code-review", "debugging")
-//     // skill "debugging"
-//
-//     // Environment variables for AI commands
-//     // env {
-//     //     ANTHROPIC_API_KEY "sk-..."
-//     // }
-//
 //     // Full system prompt (replaces the default agnt prompt)
 //     // system-prompt "You are a helpful assistant..."
 //

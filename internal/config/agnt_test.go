@@ -210,15 +210,14 @@ func TestParseAgntConfigFormats(t *testing.T) {
 			},
 		},
 		{
-			name: "proxy with websocket",
+			name: "proxy basic target",
 			input: `proxies {
     ws {
         target "http://localhost:3000"
-        websocket true
     }
 }`,
 			expectProxies: map[string]ProxyConfig{
-				"ws": {Target: "http://localhost:3000", Websocket: true},
+				"ws": {Target: "http://localhost:3000"},
 			},
 		},
 		{
@@ -241,8 +240,7 @@ func TestParseAgntConfigFormats(t *testing.T) {
 		{
 			name: "project block",
 			input: `project {
-    type "wails"
-    name "my-app"
+    port-conflict "fail"
 }
 scripts {
     dev {
@@ -284,8 +282,7 @@ proxies {
 		{
 			name: "full config with all sections",
 			input: `project {
-    type "node"
-    name "my-project"
+    port-conflict "skip"
 }
 
 scripts {
@@ -328,12 +325,7 @@ proxies {
 		},
 		{
 			name: "wails project config",
-			input: `project {
-    type "wails"
-    name "beagle-term"
-}
-
-scripts {
+			input: `scripts {
     frontend-dev {
         run "npm run dev"
         cwd "frontend"
@@ -352,7 +344,6 @@ proxies {
     wails-dev {
         script "wails-dev"
         fallback-port 34115
-        websocket true
     }
 }
 `,
@@ -362,7 +353,7 @@ proxies {
 				"build":        {Run: "wails build", Autostart: false},
 			},
 			expectProxies: map[string]ProxyConfig{
-				"wails-dev": {Script: "wails-dev", FallbackPort: 34115, Websocket: true},
+				"wails-dev": {Script: "wails-dev", FallbackPort: 34115},
 			},
 			expectAutostart: 1,
 		},
@@ -444,7 +435,6 @@ proxies {
 					assert.Equal(t, expected.MaxLogSize, actual.MaxLogSize, "proxy %s: MaxLogSize mismatch", name)
 				}
 				assert.Equal(t, expected.Autostart, actual.Autostart, "proxy %s: Autostart mismatch", name)
-				assert.Equal(t, expected.Websocket, actual.Websocket, "proxy %s: Websocket mismatch", name)
 			}
 
 			// Check autostart scripts count
@@ -920,13 +910,6 @@ func TestParseAIConfig(t *testing.T) {
 			expected: nil,
 		},
 		{
-			name: "ai with skill only",
-			input: `ai {
-    skill "debugging"
-}`,
-			expected: &AIConfig{Skill: "debugging"},
-		},
-		{
 			name: "ai with system-prompt override",
 			input: `ai {
     system-prompt "You are a helpful assistant."
@@ -950,13 +933,11 @@ func TestParseAIConfig(t *testing.T) {
 		{
 			name: "ai with all options",
 			input: `ai {
-    skill "code-review"
     system-prompt ""
     context "Node.js monorepo."
     append-system-prompt "This is a Node.js project."
 }`,
 			expected: &AIConfig{
-				Skill:              "code-review",
 				Context:            "Node.js monorepo.",
 				AppendSystemPrompt: "This is a Node.js project.",
 			},
@@ -972,9 +953,6 @@ func TestParseAIConfig(t *testing.T) {
 				assert.Nil(t, cfg.AI)
 			} else {
 				require.NotNil(t, cfg.AI)
-				if tt.expected.Skill != "" {
-					assert.Equal(t, tt.expected.Skill, cfg.AI.Skill)
-				}
 				if tt.expected.SystemPrompt != "" {
 					assert.Equal(t, tt.expected.SystemPrompt, cfg.AI.SystemPrompt)
 				}
@@ -987,6 +965,81 @@ func TestParseAIConfig(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestParseAgntConfig_RemovedKeys pins the friendly "key X removed: reason"
+// error for keys that used to ship in the `agnt init` template / README but
+// were deleted as dead fields (see checkRemovedKeys). A config still
+// carrying one of these must not fall through to kdl-go's generic
+// unknown-field error — the operator needs to know WHY it broke.
+func TestParseAgntConfig_RemovedKeys(t *testing.T) {
+	tests := []struct {
+		name  string
+		input string
+		want  string
+	}{
+		{"ai.skill", `ai {
+    skill "debugging"
+}`, `"ai.skill" removed`},
+		{"ai.env", `ai {
+    env {
+        ANTHROPIC_API_KEY "sk-..."
+    }
+}`, `"ai.env" removed`},
+		{"project.type", `project {
+    type "node"
+}`, `"project.type" removed`},
+		{"project.name", `project {
+    name "my-project"
+}`, `"project.name" removed`},
+		{"hooks", `hooks {
+    on-response {
+        toast true
+    }
+}`, `"hooks" removed`},
+		{"toast", `toast {
+    duration 4000
+}`, `"toast" removed`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := ParseAgntConfig(tt.input)
+			require.Error(t, err)
+			assert.Contains(t, err.Error(), tt.want)
+		})
+	}
+}
+
+// TestDefaultAgntConfigKDL_Parses guards against the exact class of bug this
+// test was added for: the shipped `agnt init` template (and the overlay
+// editor's "no config yet" buffer, which is the same string) once carried a
+// top-level `hooks {}` / `toast {}` block with no matching AgntConfig field,
+// so any project that uncommented and used it got a hard parse failure on
+// every subsequent load. The template must always round-trip through
+// ParseAgntConfig.
+func TestDefaultAgntConfigKDL_Parses(t *testing.T) {
+	_, err := ParseAgntConfig(DefaultAgntConfigKDL())
+	require.NoError(t, err, "the agnt init template must parse cleanly")
+}
+
+// TestREADME_ConfigExample_Parses extracts the ```kdl fenced .agnt.kdl
+// example from README.md's Configuration section and asserts it parses.
+// Prevents the doc drifting from the parser again (see
+// TestDefaultAgntConfigKDL_Parses for the bug this class of test caught).
+func TestREADME_ConfigExample_Parses(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "README.md"))
+	require.NoError(t, err, "read README.md")
+
+	const fence = "```kdl"
+	start := strings.Index(string(data), fence)
+	require.Greater(t, start, -1, "README.md must contain a ```kdl fenced .agnt.kdl example")
+	rest := string(data)[start+len(fence):]
+	end := strings.Index(rest, "```")
+	require.Greater(t, end, -1, "unterminated ```kdl fence in README.md")
+
+	example := strings.TrimSpace(rest[:end])
+	_, err = ParseAgntConfig(example)
+	require.NoError(t, err, "README.md's .agnt.kdl example must parse cleanly:\n%s", example)
 }
 
 func TestBuildSystemPrompt(t *testing.T) {
@@ -1559,21 +1612,6 @@ func TestAutoForwardConfig_GetSources_Custom(t *testing.T) {
 	assert.Equal(t, []string{"browser"}, sources)
 }
 
-func TestAutoForwardConfig_GetDebounceSeconds_Default(t *testing.T) {
-	var cfg *AutoForwardConfig
-	assert.Equal(t, 10, cfg.GetDebounceSeconds())
-}
-
-func TestAutoForwardConfig_GetDebounceSeconds_Custom(t *testing.T) {
-	cfg := &AutoForwardConfig{Debounce: 30}
-	assert.Equal(t, 30, cfg.GetDebounceSeconds())
-}
-
-func TestAutoForwardConfig_GetDebounceSeconds_Zero(t *testing.T) {
-	cfg := &AutoForwardConfig{Debounce: 0}
-	assert.Equal(t, 10, cfg.GetDebounceSeconds(), "zero should use default")
-}
-
 func TestAutoForwardConfig_GetSeverity_Default(t *testing.T) {
 	var cfg *AutoForwardConfig
 	assert.Equal(t, "error", cfg.GetSeverity())
@@ -1600,7 +1638,6 @@ func TestParseAgntConfig_AutoForward(t *testing.T) {
     auto-forward {
         enabled true
         sources "browser" "http"
-        debounce 30
         severity "warning"
     }
 }`)
@@ -1609,8 +1646,117 @@ func TestParseAgntConfig_AutoForward(t *testing.T) {
 	require.NotNil(t, cfg.Alerts.AutoForward)
 	assert.True(t, cfg.Alerts.AutoForward.IsEnabled())
 	assert.Equal(t, []string{"browser", "http"}, cfg.Alerts.AutoForward.GetSources())
-	assert.Equal(t, 30, cfg.Alerts.AutoForward.GetDebounceSeconds())
 	assert.Equal(t, "warning", cfg.Alerts.AutoForward.GetSeverity())
+}
+
+// TestParseAgntConfig_AutoForward_InvalidSource pins the parse-time enum
+// guard added alongside the dead-key sweep: an unknown source name used to
+// parse cleanly and silently never match ShouldForwardSource at runtime.
+func TestParseAgntConfig_AutoForward_InvalidSource(t *testing.T) {
+	_, err := ParseAgntConfig(`alerts {
+    auto-forward {
+        sources "browser" "websocket"
+    }
+}`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "auto-forward.sources")
+}
+
+// TestParseAgntConfig_Preset_Invalid pins the same guard for alerts.preset.
+func TestParseAgntConfig_Preset_Invalid(t *testing.T) {
+	_, err := ParseAgntConfig(`alerts {
+    preset "vscode"
+}`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "alerts.preset")
+}
+
+// TestParseAgntConfig_PortConflict_Invalid pins project.port-conflict enum
+// validation.
+func TestParseAgntConfig_PortConflict_Invalid(t *testing.T) {
+	_, err := ParseAgntConfig(`project {
+    port-conflict "retry"
+}`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "port-conflict")
+}
+
+// TestParseAgntConfig_AlertPattern_InvalidRegex pins alerts.patterns.*.pattern
+// regex-compile validation at parse time.
+func TestParseAgntConfig_AlertPattern_InvalidRegex(t *testing.T) {
+	_, err := ParseAgntConfig(`alerts {
+    patterns {
+        broken {
+            pattern "("
+            severity "error"
+        }
+    }
+}`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "alerts.patterns.broken.pattern")
+}
+
+// TestParseAgntConfig_AlertPattern_InvalidSeverity pins
+// alerts.patterns.*.severity enum validation.
+func TestParseAgntConfig_AlertPattern_InvalidSeverity(t *testing.T) {
+	_, err := ParseAgntConfig(`alerts {
+    patterns {
+        custom {
+            pattern "MY_ERROR:"
+            severity "fatal"
+        }
+    }
+}`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "alerts.patterns.custom.severity")
+}
+
+// TestParseAgntConfig_HookRulesAction_CaseNormalized pins the case-
+// insensitive promise in HookBashPattern's doc comment: an uppercase action
+// must normalize rather than silently fail to match the switch in
+// cmd/agnt/hook_rules.go (which previously left it an unprotected no-op).
+func TestParseAgntConfig_HookRulesAction_CaseNormalized(t *testing.T) {
+	cfg, err := ParseAgntConfig(`hook-rules {
+    bash-patterns {
+        block-foo {
+            pattern "foo"
+            action "Block"
+        }
+    }
+}`)
+	require.NoError(t, err)
+	require.NotNil(t, cfg.HookRules)
+	require.Contains(t, cfg.HookRules.BashPatterns, "block-foo")
+	assert.Equal(t, "block", cfg.HookRules.BashPatterns["block-foo"].Action)
+}
+
+// TestParseAgntConfig_HookRulesAction_Invalid pins the parse-time enum guard.
+func TestParseAgntConfig_HookRulesAction_Invalid(t *testing.T) {
+	_, err := ParseAgntConfig(`hook-rules {
+    bash-patterns {
+        typo {
+            pattern "foo"
+            action "blck"
+        }
+    }
+}`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "bash-patterns.typo.action")
+}
+
+// TestParseAgntConfig_ShimsAction_Invalid pins shims.rules.*.action
+// enum validation.
+func TestParseAgntConfig_ShimsAction_Invalid(t *testing.T) {
+	_, err := ParseAgntConfig(`shims {
+    rules {
+        typo {
+            match "npm run build"
+            action "restartwatch"
+        }
+    }
+}`)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "shims.rules.typo.action")
 }
 
 func TestParseAgntConfig_AutoForwardDisabled(t *testing.T) {
@@ -1648,9 +1794,7 @@ func TestParseAgntConfig_AutomationMaxSessions(t *testing.T) {
 
 func TestParseAgntConfig_AutomationDefaults(t *testing.T) {
 	// Absent block → default ceiling via the nil-safe accessor.
-	cfg, err := ParseAgntConfig(`project {
-    name "x"
-}`)
+	cfg, err := ParseAgntConfig(`scripts {}`)
 	require.NoError(t, err)
 	assert.Nil(t, cfg.Automation)
 	assert.Equal(t, DefaultAutomationMaxSessions, cfg.Automation.MaxSessionsOrDefault())
@@ -2095,7 +2239,7 @@ func TestOutageHoldConfig_Defaults(t *testing.T) {
 
 func TestParseAgntConfig_AuthBreakout(t *testing.T) {
 	// Absent block: disabled, but getters still return sane defaults.
-	cfg, err := ParseAgntConfig("project {\n name \"x\"\n}")
+	cfg, err := ParseAgntConfig("scripts {}")
 	require.NoError(t, err)
 	assert.Nil(t, cfg.AuthBreakout)
 	assert.False(t, cfg.AuthBreakout.IsEnabled())
@@ -2165,7 +2309,7 @@ func TestSystemPrompt_DebuggingFlowOrder(t *testing.T) {
 
 	iRelease := strings.Index(prompt, "release_qa")
 	if assert.NotEqual(t, -1, iRelease, "prompt must mention release_qa") {
-		releaseLine := prompt[strings.LastIndex(prompt[:iRelease], "\n"):strings.Index(prompt[iRelease:], "\n")+iRelease]
+		releaseLine := prompt[strings.LastIndex(prompt[:iRelease], "\n") : strings.Index(prompt[iRelease:], "\n")+iRelease]
 		assert.Contains(t, releaseLine, "only when", "release_qa line must say 'only when' (explicit release QA)")
 	}
 }
