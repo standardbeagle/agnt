@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -277,7 +278,15 @@ func TestRunBinary_WritesAgentContextUnderCmdDir(t *testing.T) {
 		t.Skip("bash not available")
 	}
 
-	cmd := exec.Command(agntPath, "run", "--no-overlay", "test-e2e-cmd")
+	// Liveness net only — under Setsid the child fails raw mode and exits
+	// (~5s unloaded, dominated by its startup spinner); 10s was too tight
+	// under a loaded -race run.
+	// CommandContext does the kill inside exec, after Start has published
+	// cmd.Process; killing it from here raced Start on a loaded machine.
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, agntPath, "run", "--no-overlay", "test-e2e-cmd")
+	cmd.WaitDelay = 2 * time.Second // a grandchild holding the output pipe cannot wedge the test
 	isolateFromTTY(cmd)
 	// The child is a real `agnt run`, and it resolves its own project path from
 	// ITS cwd (run.go's os.Getwd) to write the agent-context file. t.TempDir()
@@ -291,21 +300,8 @@ func TestRunBinary_WritesAgentContextUnderCmdDir(t *testing.T) {
 		"SHELL="+bash,
 	)
 
-	done := make(chan struct{})
-	var output []byte
-	go func() {
-		output, _ = cmd.CombinedOutput()
-		close(done)
-	}()
-
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		// Safety net only — under Setsid the child fails raw mode and exits
-		// fast; it should not reach this. Kill and still assert containment.
-		cmd.Process.Kill()
-		<-done // drain output after kill
-	}
+	// A killed child still has to show containment, so the error is not fatal.
+	output, _ := cmd.CombinedOutput()
 
 	// Positive proof of containment: the child writes its agent-context file
 	// before it ever touches the PTY, so this holds regardless of whether the
