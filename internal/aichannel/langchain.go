@@ -25,7 +25,6 @@ const (
 	ProviderOpenRouter LLMProvider = "openrouter"
 	ProviderTogether   LLMProvider = "together"
 	ProviderHyperbolic LLMProvider = "hyperbolic"
-	ProviderReplicate  LLMProvider = "replicate"
 	ProviderSambaNova  LLMProvider = "sambanova"
 	ProviderGLM        LLMProvider = "glm"
 )
@@ -101,10 +100,11 @@ var providerRegistry = map[LLMProvider]ProviderInfo{
 
 // LangChainProvider implements the Provider interface using langchaingo.
 type LangChainProvider struct {
-	llm      llms.Model
-	provider LLMProvider
-	model    string
-	apiKey   string
+	llm       llms.Model
+	provider  LLMProvider
+	model     string
+	apiKey    string
+	maxTokens int
 }
 
 // LangChainConfig configures a LangChain provider.
@@ -188,10 +188,11 @@ func NewLangChainProvider(config LangChainConfig) (*LangChainProvider, error) {
 	}
 
 	return &LangChainProvider{
-		llm:      llm,
-		provider: config.Provider,
-		model:    model,
-		apiKey:   apiKey,
+		llm:       llm,
+		provider:  config.Provider,
+		model:     model,
+		apiKey:    apiKey,
+		maxTokens: config.MaxTokens,
 	}, nil
 }
 
@@ -227,7 +228,11 @@ func (p *LangChainProvider) CompleteWithContext(ctx context.Context, systemPromp
 	messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, userContent))
 
 	// Call the LLM
-	resp, err := p.llm.GenerateContent(ctx, messages)
+	var opts []llms.CallOption
+	if p.maxTokens > 0 {
+		opts = append(opts, llms.WithMaxTokens(p.maxTokens))
+	}
+	resp, err := p.llm.GenerateContent(ctx, messages, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrProviderError, err)
 	}

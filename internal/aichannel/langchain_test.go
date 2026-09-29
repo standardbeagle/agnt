@@ -1,8 +1,11 @@
 package aichannel
 
 import (
+	"context"
 	"os"
 	"testing"
+
+	"github.com/tmc/langchaingo/llms"
 )
 
 func TestProviderRegistry(t *testing.T) {
@@ -162,5 +165,72 @@ func TestLangChainProvider_OpenAICompatible(t *testing.T) {
 		if info.BaseURL != tc.baseURL {
 			t.Errorf("Provider %s BaseURL = %q, want %q", tc.provider, info.BaseURL, tc.baseURL)
 		}
+	}
+}
+
+// TestProviderReplicateRemoved pins that the dead ProviderReplicate constant
+// is gone: it was declared but never registered in providerRegistry and had
+// no case in NewLangChainProvider's provider switch, so any caller that
+// referenced it would always fail with "unknown provider" — a declared
+// capability that never worked.
+func TestProviderReplicateRemoved(t *testing.T) {
+	if _, ok := providerRegistry["replicate"]; ok {
+		t.Error(`providerRegistry still has a "replicate" entry; ProviderReplicate should stay removed unless it's actually implemented`)
+	}
+}
+
+// fakeLLM captures the CallOptions passed to GenerateContent so tests can
+// assert on them without a real provider SDK or network call.
+type fakeLLM struct {
+	gotOpts []llms.CallOption
+}
+
+func (f *fakeLLM) GenerateContent(_ context.Context, _ []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	f.gotOpts = options
+	return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: "ok"}}}, nil
+}
+
+func (f *fakeLLM) Call(_ context.Context, _ string, _ ...llms.CallOption) (string, error) {
+	return "ok", nil
+}
+
+// TestCompleteWithContext_HonorsMaxTokens is the RED→GREEN pin for the
+// MaxTokens config field: it was accepted and stored but never passed to
+// GenerateContent, so it silently had no effect on response length.
+func TestCompleteWithContext_HonorsMaxTokens(t *testing.T) {
+	fake := &fakeLLM{}
+	p := &LangChainProvider{llm: fake, provider: ProviderOpenAI, model: "test", maxTokens: 256}
+
+	if _, err := p.CompleteWithContext(context.Background(), "sys", "hello", ""); err != nil {
+		t.Fatalf("CompleteWithContext: %v", err)
+	}
+
+	opts := llms.CallOptions{}
+	for _, o := range fake.gotOpts {
+		o(&opts)
+	}
+	if opts.MaxTokens != 256 {
+		t.Errorf("MaxTokens option = %d, want 256", opts.MaxTokens)
+	}
+}
+
+// TestCompleteWithContext_ZeroMaxTokensOmitsOption confirms an unset
+// MaxTokens (0, the config zero value) doesn't pass a WithMaxTokens(0) —
+// which would tell the provider to generate nothing — leaving the
+// provider's own default in effect instead.
+func TestCompleteWithContext_ZeroMaxTokensOmitsOption(t *testing.T) {
+	fake := &fakeLLM{}
+	p := &LangChainProvider{llm: fake, provider: ProviderOpenAI, model: "test"}
+
+	if _, err := p.CompleteWithContext(context.Background(), "sys", "hello", ""); err != nil {
+		t.Fatalf("CompleteWithContext: %v", err)
+	}
+
+	opts := llms.CallOptions{}
+	for _, o := range fake.gotOpts {
+		o(&opts)
+	}
+	if opts.MaxTokens != 0 {
+		t.Errorf("MaxTokens option = %d, want 0 (no option passed)", opts.MaxTokens)
 	}
 }
