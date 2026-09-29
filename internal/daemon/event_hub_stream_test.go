@@ -64,6 +64,37 @@ func TestStreamFilter_MatchesProxyIDFilter(t *testing.T) {
 	assert.False(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "other-proxy", ""))
 }
 
+// TestStreamFilter_MatchesCommaJoinedProxyIDSet proves watch multi-id
+// filtering actually works end to end: internal/tools/watch.go comma-joins
+// ProxyIDs into a single "--proxy a,b" flag (cmd/agnt/monitor.go forwards it
+// unsplit into protocol.StreamEventFilter.ProxyID), so streamFilter.matches
+// must treat that joined string as a SET, not compare it as one literal id.
+func TestStreamFilter_MatchesCommaJoinedProxyIDSet(t *testing.T) {
+	t.Parallel()
+	sf := streamFilter{proxyID: "proxy-a,proxy-b"}
+
+	assert.True(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "proxy-a", ""))
+	assert.True(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "proxy-b", ""))
+	assert.False(t, sf.matches(proxy.LogEntry{Type: proxy.LogTypeError}, "proxy-c", ""))
+}
+
+// TestStreamFilter_MatchesCommaJoinedProcessIDSet mirrors the proxy-set test
+// for --process (processID), used by the "process" watch target.
+func TestStreamFilter_MatchesCommaJoinedProcessIDSet(t *testing.T) {
+	t.Parallel()
+	sf := streamFilter{processID: "proc-a, proc-b"}
+
+	entryFor := func(pid string) proxy.LogEntry {
+		return proxy.LogEntry{
+			Type:          proxy.LogTypeProcessOutput,
+			ProcessOutput: &proxy.ProcessOutputEvent{ProcessID: pid},
+		}
+	}
+	assert.True(t, sf.matches(entryFor("proc-a"), "", ""))
+	assert.True(t, sf.matches(entryFor("proc-b"), "", ""), "must tolerate whitespace after the comma")
+	assert.False(t, sf.matches(entryFor("proc-c"), "", ""))
+}
+
 func TestStreamFilter_MatchesSeverityFilter(t *testing.T) {
 	t.Parallel()
 	sf := streamFilter{
