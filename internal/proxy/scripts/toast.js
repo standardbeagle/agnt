@@ -12,6 +12,15 @@
     gap: 10
   };
 
+  // Secret-entry submissions awaiting the daemon's 'secret_ack' reply, keyed
+  // by secret name: { token, cb(ok) }. The wire protocol (ws_messages.go)
+  // carries no per-request id, only the name, so only the most recent
+  // in-flight submission for a given name can be resolved — a second submit
+  // of the same name before the first acks replaces the pending entry, and
+  // the stale timeout below no-ops via the token check.
+  var pendingSecretAcks = {};
+  var SECRET_ACK_TIMEOUT_MS = 10000;
+
   // State
   var state = {
     container: null,
@@ -274,17 +283,71 @@
       form.appendChild(secretInput);
       form.appendChild(submitBtn);
 
+      // Inline status line: the ONLY place a submission's real outcome is
+      // shown. A prior version dismissed the toast (and claimed "saved") the
+      // instant WebSocket.send() returned true — the daemon's actual
+      // secret_ack (ws_messages.go) had no listener, so a rejected or
+      // never-persisted secret was reported to the visitor as a success.
+      var statusEl = document.createElement('div');
+      statusEl.setAttribute('role', 'status');
+      statusEl.style.cssText = [
+        'font-size:12px', 'margin-top:4px', 'min-height:14px',
+        'color:' + TOKENS.colors.textMuted
+      ].join(';');
+
       form.onsubmit = function(ev) {
         ev.preventDefault();
         var v = secretInput.value;
         if (!v) return;
-        var sent = window.__devtool_core && window.__devtool_core.send &&
-          window.__devtool_core.send('secret_submit', { name: options.name, value: v });
+        var core = window.__devtool_core;
+        var sent = core && core.send && core.send('secret_submit', { name: options.name, value: v });
         secretInput.value = '';
-        if (options.onSubmitted) options.onSubmitted(!!sent);
+
+        if (!sent) {
+          statusEl.textContent = 'Not connected — try again once reconnected.';
+          statusEl.style.color = TOKENS.colors.error;
+          return;
+        }
+
+        submitBtn.disabled = true;
+        secretInput.disabled = true;
+        statusEl.textContent = 'Saving…';
+        statusEl.style.color = TOKENS.colors.textMuted;
+
+        var settled = false;
+        function finish(ok, reason) {
+          if (settled) return;
+          settled = true;
+          submitBtn.disabled = false;
+          secretInput.disabled = false;
+          if (ok) {
+            if (options.onSubmitted) options.onSubmitted();
+          } else {
+            // Left open on failure so the visitor can retry without
+            // re-triggering the whole toast (Silent Failure Prohibition: a
+            // rejected or unanswered secret_ack must never look like success).
+            statusEl.textContent = reason;
+            statusEl.style.color = TOKENS.colors.error;
+            secretInput.focus();
+          }
+        }
+
+        var token = {};
+        pendingSecretAcks[options.name] = {
+          token: token,
+          cb: function(ok) { finish(ok, ok ? '' : 'Rejected — try again.'); }
+        };
+        setTimeout(function() {
+          var pending = pendingSecretAcks[options.name];
+          if (pending && pending.token === token) {
+            delete pendingSecretAcks[options.name];
+            finish(false, 'No response — try again.');
+          }
+        }, SECRET_ACK_TIMEOUT_MS);
       };
 
       content.appendChild(form);
+      content.appendChild(statusEl);
     }
 
     toast.appendChild(content);
@@ -328,17 +391,16 @@
     var id = state.nextId++;
     var duration = options.duration || config.duration;
 
-    // Secret-entry toasts persist until submitted or dismissed.
+    // Secret-entry toasts persist until submitted or dismissed. onSubmitted
+    // now fires only once the daemon's secret_ack confirms the value was
+    // actually stored (createToastElement's own status line handles the
+    // in-place failure/retry case, so this toast just closes out on success).
     if (options.input === 'secret' && options.name) {
       duration = 0;
       options.showProgress = false;
-      options.onSubmitted = function(sent) {
+      options.onSubmitted = function() {
         dismiss(id);
-        if (sent) {
-          info(options.name + ' saved to the agnt store (value never shared with the agent)', 'Secret received');
-        } else {
-          error('Could not submit ' + options.name + ' — connection unavailable, try again', 'Secret not saved');
-        }
+        info(options.name + ' saved to the agnt store (value never shared with the agent)', 'Secret received');
       };
     }
 
@@ -476,6 +538,17 @@
         input: payload.input,
         name: payload.name
       });
+      return;
+    }
+    // The daemon's reply to 'secret_submit' (ws_messages.go: {type:
+    // 'secret_ack', name, ok}). Resolves the in-flight submission for that
+    // name registered by createToastElement's form handler above.
+    if (message.type === 'secret_ack') {
+      var pending = pendingSecretAcks[message.name];
+      if (pending) {
+        delete pendingSecretAcks[message.name];
+        pending.cb(!!message.ok);
+      }
     }
   }
 
