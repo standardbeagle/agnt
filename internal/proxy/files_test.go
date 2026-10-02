@@ -9,9 +9,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// redirectOSTempDir points os.TempDir at dir for the test. os.TempDir reads
+// TMPDIR on unix but TMP (then TEMP) on Windows, so setting TMPDIR alone left
+// Windows writing to the runner's real temp dir and every containment
+// assertion below measured the wrong directory.
+func redirectOSTempDir(t *testing.T, dir string) {
+	t.Helper()
+	t.Setenv("TMPDIR", dir)
+	t.Setenv("TMP", dir)
+	t.Setenv("TEMP", dir)
+	require.Equal(t, filepath.Clean(dir), filepath.Clean(os.TempDir()))
+}
+
 func TestSaveLargeResult_ExecIDCannotEscapeTempDir(t *testing.T) {
 	tempDir := t.TempDir()
-	t.Setenv("TMPDIR", tempDir)
+	redirectOSTempDir(t, tempDir)
 
 	ps := &ProxyServer{ID: "test-proxy"}
 	// Before execID sanitization, the prefixed first component plus these
@@ -98,7 +110,7 @@ func TestSavePNGBytes_LandsUnderProxyProjectRootNotCwd(t *testing.T) {
 // capture stays locatable) — but the fallback must never be the process cwd.
 func TestSavePNGBytes_NoProjectRootFallsBackToTempNotCwd(t *testing.T) {
 	tempDir := t.TempDir()
-	t.Setenv("TMPDIR", tempDir)
+	redirectOSTempDir(t, tempDir)
 	sentinelCwd := t.TempDir()
 	t.Chdir(sentinelCwd)
 

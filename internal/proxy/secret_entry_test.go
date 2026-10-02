@@ -13,6 +13,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -40,7 +41,13 @@ func (oc *overlayCapture) all() []string {
 func startOverlayCapture(t *testing.T) (*overlayCapture, string) {
 	t.Helper()
 	oc := &overlayCapture{}
-	socketPath := filepath.Join(t.TempDir(), "overlay.sock")
+	// Not t.TempDir(): its name embeds the test name, and on Windows that
+	// pushes the socket path past the 108-byte sun_path limit, so bind fails
+	// with "invalid argument". A short MkdirTemp name keeps it well under.
+	sockDir, err := os.MkdirTemp("", "ovl")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	socketPath := filepath.Join(sockDir, "overlay.sock")
 	ln, err := net.Listen("unix", socketPath)
 	require.NoError(t, err)
 	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
