@@ -176,3 +176,16 @@ func ephemeralTargetURL(t *testing.T) string {
 	t.Helper()
 	return fmt.Sprintf("http://127.0.0.1:%d", ephemeralPort(t))
 }
+
+// registerSession is a small helper that puts a session into the registry
+// without going through the full hub handshake.
+func registerSession(t *testing.T, d *Daemon, code, projectPath string) {
+	t.Helper()
+	require.NoError(t, d.sessionRegistry.Register(&Session{
+		Code:        code,
+		ProjectPath: projectPath,
+		StartedAt:   time.Now(),
+		Status:      SessionStatusActive,
+		LastSeen:    time.Now(),
+	}))
+}

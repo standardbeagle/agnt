@@ -64,19 +64,6 @@ func blockingAutostartFn(cancelled *atomic.Int32) AutostartStartFunc {
 	}
 }
 
-// registerSession is a small helper that puts a session into the registry
-// without going through the full hub handshake.
-func registerSession(t *testing.T, d *Daemon, code, projectPath string) {
-	t.Helper()
-	require.NoError(t, d.sessionRegistry.Register(&Session{
-		Code:        code,
-		ProjectPath: projectPath,
-		StartedAt:   time.Now(),
-		Status:      SessionStatusActive,
-		LastSeen:    time.Now(),
-	}))
-}
-
 // TestCleanupSessionResources_CancelsAutostart_LastSession verifies that the
 // running autostart context is cancelled when the last session for a project
 // is cleaned up.
