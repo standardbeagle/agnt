@@ -20,7 +20,7 @@ func TestPIDTrackerPath_IsPerDaemon(t *testing.T) {
 
 	assert.NotEmpty(t, a)
 	assert.NotEqual(t, a, b, "two daemons on different sockets must not share a PID tracker file")
-	assert.Equal(t, "/tmp/agnt-a", filepath.Dir(a), "the tracker lives beside its socket")
+	assert.Equal(t, filepath.Dir(filepath.FromSlash("/tmp/agnt-a/agnt.sock")), filepath.Dir(a), "the tracker lives beside its socket")
 }
 
 // A daemon on the default socket keeps the historical, AppName-derived path, so
@@ -34,8 +34,8 @@ func TestPIDTrackerPath_DefaultSocketKeepsLibraryDefault(t *testing.T) {
 // Two test daemons must not collide: this is what made `sleep 60` processes die
 // with "exited with code -1 during startup" when the suite ran under load.
 func TestPIDTrackerPath_TestDaemonsGetDistinctFiles(t *testing.T) {
-	d1 := NewForTest(t, DaemonConfig{SocketPath: filepath.Join(t.TempDir(), "one.sock")})
-	d2 := NewForTest(t, DaemonConfig{SocketPath: filepath.Join(t.TempDir(), "two.sock")})
+	d1 := NewForTest(t, DaemonConfig{SocketPath: filepath.Join(shortTempDir(t), "one.sock")})
+	d2 := NewForTest(t, DaemonConfig{SocketPath: filepath.Join(shortTempDir(t), "two.sock")})
 
 	p1 := pidTrackerPathFor(d1.config.SocketPath)
 	p2 := pidTrackerPathFor(d2.config.SocketPath)

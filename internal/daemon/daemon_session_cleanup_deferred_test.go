@@ -18,7 +18,7 @@ import (
 func newDeferredCleanupDaemon(t *testing.T, grace time.Duration) *Daemon {
 	t.Helper()
 	return NewForTest(t, DaemonConfig{
-		SocketPath:         filepath.Join(t.TempDir(), "d.sock"),
+		SocketPath:         filepath.Join(shortTempDir(t), "d.sock"),
 		CleanupGracePeriod: grace,
 	})
 }

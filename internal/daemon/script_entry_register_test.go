@@ -16,7 +16,7 @@ import (
 // which is exactly what live reconcile does. registerScriptEntry replaces the
 // entry instead.
 func TestRegisterScriptEntry_ReplacesOnChangedConfig(t *testing.T) {
-	d := NewForTest(t, DaemonConfig{SocketPath: filepath.Join(t.TempDir(), "d.sock")})
+	d := NewForTest(t, DaemonConfig{SocketPath: filepath.Join(shortTempDir(t), "d.sock")})
 	project := t.TempDir()
 
 	first, err := d.registerScriptEntry("dev", project, &script.Config{Run: "npm run dev"})
@@ -37,7 +37,7 @@ func TestRegisterScriptEntry_ReplacesOnChangedConfig(t *testing.T) {
 }
 
 func TestRegisterScriptEntry_IdempotentOnUnchangedConfig(t *testing.T) {
-	d := NewForTest(t, DaemonConfig{SocketPath: filepath.Join(t.TempDir(), "d.sock")})
+	d := NewForTest(t, DaemonConfig{SocketPath: filepath.Join(shortTempDir(t), "d.sock")})
 	project := t.TempDir()
 	cfg := func() *script.Config {
 		return &script.Config{Command: "go", Args: []string{"run", "."}, Env: map[string]string{"A": "1"}}
@@ -57,7 +57,7 @@ func TestRegisterScriptEntry_IdempotentOnUnchangedConfig(t *testing.T) {
 // whether a script still has a live watcher. Losing them on a config edit would
 // let the next session disconnect tear down a script another session still owns.
 func TestRegisterScriptEntry_CarriesSessionsAndOwnerAcrossReplacement(t *testing.T) {
-	d := NewForTest(t, DaemonConfig{SocketPath: filepath.Join(t.TempDir(), "d.sock")})
+	d := NewForTest(t, DaemonConfig{SocketPath: filepath.Join(shortTempDir(t), "d.sock")})
 	project := t.TempDir()
 
 	entry, err := d.registerScriptEntry("web", project, &script.Config{Run: "vite"})
@@ -75,7 +75,7 @@ func TestRegisterScriptEntry_CarriesSessionsAndOwnerAcrossReplacement(t *testing
 }
 
 func TestRegisterScriptEntry_RejectsInvalidKey(t *testing.T) {
-	d := NewForTest(t, DaemonConfig{SocketPath: filepath.Join(t.TempDir(), "d.sock")})
+	d := NewForTest(t, DaemonConfig{SocketPath: filepath.Join(shortTempDir(t), "d.sock")})
 
 	_, err := d.registerScriptEntry("", t.TempDir(), &script.Config{Run: "x"})
 	assert.Error(t, err, "empty name is unaddressable in the registry")

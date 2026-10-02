@@ -668,7 +668,7 @@ func TestSession_MarshalJSON(t *testing.T) {
 func TestDaemon_AutostartManager_SharedPerProject(t *testing.T) {
 	t.Parallel()
 	d := New(DaemonConfig{
-		SocketPath:   filepath.Join(t.TempDir(), "test.sock"),
+		SocketPath:   filepath.Join(shortTempDir(t), "test.sock"),
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})

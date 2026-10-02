@@ -27,8 +27,7 @@ import (
 // OrphanScanEnabled: true.
 func newCleanupTestDaemon(t *testing.T, grace time.Duration) *Daemon {
 	t.Helper()
-	tmpDir := t.TempDir()
-	sockPath := filepath.Join(tmpDir, "test.sock")
+	sockPath := shortSockPath(t)
 
 	d := New(DaemonConfig{
 		SocketPath:         sockPath,
@@ -351,7 +350,7 @@ func TestCleanupSessionResources_ExplicitProxy_OtherSessionRemains(t *testing.T)
 func TestRestoreProxies_RegistersAdminEntry(t *testing.T) {
 	t.Parallel()
 	stateDir := t.TempDir()
-	sockPath := filepath.Join(stateDir, "d.sock")
+	sockPath := shortSockPath(t)
 	d := New(DaemonConfig{
 		SocketPath:             sockPath,
 		MaxClients:             10,

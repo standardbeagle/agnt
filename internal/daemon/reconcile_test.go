@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"path/filepath"
 	"testing"
 
 	"github.com/standardbeagle/agnt/internal/config"
@@ -161,7 +162,7 @@ func TestBuildProxyServerConfig_CloudflareTunnel(t *testing.T) {
 	if assert.NotNil(t, got) {
 		assert.Equal(t, "tid", got.Tunnel.TunnelID)
 		assert.Equal(t, "dev.example.com", got.Tunnel.Hostname)
-		assert.Equal(t, "/proj/secrets/dev.json", got.Tunnel.CredentialsFile, "relative credentials resolve against the project")
+		assert.Equal(t, filepath.Join("/proj", "secrets", "dev.json"), got.Tunnel.CredentialsFile, "relative credentials resolve against the project")
 		assert.Equal(t, "beagle.cloudflareaccess.com", got.AccessTeamDomain)
 		assert.Equal(t, "aud", got.AccessAUD)
 		assert.False(t, got.AllowUnauthenticated)

@@ -37,7 +37,10 @@ func TestRunLifecycleHook_SetsEnvVars(t *testing.T) {
 		cmd = `printf '%s|%s' "$AGNT_EVENT" "$AGNT_SCRIPT_ID" > ` + tmp.Name()
 	}
 
-	err = RunLifecycleHook(cmd, "mybackend", "start", hookTestScriptConfig(nil), 0)
+	// Generous deadline: the first powershell.exe launch on a cold Windows
+	// runner can exceed the 5s production window, and this test asserts the
+	// env contract, not hook latency.
+	err = runLifecycleHookWithTimeout(30*time.Second, cmd, "mybackend", "start", hookTestScriptConfig(nil), 0)
 	require.NoError(t, err)
 
 	data, _ := os.ReadFile(tmp.Name())

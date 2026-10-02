@@ -12,7 +12,7 @@ import (
 // registered, without starting the production socket listener.
 func newSubVerbTestDaemon(t *testing.T) *Daemon {
 	t.Helper()
-	return NewForTest(t, DaemonConfig{SocketPath: filepath.Join(t.TempDir(), "d.sock")})
+	return NewForTest(t, DaemonConfig{SocketPath: filepath.Join(shortTempDir(t), "d.sock")})
 }
 
 // TestRouterActionsAreRegisteredSubVerbs pins the invariant that makes
@@ -28,25 +28,25 @@ func TestRouterActionsAreRegisteredSubVerbs(t *testing.T) {
 	d := newSubVerbTestDaemon(t)
 
 	routers := map[string]map[string]handlerFn{
-		"PROC":         d.procActions(),
-		"PROXY":        d.proxyActions(),
-		"PROXYLOG":     d.proxyLogActions(),
-		"CURRENTPAGE":  d.currentPageActions(),
-		"OVERLAY":      d.overlayActions(),
-		"TUNNEL":       d.tunnelActions(),
-		"BROWSER":      d.browserActions(),
-		"AUTOMATION":   d.automationActions(),
-		"CHAOS":        d.chaosActions(),
-		"SESSION":      d.sessionActions(),
-		"SESSION-HOST": d.sessionHostActions(),
-		"STORE":        d.storeActions(),
-		"AUTOMATE":     d.automateActions(),
-		"ALERTS":       d.alertsActions(),
+		"PROC":          d.procActions(),
+		"PROXY":         d.proxyActions(),
+		"PROXYLOG":      d.proxyLogActions(),
+		"CURRENTPAGE":   d.currentPageActions(),
+		"OVERLAY":       d.overlayActions(),
+		"TUNNEL":        d.tunnelActions(),
+		"BROWSER":       d.browserActions(),
+		"AUTOMATION":    d.automationActions(),
+		"CHAOS":         d.chaosActions(),
+		"SESSION":       d.sessionActions(),
+		"SESSION-HOST":  d.sessionHostActions(),
+		"STORE":         d.storeActions(),
+		"AUTOMATE":      d.automateActions(),
+		"ALERTS":        d.alertsActions(),
 		"INCIDENTS":     d.incidentsActions(),
 		"INVESTIGATION": d.investigationActions(),
-		"PORTS":        d.portsActions(),
-		"SCRIPT":       d.scriptActions(),
-		"AUTOSTART":    d.autostartActions(),
+		"PORTS":         d.portsActions(),
+		"SCRIPT":        d.scriptActions(),
+		"AUTOSTART":     d.autostartActions(),
 	}
 
 	for verb, actions := range routers {

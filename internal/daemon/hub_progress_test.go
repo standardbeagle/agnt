@@ -74,7 +74,7 @@ func measureRoundTripBaseline(t *testing.T, sock string) time.Duration {
 // observed elapsed time is asserted against the observed deadline to prove the
 // request really did outlive multiple windows rather than racing through one.
 func TestHubProgressKeepsSilentRequestAlive(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "hub.sock")
+	sock := filepath.Join(shortTempDir(t), "hub.sock")
 
 	// silentMultiple: how many client idle-deadline windows the handler stays
 	// completely silent for. >1 is what gives the test teeth — with STATUS
@@ -143,7 +143,7 @@ func TestHubProgressKeepsSilentRequestAlive(t *testing.T) {
 // invariant: one long request may occupy its own connection, but STATUS writes
 // and handler execution must not delay an independent control-plane request.
 func TestHubProgressDoesNotBlockOtherClients(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "hub.sock")
+	sock := filepath.Join(shortTempDir(t), "hub.sock")
 	release := make(chan struct{})
 	started := make(chan struct{})
 	var once sync.Once
@@ -199,7 +199,7 @@ func TestHubProgressDoesNotBlockOtherClients(t *testing.T) {
 // TestHubProgressDoesNotContaminateChunkedPayload ensures STATUS remains
 // out-of-band even when it is interleaved with application CHUNK frames.
 func TestHubProgressDoesNotContaminateChunkedPayload(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "hub.sock")
+	sock := filepath.Join(shortTempDir(t), "hub.sock")
 	h := hubpkg.New(hubpkg.Config{
 		SocketPath:     sock,
 		MaxClients:     4,

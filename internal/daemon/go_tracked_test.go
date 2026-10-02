@@ -13,7 +13,7 @@ import (
 
 func newGoTrackedDaemon(t *testing.T) *Daemon {
 	t.Helper()
-	return NewForTest(t, DaemonConfig{SocketPath: filepath.Join(t.TempDir(), "d.sock")})
+	return NewForTest(t, DaemonConfig{SocketPath: filepath.Join(shortTempDir(t), "d.sock")})
 }
 
 // A goroutine started before Stop must finish before Stop returns: that is the

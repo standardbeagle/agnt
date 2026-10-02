@@ -15,7 +15,10 @@ import (
 
 func TestReconcileProxyOnlyChanges(t *testing.T) {
 	d := NewForTest(t, DaemonConfig{})
-	dir := t.TempDir()
+	// The daemon keys proxies by normalizePath(project) (lowercased on
+	// Windows); deriving the expected id from the raw temp path hashes a
+	// different string there.
+	dir := normalizePath(t.TempDir())
 	path := filepath.Join(dir, config.AgntConfigFileName)
 	write := func(target, status string) {
 		t.Helper()
