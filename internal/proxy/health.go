@@ -120,7 +120,11 @@ func isAddressInUse(err error) bool {
 	// Check for "bind: address already in use" error
 	return strings.Contains(err.Error(), "address already in use") ||
 		strings.Contains(err.Error(), "bind") && strings.Contains(err.Error(), "in use") ||
-		strings.Contains(err.Error(), "Only one usage of each socket address")
+		strings.Contains(err.Error(), "Only one usage of each socket address") ||
+		// Windows WSAEACCES: the port sits in an OS-reserved (excluded) range,
+		// e.g. Hyper-V/WinNAT. A derived listen port can land there, and it is
+		// as unusable as an occupied one, so it takes the same fallback.
+		strings.Contains(err.Error(), "forbidden by its access permissions")
 }
 
 // isTransientConnectionError checks if an error is a transient connection error
