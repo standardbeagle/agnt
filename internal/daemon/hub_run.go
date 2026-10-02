@@ -399,9 +399,18 @@ func (d *Daemon) hubHandleRun(ctx context.Context, conn *hubpkg.Connection, cmd 
 		return conn.WriteMissingParam("RUN", "command", "command or script_name required")
 	}
 
+	// Store the project key in the daemon's normalized form (lowercased on
+	// Windows). Session cleanup stops processes by exact ProjectPath match
+	// against the session's normalized path, so a raw client casing would
+	// leave the process running after its last session ends.
+	projectPath := cfg.Path
+	if projectPath != "" {
+		projectPath = normalizePath(projectPath)
+	}
+
 	procCfg := goprocess.ProcessConfig{
 		ID:          cfg.ID,
-		ProjectPath: cfg.Path,
+		ProjectPath: projectPath,
 		Command:     cfg.Command,
 		Args:        cfg.Args,
 		// Store-held secrets are consumed by NAME via env injection at spawn.
