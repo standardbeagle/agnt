@@ -129,7 +129,7 @@ func (sm *Manager) Close() error {
 	var errs []error
 
 	if sm.listener != nil {
-		if err := sm.listener.Close(); err != nil {
+		if err := sm.listener.Close(); err != nil && !IsClosedError(err) {
 			errs = append(errs, fmt.Errorf("close listener: %w", err))
 		}
 		sm.listener = nil
