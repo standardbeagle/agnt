@@ -43,7 +43,6 @@ import (
 	"sort"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 	"unicode/utf8"
 )
@@ -415,37 +414,11 @@ func (s *FeedbackStore) persist(shareID string, records []FeedbackRecord) error 
 		os.Remove(tmp)
 		return fmt.Errorf("publish: fsync temp feedback: %w", err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
+	if err := renameDurable(tmp, path); err != nil {
 		os.Remove(tmp)
-		return fmt.Errorf("publish: rename feedback: %w", err)
-	}
-	// Fsync the parent directory so the rename itself is durable: without it a
-	// power loss after a successful rename() can still lose the new dir entry,
-	// leaving the record absent despite the temp-file fsync above.
-	if err := fsyncDir(s.dir); err != nil {
-		return fmt.Errorf("publish: fsync feedback dir: %w", err)
+		return fmt.Errorf("publish: persist feedback: %w", err)
 	}
 	return nil
-}
-
-// fsyncDir flushes a directory entry to disk (durable rename). A platform that
-// does not support syncing a directory handle reports errors.ErrUnsupported (or
-// EINVAL on some filesystems); those are non-fatal — the rename is still
-// atomic, only the extra durability barrier is unavailable. Any other error is
-// a real I/O fault and is returned.
-func fsyncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	err = d.Sync()
-	if cerr := d.Close(); err == nil {
-		err = cerr
-	}
-	if err != nil && (errors.Is(err, errors.ErrUnsupported) || errors.Is(err, syscall.EINVAL)) {
-		return nil
-	}
-	return err
 }
 
 // feedbackFileName maps a share id to a filesystem-safe record filename. Share
