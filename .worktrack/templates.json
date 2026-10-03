@@ -69,11 +69,19 @@
     },
     {
       "name": "go-epic",
-      "description": "Epic container for go-slice children: waits for every go-slice child to be done, builds and tests the integrated tree, fable reviews the union of the children's change packets against the epic's done-condition, then harvests lessons into tasks and rules.",
+      "description": "Epic container for go-slice children: a planning agent decomposes the epic into go-slice children, then waits for every go-slice child to be done, builds and tests the integrated tree, fable reviews the union of the children's change packets against the epic's done-condition, then harvests lessons into tasks and rules.",
       "autoAttachOnTags": [
         "epic"
       ],
       "steps": [
+        {
+          "kind": "agent",
+          "name": "decompose",
+          "specJson": "{\"prompt\":\"PLANNING GATE for task {{task.id}} ({{workspace}}): {{task.title}}\\n\\nTASK TEXT:\\n{{task.description}}\\n\\nDecompose this epic into child tasks through the worktrack MCP verbs task_batch_create (parentId {{task.id}}), task_link_create and task_scope_set. Tag every child go-slice: that tag routes it to the go-slice template and is the tag the next step, slices-done, counts. A child without it is never counted and the epic waits forever. Give each child a real fileScope and executable acceptance criteria.\\n\\nDo not implement. When done, post a worktrack_completion_v1 note through task_comment_add naming every created task id.\",\"system_prompt_file\":\"builtin:planning-context\",\"effort\":\"high\",\"allowed_tools\":[\"Read\",\"Grep\",\"Glob\",\"Agent\",\"Bash(git diff *)\",\"Bash(git log *)\",\"Bash(git show *)\",\"mcp__worktrack__task_get\",\"mcp__worktrack__task_comments_list\",\"mcp__worktrack__task_workflow_get\",\"mcp__worktrack__task_batch_create\",\"mcp__worktrack__task_link_create\",\"mcp__worktrack__task_scope_set\",\"mcp__worktrack__task_comment_add\"],\"mcp_servers\":{\"worktrack\":{\"command\":\"{{host.worktrack_mcp}}\",\"env\":{\"WORKTRACK_DB\":\"{{host.worktrack_db}}\"}}},\"max_turns\":80,\"max_budget_usd\":10,\"stall_seconds\":600,\"timeout_seconds\":2700,\"model_category\":\"plan\",\"agent\":{\"argv\":[\"opencode\",\"acp\"],\"env\":{\"OPENCODE_CONFIG_DIR\":\"{{host.home}}/.config/opencode-acp/opencode\"}},\"permissions\":\"allow_all\",\"fs\":\"read_only\"}",
+          "required": true,
+          "allowSkip": false,
+          "maxAttempts": 3
+        },
         {
           "kind": "subtask_gate",
           "name": "slices-done",
