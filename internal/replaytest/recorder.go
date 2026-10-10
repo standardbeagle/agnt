@@ -17,6 +17,13 @@ import (
 // are templated via TemplatePath, query keys are extracted (dropping the
 // cache-buster "_"), and consecutive identical recordings are coalesced into
 // one with an incremented Hits count.
+//
+// Steps always open with a navigate to the page the recording started on: the
+// replay driver starts from a blank browser, so without it the first recorded
+// click has no document to find its target in. Each step also asserts that the
+// element the user touched next is present once it has run — the one check the
+// log supports without a DOM snapshot. DOM signatures are captured by the first
+// baseline replay (see Driver.RunSeed).
 func AssembleScenario(name, baseURL string, entries []proxy.LogEntry) *Scenario {
 	sc := &Scenario{
 		Name:       name,
@@ -25,6 +32,7 @@ func AssembleScenario(name, baseURL string, entries []proxy.LogEntry) *Scenario 
 		RecordedAt: time.Now().UTC().Format(time.RFC3339),
 		Blobs:      map[string]string{},
 	}
+	sc.Steps = []Step{{Kind: StepNavigate, Selector: startPath(entries)}}
 	blobN := 0
 	for _, e := range entries {
 		switch e.Type {
@@ -32,9 +40,19 @@ func AssembleScenario(name, baseURL string, entries []proxy.LogEntry) *Scenario 
 			if e.Interaction == nil {
 				continue
 			}
+			kind, ok := mapInteractionKind(e.Interaction.EventType)
+			if !ok || e.Interaction.Target.Selector == "" {
+				continue
+			}
+			// The page reports the field's whole value on every keystroke;
+			// keep only the last one so replay types it once.
+			if last := &sc.Steps[len(sc.Steps)-1]; kind == StepInput && last.Kind == StepInput && last.Selector == e.Interaction.Target.Selector {
+				last.Value = e.Interaction.Value
+				continue
+			}
 			sc.Steps = append(sc.Steps, Step{
 				Index:    len(sc.Steps),
-				Kind:     mapInteractionKind(e.Interaction.EventType),
+				Kind:     kind,
 				Selector: e.Interaction.Target.Selector,
 				Value:    e.Interaction.Value,
 			})
@@ -57,20 +75,58 @@ func AssembleScenario(name, baseURL string, entries []proxy.LogEntry) *Scenario 
 			})
 		}
 	}
+	for i := 0; i+1 < len(sc.Steps); i++ {
+		sc.Steps[i].Assertions = []Assertion{{Selector: sc.Steps[i+1].Selector, Type: AssertPresent}}
+	}
 	coalesceHits(sc)
 	return sc
 }
 
-func mapInteractionKind(k string) StepKind {
+// startPath returns the path (with query) of the page the recording began on:
+// the page of the first interaction, else the first HTML document fetched, else
+// the site root.
+func startPath(entries []proxy.LogEntry) string {
+	for _, e := range entries {
+		raw := ""
+		switch {
+		case e.Type == proxy.LogTypeInteraction && e.Interaction != nil:
+			raw = e.Interaction.URL
+		case e.Type == proxy.LogTypeHTTP && e.HTTP != nil && e.HTTP.Method == "GET" && isHTML(e.HTTP.ResponseHeaders):
+			raw = e.HTTP.URL
+		}
+		if raw == "" {
+			continue
+		}
+		if u, err := url.Parse(raw); err == nil && u.Path != "" {
+			return u.RequestURI()
+		}
+	}
+	return "/"
+}
+
+func isHTML(headers map[string]string) bool {
+	for k, v := range headers {
+		if strings.EqualFold(k, "Content-Type") {
+			return strings.HasPrefix(strings.ToLower(strings.TrimSpace(v)), "text/html")
+		}
+	}
+	return false
+}
+
+// mapInteractionKind maps a recorded browser event to the step that replays
+// it. ok is false for events with no replayable action (scroll, focus, blur,
+// mousemove, bare keydown): they are dropped rather than replayed as something
+// they were not.
+func mapInteractionKind(k string) (kind StepKind, ok bool) {
 	switch strings.ToLower(k) {
 	case "click", "dblclick", "contextmenu":
-		return StepClick
-	case "input", "change", "keydown":
-		return StepInput
+		return StepClick, true
+	case "input", "change":
+		return StepInput, true
 	case "submit":
-		return StepSubmit
+		return StepSubmit, true
 	default:
-		return StepNavigate
+		return "", false
 	}
 }
 
@@ -81,8 +137,11 @@ func mapInteractionKind(k string) StepKind {
 func splitPathQuery(rawURL string) (string, []string) {
 	path := rawURL
 	query := ""
-	if u, err := url.Parse(rawURL); err == nil && u.Path != "" {
+	if u, err := url.Parse(rawURL); err == nil && (u.Path != "" || u.Host != "") {
 		path = u.Path
+		if path == "" {
+			path = "/"
+		}
 		query = u.RawQuery
 	} else if i := strings.IndexByte(rawURL, '?'); i >= 0 {
 		path = rawURL[:i]
