@@ -1,8 +1,10 @@
 package replaytest
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 )
@@ -14,7 +16,36 @@ func NewStore(projectDir string) *Store {
 	return &Store{dir: filepath.Join(projectDir, ".agnt", "replaytests")}
 }
 
+// scenarioName is the whole grammar of a scenario name. It admits no path
+// separator and no leading dot, so a name can only ever address a file directly
+// inside the store directory.
+var scenarioName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$`)
+
+// ValidateName rejects a scenario name that could address anything other than
+// its own file in the store: the name is caller-supplied and becomes a file
+// name, so "../../victim" would otherwise read and overwrite project files.
+// A ".report" suffix is refused because <name>.report.json is the report file.
+func ValidateName(name string) error {
+	if !scenarioName.MatchString(name) || strings.HasSuffix(name, ".report") {
+		return fmt.Errorf("invalid scenario name %q: use letters, digits, '.', '_' and '-' (max 128), starting with a letter or digit, not ending in .report", name)
+	}
+	return nil
+}
+
+// file returns the store path for name with the given extension, refusing any
+// name ValidateName rejects.
+func (s *Store) file(name, ext string) (string, error) {
+	if err := ValidateName(name); err != nil {
+		return "", err
+	}
+	return filepath.Join(s.dir, name+ext), nil
+}
+
 func (s *Store) SaveScenario(sc *Scenario) error {
+	path, err := s.file(sc.Name, ".json")
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(s.dir, 0o755); err != nil {
 		return err
 	}
@@ -22,7 +53,7 @@ func (s *Store) SaveScenario(sc *Scenario) error {
 	if err != nil {
 		return err
 	}
-	return writeAtomic(filepath.Join(s.dir, sc.Name+".json"), data, 0o644)
+	return writeAtomic(path, data, 0o644)
 }
 
 // writeAtomic writes data to a temp file in the target's directory, then renames
@@ -56,7 +87,11 @@ func writeAtomic(path string, data []byte, perm os.FileMode) error {
 }
 
 func (s *Store) LoadScenario(name string) (*Scenario, error) {
-	data, err := os.ReadFile(filepath.Join(s.dir, name+".json"))
+	path, err := s.file(name, ".json")
+	if err != nil {
+		return nil, err
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
 	}
@@ -64,10 +99,14 @@ func (s *Store) LoadScenario(name string) (*Scenario, error) {
 }
 
 func (s *Store) SaveReport(name string, data []byte) error {
+	path, err := s.file(name, ".report.json")
+	if err != nil {
+		return err
+	}
 	if err := os.MkdirAll(s.dir, 0o755); err != nil {
 		return err
 	}
-	return writeAtomic(filepath.Join(s.dir, name+".report.json"), data, 0o644)
+	return writeAtomic(path, data, 0o644)
 }
 
 func (s *Store) List() ([]string, error) {

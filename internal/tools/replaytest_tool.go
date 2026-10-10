@@ -448,6 +448,10 @@ func (h *replaytestHandler) handleRecord(in ReplaytestInput) (*mcp.CallToolResul
 		out := ReplaytestOutput{Message: "provide a proxy_id to record traffic from", Success: false}
 		return replaytestOK(out.Message), out, nil
 	}
+	// Refuse a name the store cannot save now, not after the recording.
+	if err := replaytest.ValidateName(in.Name); err != nil {
+		return fail[ReplaytestOutput](err.Error())
+	}
 	if h.clientFn == nil {
 		return fail[ReplaytestOutput]("record/stop require daemon mode — no daemon client is available to pull proxy traffic")
 	}
