@@ -134,11 +134,21 @@ const bundleTemplate = `(function(){
 // workerJS is the Web Worker source. It MUST contain no backtick and no literal
 // percent character (so the JSON-quoted form is safe inside fmt.Sprintf). It
 // mirrors match.go's recKey/buildKey and the six fuzz presets from fuzz.go.
+// buildKey drops scheme, host and fragment first, as the recorder's
+// splitPathQuery does: recordings are keyed by path, while Request.url and many
+// app fetches are absolute.
 const workerJS = `
 var QUEUES = {}, BLOBS = {}, PRESET = '';
 function templatePath(p){ return p.split('/').map(function(s){
   return (/^([0-9]+|[0-9a-zA-Z-]{12,})$/.test(s)) ? ':id' : s; }).join('/'); }
+function stripOrigin(u){
+  var h=u.indexOf('#'); if(h>=0) u=u.slice(0,h);
+  var m=/^(?:[a-zA-Z][a-zA-Z0-9+.-]*:)?\/\/[^\/?]*/.exec(u);
+  if(m){ u=u.slice(m[0].length); if(u.charAt(0)!=='/') u='/'+u; }
+  return u;
+}
 function buildKey(method, rawURL, bodySig){
+  rawURL=stripOrigin(rawURL);
   var path=rawURL, query='';
   var i=rawURL.indexOf('?'); if(i>=0){ path=rawURL.slice(0,i); query=rawURL.slice(i+1); }
   path=templatePath(path);
