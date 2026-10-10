@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	claude "github.com/standardbeagle/claude-go"
 	"github.com/stretchr/testify/assert"
@@ -320,4 +321,43 @@ func TestDefaultConfig(t *testing.T) {
 	for _, tool := range []string{"Bash", "Write", "Edit", "Read"} {
 		assert.Contains(t, cfg.DisallowedTools, tool, "%s must be disallowed", tool)
 	}
+}
+
+// TestProcessCarriesToolRestrictionsAndTimeout pins that the per-task options
+// keep the configured tool lists and working directory — permissions are
+// bypassed, so dropping them leaves the agent unrestricted — and that
+// TimeoutSecs bounds the query.
+func TestProcessCarriesToolRestrictionsAndTimeout(t *testing.T) {
+	cfg := DefaultConfig()
+	cfg.AllowedTools = []string{"WebFetch"}
+	cfg.WorkingDir = t.TempDir()
+	cfg.TimeoutSecs = 7
+	p, err := New(cfg)
+	require.NoError(t, err)
+
+	var gotOpts *claude.AgentOptions
+	var deadline time.Time
+	var hasDeadline bool
+	start := time.Now()
+	p.queryFn = func(ctx context.Context, _ string, opts *claude.AgentOptions) ([]claude.MessageType, error) {
+		gotOpts = opts
+		deadline, hasDeadline = ctx.Deadline()
+		return []claude.MessageType{assistantWithText("\"ok\"")}, nil
+	}
+
+	_, err = p.Process(context.Background(), NewSummarizeTask("hello", nil))
+	require.NoError(t, err)
+
+	require.NotNil(t, gotOpts)
+	assert.Equal(t, []string{"Bash", "Write", "Edit", "Read"}, gotOpts.DisallowedTools)
+	assert.Equal(t, []string{"WebFetch"}, gotOpts.AllowedTools)
+	assert.Equal(t, cfg.WorkingDir, gotOpts.WorkingDirectory)
+	assert.Equal(t, claude.PermissionModeBypassPermission, gotOpts.PermissionMode)
+	assert.NotEmpty(t, gotOpts.SystemPrompt)
+	require.True(t, hasDeadline, "TimeoutSecs must put a deadline on the query context")
+	assert.WithinDuration(t, start.Add(7*time.Second), deadline, 5*time.Second)
+
+	// The task's options must not alias the processor defaults.
+	gotOpts.DisallowedTools[0] = "mutated"
+	assert.Equal(t, "Bash", p.defaultOpts.DisallowedTools[0])
 }

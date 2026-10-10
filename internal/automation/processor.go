@@ -134,22 +134,27 @@ func (p *Processor) Process(ctx context.Context, task Task) (*Result, error) {
 		return nil, fmt.Errorf("failed to build user prompt: %w", err)
 	}
 
-	// Create options with the system prompt
-	opts := &claude.AgentOptions{
-		Model:          p.config.Model,
-		MaxTurns:       p.config.MaxTurns,
-		MaxBudgetUSD:   p.config.MaxBudgetUSD,
-		SystemPrompt:   systemPrompt,
-		PermissionMode: claude.PermissionModeBypassPermission,
-	}
+	// Start from the configured defaults so the tool restrictions and working
+	// directory reach the query: permissions are bypassed, so the allow/deny
+	// lists are the only thing keeping the agent off Bash and the filesystem.
+	opts := *p.defaultOpts
+	opts.AllowedTools = append([]string(nil), p.defaultOpts.AllowedTools...)
+	opts.DisallowedTools = append([]string(nil), p.defaultOpts.DisallowedTools...)
+	opts.SystemPrompt = systemPrompt
 
 	// Apply task-specific options
 	if task.Options.Model != "" {
 		opts.Model = task.Options.Model
 	}
 
+	if p.config.TimeoutSecs > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, time.Duration(p.config.TimeoutSecs)*time.Second)
+		defer cancel()
+	}
+
 	// Run the query
-	messages, err := p.queryFn(ctx, userPrompt, opts)
+	messages, err := p.queryFn(ctx, userPrompt, &opts)
 	if err != nil {
 		failed := &Result{
 			Type:     task.Type,
