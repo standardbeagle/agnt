@@ -24,19 +24,26 @@ const errCollectorJS = `window.__rt_errors=[];` +
 // evaluates Assertions, captures JS errors, and returns a *Report. It is THIN —
 // all request matching and response mutation lives in the worker bundle.
 type Driver struct {
-	proxyID string
+	proxyURL string
 }
 
-// NewDriver returns a seed-lane driver. proxyID may be "" when the bundle fully
-// mocks the network in-page (the default); when set, the chromedp session is
-// routed through that proxy.
-func NewDriver(proxyID string) *Driver {
-	return &Driver{proxyID: proxyID}
+// NewDriver returns a seed-lane driver. proxyURL may be "" when the bundle fully
+// mocks the network in-page (the default); when set, it is the proxy's address
+// (not its id — the caller resolves that) and the chromedp session is routed
+// through it.
+func NewDriver(proxyURL string) *Driver {
+	return &Driver{proxyURL: proxyURL}
 }
 
 // RunSeed injects the worker bundle for the given preset, drives the scenario's
 // steps once, and records a single SeedResult labeled by preset ("baseline"
 // when preset==""). It fails fast on bundle generation or browser errors.
+//
+// The baseline lane owns the DOM signatures: a step that carries one is
+// compared against it, and a step that carries none has the observed signature
+// written into sc as its baseline (counted in Report.BaselineCaptured — the
+// caller persists sc). Fuzz presets mutate responses, so their DOM is expected
+// to differ and is not compared.
 func (d *Driver) RunSeed(ctx context.Context, sc *Scenario, preset string) (*Report, error) {
 	js, err := GenerateBundle(sc, preset)
 	if err != nil {
@@ -53,7 +60,7 @@ func (d *Driver) RunSeed(ctx context.Context, sc *Scenario, preset string) (*Rep
 	sess := cdp.NewSession(cdp.SessionConfig{
 		ID:       "replay-seed-" + label,
 		Headless: true,
-		ProxyURL: proxyURLFor(d.proxyID),
+		ProxyURL: d.proxyURL,
 		Timeout:  30 * time.Second,
 	})
 	if err := sess.Start(ctx); err != nil {
@@ -82,10 +89,23 @@ func (d *Driver) RunSeed(ctx context.Context, sc *Scenario, preset string) (*Rep
 	var failures []string
 	currentRoute := sc.BaseURL
 
-	for _, step := range sc.Steps {
-		route, stepFailures, err := d.runStep(sess, sc, step)
+	// A scenario that does not open with a navigate (hand-written, or recorded
+	// before the recorder emitted one) would act on a blank page.
+	if len(sc.Steps) > 0 && sc.Steps[0].Kind != StepNavigate {
+		if err := sess.Run(chromedp.Navigate(sc.BaseURL)); err != nil {
+			return nil, fmt.Errorf("navigate %s: %w", sc.BaseURL, err)
+		}
+	}
+
+	for i := range sc.Steps {
+		step := &sc.Steps[i]
+		hadSignature := step.DOMSignature != ""
+		route, stepFailures, err := d.runStep(sess, sc, step, preset == "")
 		if err != nil {
 			return nil, err
+		}
+		if !hadSignature && step.DOMSignature != "" {
+			rep.BaselineCaptured++
 		}
 		if route != "" {
 			currentRoute = route
@@ -109,7 +129,9 @@ func (d *Driver) RunSeed(ctx context.Context, sc *Scenario, preset string) (*Rep
 // runStep performs a single step's action, settles the DOM, recomputes the
 // DOMSignature, and evaluates the step's assertions. It returns the route after
 // the action (non-empty only for navigate), and any assertion failure strings.
-func (d *Driver) runStep(sess *cdp.AutomationSession, sc *Scenario, step Step) (route string, failures []string, err error) {
+// With baseline set it checks the step's DOM signature, or records one into
+// step when it has none.
+func (d *Driver) runStep(sess *cdp.AutomationSession, sc *Scenario, step *Step, baseline bool) (route string, failures []string, err error) {
 	switch step.Kind {
 	case StepNavigate:
 		route = joinURL(sc.BaseURL, step.Selector)
@@ -121,7 +143,8 @@ func (d *Driver) runStep(sess *cdp.AutomationSession, sc *Scenario, step Step) (
 			return "", nil, fmt.Errorf("click %s: %w", step.Selector, err)
 		}
 	case StepInput:
-		if err = sess.Run(chromedp.SendKeys(step.Selector, step.Value, chromedp.ByQuery)); err != nil {
+		// Value is the field's whole recorded content, so replace, not append.
+		if err = sess.Run(chromedp.Clear(step.Selector, chromedp.ByQuery), chromedp.SendKeys(step.Selector, step.Value, chromedp.ByQuery)); err != nil {
 			return "", nil, fmt.Errorf("input %s: %w", step.Selector, err)
 		}
 	case StepSubmit:
@@ -140,17 +163,18 @@ func (d *Driver) runStep(sess *cdp.AutomationSession, sc *Scenario, step Step) (
 		return "", nil, fmt.Errorf("settle: %w", err)
 	}
 
-	failures = d.evalAssertions(sess, step)
+	failures = d.evalAssertions(sess, *step)
 
 	// DOM signature regression check (volatile attrs stripped so cosmetic noise
-	// does not register). Only fires when the scenario carries a recorded
-	// baseline for this step.
-	if step.DOMSignature != "" {
+	// does not register), baseline lane only.
+	if baseline {
 		var html string
-		if e := sess.Run(chromedp.OuterHTML("body", &html, chromedp.ByQuery)); e == nil {
-			if got := DOMSignature(html, defaultVolatileAttrs); got != step.DOMSignature {
-				failures = append(failures, fmt.Sprintf("dom signature changed: want %s got %s", step.DOMSignature, got))
-			}
+		if e := sess.Run(chromedp.OuterHTML("body", &html, chromedp.ByQuery)); e != nil {
+			failures = append(failures, fmt.Sprintf("dom signature: read body: %v", e))
+		} else if got := DOMSignature(html, defaultVolatileAttrs); step.DOMSignature == "" {
+			step.DOMSignature = got
+		} else if got != step.DOMSignature {
+			failures = append(failures, fmt.Sprintf("dom signature changed: want %s got %s", step.DOMSignature, got))
 		}
 	}
 	return route, failures, nil
@@ -196,15 +220,6 @@ func (d *Driver) evalAssertions(sess *cdp.AutomationSession, step Step) []string
 		}
 	}
 	return failures
-}
-
-// proxyURLFor maps a proxyID to a ProxyServer URL. An empty proxyID means the
-// bundle mocks the network in-page and no proxy routing is required.
-func proxyURLFor(proxyID string) string {
-	if proxyID == "" {
-		return ""
-	}
-	return proxyID
 }
 
 // joinURL joins a base URL with a step selector treated as a path/href. A blank

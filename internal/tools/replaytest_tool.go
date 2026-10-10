@@ -223,7 +223,26 @@ func (h *replaytestHandler) handleReplay(ctx context.Context, in ReplaytestInput
 		presets = append(presets, in.Preset)
 	}
 
-	driver := replaytest.NewDriver(in.ProxyID)
+	// proxy_id is a daemon proxy id; Chrome needs the address it listens on.
+	proxyURL := ""
+	if in.ProxyID != "" {
+		if h.clientFn == nil {
+			return fail[ReplaytestOutput]("replay with proxy_id requires daemon mode — no daemon client is available to resolve proxy " + in.ProxyID)
+		}
+		client, err := h.clientFn()
+		if err != nil {
+			return fail[ReplaytestOutput]("failed to reach daemon: " + err.Error())
+		}
+		status, err := client.ProxyStatus(in.ProxyID)
+		if err != nil {
+			return fail[ReplaytestOutput]("failed to inspect proxy " + in.ProxyID + ": " + err.Error())
+		}
+		if proxyURL, _ = status["url"].(string); proxyURL == "" {
+			return fail[ReplaytestOutput]("proxy " + in.ProxyID + " has no listen url")
+		}
+	}
+
+	driver := replaytest.NewDriver(proxyURL)
 	agg := replaytest.NewReport(sc.Name)
 	for _, p := range presets {
 		rep, err := driver.RunSeed(ctx, sc, p)
@@ -232,6 +251,14 @@ func (h *replaytestHandler) handleReplay(ctx context.Context, in ReplaytestInput
 		}
 		agg.Seeds = append(agg.Seeds, rep.Seeds...)
 		agg.Crashes = append(agg.Crashes, rep.Crashes...)
+		agg.BaselineCaptured += rep.BaselineCaptured
+	}
+	// The baseline run filled in DOM signatures the scenario did not have yet;
+	// persist them so later replays compare against this run.
+	if agg.BaselineCaptured > 0 {
+		if err := store.SaveScenario(sc); err != nil {
+			return fail[ReplaytestOutput]("failed to save captured DOM baseline: " + err.Error())
+		}
 	}
 
 	data, err := agg.JSON()
@@ -243,7 +270,12 @@ func (h *replaytestHandler) handleReplay(ctx context.Context, in ReplaytestInput
 	}
 
 	out := ReplaytestOutput{Report: string(data), Success: agg.Passed()}
-	return replaytestOK("replayed scenario " + sc.Name), out, nil
+	msg := "replayed scenario " + sc.Name
+	if agg.BaselineCaptured > 0 {
+		msg += fmt.Sprintf(" — captured the DOM baseline for %d step(s); later replays compare against it", agg.BaselineCaptured)
+		out.Message = msg
+	}
+	return replaytestOK(msg), out, nil
 }
 
 // handleExplore computes the breadth-exploration seed partition from a scenario

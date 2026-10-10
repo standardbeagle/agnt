@@ -19,6 +19,9 @@ type Report struct {
 	Seeds      []SeedResult `json:"seeds"`
 	Crashes    []Crash      `json:"crashes"`
 	NewAsserts []Assertion  `json:"new_assertions,omitempty"`
+	// BaselineCaptured counts steps whose DOM signature this run recorded as
+	// the baseline (they had none), rather than compared.
+	BaselineCaptured int `json:"baseline_captured,omitempty"`
 }
 
 func NewReport(scenario string) *Report { return &Report{Scenario: scenario} }
