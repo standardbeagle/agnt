@@ -30,24 +30,34 @@ import (
 // fresh full bucket — identical to what a full bucket would have granted, so no
 // limit is relaxed. A currently-throttling bucket (which refills to < burst) is
 // never dropped, so its limit still applies. reapHardCap is an absolute ceiling:
-// above it, only NON-throttling buckets (refilled >= 1 token) are evicted, so a
-// depleted bucket is still never discarded.
+// at it, only NON-throttling buckets (refilled >= 1 token) are evicted, so a
+// depleted bucket is still never discarded. When that frees nothing — every
+// bucket is depleted — a NEW key is refused without being inserted: the map
+// never exceeds reapHardCap, and the flood that filled it is what gets denied.
+//
+// A sweep is O(map), so it is rationed: buckets only become evictable as the
+// clock advances, so a sweep that left the map over the soft cap is not repeated
+// until reapInterval has passed. A flood therefore costs O(1) per request.
 type tokenBucketLimiter struct {
 	rate  float64 // tokens per second (RatePerMinute / 60)
 	burst float64 // bucket capacity
 	now   func() time.Time
 
-	mu      sync.Mutex
-	buckets map[string]*tokenBucket
+	mu       sync.Mutex
+	buckets  map[string]*tokenBucket
+	lastReap time.Time
+	reaped   bool // false until the first sweep, so lastReap's zero value is never compared
 }
 
 // Bucket-map bounds. reapSoftCap triggers the cheap "drop full buckets" sweep;
 // reapHardCap is the absolute ceiling that additionally sheds non-throttling
-// buckets. Both are amortized over allow() calls — a sweep only fires when the
-// map is over the soft cap.
+// buckets and, failing that, refuses new keys. Both are amortized over allow()
+// calls — a sweep only fires when the map is over the soft cap, at most once per
+// reapInterval.
 const (
-	reapSoftCap = 4096
-	reapHardCap = 16384
+	reapSoftCap  = 4096
+	reapHardCap  = 16384
+	reapInterval = time.Second
 )
 
 type tokenBucket struct {
@@ -79,6 +89,14 @@ func (l *tokenBucketLimiter) allow(key string) bool {
 	t := l.now()
 	b := l.buckets[key]
 	if b == nil {
+		// Admission bound: at the ceiling, make room or refuse. Inserting anyway
+		// is what let a flood of depleted buckets grow the map without limit.
+		if len(l.buckets) >= reapHardCap {
+			l.maybeReap(t)
+			if len(l.buckets) >= reapHardCap {
+				return false
+			}
+		}
 		b = &tokenBucket{tokens: l.burst, last: t}
 		l.buckets[key] = b
 	} else {
@@ -102,9 +120,20 @@ func (l *tokenBucketLimiter) allow(key string) bool {
 	// cap, so the common path stays O(1). The bucket just touched above is never
 	// full (it just spent or lacked a token), so it is never reaped here.
 	if len(l.buckets) > reapSoftCap {
-		l.reap(t)
+		l.maybeReap(t)
 	}
 	return allowed
+}
+
+// maybeReap runs reap unless one already ran within reapInterval. Caller holds
+// l.mu.
+func (l *tokenBucketLimiter) maybeReap(now time.Time) {
+	if l.reaped && now.Sub(l.lastReap) < reapInterval {
+		return
+	}
+	l.reaped = true
+	l.lastReap = now
+	l.reap(now)
 }
 
 // reap bounds the bucket map. Caller holds l.mu.
@@ -113,7 +142,7 @@ func (l *tokenBucketLimiter) allow(key string) bool {
 // fresh on the client's next request yields the same burst, so dropping it
 // relaxes no limit. A currently-throttling bucket refills to < burst and is kept.
 //
-// Pass 2 (only over the hard ceiling) sheds additional buckets that are NOT
+// Pass 2 (only at the hard ceiling) sheds additional buckets that are NOT
 // currently throttling (refilled >= 1 token — the client would be allowed right
 // now anyway). A depleted bucket (refilled < 1) is never evicted, so an active
 // limit is always preserved even under a massive distributed flood.
@@ -123,11 +152,11 @@ func (l *tokenBucketLimiter) reap(now time.Time) {
 			delete(l.buckets, k)
 		}
 	}
-	if len(l.buckets) <= reapHardCap {
+	if len(l.buckets) < reapHardCap {
 		return
 	}
 	for k, b := range l.buckets {
-		if len(l.buckets) <= reapHardCap {
+		if len(l.buckets) < reapHardCap {
 			break
 		}
 		if l.refilled(b, now) >= 1 {

@@ -77,3 +77,32 @@ func TestLimiterFreshKeyAfterReapIsFull(t *testing.T) {
 		t.Fatal("6th request should be throttled")
 	}
 }
+
+// TestLimiterHardCapBoundsDepletedFlood pins the admission bound: a flood of
+// distinct keys that each drain their bucket leaves nothing evictable, so new
+// keys must be refused rather than inserted past reapHardCap.
+func TestLimiterHardCapBoundsDepletedFlood(t *testing.T) {
+	clk := newFakeClock()
+	// burst 1: a single request depletes the bucket, and at 1 token/min it stays
+	// depleted for the whole test.
+	l := newTokenBucketLimiter(1, 1, clk.now)
+
+	for i := 0; i < reapHardCap+500; i++ {
+		l.allow(fmt.Sprintf("flood-%d", i))
+	}
+	if l.size() > reapHardCap {
+		t.Fatalf("hard cap exceeded: size = %d, cap = %d", l.size(), reapHardCap)
+	}
+	if l.allow("newcomer") {
+		t.Fatal("a new key was admitted while the map is full of depleted buckets")
+	}
+
+	// Once the flood's buckets refill they are evictable and newcomers return.
+	clk.advance(2 * time.Minute)
+	if !l.allow("newcomer") {
+		t.Fatal("new key still refused after the flood's buckets refilled")
+	}
+	if l.size() > reapSoftCap {
+		t.Fatalf("refilled buckets were not reaped: size = %d", l.size())
+	}
+}
