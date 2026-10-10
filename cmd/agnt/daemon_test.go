@@ -5,9 +5,11 @@ import (
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/daemonclient"
+	"github.com/standardbeagle/go-cli-server/process"
 )
 
 // TestNewDaemonConfig_ThreadsFeedbackLimits pins the config→daemon seam: the
@@ -36,6 +38,29 @@ func TestNewDaemonConfig_ThreadsFeedbackLimits(t *testing.T) {
 	}
 	if got.PublicListenAddr != "127.0.0.1:0" {
 		t.Errorf("PublicListenAddr = %q, want 127.0.0.1:0", got.PublicListenAddr)
+	}
+}
+
+// TestNewDaemonConfig_ThreadsProcessSettings pins the same seam for the
+// settings{} block: the configured process timeout, output buffer and graceful
+// timeout must reach the live process manager, and an unset buffer or graceful
+// timeout must fall back to its default rather than to zero.
+func TestNewDaemonConfig_ThreadsProcessSettings(t *testing.T) {
+	appCfg := config.DefaultConfig()
+	appCfg.Settings = config.Settings{
+		DefaultTimeout:  90 * time.Second,
+		MaxOutputBuffer: 1 << 20,
+		GracefulTimeout: 12 * time.Second,
+	}
+	got := newDaemonConfig(appCfg, "/tmp/sock", "").ProcessConfig
+	if got.DefaultTimeout != 90*time.Second || got.MaxOutputBuffer != 1<<20 || got.GracefulTimeout != 12*time.Second {
+		t.Errorf("settings not threaded into ProcessConfig: got %+v", got)
+	}
+
+	appCfg.Settings = config.Settings{}
+	got = newDaemonConfig(appCfg, "/tmp/sock", "").ProcessConfig
+	if got.DefaultTimeout != 0 || got.MaxOutputBuffer != process.DefaultBufferSize || got.GracefulTimeout != config.DefaultGracefulTimeout {
+		t.Errorf("zero settings did not fall back to defaults: got %+v", got)
 	}
 }
 

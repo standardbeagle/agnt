@@ -116,12 +116,23 @@ func getSocketPath(cmd *cobra.Command) string {
 // live public-plane limiter on defaults regardless of config (no-silent-fallback
 // / Config Authority violation).
 func newDaemonConfig(appCfg *config.Config, socketPath, publicAddr string) daemon.DaemonConfig {
+	// Thread the operator's settings{} block into the live process manager
+	// (Config Authority). A non-positive buffer or graceful timeout would
+	// disable the bound, so those fall back to the house default; a zero
+	// default-timeout is the documented "no timeout".
+	settings := appCfg.Settings
+	if settings.MaxOutputBuffer <= 0 {
+		settings.MaxOutputBuffer = process.DefaultBufferSize
+	}
+	if settings.GracefulTimeout <= 0 {
+		settings.GracefulTimeout = config.DefaultGracefulTimeout
+	}
 	return daemon.DaemonConfig{
 		SocketPath: socketPath,
 		ProcessConfig: process.ManagerConfig{
-			DefaultTimeout:    0,
-			MaxOutputBuffer:   process.DefaultBufferSize,
-			GracefulTimeout:   config.DefaultGracefulTimeout,
+			DefaultTimeout:    settings.DefaultTimeout,
+			MaxOutputBuffer:   settings.MaxOutputBuffer,
+			GracefulTimeout:   settings.GracefulTimeout,
 			HealthCheckPeriod: 10 * time.Second,
 		},
 		MaxClients:        100,
