@@ -91,6 +91,29 @@ func (d *Daemon) getSessionProjectPath(conn *hubpkg.Connection) string {
 	return ""
 }
 
+// startProjectPath returns the project a newly started browser or automation
+// session belongs to: the connection's bound session, else the session or
+// directory the caller named on the wire. The MCP connection is not
+// session-bound, so without the wire fallback its resources start with no
+// project and never appear in that project's scoped listing. An empty result
+// means the caller named no project at all.
+func (d *Daemon) startProjectPath(conn *hubpkg.Connection, s protocol.StartScope) (string, error) {
+	if path := d.getSessionProjectPath(conn); path != "" {
+		return path, nil
+	}
+	if s.SessionCode != "" {
+		session, ok := d.sessionRegistry.Get(s.SessionCode)
+		if !ok {
+			return "", fmt.Errorf("session %q not found", s.SessionCode)
+		}
+		return session.ProjectPath, nil
+	}
+	if s.Directory != "" {
+		return normalizePath(s.Directory), nil
+	}
+	return "", nil
+}
+
 // errNoSessionScope is returned by resolveProjectScope when a non-global
 // query arrives on a connection with no resolvable session. It mirrors the
 // INCIDENTS QUERY "no session attached" contract: scope is mandatory, so an

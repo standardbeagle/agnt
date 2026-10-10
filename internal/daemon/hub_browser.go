@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/browser"
+	"github.com/standardbeagle/agnt/internal/protocol"
 
 	"github.com/standardbeagle/agnt/internal/proxy"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
@@ -35,6 +36,7 @@ func (d *Daemon) hubHandleBrowserStart(ctx context.Context, conn *hubpkg.Connect
 		ProxyID    string `json:"proxy_id"`
 		Headless   *bool  `json:"headless"`
 		BinaryPath string `json:"binary_path"`
+		protocol.StartScope
 	}](cmd)
 
 	// Also accept ID from args for convenience
@@ -48,7 +50,10 @@ func (d *Daemon) hubHandleBrowserStart(ctx context.Context, conn *hubpkg.Connect
 	}
 
 	// Get project path from session for session scoping
-	projectPath := d.getSessionProjectPath(conn)
+	projectPath, err := d.startProjectPath(conn, config.StartScope)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+	}
 
 	// Determine URL to open
 	url := config.URL
@@ -200,21 +205,21 @@ func (d *Daemon) hubHandleBrowserStatus(conn *hubpkg.Connection, cmd *hubproto.C
 
 func (d *Daemon) hubHandleBrowserList(conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	// Parse filter from command data
-	dirFilter, _ := unmarshalCommand[hubproto.DirectoryFilter](cmd)
+	dirFilter, _ := unmarshalCommand[protocol.DirectoryFilter](cmd)
+
+	// Route through the mandatory session-scope chokepoint (see
+	// resolveProjectScope). A non-global query with no resolvable project
+	// fails loud rather than listing every project's browsers.
+	projectPath, global, err := d.resolveProjectScope(dirFilter, conn.SessionCode())
+	if err != nil {
+		return d.writeScopeErr(conn, err, "session_code")
+	}
 
 	var infos []browser.Info
-	if dirFilter.Global {
-		// Global: list all browsers
+	if global {
 		infos = d.browserm.List()
 	} else {
-		// Session-scoped: filter by project path
-		projectPath := d.getSessionProjectPath(conn)
-		if projectPath != "" {
-			infos = d.browserm.ListByPath(projectPath)
-		} else {
-			// No session, return all (fallback for non-session connections)
-			infos = d.browserm.List()
-		}
+		infos = d.browserm.ListByPath(projectPath)
 	}
 
 	entries := make([]map[string]interface{}, len(infos))

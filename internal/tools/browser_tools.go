@@ -17,7 +17,7 @@ type BrowserInput struct {
 	ProxyID    string `json:"proxy_id,omitempty" jsonschema:"Proxy to use - auto-starts proxy if not found and URL is provided"`
 	Headless   *bool  `json:"headless,omitempty" jsonschema:"Run in headless mode (default: true)"`
 	BinaryPath string `json:"binary_path,omitempty" jsonschema:"Optional path to Chrome binary (auto-detected if empty)"`
-	Global     bool   `json:"global,omitempty" jsonschema:"For list: include browsers from all directories (default: false)"`
+	Global     *bool  `json:"global,omitempty" jsonschema:"For list: override project config; true includes all projects, false forces current project"`
 }
 
 // BrowserOutput represents output from the browser tool.
@@ -130,6 +130,7 @@ func (dt *DaemonTools) handleBrowserStart(input BrowserInput) (*mcp.CallToolResu
 		Headless:   input.Headless,
 		BinaryPath: input.BinaryPath,
 	}
+	config.SessionCode, config.Directory = dt.sessionScope()
 
 	result, err := dt.client.BrowserStart(config)
 	if err != nil {
@@ -200,9 +201,7 @@ func (dt *DaemonTools) handleBrowserStatus(input BrowserInput) (*mcp.CallToolRes
 }
 
 func (dt *DaemonTools) handleBrowserList(input BrowserInput) (*mcp.CallToolResult, BrowserOutput, error) {
-	dirFilter := protocol.DirectoryFilter{
-		Global: input.Global,
-	}
+	dirFilter := dt.scopeFilter(input.Global)
 
 	result, err := dt.client.BrowserList(dirFilter)
 	if err != nil {

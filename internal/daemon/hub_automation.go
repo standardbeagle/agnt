@@ -9,6 +9,7 @@ import (
 	"github.com/chromedp/cdproto/runtime"
 	cdp "github.com/chromedp/chromedp"
 	"github.com/standardbeagle/agnt/internal/chromedp"
+	"github.com/standardbeagle/agnt/internal/protocol"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
@@ -39,6 +40,7 @@ func (d *Daemon) hubHandleAutomationStart(ctx context.Context, conn *hubpkg.Conn
 		URL      string `json:"url"`
 		ProxyID  string `json:"proxy_id"`
 		Headless *bool  `json:"headless"`
+		protocol.StartScope
 	}](cmd)
 
 	// Accept ID from args for convenience
@@ -52,7 +54,10 @@ func (d *Daemon) hubHandleAutomationStart(ctx context.Context, conn *hubpkg.Conn
 	}
 
 	// Get project path from session
-	projectPath := d.getSessionProjectPath(conn)
+	projectPath, err := d.startProjectPath(conn, config.StartScope)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+	}
 
 	// Make session ID unique per project
 	fullID := config.ID
@@ -170,18 +175,21 @@ func (d *Daemon) hubHandleAutomationStatus(conn *hubpkg.Connection, cmd *hubprot
 // hubHandleAutomationList handles AUTOMATION LIST command.
 
 func (d *Daemon) hubHandleAutomationList(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	dirFilter, _ := unmarshalCommand[hubproto.DirectoryFilter](cmd)
+	dirFilter, _ := unmarshalCommand[protocol.DirectoryFilter](cmd)
+
+	// Route through the mandatory session-scope chokepoint (see
+	// resolveProjectScope). A non-global query with no resolvable project
+	// fails loud rather than listing every project's automation sessions.
+	projectPath, global, err := d.resolveProjectScope(dirFilter, conn.SessionCode())
+	if err != nil {
+		return d.writeScopeErr(conn, err, "session_code")
+	}
 
 	var infos []chromedp.SessionInfo
-	if dirFilter.Global {
+	if global {
 		infos = d.sessionm.List()
 	} else {
-		projectPath := d.getSessionProjectPath(conn)
-		if projectPath != "" {
-			infos = d.sessionm.ListByPath(projectPath)
-		} else {
-			infos = d.sessionm.List()
-		}
+		infos = d.sessionm.ListByPath(projectPath)
 	}
 
 	entries := make([]map[string]interface{}, len(infos))

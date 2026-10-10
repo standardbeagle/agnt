@@ -29,6 +29,8 @@ func TestGatedMCPTools_ExposeGlobalFlagUniformly(t *testing.T) {
 		{"TunnelInput", reflect.TypeOf(TunnelInput{})},
 		{"SessionInput", reflect.TypeOf(SessionInput{})},
 		{"DaemonInput", reflect.TypeOf(DaemonInput{})},
+		{"BrowserInput", reflect.TypeOf(BrowserInput{})},
+		{"AutomationInput", reflect.TypeOf(AutomationInput{})},
 	}
 
 	for _, g := range gated {

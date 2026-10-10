@@ -16,7 +16,7 @@ type AutomationInput struct {
 	URL       string  `json:"url,omitempty" jsonschema:"URL to open (for start/navigate actions)"`
 	ProxyID   string  `json:"proxy_id,omitempty" jsonschema:"Proxy to route through (for start action)"`
 	Headless  *bool   `json:"headless,omitempty" jsonschema:"Run in headless mode (default: true)"`
-	Global    bool    `json:"global,omitempty" jsonschema:"For list: include sessions from all directories"`
+	Global    *bool   `json:"global,omitempty" jsonschema:"For list: override project config; true includes all projects, false forces current project"`
 	Type      string  `json:"type,omitempty" jsonschema:"Screenshot type: viewport, fullpage, element, clip"`
 	Label     string  `json:"label,omitempty" jsonschema:"Label for screenshot filename"`
 	Selector  string  `json:"selector,omitempty" jsonschema:"CSS selector for element screenshot"`
@@ -166,6 +166,7 @@ func (dt *DaemonTools) handleAutomationStart(input AutomationInput) (*mcp.CallTo
 		ProxyID:  input.ProxyID,
 		Headless: input.Headless,
 	}
+	config.SessionCode, config.Directory = dt.sessionScope()
 
 	result, err := dt.client.AutomationStart(config)
 	if err != nil {
@@ -233,9 +234,7 @@ func (dt *DaemonTools) handleAutomationStatus(input AutomationInput) (*mcp.CallT
 }
 
 func (dt *DaemonTools) handleAutomationList(input AutomationInput) (*mcp.CallToolResult, AutomationOutput, error) {
-	dirFilter := protocol.DirectoryFilter{
-		Global: input.Global,
-	}
+	dirFilter := dt.scopeFilter(input.Global)
 
 	result, err := dt.client.AutomationList(dirFilter)
 	if err != nil {

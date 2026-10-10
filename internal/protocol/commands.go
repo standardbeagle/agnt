@@ -377,6 +377,14 @@ type BrowserStartConfig struct {
 	ProxyID    string `json:"proxy_id,omitempty"`    // Proxy to use (auto-starts if needed)
 	Headless   *bool  `json:"headless,omitempty"`    // Default: true
 	BinaryPath string `json:"binary_path,omitempty"` // Optional Chrome path
+	StartScope
+}
+
+// StartScope names the project a started resource belongs to when the
+// connection itself has no bound session (the MCP connection never does).
+type StartScope struct {
+	SessionCode string `json:"session_code,omitempty"`
+	Directory   string `json:"directory,omitempty"`
 }
 
 // AutomationStartConfig represents configuration for an AUTOMATION START command.
@@ -385,6 +393,7 @@ type AutomationStartConfig struct {
 	URL      string `json:"url,omitempty"`      // URL to open
 	ProxyID  string `json:"proxy_id,omitempty"` // Proxy to use
 	Headless *bool  `json:"headless,omitempty"` // Default: true
+	StartScope
 }
 
 // AutomationScreenshotConfig represents configuration for an AUTOMATION SCREENSHOT command.
