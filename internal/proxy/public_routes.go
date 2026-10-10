@@ -189,9 +189,9 @@ func NewPublicHandler(verifier PublicTokenVerifier, feedback FeedbackSink, maxBo
 	}
 	// Default rate limiters come from config.DefaultPublicPlaneConfig() so the
 	// proxy-side default cannot drift from the config default (a single source of
-	// truth for the numbers). The daemon overrides these with operator-configured
-	// limiters via WithRateLimits; a direct caller (a test, `agnt publish serve`)
-	// gets the house defaults, always on.
+	// truth for the numbers). The daemon and `agnt publish serve` override these
+	// with operator-configured limiters via WithRateLimits; any other direct
+	// caller (a test) gets the house defaults, always on.
 	ppc := config.DefaultPublicPlaneConfig()
 	// A signer that cannot be generated leaves the subresource route dead rather
 	// than unbound: rewriting stops, /s/{token}/sub refuses everything, and the

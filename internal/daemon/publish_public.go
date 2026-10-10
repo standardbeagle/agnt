@@ -106,12 +106,19 @@ func (d *Daemon) buildPublicPlane() {
 	// Install operator-configured request-rate limiters so the public-plane
 	// config actually drives behaviour (Config Authority / §5), not merely
 	// parses. Normalize fills any unset field with its house default.
-	ppc := d.config.PublicPlaneLimits.Normalize()
 	d.publicHandler = proxy.NewPublicHandler(d.publishStore, sink, limits.MaxBodyBytes).
-		WithRateLimits(
-			publish.NewRateLimiter(ppc.ArtifactRatePerMinute, ppc.ArtifactBurst, nil),
-			publish.NewRateLimiter(ppc.OutboundRatePerMinute, ppc.OutboundBurst, nil),
-		)
+		WithRateLimits(PublicRateLimitersFromConfig(d.config.PublicPlaneLimits))
+}
+
+// PublicRateLimitersFromConfig builds the public plane's artifact and outbound
+// request-rate limiters from the operator's public-plane{} block. Normalize
+// fills any unset field with its house default. Exported so the `publish serve`
+// CLI path shares this one mapping with the daemon rather than serving on
+// defaults regardless of config.
+func PublicRateLimitersFromConfig(c config.PublicPlaneConfig) (artifact, outbound *publish.RateLimiter) {
+	n := c.Normalize()
+	return publish.NewRateLimiter(n.ArtifactRatePerMinute, n.ArtifactBurst, nil),
+		publish.NewRateLimiter(n.OutboundRatePerMinute, n.OutboundBurst, nil)
 }
 
 // projectOfShare resolves a viewer-safe share id to its owning project path via

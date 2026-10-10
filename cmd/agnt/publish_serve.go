@@ -591,7 +591,10 @@ func runPublishServe(ctx context.Context, opts publishServeOptions) error {
 		fmt.Fprintf(opts.Out, "publish serve: warning: could not write store metadata (publish list will not discover this store): %v\n", err)
 	}
 
-	handler := proxy.NewPublicHandler(store, feedback, limits.MaxBodyBytes)
+	// Same public-plane{} request-rate limits the daemon applies, so the two
+	// serving paths throttle identically.
+	handler := proxy.NewPublicHandler(store, feedback, limits.MaxBodyBytes).
+		WithRateLimits(daemon.PublicRateLimitersFromConfig(appCfg.PublicPlane))
 	// Test-only: drive the guarded proxied-document route against a fake upstream.
 	// Nil in production, so the default guarded fetcher stands unchanged.
 	if opts.UpstreamSeam != nil {
