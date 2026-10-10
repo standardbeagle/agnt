@@ -44,6 +44,9 @@ type ProxyServer struct {
 	// requestLimiter is the per-client request-rate cap (see rateLimited). Nil
 	// until Start installs the default; tests set it first to inject a clock.
 	requestLimiter *publish.RateLimiter
+	// listen opens the proxy's TCP listener. Nil is net.Listen; tests set it to
+	// exercise an all-interfaces bind without opening one.
+	listen func(network, addr string) (net.Listener, error)
 	// rateDiagnosticAt is the UnixNano of the last "request rate capped"
 	// diagnostic, so a flood reports itself at a bounded rate.
 	rateDiagnosticAt atomic.Int64
@@ -680,7 +683,7 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 	handler := ps.rateLimited(mux)
 
 	// Try to bind to requested port first
-	listener, err := net.Listen("tcp", ps.ListenAddr)
+	listener, err := ps.netListen(ps.ListenAddr)
 	if err != nil {
 		// If port is in use, try to find an available port — unless
 		// the caller pinned an explicit listen port. A strict listen
@@ -691,7 +694,7 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 		if isAddressInUse(err) && !ps.StrictListenPort {
 			debug.Log("proxy", "address %s in use, trying auto-assign", ps.ListenAddr)
 			// Auto-assign a port on the same host (preserves loopback scope).
-			listener, err = net.Listen("tcp", ps.autoAssignAddr())
+			listener, err = ps.netListen(ps.autoAssignAddr())
 			if err != nil {
 				debug.Error("proxy", "failed to find available port: %v", err)
 				cancel()
@@ -817,6 +820,14 @@ func (ps *ProxyServer) liveAddr() string {
 	return ps.ListenAddr
 }
 
+// netListen opens a TCP listener through the listen seam.
+func (ps *ProxyServer) netListen(addr string) (net.Listener, error) {
+	if ps.listen != nil {
+		return ps.listen("tcp", addr)
+	}
+	return net.Listen("tcp", addr)
+}
+
 // autoAssignAddr returns the address to hand net.Listen for the port-in-use
 // fallback: the *original host* with port 0, so the OS picks a free port while
 // the interface scope is preserved. A bare ":0" would bind 0.0.0.0/[::] and
@@ -929,11 +940,11 @@ func (ps *ProxyServer) runServer(ctx context.Context, listener net.Listener) {
 			// pinned an explicit StrictListenPort, in which case drifting would
 			// defeat the declared port and we abort. Mirrors the initial-bind
 			// policy above.
-			newListener, restartErr := net.Listen("tcp", ps.ListenAddr)
+			newListener, restartErr := ps.netListen(ps.ListenAddr)
 			if restartErr != nil {
 				if isAddressInUse(restartErr) && !ps.StrictListenPort {
 					debug.Log("proxy", "proxy %s restart: address %s in use, auto-assigning port", ps.ID, ps.ListenAddr)
-					newListener, restartErr = net.Listen("tcp", ps.autoAssignAddr())
+					newListener, restartErr = ps.netListen(ps.autoAssignAddr())
 				}
 				if restartErr != nil {
 					ps.lastError.Store(fmt.Sprintf("restart failed: %v (original: %v)", restartErr.Error(), err.Error()))

@@ -169,6 +169,9 @@ type publishServeOptions struct {
 	// weakening the SSRF guard. Nil in every production caller, so the handler
 	// keeps its default fetcher and behaviour unchanged.
 	UpstreamSeam *proxy.UpstreamSeam
+	// Listen opens the HTTP listener. Nil is net.Listen; tests set it to
+	// exercise a wide --addr without opening an all-interfaces socket.
+	Listen func(network, addr string) (net.Listener, error)
 }
 
 // publishedShare is one served file's share, as printed and as handed to
@@ -526,7 +529,11 @@ func runPublishServe(ctx context.Context, opts publishServeOptions) error {
 		return fmt.Errorf("publish serve: open feedback store: %w", err)
 	}
 
-	ln, err := net.Listen("tcp", addr)
+	listen := opts.Listen
+	if listen == nil {
+		listen = net.Listen
+	}
+	ln, err := listen("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("publish serve: listen on %s: %w", addr, err)
 	}

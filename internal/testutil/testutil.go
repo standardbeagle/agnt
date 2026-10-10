@@ -433,3 +433,36 @@ func RequireChrome(t *testing.T) string {
 	t.Skip("Chrome not found - skipping browser test")
 	return ""
 }
+
+// LoopbackListen returns a net.Listen replacement for tests that exercise
+// all-interfaces behaviour without opening an all-interfaces socket: the
+// listener binds 127.0.0.1 on the requested port, and its Addr reports the host
+// the caller asked for. Code that keys on the bound address (exposure warnings,
+// locality checks) sees the wide bind; the host firewall never sees one.
+func LoopbackListen(t *testing.T) func(network, addr string) (net.Listener, error) {
+	t.Helper()
+	return func(network, addr string) (net.Listener, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, err
+		}
+		ln, err := net.Listen(network, net.JoinHostPort("127.0.0.1", port))
+		if err != nil {
+			return nil, err
+		}
+		_, boundPort, _ := net.SplitHostPort(ln.Addr().String())
+		return reportedAddrListener{Listener: ln, addr: reportedAddr(net.JoinHostPort(host, boundPort))}, nil
+	}
+}
+
+type reportedAddrListener struct {
+	net.Listener
+	addr reportedAddr
+}
+
+func (l reportedAddrListener) Addr() net.Addr { return l.addr }
+
+type reportedAddr string
+
+func (a reportedAddr) Network() string { return "tcp" }
+func (a reportedAddr) String() string  { return string(a) }

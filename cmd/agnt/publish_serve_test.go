@@ -19,6 +19,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/platform"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/publish"
+	"github.com/standardbeagle/agnt/internal/testutil"
 )
 
 // walkthroughJSON renders a minimal valid published walkthrough. upstream is the
@@ -573,8 +574,9 @@ func TestDefaultPublishServeAddrIsLoopback(t *testing.T) {
 // exposure stays possible AND stays announced — the warning keys on the bound
 // address, never on the default value.
 func TestPublishServeExplicitWideBindStillWarns(t *testing.T) {
-	// Never t.Parallel(): binds a real listener (here, briefly, on all interfaces
-	// on an ephemeral port) and is torn down immediately.
+	// Never t.Parallel(): binds a real listener. The socket itself is loopback
+	// (testutil.LoopbackListen) and only reports the wide address, so the test
+	// never opens a LAN-reachable port or trips the host firewall.
 	dir := t.TempDir()
 	writeFile(t, dir, "demo.json", walkthroughJSON(t, "demo", "Demo", ""))
 	out := &syncBuffer{}
@@ -590,6 +592,7 @@ func TestPublishServeExplicitWideBindStillWarns(t *testing.T) {
 			Out:          out,
 			PollInterval: time.Second,
 			OnListen:     func(addr string) { listening <- addr },
+			Listen:       testutil.LoopbackListen(t),
 		})
 	}()
 	select {

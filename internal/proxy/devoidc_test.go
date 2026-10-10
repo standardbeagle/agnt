@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/devoidc"
+	"github.com/standardbeagle/agnt/internal/testutil"
 )
 
 func devOIDCTestConfig() devoidc.Config {
@@ -47,6 +48,9 @@ func startDevOIDCProxy(t *testing.T, cfg ProxyConfig, withIssuer bool) (*ProxySe
 	if err != nil {
 		t.Fatal(err)
 	}
+	// An all-interfaces config is served from loopback: the proxy still sees
+	// the wide bound address, and the test never opens a LAN-reachable socket.
+	ps.listen = testutil.LoopbackListen(t)
 	if withIssuer {
 		is, err := devoidc.New(devOIDCTestConfig())
 		if err != nil {
