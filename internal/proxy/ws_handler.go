@@ -24,6 +24,19 @@ const (
 	wsWriteWait  = 10 * time.Second
 )
 
+// Per-connection resource bounds. The connection cap alone does not bound
+// memory: gorilla buffers a whole message before returning it, and some message
+// types run on their own goroutine.
+const (
+	// wsMaxMessageBytes caps one inbound message. The largest legitimate frames
+	// are full-page screenshot PNGs; a larger frame closes the connection.
+	wsMaxMessageBytes = 16 << 20
+	// wsMaxHandlers caps the handler goroutines one connection may have in
+	// flight. At the cap the read loop waits for a slot, so a client that
+	// floods spawned requests is slowed instead of multiplying goroutines.
+	wsMaxHandlers = 8
+)
+
 // errorHandler handles proxy errors.
 func (ps *ProxyServer) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
 	seq := ps.requestSeq.Add(1)
@@ -144,10 +157,13 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// connection: the deferred Wait (registered after the Close defers, so
 	// it runs first) awaits them before asyncConn/rawConn are torn down.
 	var handlerWG sync.WaitGroup
+	handlerSlots := make(chan struct{}, wsMaxHandlers)
 	spawnHandler := func(fn func()) {
+		handlerSlots <- struct{}{}
 		handlerWG.Add(1)
 		go func() {
 			defer handlerWG.Done()
+			defer func() { <-handlerSlots }()
 			fn()
 		}()
 	}
@@ -208,6 +224,7 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	// wsConns entry. A read deadline plus a pong handler that extends it, driven
 	// by a periodic ping, detects the dead peer. WriteControl is safe to call
 	// concurrently with the asyncConn drain goroutine (gorilla guarantees this).
+	rawConn.SetReadLimit(wsMaxMessageBytes)
 	rawConn.SetReadDeadline(time.Now().Add(wsPongWait))
 	rawConn.SetPongHandler(func(string) error {
 		return rawConn.SetReadDeadline(time.Now().Add(wsPongWait))
