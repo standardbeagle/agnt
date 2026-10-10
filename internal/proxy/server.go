@@ -21,6 +21,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/devoidc"
 	"github.com/standardbeagle/agnt/internal/httpcaps"
 	"github.com/standardbeagle/agnt/internal/platform"
+	"github.com/standardbeagle/agnt/internal/publish"
 	"github.com/standardbeagle/agnt/internal/store"
 )
 
@@ -40,6 +41,12 @@ type ProxyServer struct {
 	StrictListenPort bool
 	SkipTLSVerify    bool // Whether TLS cert verification was disabled for the backend transport
 	logger           *TrafficLogger
+	// requestLimiter is the per-client request-rate cap (see rateLimited). Nil
+	// until Start installs the default; tests set it first to inject a clock.
+	requestLimiter *publish.RateLimiter
+	// rateDiagnosticAt is the UnixNano of the last "request rate capped"
+	// diagnostic, so a flood reports itself at a bounded rate.
+	rateDiagnosticAt atomic.Int64
 	pageTracker      *PageTracker
 	// httpServer is replaced by the runServer auto-restart loop, so it is
 	// published atomically; readers (Stop, Serve) must Load() it.
@@ -670,6 +677,8 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 	mux.HandleFunc(devoidc.Prefix+"/", ps.serveDevOIDC)
 	mux.HandleFunc("/", ps.handleProxy)
 
+	handler := ps.rateLimited(mux)
+
 	// Try to bind to requested port first
 	listener, err := net.Listen("tcp", ps.ListenAddr)
 	if err != nil {
@@ -709,11 +718,11 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 	// arbitrary-length proxied bodies and hijacks WebSocket upgrades (e.g. Vite
 	// HMR) — a whole-request write deadline would sever those. Slowloris and fd
 	// exhaustion stay bounded by ReadHeaderTimeout + IdleTimeout + the connection
-	// cap below.
+	// cap below, and request floods by the per-client rate cap in rateLimited.
 	proxyCaps := httpcaps.Streaming()
 	ps.httpServer.Store(proxyCaps.Apply(&http.Server{
 		Addr:    ps.ListenAddr,
-		Handler: mux,
+		Handler: handler,
 		BaseContext: func(l net.Listener) context.Context {
 			return ctx
 		},
@@ -731,7 +740,7 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 	go ps.runHealthCheck(ctx)
 
 	if ps.namedTunnelSetup != nil {
-		ps.startNamedTunnel(ctx, mux)
+		ps.startNamedTunnel(ctx, handler)
 	}
 
 	// Emit a lifecycle diagnostic so STREAM-EVENTS consumers (e.g. agnt ssh's
