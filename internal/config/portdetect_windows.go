@@ -6,9 +6,12 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+
+	"golang.org/x/sys/windows"
 )
 
 // PortOwner is a single listening TCP port and the process that owns it.
@@ -95,13 +98,29 @@ func detectPortsForPID(ctx context.Context, pid int) []int {
 	return ports
 }
 
-// ProcessNameByPID returns the process name for a given PID.
+// ProcessNameByPID returns the executable name (e.g. "node.exe") of the process
+// with the given PID, or "" when the PID is invalid, gone, or not queryable —
+// a protected system process refuses even the limited-information handle.
 func ProcessNameByPID(pid int) string {
-	return ""
+	if pid <= 0 {
+		return ""
+	}
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return ""
+	}
+	defer windows.CloseHandle(h)
+
+	buf := make([]uint16, windows.MAX_LONG_PATH)
+	size := uint32(len(buf))
+	if err := windows.QueryFullProcessImageName(h, 0, &buf[0], &size); err != nil {
+		return ""
+	}
+	return filepath.Base(windows.UTF16ToString(buf[:size]))
 }
 
 // ProcessNamesByPIDs returns a map of PID → process name for all given PIDs.
-// On Windows, ProcessNameByPID always returns "" (not yet implemented).
+// PIDs whose name cannot be resolved are omitted.
 func ProcessNamesByPIDs(ctx context.Context, pids []int) map[int]string {
 	out := make(map[int]string, len(pids))
 	for _, pid := range pids {

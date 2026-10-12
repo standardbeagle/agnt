@@ -1,8 +1,11 @@
 package aichannel
 
 import (
+	"context"
 	"os"
 	"testing"
+
+	"github.com/tmc/langchaingo/llms"
 )
 
 func TestProviderRegistry(t *testing.T) {
@@ -162,5 +165,49 @@ func TestLangChainProvider_OpenAICompatible(t *testing.T) {
 		if info.BaseURL != tc.baseURL {
 			t.Errorf("Provider %s BaseURL = %q, want %q", tc.provider, info.BaseURL, tc.baseURL)
 		}
+	}
+}
+
+// capturingModel records the call options a completion was made with.
+type capturingModel struct {
+	got llms.CallOptions
+}
+
+func (m *capturingModel) GenerateContent(_ context.Context, _ []llms.MessageContent, options ...llms.CallOption) (*llms.ContentResponse, error) {
+	for _, opt := range options {
+		opt(&m.got)
+	}
+	return &llms.ContentResponse{Choices: []*llms.ContentChoice{{Content: "ok"}}}, nil
+}
+
+func (m *capturingModel) Call(context.Context, string, ...llms.CallOption) (string, error) {
+	return "ok", nil
+}
+
+// A configured max_tokens has to reach the model call — it used to be accepted
+// by LangChainConfig and then dropped, leaving the response length uncapped.
+func TestLangChainProvider_MaxTokensReachesTheModelCall(t *testing.T) {
+	p, err := NewLangChainProvider(LangChainConfig{Provider: ProviderOpenAI, APIKey: "test-key", MaxTokens: 321})
+	if err != nil {
+		t.Fatalf("NewLangChainProvider: %v", err)
+	}
+	model := &capturingModel{}
+	p.llm = model
+
+	if _, err := p.Complete(context.Background(), "sys", "hello"); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if model.got.MaxTokens != 321 {
+		t.Fatalf("model call MaxTokens = %d, want the configured 321", model.got.MaxTokens)
+	}
+
+	// Unset leaves the provider default alone rather than sending a zero cap.
+	p.maxTokens = 0
+	model.got = llms.CallOptions{}
+	if _, err := p.Complete(context.Background(), "sys", "hello"); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if model.got.MaxTokens != 0 {
+		t.Fatalf("model call MaxTokens = %d with none configured, want 0", model.got.MaxTokens)
 	}
 }

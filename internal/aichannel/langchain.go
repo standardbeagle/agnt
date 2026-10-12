@@ -105,6 +105,9 @@ type LangChainProvider struct {
 	provider LLMProvider
 	model    string
 	apiKey   string
+	// maxTokens caps the response length on every call; 0 leaves the
+	// provider's own default in place.
+	maxTokens int
 }
 
 // LangChainConfig configures a LangChain provider.
@@ -188,10 +191,11 @@ func NewLangChainProvider(config LangChainConfig) (*LangChainProvider, error) {
 	}
 
 	return &LangChainProvider{
-		llm:      llm,
-		provider: config.Provider,
-		model:    model,
-		apiKey:   apiKey,
+		llm:       llm,
+		provider:  config.Provider,
+		model:     model,
+		apiKey:    apiKey,
+		maxTokens: config.MaxTokens,
 	}, nil
 }
 
@@ -227,7 +231,7 @@ func (p *LangChainProvider) CompleteWithContext(ctx context.Context, systemPromp
 	messages = append(messages, llms.TextParts(llms.ChatMessageTypeHuman, userContent))
 
 	// Call the LLM
-	resp, err := p.llm.GenerateContent(ctx, messages)
+	resp, err := p.llm.GenerateContent(ctx, messages, p.callOptions()...)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", ErrProviderError, err)
 	}
@@ -240,6 +244,17 @@ func (p *LangChainProvider) CompleteWithContext(ctx context.Context, systemPromp
 	return &Response{
 		Result: resp.Choices[0].Content,
 	}, nil
+}
+
+// callOptions returns the per-call options derived from the provider's
+// configuration. A configured max_tokens must reach the model call; storing it
+// on the config alone leaves the response length unbounded by it.
+func (p *LangChainProvider) callOptions() []llms.CallOption {
+	var opts []llms.CallOption
+	if p.maxTokens > 0 {
+		opts = append(opts, llms.WithMaxTokens(p.maxTokens))
+	}
+	return opts
 }
 
 // Model returns the configured model name.
