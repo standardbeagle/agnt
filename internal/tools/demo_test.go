@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -111,9 +112,21 @@ func TestListDemos_NarrationOptional(t *testing.T) {
 
 func TestBuildDemoEngineArgs(t *testing.T) {
 	entry := "/x/engine/demo.mjs"
-	assert.Equal(t, []string{entry, "demos/foo"}, buildDemoEngineArgs(entry, "foo", "", false))
-	assert.Equal(t, []string{entry, "demos/foo", "--only=seg1"}, buildDemoEngineArgs(entry, "foo", "seg1", false))
-	assert.Equal(t, []string{entry, "demos/foo", "--assemble-only"}, buildDemoEngineArgs(entry, "foo", "", true))
+	assert.Equal(t, []string{entry, "demos/foo"}, buildDemoEngineArgs(entry, "foo", "record", ""))
+	assert.Equal(t, []string{entry, "demos/foo", "--only=seg1,seg2"}, buildDemoEngineArgs(entry, "foo", "record", "seg1,seg2"))
+	assert.Equal(t, []string{entry, "demos/foo", "--assemble-only"}, buildDemoEngineArgs(entry, "foo", "assemble", "ignored"))
+	assert.Equal(t, []string{entry, "demos/foo", "--inspect"}, buildDemoEngineArgs(entry, "foo", "inspect", ""))
+	assert.Equal(t, []string{entry, "demos/foo", "--inspect=seg1"}, buildDemoEngineArgs(entry, "foo", "inspect", "seg1"))
+	assert.Equal(t, []string{entry, "demos/foo", "--publish"}, buildDemoEngineArgs(entry, "foo", "publish", "ignored"))
+}
+
+func TestValidDemoName(t *testing.T) {
+	for _, ok := range []string{"vhs-spiral", "ci_fixture", "demo.v2", "A1"} {
+		assert.True(t, validDemoName(ok), ok)
+	}
+	for _, bad := range []string{"", "..", "../x", "a/b", `a\b`, ".hidden", "a..b", "x y", "--publish"} {
+		assert.False(t, validDemoName(bad), bad)
+	}
 }
 
 func TestDemoHandler_MissingEngineIsError(t *testing.T) {
@@ -128,20 +141,77 @@ func TestDemoHandler_MissingEngineIsError(t *testing.T) {
 	assert.True(t, res.IsError, "missing engine dir must yield IsError")
 }
 
-func TestDemoHandler_InspectPublishNotYetAvailable(t *testing.T) {
+// Requests the engine could not honour are refused before any process starts
+// (the socket here is unreachable, so reaching the daemon would be a different
+// error): a name that is not a plain directory name, and an inspect scoped to
+// more than one segment.
+func TestDemoHandler_RefusesBadEngineRequests(t *testing.T) {
 	root := t.TempDir()
 	writeFixtureEngine(t, root, "fixture", fixtureDemoJSON)
 	dt := NewDaemonTools(daemonclient.AutoStartConfig{SocketPath: "/tmp/none.sock"}, "")
 	h := dt.makeDemoHandler()
-	for _, action := range []string{"inspect", "publish"} {
-		res, _, err := h(context.Background(), &mcp.CallToolRequest{}, DemoInput{
-			Action: action,
-			Name:   "fixture",
-			Path:   root,
-		})
+	cases := []struct {
+		in   DemoInput
+		want string
+	}{
+		{DemoInput{Action: "publish", Name: "../fixture"}, "invalid name"},
+		{DemoInput{Action: "inspect", Name: "--publish"}, "invalid name"},
+		{DemoInput{Action: "inspect", Name: "fixture", Only: "a,b"}, "single segment id"},
+		{DemoInput{Action: "publish", Name: "absent"}, "no demo named"},
+	}
+	for _, c := range cases {
+		c.in.Path = root
+		res, _, err := h(context.Background(), &mcp.CallToolRequest{}, c.in)
 		require.NoError(t, err)
-		require.NotNil(t, res)
-		assert.True(t, res.IsError, "%s must be a loud not-yet-available error, not a silent no-op", action)
+		require.NotNil(t, res, "%+v", c.in)
+		require.True(t, res.IsError, "%+v must be refused", c.in)
+		assert.Contains(t, res.Content[0].(*mcp.TextContent).Text, c.want)
+	}
+}
+
+// TestDemoHandler_InspectAndPublishReachTheEngine runs both actions against a
+// live NewForTest daemon and the stub engine, and asserts the engine was
+// invoked with the flag each action maps to — the actions used to return
+// "not yet available" without starting anything.
+func TestDemoHandler_InspectAndPublishReachTheEngine(t *testing.T) {
+	if _, err := exec.LookPath("node"); err != nil {
+		t.Skip("node not on PATH; skipping stub-engine managed-process integration test")
+	}
+	root := t.TempDir()
+	writeFixtureEngine(t, root, "fixture", fixtureDemoJSON)
+	sock := shortDemoSock(t)
+	daemon.NewForTest(t, daemon.DaemonConfig{SocketPath: sock, MaxClients: 10, WriteTimeout: 5 * time.Second})
+	dt := NewDaemonTools(daemonclient.AutoStartConfig{SocketPath: sock}, "")
+	h := dt.makeDemoHandler()
+	procH := dt.makeProcHandler()
+
+	cases := []struct {
+		in       DemoInput
+		wantID   string
+		wantArgv string
+		wantHint string
+	}{
+		{DemoInput{Action: "inspect", Name: "fixture", Only: "fix"}, "demo-inspect-fixture", "STUB DEMO demos/fixture --inspect=fix", filepath.Join("out", "inspect")},
+		{DemoInput{Action: "publish", Name: "fixture"}, "demo-publish-fixture", "STUB DEMO demos/fixture --publish", filepath.Join("docs-site", "static", "video")},
+	}
+	for _, c := range cases {
+		c.in.Path = root
+		res, out, err := h(context.Background(), &mcp.CallToolRequest{}, c.in)
+		require.NoError(t, err)
+		require.False(t, res != nil && res.IsError, "%s should start against a valid engine", c.in.Action)
+		assert.Contains(t, out.ProcessID, c.wantID)
+		assert.Contains(t, out.Message, c.wantHint, "the message must say where the result lands")
+
+		var got string
+		require.Eventually(t, func() bool {
+			_, pout, perr := procH(context.Background(), &mcp.CallToolRequest{}, ProcInput{Action: "output", ProcessID: out.ProcessID})
+			got = pout.Output
+			return perr == nil && strings.Contains(got, c.wantArgv)
+		}, 8*time.Second, 150*time.Millisecond, "engine argv for %s: want %q in output %q", c.in.Action, c.wantArgv, got)
+
+		_, stopOut, stopErr := procH(context.Background(), &mcp.CallToolRequest{}, ProcInput{Action: "stop", ProcessID: out.ProcessID})
+		require.NoError(t, stopErr)
+		assert.True(t, stopOut.Success)
 	}
 }
 

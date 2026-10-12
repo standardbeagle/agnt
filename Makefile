@@ -1,4 +1,4 @@
-.PHONY: build release test test-unit test-integration test-browser test-e2e e2e-publish-browser test-chrome-e2e test-js test-isolated test-ssh test-ssh-coverage test-flake check-dirty-tree clean clean-zombies install install-local install-windows install-hooks run lint test-webapp mockagent generate generate-check vendor cross-compile cross-compile-check demo demo-publish demo-check demo-engine-test demo-mux-check demo-inspect-check demo-assemble-check
+.PHONY: build release test test-unit test-integration test-browser test-e2e e2e-publish-browser test-chrome-e2e test-js test-isolated test-ssh test-ssh-coverage test-flake check-dirty-tree clean clean-zombies install install-local install-windows install-hooks run lint test-webapp mockagent generate generate-check vendor cross-compile cross-compile-check demo demo-publish demo-check demo-engine-test demo-mux-check demo-inspect-check demo-publish-check demo-assemble-check
 
 # Binary names
 BINARY := devtool-mcp
@@ -378,6 +378,13 @@ demo-mux-check:
 # and the run stays read-only over mezzanine/output. Loud-skips without ffmpeg.
 demo-inspect-check:
 	cd docs-site/screenshots && node engine/test/integration-inspect.mjs
+
+# Integration check for --publish: runs the REAL ffmpeg renders on a synthetic
+# clip into a temp docs-site and asserts the poster/animation geometry, the
+# verbatim clip copy, and that a failed publish writes nothing. Loud-skips
+# without ffmpeg.
+demo-publish-check:
+	cd docs-site/screenshots && node engine/test/integration-publish.mjs
 
 # Assembly smoke: run the committed ci-fixture through `--assemble-only` and
 # assert a playable output of the expected duration. ffmpeg + node only — no

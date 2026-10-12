@@ -145,7 +145,11 @@ const SPEC = {
     {id: 'attempt-1', type: 'cli'},
   ],
 };
-const DIRS = {demoDir: '/demo', workDir: '/demo/out/.work', outDir: '/demo/out'};
+// Built with path.join so the fixtures match what the engine constructs on any
+// host (the engine joins with the platform separator).
+const DEMO = path.join(path.sep, 'demo');
+const DIRS = {demoDir: DEMO, workDir: path.join(DEMO, 'out', '.work'), outDir: path.join(DEMO, 'out')};
+const take = (f) => path.join(DIRS.workDir, f);
 const INSPECT_DIR = path.join(DIRS.outDir, 'inspect');
 
 // A recording harness: existing paths in a Set, and recorders for every write.
@@ -168,8 +172,8 @@ const harness = (existing) => {
 
 test('inspectDemo writes ONLY under out/inspect — never a mezzanine/output file', () => {
   const h = harness([
-    '/demo/out/.work/show-bug.webm', '/demo/out/.work/show-bug.json',
-    '/demo/out/.work/attempt-1.webm',
+    take('show-bug.webm'), take('show-bug.json'),
+    take('attempt-1.webm'),
   ]);
   inspectDemo(SPEC, DIRS, {}, h.deps);
   // one PNG per browser/cli take (card skipped)
@@ -182,13 +186,14 @@ test('inspectDemo writes ONLY under out/inspect — never a mezzanine/output fil
   // the only directory ever created is out/inspect
   assert.deepEqual([...new Set(h.mkdirs)], [INSPECT_DIR]);
   // marks are read only from the .work take-mark json, never a mezz/output file
-  for (const p of h.reads) assert.match(p, /\.work\/[^/]+\.json$/);
+  for (const p of h.reads) assert.equal(path.dirname(p), DIRS.workDir);
+  for (const p of h.reads) assert.match(p, /\.json$/);
 });
 
 test('inspectDemo skips card segments (they have no take)', () => {
   const h = harness([
-    '/demo/out/.work/show-bug.webm', '/demo/out/.work/show-bug.json',
-    '/demo/out/.work/attempt-1.webm',
+    take('show-bug.webm'), take('show-bug.json'),
+    take('attempt-1.webm'),
   ]);
   const r = inspectDemo(SPEC, DIRS, {}, h.deps);
   const outs = h.runs.map((a) => a[a.length - 1]);
@@ -199,7 +204,7 @@ test('inspectDemo skips card segments (they have no take)', () => {
 test('inspectDemo: a missing take is a loud per-segment message, not a crash', () => {
   const h = harness([
     // show-bug take is ABSENT; attempt-1 present
-    '/demo/out/.work/attempt-1.webm',
+    take('attempt-1.webm'),
   ]);
   let r;
   assert.doesNotThrow(() => { r = inspectDemo(SPEC, DIRS, {}, h.deps); });
@@ -215,8 +220,8 @@ test('inspectDemo: a missing take is a loud per-segment message, not a crash', (
 
 test('inspectDemo with only=<seg-id> renders exactly that segment', () => {
   const h = harness([
-    '/demo/out/.work/show-bug.webm', '/demo/out/.work/show-bug.json',
-    '/demo/out/.work/attempt-1.webm',
+    take('show-bug.webm'), take('show-bug.json'),
+    take('attempt-1.webm'),
   ]);
   const r = inspectDemo(SPEC, DIRS, {only: 'attempt-1'}, h.deps);
   assert.equal(r.results.length, 1);
@@ -225,14 +230,14 @@ test('inspectDemo with only=<seg-id> renders exactly that segment', () => {
 });
 
 test('inspectDemo with only=<unknown> is loud, not silent', () => {
-  const h = harness(['/demo/out/.work/show-bug.webm']);
+  const h = harness([take('show-bug.webm')]);
   inspectDemo(SPEC, DIRS, {only: 'nope'}, h.deps);
   assert.ok(h.logs.err.some((m) => /nope/.test(m)));
   assert.equal(h.runs.length, 0);
 });
 
 test('inspectDemo tolerates a take that has no marks json (empty marks)', () => {
-  const h = harness(['/demo/out/.work/attempt-1.webm']); // no .json for it
+  const h = harness([take('attempt-1.webm')]); // no .json for it
   const r = inspectDemo({...SPEC, segments: [{id: 'attempt-1', type: 'cli'}]}, DIRS, {}, h.deps);
   assert.equal(r.results.length, 1);
   assert.equal(h.reads.length, 0);                // never tried to read a missing json

@@ -2,6 +2,12 @@
 //
 //   node docs-site/screenshots/engine/demo.mjs demos/<name> [--assemble-only]
 //   node docs-site/screenshots/engine/demo.mjs demos/<name> --inspect[=<seg-id>]
+//   node docs-site/screenshots/engine/demo.mjs demos/<name> --publish
+//
+// --publish promotes an already-rendered demo (out/<name>.webm) into the
+// docs-site's committed assets: the clip, its captions when present, a poster
+// and an animated webp. It records and assembles nothing, needs only ffmpeg,
+// and writes nothing when the source is missing. See lib/publish.mjs.
 //
 // --inspect is a read-only cut-point authoring aid: for each recorded take in
 // out/.work it emits a contact sheet (one thumbnail/second) with a timeline
@@ -44,6 +50,7 @@ import {recordCLI} from './lib/vhs.mjs';
 import {recordBrowser, setupLiveStack} from './lib/browser.mjs';
 import {assemble} from './lib/assemble.mjs';
 import {inspectDemo} from './lib/inspect.mjs';
+import {publishDemo} from './lib/publish.mjs';
 import {readJSON} from './lib/util.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -78,7 +85,7 @@ const assembleOnly = process.argv.includes('--assemble-only');
 const onlyArg = process.argv.find((a) => a.startsWith('--only='));
 const only = onlyArg ? new Set(onlyArg.slice(7).split(',')) : null;
 if (!demoArg) {
-  console.error('usage: node engine/demo.mjs <demo-dir> [--assemble-only] [--only=id1,id2]');
+  console.error('usage: node engine/demo.mjs <demo-dir> [--assemble-only] [--only=id1,id2] [--inspect[=id]] [--publish]');
   process.exit(2);
 }
 const demoDir = path.resolve(screenshotsDir, demoArg);
@@ -98,6 +105,24 @@ if (inspectArg) {
   }, {only});
   if (!results.length) {
     console.error('inspect: nothing rendered' + (missing ? ` (${missing} take(s) missing — record them first)` : ''));
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
+// --publish: promote the rendered output into docs-site/static. Like --inspect
+// it runs before the narration gate and the live stack — it only reads the
+// assembled output — and exits without recording or assembling.
+if (process.argv.includes('--publish')) {
+  try {
+    publishDemo({
+      demoDir,
+      docsSiteDir: path.dirname(screenshotsDir),
+      dirName: path.basename(demoDir),
+      specName: spec.name,
+    });
+  } catch (e) {
+    console.error(e.message);
     process.exit(1);
   }
   process.exit(0);

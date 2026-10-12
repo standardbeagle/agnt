@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strings"
 
 	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/go-sdk/mcp"
@@ -17,9 +19,9 @@ import (
 // (docs-site/screenshots/engine/demo.mjs) as a daemon-managed process so
 // long recordings survive and report like any managed script.
 type DemoInput struct {
-	Action string `json:"action" jsonschema:"Action to run: list (enumerate demos with segment/narration summary), record (start a recording, optionally scoped with only), assemble (re-mux from existing segment captures), inspect (cut-point aid), publish (share via the demo-publish target)"`
+	Action string `json:"action" jsonschema:"Action to run: list (enumerate demos with segment/narration summary), record (start a recording, optionally scoped with only), assemble (re-mux from existing segment captures), inspect (render cut-point contact sheets from the recorded takes), publish (promote the rendered demo into docs-site/static)"`
 	Name   string `json:"name,omitempty" jsonschema:"Demo directory name under docs-site/screenshots/demos (required for record/assemble/inspect/publish)"`
-	Only   string `json:"only,omitempty" jsonschema:"For record: comma-separated segment ids to record instead of the whole demo (maps to the engine --only flag)"`
+	Only   string `json:"only,omitempty" jsonschema:"For record: comma-separated segment ids to record instead of the whole demo (engine --only). For inspect: a single segment id to render instead of every take (engine --inspect=<id>)"`
 	Path   string `json:"path,omitempty" jsonschema:"Project directory whose docs-site/screenshots engine to use (defaults to the session project)"`
 }
 
@@ -144,18 +146,39 @@ func listDemos(demosDir string) ([]DemoSummary, error) {
 	return demos, nil
 }
 
+// demoNameRe is the shape of a demo directory name. The name is joined into
+// the engine argv (demos/<name>) and, for publish, into file names under
+// docs-site/static, so anything that is not a plain name is refused before it
+// reaches the engine. Mirrors DEMO_NAME_RE in engine/lib/publish.mjs.
+var demoNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+func validDemoName(name string) bool {
+	return demoNameRe.MatchString(name) && !strings.Contains(name, "..")
+}
+
 // buildDemoEngineArgs builds the argv (after "node") for a demo engine run:
 //
-//	record:        [entry, demos/<name>]
-//	record --only: [entry, demos/<name>, --only=<seg>]
-//	assemble:      [entry, demos/<name>, --assemble-only]
+//	record:         [entry, demos/<name>]
+//	record + only:  [entry, demos/<name>, --only=<seg,seg>]
+//	assemble:       [entry, demos/<name>, --assemble-only]
+//	inspect:        [entry, demos/<name>, --inspect]
+//	inspect + only: [entry, demos/<name>, --inspect=<seg>]
+//	publish:        [entry, demos/<name>, --publish]
 //
 // The demo dir is passed relative to the screenshots root (demos/<name>), which
 // is how the engine resolves it (against its own location, not the cwd).
-func buildDemoEngineArgs(entry, name, only string, assembleOnly bool) []string {
+func buildDemoEngineArgs(entry, name, kind, only string) []string {
 	args := []string{entry, "demos/" + name}
-	if assembleOnly {
+	switch kind {
+	case "assemble":
 		return append(args, "--assemble-only")
+	case "publish":
+		return append(args, "--publish")
+	case "inspect":
+		if only != "" {
+			return append(args, "--inspect="+only)
+		}
+		return append(args, "--inspect")
 	}
 	if only != "" {
 		args = append(args, "--only="+only)
@@ -197,20 +220,20 @@ func (dt *DaemonTools) makeDemoHandler() func(context.Context, *mcp.CallToolRequ
 				Count:      len(demos),
 			}, nil
 
-		case "record":
-			return dt.runDemoEngine(input, eng, absPath, "record", buildDemoEngineArgs(eng.Entry, input.Name, input.Only, false))
+		case "record", "assemble", "publish":
+			only := ""
+			if input.Action == "record" {
+				only = input.Only
+			}
+			return dt.runDemoEngine(input, eng, absPath, input.Action, buildDemoEngineArgs(eng.Entry, input.Name, input.Action, only))
 
-		case "assemble":
-			return dt.runDemoEngine(input, eng, absPath, "assemble", buildDemoEngineArgs(eng.Entry, input.Name, "", true))
-
-		case "inspect", "publish":
-			// The engine (demo.mjs) has no inspect/publish subcommand yet. Fail
-			// loud rather than silently no-op; wiring lands as a follow-up once
-			// the engine grows those subcommands.
-			return fail[DemoOutput](fmt.Sprintf(
-				"demo %s is not yet available: the in-repo engine (%s) has no %s subcommand yet. "+
-					"Only list/record/assemble are wired. This action is tracked as follow-up engine wiring.",
-				input.Action, eng.Entry, input.Action))
+		case "inspect":
+			// The engine's --inspect takes one segment id, not a list.
+			if strings.Contains(input.Only, ",") {
+				return fail[DemoOutput](fmt.Sprintf(
+					"demo inspect: only takes a single segment id, got %q. Omit only to render every recorded take.", input.Only))
+			}
+			return dt.runDemoEngine(input, eng, absPath, "inspect", buildDemoEngineArgs(eng.Entry, input.Name, "inspect", input.Only))
 
 		default:
 			return fail[DemoOutput](fmt.Sprintf(
@@ -219,14 +242,34 @@ func (dt *DaemonTools) makeDemoHandler() func(context.Context, *mcp.CallToolRequ
 	}
 }
 
+// demoResultHint says where an action's result lands, since the tool returns
+// before the engine has produced it.
+func demoResultHint(kind string, eng demoEngine, name string) string {
+	switch kind {
+	case "inspect":
+		return fmt.Sprintf(". Contact sheets are written to %s (one PNG per recorded take); the process output lists each path and any take that has not been recorded yet",
+			filepath.Join(eng.DemosDir, name, "out", "inspect"))
+	case "publish":
+		static := filepath.Join(filepath.Dir(eng.Screenshots), "static")
+		return fmt.Sprintf(". Assets are written to %s and %s; the process output prints the <ModeVideo/> embed snippet, or the reason nothing was published (no rendered demo yet, or ffmpeg missing)",
+			filepath.Join(static, "video"), filepath.Join(static, "img"))
+	}
+	return ""
+}
+
 // runDemoEngine starts a demo engine invocation as a daemon-managed process
-// (PROC RUN), returning the process id immediately. The recording then survives
-// and reports like any managed script: status/output/stop via the proc tool.
-// Recordings never auto-restart — a finished (or crashed) recording must stay
-// down, not loop.
+// (PROC RUN), returning the process id immediately. The run then survives and
+// reports like any managed script: status/output/stop via the proc tool. Engine
+// runs never auto-restart — a finished (or crashed) recording, inspect or
+// publish must stay down, not loop.
 func (dt *DaemonTools) runDemoEngine(input DemoInput, eng demoEngine, absPath, kind string, args []string) (*mcp.CallToolResult, DemoOutput, error) {
 	if input.Name == "" {
 		return fail[DemoOutput](fmt.Sprintf("demo %s: name required (a demo directory under %s)", kind, eng.DemosDir))
+	}
+	if !validDemoName(input.Name) {
+		return fail[DemoOutput](fmt.Sprintf(
+			"demo %s: invalid name %q — a demo name is a directory under %s (letters, digits, '.', '_' and '-' only)",
+			kind, input.Name, eng.DemosDir))
 	}
 	if _, err := os.Stat(filepath.Join(eng.DemosDir, input.Name, "demo.json")); err != nil {
 		return fail[DemoOutput](fmt.Sprintf(
@@ -239,8 +282,8 @@ func (dt *DaemonTools) runDemoEngine(input DemoInput, eng demoEngine, absPath, k
 	}
 
 	id := "demo-" + input.Name
-	if kind == "assemble" {
-		id = "demo-assemble-" + input.Name
+	if kind != "record" {
+		id = "demo-" + kind + "-" + input.Name
 	}
 
 	cfg := daemonclient.ProcRunConfig{
@@ -262,7 +305,7 @@ func (dt *DaemonTools) runDemoEngine(input DemoInput, eng demoEngine, absPath, k
 		State:      getString(result, "state"),
 		Command:    "node " + eng.Entry,
 		Message: fmt.Sprintf(
-			"%s started as managed process %q; observe with proc {action:\"output\", process_id:%q} and stop with proc {action:\"stop\", process_id:%q}",
-			kind, getString(result, "process_id"), getString(result, "process_id"), getString(result, "process_id")),
+			"%s started as managed process %q; observe with proc {action:\"output\", process_id:%q} and stop with proc {action:\"stop\", process_id:%q}%s",
+			kind, getString(result, "process_id"), getString(result, "process_id"), getString(result, "process_id"), demoResultHint(kind, eng, input.Name)),
 	}, nil
 }

@@ -10,6 +10,8 @@ name: Demo Engine Smoke
 #                       narration gating, assembly cache, injection predicates).
 #   * demo-assemble-check — run the committed ci-fixture through
 #                       `--assemble-only` and assert a playable output.
+#   * demo-publish-check — run `--publish`'s real ffmpeg renders on a synthetic
+#                       clip into a temp docs-site and assert the assets.
 #
 # Deliberately NO Chrome / VHS / daemon: the fixture is card-less (cards are the
 # only assembly step that needs chromium) and declares no narration or setup, so
@@ -66,3 +68,6 @@ jobs:
 
       - name: Assembly smoke over the committed fixture (--assemble-only)
         run: make demo-assemble-check
+
+      - name: Publish check (--publish poster + animated webp, into a temp docs-site)
+        run: make demo-publish-check

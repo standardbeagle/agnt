@@ -42,7 +42,7 @@ for an explicit audit request, not routine debugging.
 | `watch` | Get monitor command for streaming events (errors, interactions, process, all) |
 | `channel_reply` | Send messages to developer's browser overlay (channel mode beta) |
 | `publish` | Public walkthrough shares — create/status/list/revoke/rotate + owner-scoped feedback read |
-| `demo` | Narrated demo-video authoring — list/record/assemble via the in-repo engine as a daemon-managed process (repo-checkout capability) |
+| `demo` | Narrated demo-video authoring — list/record/assemble/inspect/publish via the in-repo engine as a daemon-managed process (repo-checkout capability) |
 
 **Session scoping & `global` flag**: query/list tools use the project's `scope.default-global` setting (default `false`; daemon-side session-scope chokepoint — see `.claude/rules/daemon-architecture.md` § Tool session-scoping). Every gated tool (`proc`, `proxy`, `tunnel`, `session`, `daemon` startup_log) accepts an optional `global`; explicit `true` or `false` overrides project config in either direction, while omission uses config. `get_incidents` (per-session isolated) and `watch` (monitor stream) intentionally omit it.
 
@@ -243,12 +243,26 @@ Actions:
   `only:"seg1,seg2"` to record specific segments (engine `--only`).
 - `assemble` — Re-mux an already-recorded demo from its segment captures
   (engine `--assemble-only`), also as a managed process returning a `process_id`.
-- `inspect` / `publish` — Reserved cut-point and demo-publish actions. **Not yet
-  available**: the engine has no such subcommand today, so these return a loud
-  not-yet-available error pending follow-up engine wiring.
+- `inspect` — Cut-point authoring aid (engine `--inspect[=<seg>]`). Renders each
+  recorded take into a contact sheet — one thumbnail per second with every
+  recorded mark on a timeline strip — under `demos/<name>/out/inspect/<seg>.png`.
+  Read-only over the takes; needs ffmpeg but neither the daemon-side proxy nor
+  edge-tts. Pass `only:"<seg>"` for one segment (a single id, not a list). A
+  take that has not been recorded is reported in the process output, not a crash.
+- `publish` — Promote an already-rendered demo into the docs-site (engine
+  `--publish`): `static/video/<name>.webm`, its `.vtt` when the demo has
+  captions, `static/img/<name>-poster.webp` and `static/img/<name>-demo.webp`.
+  Needs ffmpeg and a prior `record`/`assemble`; when either is missing the
+  process exits non-zero having written nothing. The process output ends with
+  the ready-to-paste `<ModeVideo/>` snippet.
 
-The managed process is addressed by a stable id: `demo-<name>` for `record`,
-`demo-assemble-<name>` for `assemble`.
+Every action except `list` returns before the engine finishes — read the result
+from the managed process. It is addressed by a stable id: `demo-<name>` for
+`record`, and `demo-assemble-<name>`, `demo-inspect-<name>`,
+`demo-publish-<name>` for the others.
+
+A demo `name` is a directory name (letters, digits, `.`, `_`, `-`); anything
+else is refused before the engine runs.
 
 Examples:
 ```
@@ -256,6 +270,8 @@ demo {action: "list"}
 demo {action: "record", name: "incident-inbox"}
 demo {action: "record", name: "incident-inbox", only: "card-intro,fix"}
 demo {action: "assemble", name: "incident-inbox"}
+demo {action: "inspect", name: "incident-inbox", only: "fix"}
+demo {action: "publish", name: "incident-inbox"}
 proc {action: "output", process_id: "demo-incident-inbox"}
 proc {action: "stop", process_id: "demo-incident-inbox"}
 ```

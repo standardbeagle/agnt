@@ -5,6 +5,7 @@
 // (Part B) are both filters folded into the single final invocation.
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
+import path from 'node:path';
 import {buildFinalMuxArgs} from '../lib/assemble.mjs';
 
 const fc = (r) => r.argv[r.argv.indexOf('-filter_complex') + 1];
@@ -128,7 +129,7 @@ test('brand.image resolves relative to the demo dir', () => {
     {name: 'd', brand: {image: 'assets/brand.png'}},
     {silent: '/w/visual.webm', out: '/o/d.webm', srtPath: null},
     {voiced: [], totalDur: 10, view: {fps: 25}, demoDir: '/demo/mine', fileExists: alwaysExists});
-  assert.ok(r.argv.includes('/demo/mine/assets/brand.png'));
+  assert.ok(r.argv.includes(path.resolve('/demo/mine', 'assets/brand.png')));
 });
 
 test('brand.image missing on disk → hard error naming the resolved path', () => {
@@ -137,7 +138,7 @@ test('brand.image missing on disk → hard error naming the resolved path', () =
       {name: 'd', brand: {image: 'nope.png'}},
       {silent: '/w/visual.webm', out: '/o/d.webm', srtPath: null},
       {voiced: [], totalDur: 10, view: {fps: 25}, demoDir: '/demo', fileExists: () => false}),
-    /\/demo\/nope\.png/);
+    (e) => e.message.includes(path.resolve('/demo', 'nope.png')));
 });
 
 test('invalid brand.position → hard error listing the valid corners', () => {

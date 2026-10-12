@@ -144,7 +144,9 @@ Output lands in `demos/<name>/out/<name>.webm` (gitignored).
 
 ### Publish a demo into the docs-site
 
-`make demo-publish NAME=<name>` promotes a rendered demo's gitignored
+`make demo-publish NAME=<name>` — equivalently `node engine/demo.mjs
+demos/<name> --publish`, or `demo {action: "publish", name: "<name>"}` from the
+MCP tool; all three run `engine/lib/publish.mjs` — promotes a rendered demo's gitignored
 `out/<name>.webm` into the three committed assets `<ModeVideo/>` references —
 no hand-run ffmpeg recipes:
 
@@ -159,7 +161,8 @@ make demo-publish NAME=vhs-spiral
 | poster | `docs-site/static/img/<name>-poster.webp` | `ffmpeg -ss 2` still, scaled to 960 wide |
 | README/GitHub animation | `docs-site/static/img/<name>-demo.webp` | 8fps, 720 wide, infinite loop |
 
-A missing `out/<name>.webm` fails loud (nonzero exit, `run 'make demo
+The source is `out/<demo.json name>.webm`; the published files are named after
+the demo directory. A missing `out/<name>.webm` (or a missing ffmpeg) fails loud (nonzero exit, `run 'make demo
 NAME=<name>' first`) and writes nothing — each artifact is rendered to a temp
 file and moved into place only after every render succeeds, so a partial run
 never leaves a stale poster or webp behind, and a re-run overwrites
@@ -175,6 +178,7 @@ Verify the final-mux graph construction and the real ffmpeg output:
 make demo-engine-test    # unit: constructed ffmpeg argv (overlay, loudnorm, one-encode, inspect geometry)
 make demo-mux-check      # integration: brand pixels + EBU R128 loudness on a fixture
 make demo-inspect-check  # integration: --inspect contact-sheet PNG + read-only over a fixture
+make demo-publish-check  # integration: --publish poster/webp geometry + nothing written on failure
 ```
 
 `demo-mux-check` runs real ffmpeg on a synthetic fixture and loud-skips when

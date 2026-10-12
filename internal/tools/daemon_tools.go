@@ -778,14 +778,23 @@ Actions:
             Pass only:"seg1,seg2" to record specific segments instead of the whole demo.
   assemble: Re-mux an already-recorded demo from its segment captures (engine
             --assemble-only) as a managed process; returns a process_id.
-  inspect:  Cut-point authoring aid (not yet available — engine subcommand pending).
-  publish:  Share via the demo-publish target (not yet available — engine subcommand pending).
+  inspect:  Cut-point authoring aid: renders each recorded take into a contact
+            sheet (one thumbnail/second, marks on a timeline strip) under
+            demos/<name>/out/inspect. Read-only over the takes. Pass only:"seg"
+            for a single segment. Managed process id: demo-inspect-<name>.
+  publish:  Promote an already-rendered demo into docs-site/static (clip,
+            captions when present, poster, animated webp) and print the
+            <ModeVideo/> embed snippet. Needs ffmpeg and a prior record or
+            assemble; writes nothing otherwise. Managed process id:
+            demo-publish-<name>.
 
 Examples:
   demo {action: "list"}
   demo {action: "record", name: "incident-inbox"}
   demo {action: "record", name: "incident-inbox", only: "card-intro,fix"}
   demo {action: "assemble", name: "incident-inbox"}
+  demo {action: "inspect", name: "incident-inbox", only: "fix"}
+  demo {action: "publish", name: "incident-inbox"}
   proc {action: "output", process_id: "demo-incident-inbox"}
   proc {action: "stop", process_id: "demo-incident-inbox"}`,
 	}, dt.makeDemoHandler())
