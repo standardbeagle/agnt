@@ -5,10 +5,10 @@ import (
 	"fmt"
 
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/pathutil"
 	"github.com/standardbeagle/go-sdk/mcp"
 
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/standardbeagle/agnt/internal/protocol"
@@ -19,31 +19,18 @@ import (
 // getProjectPath returns the project path for filtering processes/proxies.
 // It first checks for AGNT_PROJECT_PATH environment variable (set by agnt run),
 // then falls back to the current working directory.
-// On Windows, paths are normalized to lowercase for case-insensitive comparison.
+// The result is in the daemon's canonical form (pathutil.NormalizeProjectPath)
+// so the filter compares equal to the paths the daemon keys its registries by.
 func getProjectPath() string {
-	var path string
-
-	if envPath := os.Getenv("AGNT_PROJECT_PATH"); envPath != "" {
-
-		absPath, err := filepath.Abs(envPath)
-		if err == nil {
-			path = absPath
-		} else {
-			path = envPath
-		}
-	} else {
-
+	path := os.Getenv("AGNT_PROJECT_PATH")
+	if path == "" {
 		cwd, err := os.Getwd()
 		if err != nil {
 			return ""
 		}
 		path = cwd
 	}
-
-	if isWindows() {
-		path = strings.ToLower(path)
-	}
-	return path
+	return pathutil.NormalizeProjectPath(path)
 }
 
 // isWindows returns true if running on Windows.

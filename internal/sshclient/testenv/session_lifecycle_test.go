@@ -1,3 +1,9 @@
+//go:build unix
+
+// Session-host lifecycle against a real PTY child: it spawns /bin/sh under a
+// pty and kills the session's process group with kill(2). Neither the PTY
+// session-host nor process groups exist on native Windows.
+
 package testenv_test
 
 import (

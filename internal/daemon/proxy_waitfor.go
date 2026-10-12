@@ -21,9 +21,10 @@
 //
 //	Waiters use the daemon context. When the daemon shuts down or
 //	the context is cancelled, outstanding waiters exit without
-//	calling MarkDependencyReady. This is safe because the proxy
-//	itself is torn down on ScriptStopped / StopByProjectPath events
-//	before the daemon context fires.
+//	calling MarkDependencyReady. A waiter also exits when its
+//	dependency's readiness is reset (process stopped, project torn
+//	down) and the proxy no longer exists; if the proxy is still
+//	there it re-waits on the dependency's next start.
 
 package daemon
 
@@ -179,17 +180,40 @@ func (d *Daemon) waitForProxyDependency(proxyID, depID string) {
 	// Both paths land on SignalReady, which closes the per-process
 	// channel. Running With Errors still fires the port probe since
 	// the process is bound and listening.
-	if err := d.readySignaler.WaitReadyCtx(depID, d.ctx); err != nil {
-		debug.Log("daemon", "proxy %s waiter for dep %s exited: %v", proxyID, depID, err)
-		return
-	}
+	//
+	// The wait is per start generation. When the dep stops or restarts
+	// its generation is retired and we wait on the next one — unless the
+	// proxy itself is gone, in which case there is nothing left to open
+	// and the waiter exits instead of lingering until daemon shutdown.
+	// A dep that failed to start keeps the gate closed and says so; the
+	// waiter then sits out the failure until the dep is started again.
+	var server *proxy.ProxyServer
+	for server == nil {
+		outcome, waitErr := d.readySignaler.waitGeneration(depID, d.ctx)
+		if outcome == readyOutcomeCancelled {
+			debug.Log("daemon", "proxy %s waiter for dep %s exited: %v", proxyID, depID, waitErr)
+			return
+		}
 
-	// Look up the proxy fresh — it may have been stopped while we
-	// were blocked (ScriptStopped event, session cleanup, etc).
-	server, err := d.proxym.Get(proxyID)
-	if err != nil {
-		debug.Log("daemon", "proxy %s gone before dep %s ready", proxyID, depID)
-		return
+		// Look up the proxy fresh — it may have been stopped while we
+		// were blocked (ScriptStopped event, session cleanup, etc).
+		current, err := d.proxym.Get(proxyID)
+		if err != nil {
+			debug.Log("daemon", "proxy %s gone before dep %s ready", proxyID, depID)
+			return
+		}
+
+		switch outcome {
+		case readyOutcomeReady:
+			server = current
+		case readyOutcomeFailed:
+			d.recordStartupEntry(proxyID, "", "error", "proxy_dependency_failed", fmt.Sprintf(
+				"proxy %s stays gated (503): wait-for dependency %s failed to start: %v — fix and start it again to open the proxy",
+				proxyID, depID, waitErr), 0)
+			if err := d.readySignaler.WaitRestart(depID, d.ctx); err != nil {
+				return
+			}
+		}
 	}
 
 	openedNow := server.MarkDependencyReady(depID)

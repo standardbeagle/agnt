@@ -40,3 +40,43 @@ func TestFeedbackClientRejectsProtocolRelativeEndpoint(t *testing.T) {
 		t.Fatal("hardened guard must reject scheme-bearing endpoints ('://')")
 	}
 }
+
+// TestFeedbackClientReportsDeliveryOutcome is the always-on source guard for the
+// visitor feedback flow. Behaviour (widget states, HTTP and network failures
+// reaching the visitor, the exact request sent) is proven against the shipped
+// bytes in the vitest + jsdom tier: jstest/public-feedback.test.js (`make
+// test-js`). This guard keeps the contract visible to `make test`, which must
+// not need node: the client is no longer a fire-and-forget stub, and the widget
+// it mounts cannot become a markup or inline-style sink on the public plane.
+func TestFeedbackClientReportsDeliveryOutcome(t *testing.T) {
+	src := moduleScript["feedback-client"]
+	for _, want := range []string{
+		"res.ok",                     // a non-2xx response is a failure, not a success
+		"'network'",                  // a rejected fetch is reported, not swallowed
+		"mount: mount",               // the visitor widget is part of the surface
+		"credentials: 'omit'",        // anonymous plane: no cookies ride along
+		"'application/json'",         // the only content type the route accepts
+		"MAX_BODY_BYTES = 4096",      // mirrors the server's default body cap
+		"role', 'status'",            // submission states are announced
+		"setAttribute('for', ",       // fields are labelled
+		"addEventListener('keydown'", // Escape closes the form
+	} {
+		if !strings.Contains(src, want) {
+			t.Errorf("feedback-client missing %q", want)
+		}
+	}
+	for _, banned := range []string{
+		"best-effort", // the stub's swallowed .catch
+		"innerHTML", "outerHTML", "insertAdjacentHTML", "document.write",
+		"setAttribute('style'", "createElement('style')", // refused by the public style-src
+	} {
+		if strings.Contains(src, banned) {
+			t.Errorf("feedback-client must not contain %q", banned)
+		}
+	}
+	for _, tok := range forbiddenPublicTokens {
+		if strings.Contains(src, tok) {
+			t.Errorf("feedback-client contains forbidden dev-surface token %q", tok)
+		}
+	}
+}

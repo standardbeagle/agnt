@@ -3,9 +3,11 @@ package config
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1287,6 +1289,31 @@ func (c *AgntConfig) EffectivePortConflictPolicy() string {
 // (URL, Target, or Port) rather than being linked to a script for URL detection.
 func (p *ProxyConfig) HasExplicitTarget() bool {
 	return p.URL != "" || p.Target != "" || p.Port > 0
+}
+
+// LocalHTTPURL returns http://host:port for a locally reachable server. An empty
+// host means localhost, and an IPv6 literal is bracketed (with or without
+// brackets on input) so the result always parses as a URL.
+func LocalHTTPURL(host string, port int) string {
+	if host == "" {
+		host = "localhost"
+	}
+	host = strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	return "http://" + net.JoinHostPort(host, strconv.Itoa(port))
+}
+
+// ExplicitTargetURL returns the proxy's configured target: url, then
+// host/port, then the legacy target field. It is empty for a proxy that has
+// none and relies on URL detection from its script.
+func (p *ProxyConfig) ExplicitTargetURL() string {
+	switch {
+	case p.URL != "":
+		return p.URL
+	case p.Port > 0:
+		return LocalHTTPURL(p.Host, p.Port)
+	default:
+		return p.Target
+	}
 }
 
 // ShouldAutostart returns true if this proxy should start automatically.

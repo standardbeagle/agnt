@@ -11,6 +11,8 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+
+	"github.com/standardbeagle/agnt/internal/config"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -363,7 +365,7 @@ func (t *Tunnel) startCloudflare(ctx context.Context) error {
 		return err
 	}
 
-	localURL := fmt.Sprintf("http://%s:%d", t.config.LocalHost, t.config.LocalPort)
+	localURL := config.LocalHTTPURL(t.config.LocalHost, t.config.LocalPort)
 	args, err := cloudflareArgs(localURL, t.config.Named)
 	if err != nil {
 		t.setState(StateFailed)

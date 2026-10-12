@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/publish"
 	"github.com/standardbeagle/go-sdk/mcp"
 )
 
@@ -245,15 +246,26 @@ func TestPublishCreateAcceptsRawOpsArtifact(t *testing.T) {
 // `publish list`, with a pointer to its location and how to read its feedback —
 // rather than being silently invisible.
 func TestDiscoverServeStoresSurfacedInList(t *testing.T) {
+	// Redirect the user cache on every OS: os.UserCacheDir reads XDG_CACHE_HOME
+	// on Linux, %LocalAppData% on Windows and $HOME/Library/Caches on macOS.
 	cache := t.TempDir()
 	t.Setenv("XDG_CACHE_HOME", cache)
+	t.Setenv("LocalAppData", cache)
+	t.Setenv("HOME", cache)
+	base, err := publish.ServeStoreBase()
+	if err != nil {
+		t.Fatalf("ServeStoreBase: %v", err)
+	}
+	if !strings.HasPrefix(base, cache) {
+		t.Fatalf("serve store base %q escaped the test cache %q", base, cache)
+	}
 
-	storeDir := filepath.Join(cache, "agnt", "publish-serve", "deadbeef")
+	storeDir := filepath.Join(base, "deadbeef")
 	if err := os.MkdirAll(storeDir, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
 	}
 	meta := []byte(`{"dir":"/home/dev/walkthroughs","addr":"127.0.0.1:8899"}`)
-	if err := os.WriteFile(filepath.Join(storeDir, serveStoreMetaFile), meta, 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(storeDir, publish.ServeStoreMetaFile), meta, 0o600); err != nil {
 		t.Fatalf("write meta: %v", err)
 	}
 

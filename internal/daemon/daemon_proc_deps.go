@@ -11,8 +11,9 @@
 //	    → pendingProcs.Register(...)
 //	    → goroutine waits on readySignaler.WaitReadyCtx for each dep
 //	      → dep ready: pendingProcs.MarkReady(processID, dep)
-//	      → dep timeout: pendingProcs.MarkFailed(processID, dep) + script
-//	        registry StateFailed + abort
+//	      → dep timeout / dep failed to start: entry marked failed +
+//	        script registry StateFailed + abort
+//	      → entry cancelled (PROC STOP, session cleanup): exit, no launch
 //	    → all deps ready: StartScriptExplicit + pendingProcs.Remove
 //
 // Group flow (PROC RUN-GROUP):
@@ -130,13 +131,18 @@ func (d *Daemon) StartProcessWithDeps(
 		deadline = time.Now().Add(effectiveTimeout)
 	}
 
-	d.pendingProcs.Register(PendingProcess{
+	// The launch gets its own cancellation handle, owned by the pending
+	// tracker: a process that has not launched yet has no ProcessManager
+	// entry, so PROC STOP and session cleanup can only reach it through
+	// this handle (PendingProcessTracker.Cancel).
+	launchCtx, cancel := context.WithCancel(ctx)
+	entry := d.pendingProcs.RegisterLaunch(PendingProcess{
 		ProcessID:   processID,
 		Name:        name,
 		ProjectPath: projectPath,
 		Command:     cmdStr,
 		Deadline:    deadline,
-	}, deps)
+	}, deps, cancel)
 
 	// NOTE: deliberately do NOT pre-register the script registry entry
 	// as Starting here. StartScriptExplicit has an idempotency check
@@ -146,7 +152,7 @@ func (d *Daemon) StartProcessWithDeps(
 	// never enters ProcessManager. The pending tracker is the single
 	// source of truth for "waiting on deps"; SCRIPT LIST surfaces it
 	// via the merge in hubHandleProcList.
-	go d.runProcessAfterDeps(ctx, name, scriptCfg, projectPath, deps, effectiveTimeout)
+	go d.runProcessAfterDeps(launchCtx, cancel, entry, name, scriptCfg, projectPath, deps, effectiveTimeout)
 
 	return StartProcessResult{
 		ProcessID:  processID,
@@ -158,56 +164,100 @@ func (d *Daemon) StartProcessWithDeps(
 // runProcessAfterDeps is the goroutine spawned by StartProcessWithDeps
 // when the process has at least one dependency. It blocks on each dep's
 // readiness signal in declaration order, then invokes
-// StartScriptExplicit. On timeout, it marks the pending entry Failed and
-// transitions the script registry entry to StateFailed.
+// StartScriptExplicit. On timeout or dependency failure, it marks the
+// pending entry Failed and transitions the script registry entry to
+// StateFailed.
+//
+// ctx is the launch's own context: it ends when the parent ends (daemon /
+// request shutdown) or when the pending entry is cancelled (PROC STOP,
+// session cleanup, a superseding PROC RUN). A cancelled launch never starts
+// the process; one cancelled while already starting stops what it started.
 //
 // This function never returns to a caller — its only side effects are
 // (a) the script registry / process manager (via StartScriptExplicit)
-// and (b) the pending tracker (Remove on success, MarkFailed on
+// and (b) the pending tracker (RemoveExact on success, fail on
 // timeout). Errors are surfaced via startupErrorStore for visibility in
 // PROC STATUS warnings.
 func (d *Daemon) runProcessAfterDeps(
 	ctx context.Context,
+	cancel context.CancelFunc,
+	entry *pendingEntry,
 	name string,
 	scriptCfg *config.ScriptConfig,
 	projectPath string,
 	deps []string,
 	timeout time.Duration,
 ) {
+	defer cancel()
 	processID := makeProcessID(projectPath, name)
 
 	// Build a wait context bounded by the per-process timeout.
 	waitCtx := ctx
 	if timeout > 0 {
-		var cancel context.CancelFunc
-		waitCtx, cancel = context.WithTimeout(ctx, timeout)
-		defer cancel()
+		var waitCancel context.CancelFunc
+		waitCtx, waitCancel = context.WithTimeout(ctx, timeout)
+		defer waitCancel()
 	}
 
 	for _, dep := range deps {
 		depProcessID := makeProcessID(projectPath, dep)
 		if err := d.readySignaler.WaitReadyCtx(depProcessID, waitCtx); err != nil {
-			// Distinguish wait-context-cancelled (timeout) from
-			// parent-cancelled (shutdown).
-			parentDone := ctx.Err() != nil
-			d.failPendingProcess(processID, name, projectPath, dep, parentDone, err)
+			// Distinguish launch-cancelled (stop / cleanup / shutdown)
+			// from the dep timing out or failing to start.
+			d.failPendingProcess(entry, name, projectPath, dep, ctx.Err() != nil, err)
 			return
 		}
-		d.pendingProcs.MarkReady(processID, dep)
+		entry.markReady(dep)
+	}
+
+	// Cancelled between the last dep becoming ready and now: do not launch.
+	if ctx.Err() != nil {
+		debug.Log("daemon", "PROC RUN %s cancelled before launch: %v", name, ctx.Err())
+		return
 	}
 
 	// All deps ready — kick off the actual start.
 	if err := d.StartScriptExplicit(ctx, name, scriptCfg, projectPath, nil); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		d.recordStartupEntry(processID, name, "error", "proc_run_failed",
 			fmt.Sprintf("PROC RUN failed after deps: %v", err), 0)
 		// Mark the pending entry failed so PROC STATUS reflects the
 		// final state. Use a synthetic reason — the real error lives
 		// in startupErrorStore.
-		d.pendingProcs.MarkFailed(processID, "start")
+		entry.fail("dependency_timeout:start")
 		debug.Warn("daemon", "PROC RUN %s post-deps start failed: %v", name, err)
 		return
 	}
-	d.pendingProcs.Remove(processID)
+
+	// The cancel landed while StartScriptExplicit was already launching:
+	// whoever cancelled (PROC STOP, session cleanup) looked for the process
+	// before it existed, so nothing else will stop it. Stop it here.
+	if ctx.Err() != nil {
+		d.stopCancelledLaunch(processID, name)
+		return
+	}
+	d.pendingProcs.RemoveExact(entry)
+}
+
+// stopCancelledLaunch stops a process whose deferred launch was cancelled
+// after it had already started. Runs on the daemon context because the
+// launch context is, by definition, already done.
+func (d *Daemon) stopCancelledLaunch(processID, name string) {
+	if d.autoRestarter != nil {
+		d.autoRestarter.Unregister(processID)
+	}
+	stopCtx, cancel := context.WithTimeout(d.ctx, 5*time.Second)
+	defer cancel()
+	if err := d.hub.ProcessManager().Stop(stopCtx, processID); err != nil {
+		d.recordStartupEntry(processID, name, "warning", "stop_failed",
+			fmt.Sprintf("PROC RUN %s was cancelled while launching and could not be stopped: %v", name, err), 0)
+		return
+	}
+	d.retireIncidentProcessOwner(processID)
+	d.recordStartupEntry(processID, name, "info", "proc_run_cancelled",
+		fmt.Sprintf("PROC RUN %s was cancelled while launching; stopped it", name), 0)
 }
 
 // failPendingProcess records a dep-wait failure for a PROC RUN process.
@@ -216,27 +266,37 @@ func (d *Daemon) runProcessAfterDeps(
 // surfaces a startup-log entry so the failure is visible to PROC STATUS
 // and the overlay.
 //
-// parentCancelled distinguishes "agent cancelled / daemon shutting down"
-// from "dep wait timed out". Only the latter writes
-// "dependency_timeout:<dep>" — the former is logged as a debug exit.
-func (d *Daemon) failPendingProcess(processID, name, projectPath, dep string, parentCancelled bool, waitErr error) {
-	if parentCancelled {
-		debug.Log("daemon", "PROC RUN %s dep-wait cancelled by parent: %v", name, waitErr)
-		// Leave the pending entry in place; the next session-cleanup
-		// pass will remove it. We don't mark Failed because the
-		// agent / daemon may be shutting down deliberately.
+// cancelled distinguishes "launch cancelled / daemon shutting down" from a
+// real dependency failure. A real failure is "dependency_failed:<dep>" when
+// the dependency failed to start and "dependency_timeout:<dep>" when it never
+// signalled ready in time; cancellation is logged as a debug exit.
+func (d *Daemon) failPendingProcess(entry *pendingEntry, name, projectPath, dep string, cancelled bool, waitErr error) {
+	if cancelled {
+		debug.Log("daemon", "PROC RUN %s dep-wait cancelled: %v", name, waitErr)
+		// Leave the pending entry alone: an explicit Cancel already
+		// removed it, and on shutdown the next session-cleanup pass
+		// will. We don't mark Failed because the agent / daemon
+		// stopped this deliberately.
 		return
 	}
-	d.pendingProcs.MarkFailed(processID, dep)
-
-	if entry, ok := d.scriptRegistry.Get(name, projectPath); ok {
-		entry.SetState(script.StateFailed)
-		entry.SetLastError(fmt.Sprintf("dependency_timeout:%s", dep))
-		entry.IncrementFailCount()
+	reason := "dependency_timeout:" + dep
+	if errors.Is(waitErr, ErrDependencyFailed) {
+		reason = "dependency_failed:" + dep
 	}
+	entry.fail(reason)
 
-	d.recordStartupEntry(processID, name, "error", "dependency_timeout",
-		fmt.Sprintf("dependency_timeout:%s — %v", dep, waitErr), 0)
+	processID := makeProcessID(projectPath, name)
+	if scriptEntry, ok := d.scriptRegistry.Get(name, projectPath); ok {
+		scriptEntry.SetState(script.StateFailed)
+		scriptEntry.SetLastError(reason)
+		scriptEntry.IncrementFailCount()
+	}
+	// Pass the failure down the chain: anything waiting on this process
+	// must not sit until its own timeout for a launch that will not happen.
+	d.readySignaler.SignalFailed(processID, fmt.Errorf("not started: %s", reason))
+
+	d.recordStartupEntry(processID, name, "error", strings.SplitN(reason, ":", 2)[0],
+		fmt.Sprintf("%s — %v", reason, waitErr), 0)
 }
 
 // resolveCommandString returns a best-effort human-readable command

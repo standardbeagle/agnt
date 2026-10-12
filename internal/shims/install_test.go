@@ -133,8 +133,8 @@ func TestRemoveMissingDirIsNoop(t *testing.T) {
 
 func TestPrependPATH(t *testing.T) {
 	t.Parallel()
-	env := PrependPATH([]string{"FOO=1", "PATH=/usr/bin:/bin"}, "/proj/.agnt/bin")
 	sep := string(os.PathListSeparator)
+	env := PrependPATH([]string{"FOO=1", "PATH=/usr/bin" + sep + "/bin"}, "/proj/.agnt/bin")
 	var got string
 	for _, kv := range env {
 		if strings.HasPrefix(kv, "PATH=") {
@@ -142,6 +142,13 @@ func TestPrependPATH(t *testing.T) {
 		}
 	}
 	assert.Equal(t, "/proj/.agnt/bin"+sep+"/usr/bin"+sep+"/bin", got)
+
+	// Windows spells the variable "Path"; a second "PATH" entry there would
+	// replace the real search path rather than extend it.
+	if runtime.GOOS == "windows" {
+		env = PrependPATH([]string{"Path=C:\\Windows"}, "C:\\proj\\.agnt\\bin")
+		assert.Equal(t, []string{"Path=C:\\proj\\.agnt\\bin;C:\\Windows"}, env)
+	}
 
 	// No PATH entry → appended.
 	env = PrependPATH([]string{"FOO=1"}, "/x")

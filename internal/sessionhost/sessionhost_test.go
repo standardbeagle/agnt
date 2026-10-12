@@ -1,3 +1,10 @@
+//go:build unix
+
+// Every test here creates a real session: a child (sh, or this test binary
+// re-exec'd) under a Unix PTY in its own session/process group (Setsid,
+// /dev/stdout as the slave). pty.Start is unsupported on native Windows and
+// syscall.SysProcAttr has no Setsid there, so the file does not even compile.
+
 package sessionhost
 
 import (

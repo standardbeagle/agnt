@@ -134,6 +134,25 @@ func TestPublicBootFailsLoud(t *testing.T) {
 	}
 }
 
+// TestPublicBootMountsFeedback pins that a booted share turns the visitor
+// feedback widget on, at the token's own same-origin feedback route, and that a
+// feedback failure is contained rather than taking the walkthrough down. The
+// rendered behaviour is proven in jstest/public-feedback.test.js.
+func TestPublicBootMountsFeedback(t *testing.T) {
+	js := publicBootJS
+	if !strings.Contains(js, "endpoint: '/s/' + token + '/feedback'") {
+		t.Error("boot must point the widget at the token's own same-origin feedback path")
+	}
+	start := strings.Index(js, "booted = viewer.create(wt, {}).start();")
+	mount := strings.Index(js, "mountFeedback(token, wt.steps);")
+	if start < 0 || mount < start {
+		t.Error("the feedback widget must mount only after the player has started")
+	}
+	if !strings.Contains(js, "warn('feedback widget failed to mount', err)") {
+		t.Error("a throwing feedback mount must be caught and warned about, not break the page")
+	}
+}
+
 // TestPublicBootIsolatedIIFE asserts the module keeps the leading space after
 // `function` so wrapModule leaves its IIFE intact rather than merging it into
 // the shared bundle scope (same convention as the other three public members).

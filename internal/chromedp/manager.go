@@ -45,10 +45,18 @@ const DefaultMaxSessions = 4
 type SessionManager struct {
 	sessions     sync.Map // map[string]*AutomationSession
 	active       atomic.Int32
-	maxSessions  atomic.Int32 // concurrency ceiling; <=0 means DefaultMaxSessions
+	maxSessions  atomic.Int32 // daemon-wide ceiling; <=0 means DefaultMaxSessions
+	baseMax      atomic.Int32 // ceiling used while no project declares a quota
 	totalStarted atomic.Int64
 	totalFailed  atomic.Int64
 	shuttingDown atomic.Bool
+
+	// projectQuotas holds each connected project's own ceiling, keyed by
+	// normalized project path (map[string]*projectQuota). Read by Start on every
+	// admission; written by SetProjectMaxSessions / ClearProjectMaxSessions on
+	// session connect and project teardown. Not user-visible on its own — the
+	// refusal message in Start is where a quota surfaces.
+	projectQuotas sync.Map
 
 	// startSession launches the browser for an already-reserved session.
 	// Overridable in tests so the concurrency cap can be exercised without
@@ -74,17 +82,101 @@ func NewSessionManagerWithMax(max int) *SessionManager {
 	return m
 }
 
-// SetMaxSessions updates the ceiling on concurrent sessions. A max <= 0 restores
-// DefaultMaxSessions. Safe to call concurrently with Start — it is the same
-// last-writer-wins, daemon-wide reconfigure shape as Daemon.ApplyAlertsConfig,
-// applied on session connect from the project's automation.max-sessions. Lowering
-// the ceiling below the current active count never evicts a session an agent is
-// mid-way through using; it only refuses new Start calls until the count drops.
+// projectQuota is one project's ceiling and its live session count.
+type projectQuota struct {
+	max    atomic.Int32
+	active atomic.Int32
+}
+
+// SetMaxSessions updates the daemon-wide ceiling used while no project has
+// declared its own quota. A max <= 0 restores DefaultMaxSessions. Safe to call
+// concurrently with Start. Lowering the ceiling below the current active count
+// never evicts a session an agent is mid-way through using; it only refuses new
+// Start calls until the count drops.
 func (m *SessionManager) SetMaxSessions(max int) {
 	if max <= 0 {
 		max = DefaultMaxSessions
 	}
-	m.maxSessions.Store(int32(max))
+	m.baseMax.Store(int32(max))
+	m.recomputeCeiling()
+}
+
+// SetProjectMaxSessions records one project's automation.max-sessions. The
+// project's own sessions are counted against this value, so a second project
+// connecting with a different value cannot change the first project's quota.
+// The daemon-wide ceiling becomes the largest quota any connected project
+// declares: each Chrome is a host-memory cost, so the host total stays bounded
+// by the most any single operator config authorised rather than by the sum.
+// A max <= 0 means DefaultMaxSessions. An empty path is ignored — sessions with
+// no project are bounded by the daemon-wide ceiling alone.
+func (m *SessionManager) SetProjectMaxSessions(projectPath string, max int) {
+	key := projectQuotaKey(projectPath)
+	if key == "" {
+		return
+	}
+	if max <= 0 {
+		max = DefaultMaxSessions
+	}
+	q, _ := m.projectQuotas.LoadOrStore(key, &projectQuota{})
+	q.(*projectQuota).max.Store(int32(max))
+	m.recomputeCeiling()
+}
+
+// ClearProjectMaxSessions drops a project's declared quota when the project's
+// last session leaves, so a departed project stops propping up the daemon-wide
+// ceiling. The entry is kept while the project still has live sessions (their
+// exit goroutines release against it); it then reverts to the default quota.
+func (m *SessionManager) ClearProjectMaxSessions(projectPath string) {
+	key := projectQuotaKey(projectPath)
+	if key == "" {
+		return
+	}
+	if v, ok := m.projectQuotas.Load(key); ok {
+		q := v.(*projectQuota)
+		if q.active.Load() > 0 {
+			q.max.Store(0)
+		} else {
+			m.projectQuotas.CompareAndDelete(key, v)
+		}
+	}
+	m.recomputeCeiling()
+}
+
+// ProjectMaxSessions returns the quota a project's sessions are held to: its
+// declared value, or the daemon-wide ceiling when it has declared none.
+func (m *SessionManager) ProjectMaxSessions(projectPath string) int {
+	if v, ok := m.projectQuotas.Load(projectQuotaKey(projectPath)); ok {
+		if max := v.(*projectQuota).max.Load(); max > 0 {
+			return int(max)
+		}
+	}
+	return m.MaxSessions()
+}
+
+// recomputeCeiling sets the daemon-wide ceiling to the largest declared project
+// quota, or to the base ceiling when no project declares one.
+func (m *SessionManager) recomputeCeiling() {
+	var largest int32
+	m.projectQuotas.Range(func(_, v any) bool {
+		if max := v.(*projectQuota).max.Load(); max > largest {
+			largest = max
+		}
+		return true
+	})
+	if largest == 0 {
+		largest = m.baseMax.Load()
+	}
+	if largest <= 0 {
+		largest = DefaultMaxSessions
+	}
+	m.maxSessions.Store(largest)
+}
+
+func projectQuotaKey(projectPath string) string {
+	if projectPath == "" {
+		return ""
+	}
+	return pathutil.NormalizeTrailingSlash(projectPath)
 }
 
 // MaxSessions returns the current concurrent-session ceiling.
@@ -123,13 +215,46 @@ func (m *SessionManager) Start(ctx context.Context, id string, config SessionCon
 	// cap, unlike an add-then-rollback. Refuse LOUDLY at the cap rather than
 	// silently queueing or evicting a session an agent is mid-way through
 	// using (Silent Failure Prohibition).
+	//
+	// The project's own quota is reserved first, then the daemon-wide ceiling;
+	// a refusal at the second releases the first.
+	var quota *projectQuota
+	if v, ok := m.projectQuotas.Load(projectQuotaKey(config.Path)); ok {
+		quota = v.(*projectQuota)
+		projectMax := quota.max.Load()
+		if projectMax <= 0 {
+			projectMax = DefaultMaxSessions
+		}
+		for {
+			cur := quota.active.Load()
+			if cur >= projectMax {
+				m.sessions.Delete(id)
+				return nil, fmt.Errorf(
+					"cannot start browser automation session %q: %w of %d for this project "+
+						"(each session is a full Chrome process using hundreds of MB). "+
+						"Stop an existing session (browser/automation stop) or raise "+
+						"automation.max-sessions in .agnt.kdl",
+					id, ErrSessionCapReached, projectMax)
+			}
+			if quota.active.CompareAndSwap(cur, cur+1) {
+				break
+			}
+		}
+	}
+	releaseProject := func() {
+		if quota != nil {
+			quota.active.Add(-1)
+		}
+	}
+
 	max := m.maxSessions.Load()
 	for {
 		cur := m.active.Load()
 		if cur >= max {
 			m.sessions.Delete(id)
+			releaseProject()
 			return nil, fmt.Errorf(
-				"cannot start browser automation session %q: %w of %d "+
+				"cannot start browser automation session %q: %w of %d across all projects "+
 					"(each session is a full Chrome process using hundreds of MB). "+
 					"Stop an existing session (browser/automation stop) or raise "+
 					"automation.max-sessions in .agnt.kdl",
@@ -143,6 +268,7 @@ func (m *SessionManager) Start(ctx context.Context, id string, config SessionCon
 	if err := m.startSession(ctx, session); err != nil {
 		m.sessions.Delete(id)
 		m.active.Add(-1) // release the reserved slot
+		releaseProject()
 		m.totalFailed.Add(1)
 		return nil, err
 	}
@@ -154,6 +280,7 @@ func (m *SessionManager) Start(ctx context.Context, id string, config SessionCon
 		<-session.Done()
 		m.sessions.Delete(id)
 		m.active.Add(-1)
+		releaseProject()
 	}()
 
 	return session, nil

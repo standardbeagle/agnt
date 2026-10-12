@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
@@ -22,8 +23,16 @@ import (
 // extraEnv is appended to the child's inherited environment (e.g. PATH
 // prepended with a fake ~/.local/bin so a just-installed "agnt" script
 // becomes runnable, proving the install actually took effect).
+//
+// The fixture stands in for a Linux/macOS remote, the only kind bootstrap
+// supports: it needs a POSIX `sh` plus coreutils, and remote paths are POSIX.
+// Native Windows has neither, so tests built on it skip loudly there rather
+// than report a 127 from a shell that does not exist.
 func execFixtureHandler(t *testing.T, cwd string, extraEnv ...string) func(channel ssh.Channel, requests <-chan *ssh.Request) {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("SKIPPED: the bootstrap fixture emulates a POSIX remote host by running each exec through `sh -c` with real coreutils, which native Windows does not provide")
+	}
 	return func(channel ssh.Channel, requests <-chan *ssh.Request) {
 		defer channel.Close()
 		for req := range requests {

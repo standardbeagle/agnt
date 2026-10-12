@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -251,18 +252,43 @@ func (d *Daemon) hubHandleProcStop(ctx context.Context, conn *hubpkg.Connection,
 	}
 
 	processID := cmd.Args[0]
+
+	// A process still waiting on depends_on has no ProcessManager entry —
+	// only a pending launch. Cancel that first, whatever the ProcessManager
+	// says: a stale stopped process and a fresh pending launch can share an
+	// ID, and "stop" must mean the launch does not happen later either.
+	cancelledPending := d.pendingProcs.Cancel(processID)
+	if cancelledPending {
+		d.readySignaler.SignalFailed(processID, errors.New("not started: launch cancelled by PROC STOP"))
+	}
+
 	proc, err := d.hub.ProcessManager().Get(processID)
 	if err != nil {
-		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("process %q not found", processID))
+		if !cancelledPending {
+			return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("process %q not found", processID))
+		}
+		d.retireIncidentProcessOwner(processID)
+		resp := map[string]interface{}{
+			"process_id": processID,
+			"state":      "cancelled",
+			"success":    true,
+			"message":    fmt.Sprintf("process %q was waiting on dependencies; pending launch cancelled", processID),
+		}
+		data, _ := json.Marshal(resp)
+		return conn.WriteJSON(data)
 	}
 
 	if !proc.IsRunning() {
 		d.retireIncidentProcessOwner(processID)
+		message := fmt.Sprintf("process %q already stopped", processID)
+		if cancelledPending {
+			message += "; pending relaunch cancelled"
+		}
 		resp := map[string]interface{}{
 			"process_id": processID,
 			"state":      proc.State().String(),
 			"success":    true,
-			"message":    fmt.Sprintf("process %q already stopped", processID),
+			"message":    message,
 		}
 		data, _ := json.Marshal(resp)
 		return conn.WriteJSON(data)
@@ -517,11 +543,14 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 	d.registerIncidentProcessOwner(processID, conn.SessionCode())
 
 	// Start with EADDRINUSE recovery (pre-flight cleanup + startup monitoring)
+	d.readySignaler.Reset(processID)
 	newProc, startupErr := d.startScriptWithRetry(ctx, processID, projectPath, workingDir, command, args, env, []int{expectedPort}, false)
 	if startupErr != nil {
+		d.readySignaler.SignalFailed(processID, startupErr)
 		d.retireIncidentProcessOwner(processID)
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart: %v", startupErr))
 	}
+	d.armReadiness(processID, []int{expectedPort})
 
 	// Re-register auto-restart if it was previously explicitly enabled
 	if wasAutoRestart && d.autoRestarter != nil {
@@ -652,6 +681,90 @@ type procRunPayload struct {
 	// in seconds. Zero (or omitted) means use DefaultDependsOnTimeout
 	// (30s). Negative means wait indefinitely (parent ctx only).
 	DependsOnTimeout int `json:"depends_on_timeout,omitempty"`
+	// FromConfig starts the script declared under <name> in the project's
+	// .agnt.kdl, with everything it declares: env, cwd, shell, ports,
+	// url-matchers, depends-on, auto-restart, and lifecycle hooks. The daemon
+	// reads the config itself, so no field can be lost on the way here. The
+	// inline run/command/cwd/env/depends_on fields are refused alongside it.
+	FromConfig bool `json:"from_config,omitempty"`
+	// ExtraArgs are appended to the configured script's command line. Only
+	// meaningful with FromConfig.
+	ExtraArgs []string `json:"extra_args,omitempty"`
+	// NoAutoRestart turns off a FromConfig script's configured auto-restart
+	// for this launch.
+	NoAutoRestart bool `json:"no_auto_restart,omitempty"`
+	// Mode is background (default), foreground, or foreground-raw — the same
+	// contract as RUN: the foreground modes reply when the process exits.
+	Mode string `json:"mode,omitempty"`
+}
+
+// scriptFromProjectConfig returns the script declared as name in projectPath's
+// .agnt.kdl, with extraArgs applied, plus its depends-on names and the wait
+// bound they declare (negative = unbounded, which is what an absent timeout
+// means in .agnt.kdl).
+//
+// The returned config is a copy: extraArgs belong to this one launch.
+func scriptFromProjectConfig(projectPath, name string, extraArgs []string) (*config.ScriptConfig, []string, time.Duration, error) {
+	agntCfg, err := config.LoadAgntConfig(projectPath)
+	if err != nil {
+		return nil, nil, 0, fmt.Errorf("failed to load .agnt.kdl from %s: %w", projectPath, err)
+	}
+	if agntCfg == nil {
+		return nil, nil, 0, fmt.Errorf("no .agnt.kdl in %s", projectPath)
+	}
+	declared, ok := agntCfg.Scripts[name]
+	if !ok {
+		return nil, nil, 0, fmt.Errorf("script %q is not declared in .agnt.kdl", name)
+	}
+
+	scriptCfg := *declared
+	if len(extraArgs) > 0 {
+		if scriptCfg.Run != "" {
+			scriptCfg.Run += " " + strings.Join(extraArgs, " ")
+		} else {
+			scriptCfg.Args = append(append([]string(nil), scriptCfg.Args...), extraArgs...)
+		}
+	}
+
+	var deps []string
+	depTimeout := -1 * time.Second
+	for _, dep := range scriptCfg.DependsOn {
+		deps = append(deps, dep.Name)
+		if dep.Timeout > depTimeout && dep.Timeout > 0 {
+			depTimeout = dep.Timeout
+		}
+	}
+	return &scriptCfg, deps, depTimeout, nil
+}
+
+// awaitProcRunLaunch blocks until a dependency-gated PROC RUN has launched its
+// process, and returns it. It ends with an error when the launch fails (a
+// dependency timed out or failed), is cancelled, or ctx ends first.
+func (d *Daemon) awaitProcRunLaunch(ctx context.Context, processID string) (*goprocess.ManagedProcess, error) {
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		pending, waiting := d.pendingProcs.Get(processID)
+		proc, getErr := d.hub.ProcessManager().Get(processID)
+		switch {
+		case waiting && pending.State == PendingFailed:
+			// A launch that exited inside the startup window is recorded as a
+			// failed start, but it did run: report the process, not the label.
+			if getErr == nil && proc.IsDone() {
+				return proc, nil
+			}
+			return nil, fmt.Errorf("process %q did not launch: %s", processID, pending.FailureReason)
+		case !waiting && getErr == nil:
+			return proc, nil
+		case !waiting:
+			return nil, fmt.Errorf("process %q did not launch: its pending start was cancelled", processID)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, fmt.Errorf("stopped waiting for process %q to launch (waiting for %v): %w", processID, pending.WaitingFor, ctx.Err())
+		case <-ticker.C:
+		}
+	}
 }
 
 // procRunGroupPayload shapes the JSON body for PROC RUN-GROUP. Each
@@ -697,8 +810,18 @@ func (d *Daemon) hubHandleProcRun(ctx context.Context, conn *hubpkg.Connection, 
 		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid PROC RUN payload: %v", err))
 	}
 
-	if payload.Run == "" && payload.Command == "" {
+	if !validRunMode(payload.Mode) {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("PROC RUN: unknown mode %q, valid: background, foreground, foreground-raw", payload.Mode))
+	}
+	if payload.FromConfig {
+		if payload.Run != "" || payload.Command != "" || len(payload.Args) > 0 || payload.Cwd != "" ||
+			len(payload.Env) > 0 || len(payload.URLMatchers) > 0 || payload.AutoRestart || len(payload.DependsOn) > 0 {
+			return conn.WriteErr(hubproto.ErrInvalidArgs, "PROC RUN: from_config takes the script from .agnt.kdl; inline run/command/args/cwd/env/url_matchers/auto_restart/depends_on are not combined with it (use extra_args to add arguments)")
+		}
+	} else if payload.Run == "" && payload.Command == "" {
 		return conn.WriteErr(hubproto.ErrMissingParam, "PROC RUN requires `run` or `command` in payload")
+	} else if len(payload.ExtraArgs) > 0 || payload.NoAutoRestart {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "PROC RUN: extra_args and no_auto_restart apply only with from_config; use `args` and `auto_restart` for an inline process")
 	}
 
 	// Resolve project path: explicit override > session binding.
@@ -722,6 +845,7 @@ func (d *Daemon) hubHandleProcRun(ctx context.Context, conn *hubpkg.Connection, 
 		URLMatchers: payload.URLMatchers,
 		AutoRestart: payload.AutoRestart,
 	}
+	deps := payload.DependsOn
 
 	// Respect caller cancellation before we touch the registry.
 	select {
@@ -742,6 +866,21 @@ func (d *Daemon) hubHandleProcRun(ctx context.Context, conn *hubpkg.Connection, 
 		depTimeout = 0 // sentinel for "use default"
 	}
 
+	if payload.FromConfig {
+		var cfgErr error
+		scriptCfg, deps, depTimeout, cfgErr = scriptFromProjectConfig(projectPath, name, payload.ExtraArgs)
+		if cfgErr != nil {
+			return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("PROC RUN: %v", cfgErr))
+		}
+		// An explicit bound from the caller still wins over the config's.
+		if payload.DependsOnTimeout > 0 {
+			depTimeout = time.Duration(payload.DependsOnTimeout) * time.Second
+		}
+		if payload.NoAutoRestart {
+			scriptCfg.AutoRestart = false
+		}
+	}
+
 	// StartProcessWithDeps handles both fast-path (no deps, synchronous)
 	// and dep-gated (async wait + StartScriptExplicit) cases. proxyConfigs
 	// is implicitly nil — MCP ad-hoc processes have no linked proxy config;
@@ -749,11 +888,21 @@ func (d *Daemon) hubHandleProcRun(ctx context.Context, conn *hubpkg.Connection, 
 	// getExpectedPortsForScript.
 	processID := makeProcessID(projectPath, name)
 	d.registerIncidentProcessOwner(processID, conn.SessionCode())
-	result := d.StartProcessWithDeps(ctx, name, scriptCfg, projectPath, payload.DependsOn, depTimeout)
+	result := d.StartProcessWithDeps(ctx, name, scriptCfg, projectPath, deps, depTimeout)
+	foreground := isForegroundRunMode(payload.Mode)
 	if result.Err != nil {
-		d.retireIncidentProcessOwner(processID)
-		debug.Warn("daemon", "PROC RUN %q failed: %v", name, result.Err)
-		return conn.WriteErr(hubproto.ErrInternal, result.Err.Error())
+		// StartScript reports any exit inside its startup window as a failed
+		// start. A foreground caller asked for exactly that exit, and a
+		// one-shot that finished cleanly did not fail for anyone: both get the
+		// process's result rather than the startup-window error.
+		proc, getErr := d.hub.ProcessManager().Get(processID)
+		ranToExit := getErr == nil && proc.IsDone()
+		if !ranToExit || !(foreground || proc.ExitCode() == 0) {
+			d.retireIncidentProcessOwner(processID)
+			debug.Warn("daemon", "PROC RUN %q failed: %v", name, result.Err)
+			return conn.WriteErr(hubproto.ErrInternal, result.Err.Error())
+		}
+		result.State = proc.State().String()
 	}
 
 	processID = result.ProcessID
@@ -763,6 +912,7 @@ func (d *Daemon) hubHandleProcRun(ctx context.Context, conn *hubpkg.Connection, 
 		"process_id":   processID,
 		"project_path": projectPath,
 		"state":        result.State,
+		"command":      resolveCommandString(scriptCfg),
 	}
 	if len(result.WaitingFor) > 0 {
 		resp["waiting_for"] = result.WaitingFor
@@ -779,6 +929,22 @@ func (d *Daemon) hubHandleProcRun(ctx context.Context, conn *hubpkg.Connection, 
 			// authoritative ProcessManager state once we have it.
 			resp["state"] = proc.State().String()
 		}
+	}
+
+	if foreground {
+		proc, err := d.awaitProcRunLaunch(ctx, processID)
+		if err != nil {
+			return conn.WriteErr(hubproto.ErrInternal, err.Error())
+		}
+		delete(resp, "waiting_for")
+		resp["pid"] = proc.PID()
+		if err := awaitForegroundRun(ctx, proc, payload.Mode, resp); err != nil {
+			return conn.WriteErr(hubproto.ErrInternal, err.Error())
+		}
+	} else if proc, getErr := d.hub.ProcessManager().Get(processID); getErr == nil && proc.IsDone() {
+		// A one-shot that already finished: say how it ended.
+		resp["state"] = proc.State().String()
+		resp["exit_code"] = proc.ExitCode()
 	}
 
 	data, _ := json.Marshal(resp)

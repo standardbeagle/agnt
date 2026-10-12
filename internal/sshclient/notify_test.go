@@ -12,7 +12,7 @@ import (
 )
 
 func TestNotifyFileArrived_UsesTypedDeveloperEventProtocol(t *testing.T) {
-	socket := filepath.Join(t.TempDir(), "daemon.sock")
+	socket := filepath.Join(shortSocketDir(t), "daemon.sock")
 	ln, err := net.Listen("unix", socket)
 	require.NoError(t, err)
 	defer ln.Close()

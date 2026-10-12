@@ -218,3 +218,59 @@ func waitForActive(t *testing.T, m *SessionManager, want int) {
 		}
 	}
 }
+
+// TestProjectQuota_IsolatedFromOtherProjects is the regression for the
+// last-writer-wins quota: a second project declaring a different
+// automation.max-sessions must not change what the first project may open.
+func TestProjectQuota_IsolatedFromOtherProjects(t *testing.T) {
+	m := newFakeManager(DefaultMaxSessions)
+	m.SetProjectMaxSessions("/work/a", 3)
+	// A second project connects with a smaller quota.
+	m.SetProjectMaxSessions("/work/b", 1)
+
+	if got := m.ProjectMaxSessions("/work/a"); got != 3 {
+		t.Fatalf("project a quota = %d after b connected, want 3", got)
+	}
+	if got := m.MaxSessions(); got != 3 {
+		t.Fatalf("daemon-wide ceiling = %d, want the largest declared quota 3", got)
+	}
+
+	if _, err := m.Start(context.Background(), "b-1", SessionConfig{Path: "/work/b"}); err != nil {
+		t.Fatalf("b's first session should start: %v", err)
+	}
+	if _, err := m.Start(context.Background(), "b-2", SessionConfig{Path: "/work/b"}); !errors.Is(err, ErrSessionCapReached) {
+		t.Fatalf("b's second session must be refused by b's quota of 1, got: %v", err)
+	}
+	// a still gets its own quota, up to the daemon-wide ceiling (3 total).
+	for i := 0; i < 2; i++ {
+		if _, err := m.Start(context.Background(), fmt.Sprintf("a-%d", i), SessionConfig{Path: "/work/a"}); err != nil {
+			t.Fatalf("a's session %d should start under its quota of 3: %v", i, err)
+		}
+	}
+	// The host total is bounded by the largest quota, not the sum (3, not 4).
+	if _, err := m.Start(context.Background(), "a-2", SessionConfig{Path: "/work/a"}); !errors.Is(err, ErrSessionCapReached) {
+		t.Fatalf("a fourth session must be refused by the daemon-wide ceiling, got: %v", err)
+	}
+	if got := m.ActiveCount(); got != 3 {
+		t.Fatalf("ActiveCount = %d, want 3", got)
+	}
+}
+
+// TestProjectQuota_ClearedProjectStopsRaisingCeiling proves a departed project
+// no longer props up the daemon-wide ceiling.
+func TestProjectQuota_ClearedProjectStopsRaisingCeiling(t *testing.T) {
+	m := newFakeManager(DefaultMaxSessions)
+	m.SetProjectMaxSessions("/work/a", 2)
+	m.SetProjectMaxSessions("/work/big", 9)
+	if got := m.MaxSessions(); got != 9 {
+		t.Fatalf("ceiling = %d, want 9", got)
+	}
+	m.ClearProjectMaxSessions("/work/big")
+	if got := m.MaxSessions(); got != 2 {
+		t.Fatalf("ceiling after big left = %d, want 2", got)
+	}
+	m.ClearProjectMaxSessions("/work/a")
+	if got := m.MaxSessions(); got != DefaultMaxSessions {
+		t.Fatalf("ceiling with no projects = %d, want default %d", got, DefaultMaxSessions)
+	}
+}

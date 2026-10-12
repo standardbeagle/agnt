@@ -4,6 +4,7 @@ import (
 	"encoding/base64"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -201,6 +202,12 @@ func TestReloadSurvivesRestart(t *testing.T) {
 
 // TestFilePerms pins spec §8: record files are 0600.
 func TestFilePerms(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		// Windows has no POSIX mode bits: os.Stat reports 0666 for any writable
+		// file whatever mode it was created with. Access there is governed by
+		// the ACL the record inherits from the user's profile directory.
+		t.Skip("record file mode is a POSIX property; not observable on Windows")
+	}
 	s, dir := newStore(t)
 	id, _, err := s.Create(validWalkthrough("wt"), "/proj")
 	if err != nil {

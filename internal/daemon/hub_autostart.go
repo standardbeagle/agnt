@@ -117,8 +117,11 @@ func (d *Daemon) hubHandleAutostartContinue(ctx context.Context, conn *hubpkg.Co
 		}
 	}
 
-	// Resume autostart without killing — background context for longevity
-	result := d.resumeAutostart(context.Background(), projectPath)
+	// Resume autostart without killing — background context for longevity.
+	// The decline has to travel with the launch: StartScript runs its own
+	// pre-flight port cleanup, which would otherwise kill the very blockers
+	// the user just said to leave alone.
+	result := d.resumeAutostart(withPortCleanupDeclined(context.Background()), projectPath)
 
 	data, _ := json.Marshal(result)
 	return conn.WriteJSON(data)

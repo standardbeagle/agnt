@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/publish"
 
 	"github.com/standardbeagle/go-sdk/mcp"
 )
@@ -313,22 +314,17 @@ func renderPublish(out PublishOutput, raw bool) *mcp.CallToolResult {
 	return mcpText(sb.String())
 }
 
-// serveStoreMetaFile mirrors the constant in cmd/agnt/publish_serve.go: the
-// discovery metadata a serve run drops into its own store dir. Kept as a plain
-// JSON contract (not a shared type) so this package need not import package main.
-const serveStoreMetaFile = "serve.json"
-
 // discoverServeStores enumerates `agnt publish serve` stores under the user cache
 // and reports each one — the daemon does not manage them, so they are otherwise
 // invisible to `publish list`. Best-effort and read-only: a missing cache dir or
 // an unreadable entry yields fewer results, never an error, so the daemon's own
 // share list never fails because a serve store is malformed.
 func discoverServeStores() []ServeStoreInfo {
-	base, err := os.UserCacheDir()
+	base, err := publish.ServeStoreBase()
 	if err != nil {
 		return nil
 	}
-	entries, err := os.ReadDir(filepath.Join(base, "agnt", "publish-serve"))
+	entries, err := os.ReadDir(base)
 	if err != nil {
 		return nil
 	}
@@ -337,9 +333,9 @@ func discoverServeStores() []ServeStoreInfo {
 		if !e.IsDir() {
 			continue
 		}
-		storeDir := filepath.Join(base, "agnt", "publish-serve", e.Name())
+		storeDir := filepath.Join(base, e.Name())
 		info := ServeStoreInfo{Path: storeDir}
-		if data, err := os.ReadFile(filepath.Join(storeDir, serveStoreMetaFile)); err == nil {
+		if data, err := os.ReadFile(filepath.Join(storeDir, publish.ServeStoreMetaFile)); err == nil {
 			var m struct {
 				Dir  string `json:"dir"`
 				Addr string `json:"addr"`

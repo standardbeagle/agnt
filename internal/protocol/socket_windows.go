@@ -2,17 +2,12 @@
 
 package protocol
 
-import (
-	"os"
+import "github.com/standardbeagle/go-cli-server/socket"
 
-	"github.com/standardbeagle/go-cli-server/socket"
-)
-
-// DefaultSocketPath returns the default socket path for agnt.
-// AGNT_SOCKET, when set, overrides the default (see the unix variant for the
-// rationale — isolated/test daemons, second-daemon escape hatch).
+// DefaultSocketPath returns the default socket path for agnt. The
+// environment overrides (socketPathOverride) win over the platform default.
 func DefaultSocketPath() string {
-	if p := os.Getenv("AGNT_SOCKET"); p != "" {
+	if p := socketPathOverride(); p != "" {
 		return p
 	}
 	return socket.DefaultSocketPath(SocketName)

@@ -3,28 +3,28 @@ package main
 import (
 	"bytes"
 	"os"
-	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
-	"syscall"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"github.com/standardbeagle/agnt/internal/selflog"
 )
 
-// waitErrExit runs `sh -c "exit N"` and returns the Wait() error, giving a real
-// *exec.ExitError to classify (rather than a hand-built fake).
+// waitErrExit runs a helper process that exits with status N and returns the
+// Wait() error, giving a real *exec.ExitError to classify (rather than a
+// hand-built fake). The helper is this test binary (helper_process_test.go),
+// so it runs wherever the tests do.
 func waitErrExit(t *testing.T, code int) error {
 	t.Helper()
-	c := exec.Command("sh", "-c", "exit "+strconv.Itoa(code))
-	return c.Run()
+	return helperProcess(t, "exit:"+strconv.Itoa(code)).Run()
 }
 
-// TestClassifyChildExit covers clean, non-zero, and signal exits with and
-// without a user interrupt.
+// TestClassifyChildExit covers clean and non-zero exits with and without a
+// user interrupt. Signal deaths are in shutdown_report_unix_test.go: Windows
+// has no signals, so a killed child there is just a non-zero exit status.
 func TestClassifyChildExit(t *testing.T) {
 	// Clean exit 0.
 	if un, _, _ := classifyChildExit(waitErrExit(t, 0), false); un {
@@ -35,18 +35,6 @@ func TestClassifyChildExit(t *testing.T) {
 	un, kind, reason := classifyChildExit(waitErrExit(t, 2), false)
 	if !un || kind != exitStatus || !strings.Contains(reason, "status 2") {
 		t.Fatalf("exit 2: unexpected=%v reason=%q", un, reason)
-	}
-
-	// Killed by SIGKILL → unexpected, reason hints OOM/resource.
-	c := exec.Command("sleep", "30")
-	if err := c.Start(); err != nil {
-		t.Fatalf("start sleep: %v", err)
-	}
-	_ = c.Process.Kill()
-	killErr := c.Wait()
-	un, kind, reason = classifyChildExit(killErr, false)
-	if !un || kind != exitSignal || !(strings.Contains(reason, "killed") || strings.Contains(reason, "SIGKILL")) {
-		t.Fatalf("SIGKILL: unexpected=%v reason=%q", un, reason)
 	}
 
 	// A shell-level SIGINT exit (130) while the user interrupted → clean.
@@ -146,9 +134,12 @@ func TestInjectedArgs(t *testing.T) {
 // TestReportUnexpectedShutdown checks the persistent banner content and that a
 // clean exit stays silent.
 func TestReportUnexpectedShutdown(t *testing.T) {
-	// Redirect selflog under a temp HOME so we don't touch the real log.
+	// Redirect selflog so we don't touch the real log. AGNT_ERROR_LOG is the
+	// only override that works on every OS: os.UserCacheDir ignores HOME and
+	// XDG_CACHE_HOME on Windows.
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CACHE_HOME", t.TempDir())
+	t.Setenv("AGNT_ERROR_LOG", filepath.Join(t.TempDir(), "errors.log"))
 
 	var buf bytes.Buffer
 	orig := shutdownWriter
@@ -255,39 +246,4 @@ func TestMeaningfulTail(t *testing.T) {
 	// A line with real words always survives, however it is decorated.
 	assert.Equal(t, []string{"│ error: boom │"}, meaningfulTail([]string{"│ error: boom │", "╰───╯"}))
 	assert.Empty(t, meaningfulTail([]string{"╭───╮", "│ > │", "⠼"}), "pure chrome leaves nothing")
-}
-
-// TestReportUnexpectedShutdown_SignalDoesNotBlameTheAgent covers the case that
-// exposed the misattribution: kimi was terminated by a signal from outside, and
-// the banner claimed the (redraw) output below was an error kimi reported.
-func TestReportUnexpectedShutdown_SignalDoesNotBlameTheAgent(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("XDG_CACHE_HOME", t.TempDir())
-
-	var buf bytes.Buffer
-	orig := shutdownWriter
-	shutdownWriter = &buf
-	t.Cleanup(func() { shutdownWriter = orig })
-
-	c := exec.Command("sleep", "30")
-	require.NoError(t, c.Start())
-	require.NoError(t, c.Process.Signal(syscall.SIGTERM))
-	waitErr := c.Wait()
-
-	kimi := agentLaunch{
-		Command:  "kimi",
-		Args:     []string{"--agent-file", "/tmp/x/agent.yaml"},
-		Injected: []string{"--agent-file", "/tmp/x/agent.yaml"},
-		Adapter:  "kimi-cli",
-	}
-	reportUnexpectedShutdown(waitErr, false, kimi, []string{"⠼ working..."}, nil)
-	out := buf.String()
-
-	assert.Contains(t, out, "A signal killed kimi from the outside")
-	assert.NotContains(t, out, "from kimi itself", "a signal death is not the agent's error")
-	assert.Contains(t, out, "session-cleanup record", "the sender is the question worth answering")
-	// Injection guidance belongs to a non-zero exit: a flag agnt appended
-	// cannot cause an external SIGTERM, so offering it here is a false lead.
-	assert.NotContains(t, out, "agnt appended")
-	assert.NotContains(t, out, "disabled true")
 }

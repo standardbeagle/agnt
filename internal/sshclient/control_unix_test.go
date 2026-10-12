@@ -379,3 +379,80 @@ func TestListenAndDiscoveryPreserveInconclusiveResponders(t *testing.T) {
 		}
 	}
 }
+
+// The tests below moved here from control_test.go: they create and inspect
+// control-socket FILES (a stale file nothing listens on) or enumerate the
+// control directory. On native Windows the control endpoint is a named pipe,
+// which has no stale-file state, and discovery is unsupported there
+// (control_windows.go fails loud), so the behaviour is Unix-only.
+
+// TestListenControl_ReclaimsStaleSocket pins the "crashed agnt ssh process"
+// case: a socket FILE left behind (nothing listening on it) must not
+// prevent a fresh ListenControl for the same host from succeeding.
+func TestListenControl_ReclaimsStaleSocket(t *testing.T) {
+	withSandboxedHome(t)
+
+	path, err := ControlSocketPath("stalehost")
+	if err != nil {
+		t.Fatalf("ControlSocketPath: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	// Create a listener and then close it WITHOUT removing the socket
+	// file, to simulate a process that died without cleanup.
+	stale, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatalf("creating stale socket: %v", err)
+	}
+	stale.Close() // file remains on disk; nothing is listening now.
+
+	ln, err := ListenControl("stalehost")
+	if err != nil {
+		t.Fatalf("ListenControl did not reclaim stale socket: %v", err)
+	}
+	defer ln.Close()
+}
+
+func TestDiscoverActiveHosts_FindsRegisteredSession(t *testing.T) {
+	withSandboxedHome(t)
+	_, stop := startTestControlServer(t, "active-host")
+	defer stop()
+
+	hosts, err := DiscoverActiveHosts()
+	if err != nil {
+		t.Fatalf("DiscoverActiveHosts: %v", err)
+	}
+	if len(hosts) != 1 || hosts[0] != "active-host" {
+		t.Errorf("hosts = %v, want [active-host]", hosts)
+	}
+}
+
+// TestDiscoverActiveHosts_SkipsAndRemovesStaleSocket pins the "crashed
+// process" cleanup on the discovery side: a socket file with nothing
+// listening must be excluded from the result, not surfaced as a false
+// positive, and should be removed so it doesn't linger.
+func TestDiscoverActiveHosts_SkipsAndRemovesStaleSocket(t *testing.T) {
+	home := withSandboxedHome(t)
+	dir := filepath.Join(home, ".agnt", "ssh")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	stalePath := filepath.Join(dir, "dead-host.ctl")
+	stale, err := net.Listen("unix", stalePath)
+	if err != nil {
+		t.Fatalf("creating stale socket: %v", err)
+	}
+	stale.Close()
+
+	hosts, err := DiscoverActiveHosts()
+	if err != nil {
+		t.Fatalf("DiscoverActiveHosts: %v", err)
+	}
+	if len(hosts) != 0 {
+		t.Errorf("hosts = %v, want none (stale socket should be skipped)", hosts)
+	}
+	if _, statErr := os.Lstat(stalePath); !os.IsNotExist(statErr) {
+		t.Errorf("stale socket file still present after discovery (stat err = %v)", statErr)
+	}
+}

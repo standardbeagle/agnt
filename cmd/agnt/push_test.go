@@ -1,9 +1,9 @@
 package main
 
 import (
-	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -119,18 +119,15 @@ func TestResolveActiveHost_NoSessionsIsLoud(t *testing.T) {
 // answers "ping" requests OK, standing in for a live 'agnt ssh' process so
 // resolveActiveHost's disambiguation path can be exercised without a real
 // SSH/SFTP fixture.
+//
+// It binds through sshclient.ListenControl, the transport a real 'agnt ssh'
+// registers with (a unix socket under $HOME, a named pipe on Windows), not a
+// hand-rolled net.Listen("unix", ...) that cannot open a named-pipe path.
 func fakePingListener(t *testing.T, host string) {
 	t.Helper()
-	path, err := sshclient.ControlSocketPath(host)
+	ln, err := sshclient.ListenControl(host)
 	if err != nil {
-		t.Fatalf("ControlSocketPath: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	ln, err := net.Listen("unix", path)
-	if err != nil {
-		t.Fatalf("listen: %v", err)
+		t.Fatalf("ListenControl: %v", err)
 	}
 	t.Cleanup(func() { ln.Close() })
 	go func() {
@@ -149,7 +146,19 @@ func fakePingListener(t *testing.T, host string) {
 	}()
 }
 
+// skipWithoutControlDiscovery skips tests that need resolveActiveHost to find
+// live sessions. Enumerating control endpoints is unsupported on native
+// Windows named pipes (sshclient.DiscoverActiveHosts fails loud and tells the
+// user to pass --host), so there is nothing for these tests to observe there.
+func skipWithoutControlDiscovery(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("SKIPPED: discovering active 'agnt ssh' sessions is unsupported on native Windows named pipes; --host is required there")
+	}
+}
+
 func TestResolveActiveHost_MultipleSessionsRequiresHostFlag(t *testing.T) {
+	skipWithoutControlDiscovery(t)
 	t.Setenv("HOME", t.TempDir())
 	fakePingListener(t, "host-a")
 	fakePingListener(t, "host-b")
@@ -167,6 +176,7 @@ func TestResolveActiveHost_MultipleSessionsRequiresHostFlag(t *testing.T) {
 }
 
 func TestResolveActiveHost_SingleSessionResolves(t *testing.T) {
+	skipWithoutControlDiscovery(t)
 	t.Setenv("HOME", t.TempDir())
 	fakePingListener(t, "only-host")
 

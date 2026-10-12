@@ -834,29 +834,13 @@ func portOf(boundAddr string) int {
 // deliberately NOT inside the served folder: a record written there would be
 // picked up as a walkthrough on the next pass.
 func defaultPublishServeStoreDir(dir string) (string, error) {
-	base, err := publishServeCacheBase()
+	base, err := publish.ServeStoreBase()
 	if err != nil {
 		return "", err
 	}
 	sum := sha256.Sum256([]byte(dir))
 	return filepath.Join(base, hex.EncodeToString(sum[:8])), nil
 }
-
-// publishServeCacheBase is the parent of every default per-folder serve store.
-// It is the directory `publish list` enumerates to discover serve stores.
-func publishServeCacheBase() (string, error) {
-	base, err := os.UserCacheDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve cache dir: %w", err)
-	}
-	return filepath.Join(base, "agnt", "publish-serve"), nil
-}
-
-// serveStoreMetaFile is the discovery metadata a serve run drops into its OWN
-// store dir. It is not a share/feedback record — it exists purely so a separate
-// process (`publish list`, `publish feedback --store`) can find the store and map
-// it back to the folder it serves.
-const serveStoreMetaFile = "serve.json"
 
 // serveStoreMeta records which folder a serve store belongs to.
 type serveStoreMeta struct {
@@ -882,12 +866,12 @@ func writeServeStoreMeta(storeDir, servedDir, addr string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(filepath.Join(storeDir, serveStoreMetaFile), data, 0o600)
+	return os.WriteFile(filepath.Join(storeDir, publish.ServeStoreMetaFile), data, 0o600)
 }
 
 // readServeStoreMeta reads the discovery metadata a serve run left in storeDir.
 func readServeStoreMeta(storeDir string) (serveStoreMeta, error) {
-	data, err := os.ReadFile(filepath.Join(storeDir, serveStoreMetaFile))
+	data, err := os.ReadFile(filepath.Join(storeDir, publish.ServeStoreMetaFile))
 	if err != nil {
 		return serveStoreMeta{}, err
 	}
@@ -906,7 +890,7 @@ func resolveServeStore(storeDir, dir string) (resolvedStore, servedDir string, e
 	case storeDir != "":
 		meta, err := readServeStoreMeta(storeDir)
 		if err != nil {
-			return "", "", fmt.Errorf("read store metadata %s: %w", filepath.Join(storeDir, serveStoreMetaFile), err)
+			return "", "", fmt.Errorf("read store metadata %s: %w", filepath.Join(storeDir, publish.ServeStoreMetaFile), err)
 		}
 		return storeDir, meta.Dir, nil
 	case dir != "":

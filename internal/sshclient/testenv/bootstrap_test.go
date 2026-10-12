@@ -40,6 +40,7 @@ import (
 // meaningful to fake — still resolve to the real system binaries.
 func bootstrapFixturePATH(t *testing.T, scripts map[string]string) {
 	t.Helper()
+	requirePOSIXHost(t)
 	dir := t.TempDir()
 	for name, body := range scripts {
 		path := filepath.Join(dir, name)
@@ -214,6 +215,7 @@ type stdinExecServer struct {
 
 func startStdinExecServer(t *testing.T, auth *testenv.Auth) *stdinExecServer {
 	t.Helper()
+	requirePOSIXHost(t)
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	require.NoError(t, err)
 	// Commands run here, not in the test binary's cwd. This handler drives the

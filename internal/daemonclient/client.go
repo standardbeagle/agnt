@@ -235,6 +235,18 @@ type ProcRunConfig struct {
 	// DependsOnTimeout is the per-process upper bound on the dep wait
 	// in seconds. Zero (or omitted) → 30s default.
 	DependsOnTimeout int `json:"depends_on_timeout,omitempty"`
+	// FromConfig starts the script declared under the PROC RUN name in the
+	// project's .agnt.kdl, with its full configuration; the daemon reads the
+	// config itself. Not combined with the inline fields above.
+	FromConfig bool `json:"from_config,omitempty"`
+	// ExtraArgs are appended to a FromConfig script's command line.
+	ExtraArgs []string `json:"extra_args,omitempty"`
+	// NoAutoRestart turns off a FromConfig script's configured auto-restart
+	// for this launch.
+	NoAutoRestart bool `json:"no_auto_restart,omitempty"`
+	// Mode is background (default), foreground, or foreground-raw. The
+	// foreground modes block until the process exits.
+	Mode string `json:"mode,omitempty"`
 }
 
 // ProcRun starts an admin-aware process via PROC RUN. Unlike the top-level

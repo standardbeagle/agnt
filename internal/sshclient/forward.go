@@ -38,8 +38,8 @@ func RemoteDaemonSocketPath(client *ssh.Client) (string, error) {
 	return path, nil
 }
 
-// LocalForwardSocketPath is platform-defined: Unix/WSL use a protected Unix
-// socket and native Windows uses an owner-only named pipe.
+// LocalForwardSocketPath is platform-defined only in where the socket file
+// lives; the transport is a Unix-domain socket everywhere (listenLocalForward).
 //
 // Forwarder listens on that local endpoint and, for every accepted
 // connection, opens a NEW direct-streamlocal@openssh.com channel to

@@ -23,8 +23,12 @@ const hookTimeout = 5 * time.Second
 // exitCode is the process exit code (meaningful for stop/crash events).
 //
 // Env: os.Environ() + script Env block overrides + injected AGNT_* vars.
-func RunLifecycleHook(cmd, scriptID, event string, scriptCfg *config.ScriptConfig, exitCode int) error {
-	return runLifecycleHookWithTimeout(hookTimeout, cmd, scriptID, event, scriptCfg, exitCode)
+//
+// dir is the hook's working directory — the script's own resolved working
+// directory, so a relative hook command means the same thing as it does in the
+// script's `run`. Empty falls back to the daemon's cwd (exec default).
+func RunLifecycleHook(cmd, scriptID, event string, scriptCfg *config.ScriptConfig, dir string, exitCode int) error {
+	return runLifecycleHookWithTimeout(hookTimeout, cmd, scriptID, event, scriptCfg, dir, exitCode)
 }
 
 // runLifecycleHookWithTimeout is RunLifecycleHook with the kill deadline as a
@@ -33,7 +37,7 @@ func RunLifecycleHook(cmd, scriptID, event string, scriptCfg *config.ScriptConfi
 // timeout" property without paying the 5s production window in gate time. The
 // default itself is pinned directly as a constant assertion, which is free and
 // clearer than inferring it from elapsed wall time.
-func runLifecycleHookWithTimeout(timeout time.Duration, cmd, scriptID, event string, scriptCfg *config.ScriptConfig, exitCode int) error {
+func runLifecycleHookWithTimeout(timeout time.Duration, cmd, scriptID, event string, scriptCfg *config.ScriptConfig, dir string, exitCode int) error {
 	if cmd == "" {
 		return nil
 	}
@@ -43,6 +47,7 @@ func runLifecycleHookWithTimeout(timeout time.Duration, cmd, scriptID, event str
 
 	shell, shellArgs := resolveHookShell(cmd, scriptCfg)
 	c := exec.CommandContext(ctx, shell, shellArgs...)
+	c.Dir = dir
 	c.Env = buildHookEnv(scriptCfg, scriptID, event, exitCode)
 	configureHookProcessGroup(c)
 
@@ -80,15 +85,21 @@ func buildHookEnv(scriptCfg *config.ScriptConfig, scriptID, event string, exitCo
 	return env
 }
 
-// runLifecycleHookAsync runs a lifecycle hook in a goroutine, logging errors.
-// Use when the caller must not block.
-func runLifecycleHookAsync(cmd, scriptID, event string, scriptCfg *config.ScriptConfig, exitCode int) {
+// runLifecycleHook runs a script's lifecycle hook in the script's configured
+// working directory, blocking up to hookTimeout. A failing hook never stops
+// the lifecycle transition, but it must not vanish either: the failure is
+// recorded in the project's startup log, which is what the agent and the
+// session log read (debug.Warn alone only reaches the debug file).
+//
+// Callers that must not block run it on a goroutine.
+func (d *Daemon) runLifecycleHook(cmd, scriptName, event string, scriptCfg *config.ScriptConfig, projectPath string, exitCode int) {
 	if cmd == "" {
 		return
 	}
-	go func() {
-		if err := RunLifecycleHook(cmd, scriptID, event, scriptCfg, exitCode); err != nil {
-			debug.Warn("daemon", "lifecycle hook %s/%s: %v", scriptID, event, err)
-		}
-	}()
+	dir := resolveWorkingDir(projectPath, scriptCfg.Cwd)
+	if err := RunLifecycleHook(cmd, scriptName, event, scriptCfg, dir, exitCode); err != nil {
+		debug.Warn("daemon", "on-%s hook for %s: %v", event, scriptName, err)
+		d.startupLog(projectPath).Warn(scriptName, "lifecycle_hook_failed",
+			fmt.Sprintf("on-%s hook failed (cwd %s): %v", event, dir, err))
+	}
 }

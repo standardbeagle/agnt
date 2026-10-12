@@ -38,76 +38,86 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 			return fail[RunOutput](fmt.Sprintf("failed to resolve path: %v", err))
 		}
 
-		// Resolve script name to command if needed
-		// The daemon's hub doesn't resolve script names, so we must do it here
-		var cmd string
-		var args []string
-		var id string
+		mode := string(input.Mode)
+		if mode == "" {
+			mode = string(RunModeBackground)
+		}
 
-		if input.Raw {
+		// send issues the request on whichever connection the mode calls for.
+		var send func(c runRequester) (map[string]interface{}, error)
+		var hints []string
 
+		// runViaRUN starts a bare command through the RUN verb.
+		runViaRUN := func(id, cmd string, args []string) {
+			config := struct {
+				protocol.RunConfig
+				NoAutoRestart bool `json:"no_auto_restart,omitempty"`
+			}{
+				RunConfig: protocol.RunConfig{
+					ID:      id,
+					Path:    absPath,
+					Raw:     true,
+					Command: cmd,
+					Args:    args,
+					Mode:    mode,
+					Env:     os.Environ(),
+				},
+				NoAutoRestart: input.NoAutoRestart,
+			}
+			send = func(c runRequester) (map[string]interface{}, error) { return c.Run(config) }
+		}
+
+		switch {
+		case input.Raw:
 			if input.Command == "" {
 				return fail[RunOutput]("raw mode requires command")
 			}
-			cmd = input.Command
-			args = input.Args
-			id = input.ID
+			id := input.ID
 			if id == "" {
 				id = fmt.Sprintf("proc-%d", time.Now().UnixNano()%100000)
 			}
-		} else if input.ScriptName != "" {
+			runViaRUN(id, input.Command, input.Args)
 
-			// First check .agnt.kdl for the script
-			if resolvedCmd, resolvedArgs, err := resolveKDLScript(absPath, input.ScriptName, input.Args); err == nil {
-				cmd = resolvedCmd
-				args = resolvedArgs
-				id = input.ID
-				if id == "" {
-					id = input.ScriptName
-				}
-			} else {
-				// Fall back to project detection (package.json scripts, etc.)
-				proj, detectErr := project.Detect(absPath)
-				if detectErr != nil {
-					return fail[RunOutput](fmt.Sprintf("failed to detect project: %v", detectErr))
-				}
-
-				cmdDef := project.GetCommandByName(proj, input.ScriptName)
-				if cmdDef == nil {
-					available := project.GetCommandNames(proj)
-					return fail[RunOutput](fmt.Sprintf("unknown script %q. Available: %s", input.ScriptName, strings.Join(available, ", ")))
-				}
-
-				cmd = cmdDef.Command
-				args = append(cmdDef.Args, input.Args...)
-				id = input.ID
-				if id == "" {
-					id = input.ScriptName
-				}
-			}
-		} else {
+		case input.ScriptName == "":
 			return fail[RunOutput]("script_name required (or use raw=true with command)")
-		}
 
-		mode := string(input.Mode)
-		if mode == "" {
-			mode = "background"
-		}
+		case kdlScriptDeclared(absPath, input.ScriptName):
+			// A script declared in .agnt.kdl is launched by the daemon from the
+			// config itself, so it runs with everything it declares — env, cwd,
+			// shell, ports, url-matchers, depends-on, auto-restart, lifecycle
+			// hooks. Resolving it here and forwarding a bare command line kept
+			// only the command and its arguments.
+			procCfg := daemonclient.ProcRunConfig{
+				ProjectPath:   absPath,
+				FromConfig:    true,
+				ExtraArgs:     input.Args,
+				NoAutoRestart: input.NoAutoRestart,
+				Mode:          mode,
+			}
+			send = func(c runRequester) (map[string]interface{}, error) {
+				return c.ProcRun(input.ScriptName, procCfg)
+			}
+			if input.ID != "" && input.ID != input.ScriptName {
+				hints = append(hints, fmt.Sprintf("id %q was not applied: a script declared in .agnt.kdl runs under its script name so its proxies and dependents can find it.", input.ID))
+			}
 
-		config := struct {
-			protocol.RunConfig
-			NoAutoRestart bool `json:"no_auto_restart,omitempty"`
-		}{
-			RunConfig: protocol.RunConfig{
-				ID:      id,
-				Path:    absPath,
-				Raw:     true,
-				Command: cmd,
-				Args:    args,
-				Mode:    mode,
-				Env:     os.Environ(),
-			},
-			NoAutoRestart: input.NoAutoRestart,
+		default:
+			// Not in .agnt.kdl: fall back to project detection (package.json
+			// scripts, etc.). The daemon's hub does not resolve these names.
+			proj, detectErr := project.Detect(absPath)
+			if detectErr != nil {
+				return fail[RunOutput](fmt.Sprintf("failed to detect project: %v", detectErr))
+			}
+			cmdDef := project.GetCommandByName(proj, input.ScriptName)
+			if cmdDef == nil {
+				available := project.GetCommandNames(proj)
+				return fail[RunOutput](fmt.Sprintf("unknown script %q. Available: %s", input.ScriptName, strings.Join(available, ", ")))
+			}
+			id := input.ID
+			if id == "" {
+				id = input.ScriptName
+			}
+			runViaRUN(id, cmdDef.Command, append(append([]string(nil), cmdDef.Args...), input.Args...))
 		}
 
 		var result map[string]interface{}
@@ -116,7 +126,7 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 			// holds the shared connection's per-request mutex only briefly. Using
 			// that connection keeps its reconnect/retry behavior and avoids a
 			// connect/close round trip on the hot path.
-			r, err := dt.client.Run(config)
+			r, err := send(dt.client)
 			if err != nil {
 				return formatDaemonError(err, "run"), RunOutput{}, nil
 			}
@@ -146,7 +156,7 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 			}
 			ch := make(chan runResult, 1)
 			go func() {
-				r, e := runClient.Run(config)
+				r, e := send(runClient)
 				ch <- runResult{result: r, err: e}
 			}()
 
@@ -177,9 +187,18 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 			Stdout:    getString(result, "stdout"),
 			Stderr:    getString(result, "stderr"),
 		}
-		if output.State != "failed" {
-			output.Hint = webServerRunHint(input, output.Command)
+		// A dependency-gated script has not launched yet; say what it waits on
+		// rather than leaving a bare "pending".
+		if waitingFor := getStringSlice(result, "waiting_for"); len(waitingFor) > 0 {
+			hints = append(hints, fmt.Sprintf("Not started yet: waiting for %s to be ready (depends-on in .agnt.kdl). Check with proc {action:\"status\", process_id:%q}.",
+				strings.Join(waitingFor, ", "), processID))
 		}
+		if output.State != "failed" {
+			if hint := webServerRunHint(input, output.Command); hint != "" {
+				hints = append(hints, hint)
+			}
+		}
+		output.Hint = strings.Join(hints, " ")
 
 		return nil, output, nil
 	}
@@ -955,35 +974,23 @@ func filterScriptFallbackLines(lines []string, filter protocol.OutputFilter) ([]
 	return out, note, nil
 }
 
-func resolveKDLScript(projectPath, scriptName string, extraArgs []string) (string, []string, error) {
+// runRequester is the pair of daemon requests the run tool issues. Both the
+// shared resilient client (background) and a dedicated per-call client
+// (foreground) satisfy it.
+type runRequester interface {
+	Run(config interface{}) (map[string]interface{}, error)
+	ProcRun(name string, cfg daemonclient.ProcRunConfig) (map[string]interface{}, error)
+}
+
+// kdlScriptDeclared reports whether the project's .agnt.kdl declares scriptName.
+// It only decides the route: the daemon reads the script's configuration itself.
+func kdlScriptDeclared(projectPath, scriptName string) bool {
 	agntCfg, err := config.LoadAgntConfig(projectPath)
 	if err != nil || agntCfg == nil {
-		return "", nil, fmt.Errorf("no .agnt.kdl config")
+		return false
 	}
-
-	scriptCfg, ok := agntCfg.Scripts[scriptName]
-	if !ok {
-		return "", nil, fmt.Errorf("script %q not in .agnt.kdl", scriptName)
-	}
-
-	if scriptCfg.Run != "" {
-		shell, shellArgs := scriptCfg.ResolveShell()
-		return shell, append(shellArgs, extraArgs...), nil
-	}
-
-	if scriptCfg.Command != "" {
-		return scriptCfg.Command, append(scriptCfg.Args, extraArgs...), nil
-	}
-
-	proj, err := project.Detect(projectPath)
-	if err != nil {
-		return "", nil, fmt.Errorf("no command/run and project detection failed: %w", err)
-	}
-	pm := proj.PackageManager
-	if pm == "" {
-		pm = "npm"
-	}
-	return pm, append([]string{"run", scriptName}, extraArgs...), nil
+	_, ok := agntCfg.Scripts[scriptName]
+	return ok
 }
 
 // populateLastExitFields copies last-exit fields from a daemon response

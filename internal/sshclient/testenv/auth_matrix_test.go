@@ -20,6 +20,7 @@ import (
 )
 
 func TestProxyJumpReachesTargetWithIndependentAuthentication(t *testing.T) {
+	requirePOSIXHost(t) // proves the hop by exec'ing on the target
 	jumpAuth, err := testenv.NewAuth("jump-user")
 	if err != nil {
 		t.Fatal(err)
@@ -84,6 +85,7 @@ func TestProxyJumpReachesTargetWithIndependentAuthentication(t *testing.T) {
 }
 
 func TestAuthenticationMatrix(t *testing.T) {
+	requirePOSIXHost(t) // proves each auth method by exec'ing on the server
 	auth, err := testenv.NewAuth("matrix-user")
 	if err != nil {
 		t.Fatal(err)

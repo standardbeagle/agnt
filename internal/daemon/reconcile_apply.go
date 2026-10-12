@@ -207,6 +207,7 @@ func (d *Daemon) stopReconcileScript(ctx context.Context, name, projectPath stri
 	if prune {
 		d.scriptRegistry.Remove(name, projectPath)
 		d.scriptConfigs.Delete(processID)
+		d.portKillDeclined.Delete(processID)
 		return
 	}
 	if entry, ok := d.scriptRegistry.Get(name, projectPath); ok {

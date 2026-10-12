@@ -47,7 +47,7 @@ import (
 // spin up its own daemon per cycle.
 func newTestDaemonClient(t *testing.T) (*daemon.Daemon, *daemonclient.Client) {
 	t.Helper()
-	sockPath := filepath.Join(t.TempDir(), "daemon.sock")
+	sockPath := filepath.Join(shortSocketDir(t), "daemon.sock")
 	d := daemon.NewForTest(t, daemon.DaemonConfig{
 		SocketPath:        sockPath,
 		MaxClients:        10,
@@ -312,7 +312,18 @@ func TestPortForwardManager_EndToEnd(t *testing.T) {
 
 		require.True(t, mapping.Remapped, "collision must produce a remapped mapping")
 		require.NotEqual(t, remotePort, mapping.LocalPort)
-		require.Equal(t, remotePort+1, mapping.LocalPort, "the nearest free port must be chosen deterministically")
+		// "Nearest free port" is the contract, and remotePort+1 is not always
+		// free: the OS hands out neighbouring ephemeral ports to this test's
+		// own fixtures. Assert the property — the choice is above the remote
+		// port and every port skipped on the way was genuinely taken.
+		require.Greater(t, mapping.LocalPort, remotePort, "the remap must search upward from the remote port")
+		for skipped := remotePort + 1; skipped < mapping.LocalPort; skipped++ {
+			ln, listenErr := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", skipped))
+			if listenErr == nil {
+				ln.Close()
+				t.Fatalf("port %d was free but the remap skipped it for %d", skipped, mapping.LocalPort)
+			}
+		}
 
 		conn, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", mapping.LocalPort))
 		require.NoError(t, err, "remapped local URL must be reachable")

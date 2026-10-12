@@ -160,8 +160,9 @@ type mockDaemonServer struct {
 
 func newMockDaemonServer(t *testing.T, handler func(net.Conn)) *mockDaemonServer {
 	t.Helper()
-	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "test.sock")
+	// shortTempDir, not t.TempDir(): the latter embeds the test name and can
+	// push a unix socket path past the sun_path limit (Windows especially).
+	socketPath := filepath.Join(shortTempDir(t), "test.sock")
 
 	listener, err := net.Listen("unix", socketPath)
 	if err != nil {
@@ -491,8 +492,9 @@ func TestConn_Sequential_Requests(t *testing.T) {
 
 func TestConn_AutoReconnect(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
-	socketPath := filepath.Join(tmpDir, "test.sock")
+	// shortTempDir, not t.TempDir(): the latter embeds the test name and can
+	// push a unix socket path past the sun_path limit (Windows especially).
+	socketPath := filepath.Join(shortTempDir(t), "test.sock")
 
 	// Start server
 	listener, err := net.Listen("unix", socketPath)

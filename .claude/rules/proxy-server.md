@@ -18,4 +18,4 @@ paths:
   - Its `ErrorsOnly` filter also drops diagnostic warnings; use an explicit `Types` filter instead.
 - The StreamEvents hub (`internal/daemon/hub_stream.go`) registers `StreamSink`s with type/proxy/process/severity/grep filters and a 30s keepalive.
 - Browser toasts are not the agent queue. A `LogCustom` warn never reaches the agent (use `LogDiagnostic`), and toasts are never auto-mirrored to the agent, which would loop `channel_reply` and hook echoes.
-- Director header rewrites (`Origin`, `Referer`, `Host`) apply only to the value the proxy itself introduced; see `publish-security-review-lessons.md` §15.
+- The upstream request is built by `ReverseProxy.Rewrite`, never the deprecated `Director` (a client can strip `Director`-set headers by naming them in `Connection`). Header rewrites (`Origin`, `Referer`, `Host`) apply only to the value the proxy itself introduced; see `publish-security-review-lessons.md` §15.

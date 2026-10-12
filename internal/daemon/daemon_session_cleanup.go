@@ -711,6 +711,12 @@ func (d *Daemon) doCleanupExact(sessionCode string, expected *Session, expectedP
 	var wg sync.WaitGroup
 
 	if !hasOtherSessions {
+		// The departing project stops contributing its automation quota to the
+		// daemon-wide ceiling.
+		if d.sessionm != nil {
+			d.sessionm.ClearProjectMaxSessions(projectPath)
+		}
+
 		// Last session for this project — stop all proxies and browsers
 		wg.Add(1)
 		go func() {
@@ -803,16 +809,26 @@ func (d *Daemon) doCleanupExact(sessionCode string, expected *Session, expectedP
 		for _, entry := range d.scriptRegistry.List(projectPath) {
 			d.scriptRegistry.Remove(entry.Name, projectPath)
 			d.scriptConfigs.Delete(entry.ProcessID)
+			d.portKillDeclined.Delete(entry.ProcessID)
 		}
 
-		// Drop any PROC RUN pending entries for this project. The
-		// dependent goroutines exit on the next ctx.Done() / dep wait
-		// failure; the tracker entry is the only durable artefact and
-		// would otherwise leak into the next session's PROC LIST.
+		// Cancel any PROC RUN launches still waiting on dependencies for
+		// this project. Removing the tracker entry alone is not enough:
+		// the wait goroutine would live on and launch the process when a
+		// readiness signal arrived, after its session had ended. Cancel
+		// stops the goroutine; one caught mid-launch stops what it started.
 		if d.pendingProcs != nil {
-			for _, pending := range d.pendingProcs.ListByProject(projectPath) {
-				d.pendingProcs.Remove(pending.ProcessID)
+			// Pending entries are keyed by the normalized path PROC RUN used.
+			for _, pending := range d.pendingProcs.ListByProject(normalizePath(projectPath)) {
+				d.pendingProcs.Cancel(pending.ProcessID)
 			}
+		}
+
+		// Retire the project's readiness state. Nothing in it describes a
+		// live process any more, and waiters still parked on it (proxy
+		// wait-for gates whose proxy was just stopped) wake and exit.
+		if d.readySignaler != nil {
+			d.readySignaler.ResetPrefix(makeProcessID(projectPath, ""))
 		}
 
 		// Clear proxy-kind admin entries registered by handleExplicitStart.
@@ -861,6 +877,7 @@ func (d *Daemon) doCleanupExact(sessionCode string, expected *Session, expectedP
 			if entry, ok := d.scriptRegistry.GetByProcessID(pid); ok {
 				d.scriptRegistry.Remove(entry.Name, entry.ProjectPath)
 				d.scriptConfigs.Delete(pid)
+				d.portKillDeclined.Delete(pid)
 			}
 		}
 	}

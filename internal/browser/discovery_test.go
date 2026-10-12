@@ -97,12 +97,12 @@ func TestDiscovererIntegration(t *testing.T) {
 		t.Errorf("Found Chrome path %q is not executable: %v", chromePath, err)
 	}
 
-	// Try to get Chrome version (just to verify it runs)
-	cmd := exec.Command(chromePath, "--version")
-	output, err := cmd.Output()
-	if err != nil {
-		t.Logf("Warning: could not get Chrome version: %v", err)
+	// Read the version through the product's probe rather than a private
+	// `chrome --version` here: on Windows that spelling launches a browser
+	// that never exits, which hung this test for the whole suite timeout.
+	if info := CheckVersionAt(chromePath); info.FullVersion == "" {
+		t.Logf("Warning: could not get Chrome version")
 	} else {
-		t.Logf("Chrome version: %s", string(output))
+		t.Logf("Chrome version: %s", info.FullVersion)
 	}
 }

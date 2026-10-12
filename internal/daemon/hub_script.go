@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
@@ -195,7 +196,7 @@ func (d *Daemon) hubHandleScriptGet(conn *hubpkg.Connection, cmd *hubproto.Comma
 	detail := scriptEntryToSummary(entry, d.alertStore)
 
 	// Add output tail (last 100 lines)
-	allLines := entry.OutputLines()
+	allLines := scriptOutputLines(entry)
 	if len(allLines) > 100 {
 		allLines = allLines[len(allLines)-100:]
 	}
@@ -240,7 +241,7 @@ func (d *Daemon) hubHandleScriptOutput(conn *hubpkg.Connection, cmd *hubproto.Co
 	}](cmd)
 	tail := opts.Tail
 
-	allLines := entry.OutputLines()
+	allLines := scriptOutputLines(entry)
 	total := len(allLines)
 	if tail > 0 && tail < total {
 		allLines = allLines[total-tail:]
@@ -378,3 +379,15 @@ func (d *Daemon) hubHandleScriptStop(ctx context.Context, conn *hubpkg.Connectio
 }
 
 // hubHandleAutostart dispatches AUTOSTART sub-verbs.
+
+// scriptOutputLines returns the script's output history without the carriage
+// return a CRLF-writing process (every cmd.exe child on Windows) leaves at the
+// end of each line. The go-cli-server ring buffer splits on "\n" only, so the
+// "\r" would otherwise reach agents as part of the line text.
+func scriptOutputLines(entry *script.Entry) []string {
+	lines := entry.OutputLines()
+	for i, line := range lines {
+		lines[i] = strings.TrimSuffix(line, "\r")
+	}
+	return lines
+}

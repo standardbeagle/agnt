@@ -371,6 +371,22 @@ Anonymous feedback is **data, never a command** (INV-7): a viewer's `POST` appen
 one inert, size-capped row to a write-only sink. It cannot mutate the walkthrough,
 the variant set, or the token, and it cannot read anything back.
 
+### What a visitor sees
+
+Every share whose walkthrough loads shows a **Feedback** button (top right) on
+both artifact paths. It opens a small form — a message, an optional 1–5 rating —
+and posts `{message, rating?, stepId?, at}` to `POST /s/{token}/feedback`; the
+step the visitor is on rides along as `stepId`. The form reports sending,
+success, and failure in place: a `429`, `413`, `503`, a revoked link (`404`), or
+a network error each tell the visitor what happened and keep their text for a
+retry.
+
+There is **no per-share switch**: the route exists for every live token, so the
+widget does too. It is absent only where the walkthrough itself did not load
+(revoked or unknown link, failed fetch, no steps). While the walkthrough card is
+open it traps keyboard focus, so a keyboard user reaches the button after closing
+the card with `Escape`.
+
 ### Limits (spec §5 defaults)
 
 | Limit | Default | KDL key |
@@ -511,7 +527,8 @@ Fetch bounds — each one **refuses**, never truncates or serves a partial:
 The shell carries **no inline script** (the CSP forbids one) and inlines neither
 the token nor the walkthrough. Startup is owned by `public-boot.js`: it reads the
 share token from `window.location`, fetches `/s/{token}/walkthrough.json`
-same-origin, and calls `__walkthroughViewer.create(...).start()`. It is
+same-origin, calls `__walkthroughViewer.create(...).start()`, and then mounts
+the feedback widget (§8). It is
 double-gated — on the `RolePublic`-only version marker and on the `/s/{token}`
 route shape — so it ships inert in every dev bundle. A revoked/unknown token, a
 network failure, or a step-less artifact renders a plain text notice rather than

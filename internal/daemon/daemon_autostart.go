@@ -172,21 +172,32 @@ func (d *Daemon) RunAutostartAsync(
 	// Safe to run on every autostart; latest values win.
 	d.ApplyAlertsConfig(projectPath, agntConfig.Alerts)
 
-	// Apply the chromedp automation concurrency ceiling. Daemon-global,
-	// last-writer-wins on session connect — same reconfigure shape as
-	// ApplyAlertsConfig. This is what makes automation.max-sessions actually
-	// drive the SessionManager's cap rather than being parsed and ignored.
+	// Apply the chromedp automation quota for THIS project. Each project's
+	// sessions count against its own automation.max-sessions, so another
+	// project connecting cannot rewrite it; the daemon-wide ceiling is the
+	// largest quota any connected project declares (see
+	// SessionManager.SetProjectMaxSessions). Cleared when the project's last
+	// session leaves.
 	if d.sessionm != nil {
-		d.sessionm.SetMaxSessions(agntConfig.Automation.MaxSessionsOrDefault())
+		d.sessionm.SetProjectMaxSessions(projectPath, agntConfig.Automation.MaxSessionsOrDefault())
 	}
 
 	// Step 3: Port pre-flight check
 	autostartScripts := agntConfig.GetAutostartScripts()
 	managedPIDs := d.collectManagedPIDs()
-	conflicts := detectPortConflicts(ctx, autostartScripts, managedPIDs, config.FindPIDsByPortTagged)
+	conflicts := detectPortConflicts(ctx, d.withExpectedPorts(autostartScripts, agntConfig.Proxies, projectPath),
+		managedPIDs, config.FindPIDsByPortTagged)
+
+	// "skip" means start anyway and kill nothing. The launch path runs its own
+	// pre-flight cleanup on every expected port — including ports this scan
+	// does not cover (linked proxies, ports named on the command line) — so
+	// the policy is carried into it whether or not a conflict was found here.
+	policy := agntConfig.EffectivePortConflictPolicy()
+	if policy == "skip" {
+		ctx = withPortCleanupDeclined(ctx)
+	}
 
 	if len(conflicts) > 0 {
-		policy := agntConfig.EffectivePortConflictPolicy()
 
 		for _, c := range conflicts {
 			log.WarnPort(c.ScriptName, "port_conflict_detected",
@@ -239,6 +250,30 @@ func (d *Daemon) RunAutostartAsync(
 
 // collectManagedPIDs returns a set of all PIDs currently managed by the daemon,
 // plus any child/descendant processes spawned by managed processes.
+// withExpectedPorts returns copies of scripts whose Ports list every port the
+// launch path will clean up for them: the declared ports plus any derived from
+// a linked proxy, the command line, or package.json (getExpectedPortsForScript).
+// The conflict scan must cover that same set — a port it does not report is a
+// port the "prompt" and "fail" policies never get to rule on, yet the launch
+// pre-flight would still kill its holder.
+func (d *Daemon) withExpectedPorts(scripts map[string]*config.ScriptConfig, proxies map[string]*config.ProxyConfig, projectPath string) map[string]*config.ScriptConfig {
+	out := make(map[string]*config.ScriptConfig, len(scripts))
+	for name, sc := range scripts {
+		if sc == nil {
+			continue
+		}
+		command, args := sc.Command, sc.Args
+		if sc.Run != "" {
+			command, args = sc.Run, nil
+		}
+		expanded := *sc
+		expanded.Ports = d.getExpectedPortsForScript(name, sc, proxies,
+			resolveWorkingDir(projectPath, sc.Cwd), command, args)
+		out[name] = &expanded
+	}
+	return out
+}
+
 func (d *Daemon) collectManagedPIDs() map[int]bool {
 	managed := make(map[int]bool)
 
@@ -304,6 +339,7 @@ func (d *Daemon) registerAndStartScripts(ctx context.Context, cfg *config.AgntCo
 		if _, inConfig := cfg.Scripts[entry.Name]; !inConfig {
 			d.scriptRegistry.Remove(entry.Name, projectPath)
 			d.scriptConfigs.Delete(entry.ProcessID)
+			d.portKillDeclined.Delete(entry.ProcessID)
 			if d.autoRestarter != nil {
 				d.autoRestarter.Unregister(entry.ProcessID)
 			}
@@ -332,6 +368,8 @@ func (d *Daemon) registerAndStartScripts(ctx context.Context, cfg *config.AgntCo
 }
 
 // resumeAutostart continues a paused autostart after port conflict resolution.
+// A caller resuming because the user declined to kill the blockers passes a ctx
+// from withPortCleanupDeclined, so the launch path kills nothing either.
 func (d *Daemon) resumeAutostart(ctx context.Context, projectPath string) *AutostartResult {
 	result := &AutostartResult{}
 
@@ -480,15 +518,8 @@ func (d *Daemon) startOneScript(
 		Phase: PhaseScriptStarting, Script: name, Layer: layerIdx,
 	})
 
-	// Wait for dependencies (layer 1+).
-	d.waitForDependenciesCtx(ctx, name, scriptCfg, projectPath, layerIdx, progress)
-	if ctx.Err() != nil {
-		return
-	}
-
-	log.Info(name, "starting", fmt.Sprintf("starting %s (layer %d)", name, layerIdx))
-	if err := d.autostartScript(ctx, name, scriptCfg, projectPath, proxyConfigs); err != nil {
-		log.Error(name, "start_failed", err.Error())
+	fail := func(eventType string, err error) {
+		log.Error(name, eventType, err.Error())
 		emitProgress(progress, projectPath, AutostartProgress{
 			Phase: PhaseScriptFailed, Script: name, Layer: layerIdx, Err: err,
 		})
@@ -496,12 +527,34 @@ func (d *Daemon) startOneScript(
 		result.Errors = append(result.Errors, fmt.Sprintf("script %s: %v", name, err))
 		failedScripts[name] = true
 		resultMu.Unlock()
-		// Unblock dependents so they don't wait forever on the ready signal.
-		// Downstream layers still observe failedScripts[name] and react.
-		d.readySignaler.SignalReady(processID)
+	}
+
+	// Wait for dependencies (layer 1+).
+	failedDep := d.waitForDependenciesCtx(ctx, name, scriptCfg, projectPath, layerIdx, progress)
+	if ctx.Err() != nil {
+		return
+	}
+	if failedDep != "" {
+		// A required dependency never came up: do not launch against it.
+		// Record this script as failed too, and pass the failure on so its
+		// own dependents stop instead of waiting forever.
+		err := fmt.Errorf("not started: dependency %q failed to start", failedDep)
+		fail("dependency_failed", err)
+		d.readySignaler.SignalFailed(processID, err)
 		return
 	}
 
+	log.Info(name, "starting", fmt.Sprintf("starting %s (layer %d)", name, layerIdx))
+	if err := d.autostartScript(ctx, name, scriptCfg, projectPath, proxyConfigs); err != nil {
+		// StartScriptExplicit already recorded the failure on the ready
+		// signaler, which is what stops dependents (they wake with
+		// ErrDependencyFailed rather than a false "ready").
+		fail("start_failed", err)
+		return
+	}
+
+	// Readiness (port probe / immediate signal) was armed by
+	// StartScriptExplicit, the start path shared with PROC RUN.
 	log.Info(name, "started", fmt.Sprintf("%s started", name))
 	emitProgress(progress, projectPath, AutostartProgress{
 		Phase: PhaseScriptStarted, Script: name, Layer: layerIdx,
@@ -509,8 +562,6 @@ func (d *Daemon) startOneScript(
 	resultMu.Lock()
 	result.Scripts = append(result.Scripts, name)
 	resultMu.Unlock()
-
-	d.setupReadinessSignal(processID, name, scriptCfg, proxyConfigs, projectPath)
 }
 
 // setupReadinessSignal configures the ready signaler for a script. If the
@@ -532,11 +583,21 @@ func (d *Daemon) setupReadinessSignal(
 	proxyConfigs map[string]*config.ProxyConfig,
 	projectPath string,
 ) {
-	probePorts := d.getExpectedPortsForScript(name, scriptCfg, proxyConfigs,
-		resolveWorkingDir(projectPath, scriptCfg.Cwd), "", nil)
-	if len(probePorts) > 0 {
-		d.readySignaler.StartPortProbe(processID, probePorts[0], d.ctx)
-		return
+	d.armReadiness(processID, d.getExpectedPortsForScript(name, scriptCfg, proxyConfigs,
+		resolveWorkingDir(projectPath, scriptCfg.Cwd), "", nil))
+}
+
+// armReadiness arms the ready signal for a process that has just been
+// (re)started: a TCP probe on its first expected port, or an immediate ready
+// signal when it has none. Shared by every start path — StartScriptExplicit,
+// auto-restart, and PROC RESTART — so a restarted process re-signals the
+// waiters that carried over from its previous run.
+func (d *Daemon) armReadiness(processID string, ports []int) {
+	for _, port := range ports {
+		if port > 0 {
+			d.readySignaler.StartPortProbe(processID, port, d.ctx)
+			return
+		}
 	}
 	d.readySignaler.SignalReady(processID)
 }
@@ -549,24 +610,31 @@ func (d *Daemon) setupReadinessSignal(
 // .claude/rules/daemon-lifecycle.md, so dependents must wait indefinitely
 // rather than launch against a not-yet-listening dependency.
 // Emits progress events for each dependency wait and resolution.
-func (d *Daemon) waitForDependenciesCtx(ctx context.Context, name string, scriptCfg *config.ScriptConfig, projectPath string, layerIdx int, progress chan<- AutostartProgress) {
+//
+// Returns the name of the first dependency that failed to start, or "" when
+// none did. A failed dependency is not "ready": the caller must not launch.
+func (d *Daemon) waitForDependenciesCtx(ctx context.Context, name string, scriptCfg *config.ScriptConfig, projectPath string, layerIdx int, progress chan<- AutostartProgress) (failedDep string) {
 	if layerIdx == 0 {
-		return
+		return ""
 	}
 	for _, dep := range scriptCfg.DependsOn {
 		if ctx.Err() != nil {
-			return
+			return ""
 		}
-		d.waitForSingleDependency(ctx, name, dep, projectPath, layerIdx, progress)
+		if failed := d.waitForSingleDependency(ctx, name, dep, projectPath, layerIdx, progress); failed {
+			return dep.Name
+		}
 	}
+	return ""
 }
 
 // waitForSingleDependency waits for one dependency to become ready. The wait
 // is unbounded (parent ctx only) unless the user set an explicit per-dep
 // `timeout=N` in .agnt.kdl, in which case it is wrapped in a context with
 // that deadline. Separated from the loop so the optional timeout context can
-// be cancelled per iteration via defer.
-func (d *Daemon) waitForSingleDependency(ctx context.Context, name string, dep config.ScriptDependency, projectPath string, layerIdx int, progress chan<- AutostartProgress) {
+// be cancelled per iteration via defer. Reports whether the dependency failed
+// to start (as opposed to becoming ready, timing out, or being cancelled).
+func (d *Daemon) waitForSingleDependency(ctx context.Context, name string, dep config.ScriptDependency, projectPath string, layerIdx int, progress chan<- AutostartProgress) (failed bool) {
 	depProcessID := makeProcessID(projectPath, dep.Name)
 	log := d.startupLog(projectPath)
 
@@ -594,6 +662,12 @@ func (d *Daemon) waitForSingleDependency(ctx context.Context, name string, dep c
 	if err := d.readySignaler.WaitReadyCtx(depProcessID, waitCtx); err != nil {
 		waited := time.Since(start).Round(time.Millisecond)
 		switch {
+		case errors.Is(err, ErrDependencyFailed):
+			log.Error(name, "dependency_failed", fmt.Sprintf(
+				"dependency %q failed to start (after %s), so %q will not be started: %v. "+
+					"Check %q with: proc status / proc output",
+				dep.Name, waited, name, err, dep.Name))
+			return true
 		case errors.Is(err, context.DeadlineExceeded):
 			log.Warn(name, "dependency_wait_timeout", fmt.Sprintf(
 				"dependency %q did not signal ready within its declared timeout=%s (waited %s); "+
@@ -612,6 +686,7 @@ func (d *Daemon) waitForSingleDependency(ctx context.Context, name string, dep c
 		})
 		log.Info(name, "dependency_ready", fmt.Sprintf("dependency %s is ready", dep.Name))
 	}
+	return false
 }
 
 // startAutostartProxies starts proxies, skipping those that depend on failed scripts.
@@ -724,10 +799,32 @@ func (d *Daemon) autostartScript(ctx context.Context, name string, scriptCfg *co
 // proxyConfigs is used only for port resolution via getExpectedPortsForScript.
 // Callers that don't have a proxyConfigs map (MCP ad-hoc processes) pass nil;
 // the helper tolerates nil and falls back to command-line / PORT env scanning.
-func (d *Daemon) StartScriptExplicit(ctx context.Context, name string, scriptCfg *config.ScriptConfig, projectPath string, proxyConfigs map[string]*config.ProxyConfig) error {
+//
+// Readiness is owned here too, so every caller gets the same contract: the
+// previous generation is reset before the launch, a successful start arms the
+// port probe (or signals ready at once when no port is expected), and a
+// failed start is recorded as a failure — never as ready — for dependents.
+func (d *Daemon) StartScriptExplicit(ctx context.Context, name string, scriptCfg *config.ScriptConfig, projectPath string, proxyConfigs map[string]*config.ProxyConfig) (err error) {
 
 	// Make process ID unique per project to avoid collisions between sessions
 	processID := makeProcessID(projectPath, name)
+
+	launching := false
+	defer func() {
+		if err == nil || !launching {
+			return
+		}
+		// StartScript reports any exit inside its startup window as an
+		// error, including a one-shot prerequisite (a migration, a build
+		// step) that ran to completion. That is the dependency being done,
+		// not the dependency failing: dependents must run after it.
+		if proc, getErr := d.hub.ProcessManager().Get(processID); getErr == nil &&
+			proc.State() == process.StateStopped && proc.ExitCode() == 0 {
+			d.readySignaler.SignalReady(processID)
+			return
+		}
+		d.readySignaler.SignalFailed(processID, err)
+	}()
 
 	// Store agnt-specific config for later use (e.g., restart with URLMatchers)
 	d.scriptConfigs.Store(processID, scriptCfg)
@@ -751,6 +848,11 @@ func (d *Daemon) StartScriptExplicit(ctx context.Context, name string, scriptCfg
 		debug.Log("daemon", "StartScriptExplicit: script %s already %s, skipping", name, state)
 		return nil
 	}
+
+	// A new start attempt: whatever the last one concluded (ready, failed)
+	// no longer describes this process. Waiters carry over to this attempt.
+	d.readySignaler.Reset(processID)
+	launching = true
 
 	// Resolve working directory and environment
 	workingDir := resolveWorkingDir(projectPath, scriptCfg.Cwd)
@@ -808,6 +910,11 @@ func (d *Daemon) StartScriptExplicit(ctx context.Context, name string, scriptCfg
 			entry.IncrementFailCount()
 			return fmt.Errorf("cannot run script %q: unknown project type and no command specified", name)
 		}
+
+		// A script with neither run nor command still carries its args (the
+		// MCP run tool's extra arguments land here): pass them to the script
+		// the package manager runs rather than parsing and dropping them.
+		args = append(args, scriptCfg.Args...)
 	}
 
 	// Record resolved command in ScriptEntry
@@ -819,7 +926,7 @@ func (d *Daemon) StartScriptExplicit(ctx context.Context, name string, scriptCfg
 	// Determine expected ports for pre-flight cleanup and EADDRINUSE recovery
 	expectedPorts := d.getExpectedPortsForScript(name, scriptCfg, proxyConfigs, workingDir, command, args)
 
-	_, err := d.StartScript(ctx, StartScriptConfig{
+	_, err = d.StartScript(ctx, StartScriptConfig{
 		ProcessID:     processID,
 		ProjectPath:   projectPath,
 		WorkingDir:    workingDir,
@@ -829,6 +936,9 @@ func (d *Daemon) StartScriptExplicit(ctx context.Context, name string, scriptCfg
 		ExpectedPorts: expectedPorts,
 		URLMatchers:   scriptCfg.URLMatchers,
 		AutoRestart:   scriptCfg.AutoRestart,
+		// Carries a declined port cleanup (port-conflict "skip", AUTOSTART
+		// CONTINUE) into the launch, which otherwise kills port holders itself.
+		SkipPortCleanup: portCleanupDeclined(ctx),
 	})
 	if err != nil {
 		entry.SetState(script.StateFailed)
@@ -856,9 +966,11 @@ func (d *Daemon) StartScriptExplicit(ctx context.Context, name string, scriptCfg
 	}
 	d.startupLog(projectPath).Info(name, "script_started", fmt.Sprintf("started %q: %s", name, cmdStr))
 
+	d.setupReadinessSignal(processID, name, scriptCfg, proxyConfigs, projectPath)
+
 	// Fire on-start lifecycle hook if configured.
 	if scriptCfg.Hooks != nil && scriptCfg.Hooks.OnStart != "" {
-		runLifecycleHookAsync(scriptCfg.Hooks.OnStart, name, "start", scriptCfg, 0)
+		go d.runLifecycleHook(scriptCfg.Hooks.OnStart, name, "start", scriptCfg, projectPath, 0)
 	}
 	return nil
 }
@@ -883,19 +995,7 @@ func (d *Daemon) autostartProxy(ctx context.Context, name string, proxyConfig *c
 	proxyID := makeProcessID(projectPath, name)
 
 	// Determine target URL (must be explicitly specified)
-	var targetURL string
-	if proxyConfig.URL != "" {
-		targetURL = proxyConfig.URL
-	} else if proxyConfig.Port > 0 {
-		host := proxyConfig.Host
-		if host == "" {
-			host = "localhost"
-		}
-		targetURL = fmt.Sprintf("http://%s:%d", host, proxyConfig.Port)
-	} else if proxyConfig.Target != "" {
-		// Legacy target field
-		targetURL = proxyConfig.Target
-	}
+	targetURL := proxyConfig.ExplicitTargetURL()
 
 	if targetURL == "" {
 		debug.Log("daemon", "Proxy %s has no explicit target URL, skipping", name)

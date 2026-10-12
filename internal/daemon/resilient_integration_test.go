@@ -125,10 +125,11 @@ func TestResilientClient_WrapperMethods(t *testing.T) {
 
 	// Test Run
 	t.Run("Run", func(t *testing.T) {
+		echoCmd, echoArgs := echoExec("hello")
 		result, err := rc.Run(protocol.RunConfig{
 			ID:      "resilient-test-echo",
-			Command: "echo",
-			Args:    []string{"hello"},
+			Command: echoCmd,
+			Args:    echoArgs,
 			Raw:     true,
 		})
 		if err != nil {
@@ -683,10 +684,11 @@ func TestResilientClient_AdditionalMethods(t *testing.T) {
 	})
 
 	// Start a process so we can test ProcStop
+	sleepCmd, sleepArgs := stayAliveExec()
 	_, err := rc.Run(protocol.RunConfig{
 		ID:      "rc-stop-test",
-		Command: "sleep",
-		Args:    []string{"10"},
+		Command: sleepCmd,
+		Args:    sleepArgs,
 		Raw:     true,
 	})
 	if err != nil {

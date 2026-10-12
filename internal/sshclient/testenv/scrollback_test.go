@@ -1,3 +1,9 @@
+//go:build unix
+
+// Scrollback replay against a real session-host PTY running /bin/sh (printf,
+// base64, sleep), torn down with a process-group kill. Unix-only for the same
+// reasons as session_lifecycle_test.go.
+
 package testenv_test
 
 import (

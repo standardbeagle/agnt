@@ -3402,10 +3402,10 @@ scripts {
 	assert.NotEmpty(t, result.PortConflicts, "should report conflicts")
 }
 
-// TestE2E_AutostartPortPreflight_Skip verifies that skip policy ignores port
-// conflicts at the policy level and proceeds to start scripts. The low-level
-// preflightPortCleanup in StartScript will still kill the blocker, so the
-// script starts successfully.
+// TestE2E_AutostartPortPreflight_Skip verifies that skip policy starts scripts
+// despite a port conflict and kills nothing: the decline reaches the low-level
+// preflightPortCleanup in StartScript, so the blocker is still holding the port
+// afterwards.
 func TestE2E_AutostartPortPreflight_Skip(t *testing.T) {
 	if testing.Short() {
 		t.Skip("e2e test")
@@ -3416,8 +3416,8 @@ func TestE2E_AutostartPortPreflight_Skip(t *testing.T) {
 	port := freePort(t)
 	env.TrackPort(port)
 
-	// Use an external process so preflightPortCleanup can kill it without
-	// killing the test process itself.
+	// An external process, so a regression that kills the port holder takes
+	// out the blocker rather than the test process itself.
 	blockerCmd := exec.Command("python3", "-c",
 		fmt.Sprintf(`import socket,time; s=socket.socket(); s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1); s.bind(('127.0.0.1',%d)); s.listen(1); time.sleep(60)`, port))
 	blockerCmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
@@ -3444,6 +3444,8 @@ scripts {
 
 	assert.Contains(t, result.Scripts, "server", "script should start despite conflict")
 	assert.Empty(t, result.PortConflicts, "skip mode doesn't return conflicts to client")
+	assert.NoError(t, blockerCmd.Process.Signal(syscall.Signal(0)), "skip must not kill the port blocker")
+	assert.NoError(t, waitForPort(port, time.Second), "blocker must still hold port %d after a skipped conflict", port)
 }
 
 // TestE2E_AutostartPortPreflight_Prompt verifies that prompt policy pauses

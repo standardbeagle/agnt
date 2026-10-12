@@ -16,10 +16,14 @@ func startURLPrintingProcess(t *testing.T) (*goprocess.ProcessManager, *goproces
 	pm := goprocess.NewProcessManager(goprocess.ManagerConfig{})
 	t.Cleanup(func() { _ = pm.Shutdown(context.Background()) })
 
+	// The child writes nothing to disk; pin its cwd to a temp dir anyway so it
+	// cannot resolve anything against the package directory.
+	echoCmd, echoArgs := echoExec("Local:   http://localhost:3000")
 	proc, err := pm.StartCommand(context.Background(), goprocess.ProcessConfig{
-		ID:      "urlproc",
-		Command: "sh",
-		Args:    []string{"-c", "echo 'Local:   http://localhost:3000'"},
+		ID:          "urlproc",
+		ProjectPath: t.TempDir(),
+		Command:     echoCmd,
+		Args:        echoArgs,
 	})
 	require.NoError(t, err)
 

@@ -40,7 +40,7 @@ func TestRunLifecycleHook_SetsEnvVars(t *testing.T) {
 	// Generous deadline: the first powershell.exe launch on a cold Windows
 	// runner can exceed the 5s production window, and this test asserts the
 	// env contract, not hook latency.
-	err = runLifecycleHookWithTimeout(30*time.Second, cmd, "mybackend", "start", hookTestScriptConfig(nil), 0)
+	err = runLifecycleHookWithTimeout(30*time.Second, cmd, "mybackend", "start", hookTestScriptConfig(nil), "", 0)
 	require.NoError(t, err)
 
 	data, _ := os.ReadFile(tmp.Name())
@@ -63,7 +63,7 @@ func TestRunLifecycleHook_RespectsTimeout(t *testing.T) {
 	// every run and asserted the weaker thing.
 	const testTimeout = 200 * time.Millisecond
 	start := time.Now()
-	err := runLifecycleHookWithTimeout(testTimeout, cmd, "backend", "stop", hookTestScriptConfig(nil), 0)
+	err := runLifecycleHookWithTimeout(testTimeout, cmd, "backend", "stop", hookTestScriptConfig(nil), "", 0)
 	elapsed := time.Since(start)
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "timeout")
@@ -90,7 +90,7 @@ func TestRunLifecycleHook_ExitCodeEnvVar(t *testing.T) {
 		cmd = `printf '%s' "$AGNT_EXIT_CODE" > ` + tmp.Name()
 	}
 
-	err = RunLifecycleHook(cmd, "svc", "crash", hookTestScriptConfig(nil), 137)
+	err = RunLifecycleHook(cmd, "svc", "crash", hookTestScriptConfig(nil), "", 137)
 	require.NoError(t, err)
 
 	data, _ := os.ReadFile(tmp.Name())
@@ -111,7 +111,7 @@ func TestRunLifecycleHook_InheritsScriptEnv(t *testing.T) {
 	}
 
 	scriptCfg := hookTestScriptConfig(map[string]string{"MY_CUSTOM_VAR": "hello-from-script"})
-	err = RunLifecycleHook(cmd, "svc", "start", scriptCfg, 0)
+	err = RunLifecycleHook(cmd, "svc", "start", scriptCfg, "", 0)
 	require.NoError(t, err)
 
 	data, _ := os.ReadFile(tmp.Name())
@@ -119,6 +119,6 @@ func TestRunLifecycleHook_InheritsScriptEnv(t *testing.T) {
 }
 
 func TestRunLifecycleHook_EmptyCmd_NoOp(t *testing.T) {
-	err := RunLifecycleHook("", "svc", "start", &config.ScriptConfig{}, 0)
+	err := RunLifecycleHook("", "svc", "start", &config.ScriptConfig{}, "", 0)
 	assert.NoError(t, err)
 }

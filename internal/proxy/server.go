@@ -459,8 +459,8 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 	// surface (MCP, hub, browser panel) mutates the engine.
 	ps.chaosEngine.SetOnChange(func() { ps.BroadcastChaosState() })
 
-	// Create reverse proxy with custom Director for proper Host handling
-	ps.proxy = httputil.NewSingleHostReverseProxy(targetURL)
+	// The upstream request is built by the Rewrite hook set below.
+	ps.proxy = &httputil.ReverseProxy{}
 
 	// Configure base transport
 	// By default, TLS certificates are verified. SkipTLSVerify opts in to insecure mode.
@@ -561,38 +561,36 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 	// Wrap the transport with chaos transport for failure injection
 	ps.proxy.Transport = NewChaosTransport(baseTransport, ps.chaosEngine)
 
-	// Customize Director to handle Host header and X-Forwarded-* headers
-	originalDirector := ps.proxy.Director
-	ps.proxy.Director = func(req *http.Request) {
-		// Capture original Host BEFORE director modifies it
-		// This is the proxy's host (e.g., localhost:8080)
-		originalHost := req.Host
+	// Rewrite, not the deprecated Director: ReverseProxy strips hop-by-hop
+	// headers before Rewrite runs, so a client cannot name a header set here
+	// in Connection and have it removed on the way upstream.
+	ps.proxy.Rewrite = func(pr *httputil.ProxyRequest) {
+		req := pr.Out
 
-		// Call original director (sets URL, Host to target, etc.)
-		originalDirector(req)
+		// The proxy's own host (e.g., localhost:8080), as the client sent it.
+		originalHost := pr.In.Host
 
-		// Ensure Host header matches target (critical for WordPress and other apps)
-		req.Host = targetURL.Host
+		// ReverseProxy re-encodes a query it cannot parse before Rewrite runs.
+		// A dev proxy forwards what the browser sent, so restore the original.
+		req.URL.RawQuery = pr.In.URL.RawQuery
 
-		// Add/update X-Forwarded headers for applications that need them
-		// These help apps know the original request came through a proxy
-		if clientIP, _, err := net.SplitHostPort(req.RemoteAddr); err == nil {
-			if prior := req.Header.Get("X-Forwarded-For"); prior != "" {
-				req.Header.Set("X-Forwarded-For", prior+", "+clientIP)
-			} else {
-				req.Header.Set("X-Forwarded-For", clientIP)
-			}
+		// Route to the target. This also makes the upstream Host the target's
+		// (critical for WordPress and other apps).
+		pr.SetURL(targetURL)
+
+		// Add X-Forwarded-For/-Host for applications that need to know the
+		// request came through a proxy. ReverseProxy drops the inbound
+		// X-Forwarded-* headers; keep the For chain a fronting tunnel supplied.
+		if prior := pr.In.Header.Values("X-Forwarded-For"); len(prior) > 0 {
+			req.Header["X-Forwarded-For"] = prior
 		}
-
-		// Set X-Forwarded-Host to the proxy's host (original request host)
-		// This tells backend apps the host the client originally connected to
-		req.Header.Set("X-Forwarded-Host", originalHost)
+		pr.SetXForwarded()
 
 		// The proxy listener is plain HTTP, but a request that arrived through
 		// the named tunnel was HTTPS at the edge. Apps building absolute URLs
 		// (OAuth redirect_uri above all) from forwarded headers need the
 		// scheme the browser used, or the redirect URI stops matching.
-		req.Header.Set("X-Forwarded-Proto", forwardedProto(req))
+		req.Header.Set("X-Forwarded-Proto", forwardedProto(pr.In))
 
 		// Rewrite Origin ONLY when the inbound Origin is the proxy's own listen
 		// origin — i.e. the origin agnt itself introduced by fronting the backend
@@ -615,7 +613,7 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 		//
 		// Note: agnt's own control-channel WebSocket origin check (checkWSOrigin,
 		// wired into ps.wsUpgrader for /__devtool_metrics) is unaffected — that
-		// path is served by handleWebSocket and never runs this Director, so it
+		// path is served by handleWebSocket and never runs this Rewrite, so it
 		// still evaluates the browser's original, un-rewritten Origin.
 		if origin := req.Header.Get("Origin"); origin != "" {
 			if ou, err := url.Parse(origin); err == nil && ou.Host != "" &&

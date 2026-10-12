@@ -172,7 +172,7 @@ func dialForwardClient(t *testing.T, auth *testenv.Auth, addr string) *sshclient
 // alone" doctrine the manager itself documents.
 func newForwardDaemon(t *testing.T) *daemonclient.Client {
 	t.Helper()
-	sockPath := filepath.Join(t.TempDir(), "daemon.sock")
+	sockPath := filepath.Join(shortSocketDir(t), "daemon.sock")
 	daemon.NewForTest(t, daemon.DaemonConfig{
 		SocketPath:        sockPath,
 		MaxClients:        10,

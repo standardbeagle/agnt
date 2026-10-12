@@ -9,6 +9,7 @@
 //
 //   read token from window.location  →  fetch /s/{token}/walkthrough.json
 //     →  window.__walkthroughViewer.create(wt).start()
+//     →  window.__feedbackClient.mount({ endpoint: /s/{token}/feedback })
 //
 // It ships in every role bundle like its three siblings, so it MUST be inert
 // everywhere but the public plane. Two independent gates, both required:
@@ -81,6 +82,38 @@
       try { console.warn('[WalkthroughPublic] ' + msg, err || ''); } catch (e) {}
     }
 
+    // mountFeedback turns the feedback widget on for a booted share. The server
+    // exposes no per-share feedback switch — POST /s/{token}/feedback exists
+    // for every live token — so "enabled" here means exactly "this is a share
+    // whose walkthrough loaded": a revoked link, a failed fetch, or a step-less
+    // artifact never reaches this call and so never offers a form that could
+    // only fail. A share whose feedback sink is down answers 503, which the
+    // widget shows the visitor on submit.
+    //
+    // Feedback is optional to the page: a missing client or a throwing mount is
+    // warned about and the walkthrough carries on.
+    function mountFeedback(token, steps) {
+      try {
+        var client = window.__feedbackClient;
+        if (!client || typeof client.mount !== 'function') {
+          warn('feedback client missing from the public bundle');
+          return;
+        }
+        // Same token-in-path rule as the artifact fetch. The step id rides
+        // along so the publisher can tell which step a comment is about.
+        feedback = client.mount({
+          endpoint: '/s/' + token + '/feedback',
+          stepId: function () {
+            var step = booted ? steps[booted.activeIndex()] : null;
+            return step && typeof step.id === 'string' ? step.id : '';
+          }
+        });
+        if (!feedback) { warn('feedback widget did not mount'); }
+      } catch (err) {
+        warn('feedback widget failed to mount', err);
+      }
+    }
+
     // boot fetches the published artifact for token and starts the player.
     // Returns the player, or null when the plane/route/payload is not bootable —
     // the caller (and the tests) can distinguish "did not boot" from "booted".
@@ -122,6 +155,7 @@
         // bad step to manual rather than throwing), and applies wt.variantSet
         // through window.__variantEngine before rendering step 0.
         booted = viewer.create(wt, {}).start();
+        mountFeedback(token, wt.steps);
       })['catch'](function (err) {
         warn('walkthrough boot failed', err);
         notice('This walkthrough could not be loaded.');
@@ -130,6 +164,7 @@
     }
 
     var booted = null;
+    var feedback = null;
 
     function autoBoot() {
       var token = shareToken(window.location && window.location.pathname);
@@ -157,7 +192,8 @@
       isPublicPlane: isPublicPlane,
       boot: boot,
       player: function () { return booted; },
-      version: 'p12'
+      feedback: function () { return feedback; },
+      version: 'p13'
     };
   } catch (e) {
     try { console.error('[WalkthroughPublic] init failed:', e); } catch (e2) {}

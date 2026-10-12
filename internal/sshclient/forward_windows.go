@@ -3,23 +3,20 @@
 package sshclient
 
 import (
-	"net"
-
-	"github.com/Microsoft/go-winio"
+	"os"
+	"path/filepath"
+	"strings"
 )
 
+// LocalForwardSocketPath is an AF_UNIX socket file under the user's temp
+// directory. The name carries only the host's hash: Windows filenames cannot
+// hold the ':' and '@' of a host identity, and AF_UNIX paths are capped near
+// 108 bytes, which a profile-rooted temp directory already eats into.
 func LocalForwardSocketPath(host string) string {
-	path, _ := windowsPipeName("forward", host)
-	return path
-}
-
-func listenLocalForward(path string) (net.Listener, func() error, error) {
-	if err := validateWindowsPipePath(path); err != nil {
-		return nil, nil, err
-	}
-	ln, err := winio.ListenPipe(path, &winio.PipeConfig{SecurityDescriptor: windowsPipeOwnerOnlySDDL, MessageMode: false})
+	pipe, err := windowsPipeName("forward", host)
 	if err != nil {
-		return nil, nil, err
+		return ""
 	}
-	return ln, ln.Close, nil
+	hash := pipe[strings.LastIndexByte(pipe, '-')+1:]
+	return filepath.Join(os.TempDir(), "agnt", "ssh-"+hash+".sock")
 }

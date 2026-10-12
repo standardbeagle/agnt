@@ -5,9 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"regexp"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +16,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/incident"
+	"github.com/standardbeagle/agnt/internal/pathutil"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/scope"
 
@@ -50,21 +49,11 @@ func writeStructuredErr(conn *hubpkg.Connection, component string, err *hubproto
 	return conn.WriteStructuredErr(err)
 }
 
-// normalizePath normalizes a path for consistent comparison.
-
+// normalizePath normalizes a path for consistent comparison. The form is
+// shared with the MCP tools, which send project filters the daemon matches
+// against these keys — see pathutil.NormalizeProjectPath.
 func normalizePath(path string) string {
-	if path == "" || path == "." {
-		return "."
-	}
-	abs, err := filepath.Abs(path)
-	if err != nil {
-		abs = filepath.Clean(path)
-	}
-	// On Windows, normalize to lowercase for case-insensitive comparison.
-	if runtime.GOOS == "windows" {
-		abs = strings.ToLower(abs)
-	}
-	return abs
+	return pathutil.NormalizeProjectPath(path)
 }
 
 // getSessionScoped retrieves a resource with session-scoped fuzzy matching.

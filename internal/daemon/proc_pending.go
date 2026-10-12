@@ -29,6 +29,7 @@
 package daemon
 
 import (
+	"context"
 	"sort"
 	"sync"
 	"time"
@@ -74,7 +75,10 @@ type PendingProcess struct {
 	// State distinguishes "still waiting" from "dependency timed out".
 	State PendingProcessState
 	// FailureReason is the human-readable reason set when State is
-	// PendingFailed. Format: "dependency_timeout:<dep-name>".
+	// PendingFailed. Format: "dependency_timeout:<dep-name>" (the dependency
+	// never signalled ready in time), "dependency_failed:<dep-name>" (the
+	// dependency failed to start), or "dependency_timeout:start" (the launch
+	// itself failed once the dependencies were ready).
 	FailureReason string
 	// CreatedAt is when the entry was registered.
 	CreatedAt time.Time
@@ -96,6 +100,9 @@ type pendingEntry struct {
 	// O(1) removal via MarkReady. WaitingFor in the snapshot is rebuilt
 	// from this map under the entry mutex.
 	remaining map[string]struct{}
+	// cancel stops the wait goroutine that will launch this process. Nil for
+	// entries registered without one (tests, display-only entries).
+	cancel context.CancelFunc
 }
 
 // NewPendingProcessTracker returns a ready-to-use tracker.
@@ -111,6 +118,23 @@ func NewPendingProcessTracker() *PendingProcessTracker {
 //
 // Returns the snapshot of the registered entry.
 func (t *PendingProcessTracker) Register(p PendingProcess, deps []string) PendingProcess {
+	entry := t.RegisterLaunch(p, deps, nil)
+	entry.mu.Lock()
+	defer entry.mu.Unlock()
+	return cloneSnapshot(entry.snapshot)
+}
+
+// RegisterLaunch is Register for a real deferred launch: cancel is the
+// cancellation handle of the goroutine that will start the process once its
+// dependencies are ready. The tracker owns that handle from here on — Cancel
+// (PROC STOP, session cleanup) invokes it, and re-registering the same
+// processID cancels the launch it replaces so two goroutines never race to
+// start one process.
+//
+// The returned entry is the launch's identity: the goroutine reports progress
+// through it and retires it with RemoveExact, so a superseded goroutine can
+// never mutate or delete its replacement.
+func (t *PendingProcessTracker) RegisterLaunch(p PendingProcess, deps []string, cancel context.CancelFunc) *pendingEntry {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
@@ -135,9 +159,58 @@ func (t *PendingProcessTracker) Register(p PendingProcess, deps []string) Pendin
 			CreatedAt:   time.Now(),
 		},
 		remaining: remaining,
+		cancel:    cancel,
+	}
+	if prev, ok := t.entries[p.ProcessID]; ok && prev.cancel != nil {
+		prev.cancel()
 	}
 	t.entries[p.ProcessID] = entry
-	return entry.snapshot
+	return entry
+}
+
+// Cancel stops the deferred launch for processID and removes its entry.
+// Returns false if processID has no pending entry. After Cancel the wait
+// goroutine will not launch the process; if it had already begun launching,
+// it stops what it started (see runProcessAfterDeps).
+func (t *PendingProcessTracker) Cancel(processID string) bool {
+	t.mu.Lock()
+	entry, ok := t.entries[processID]
+	delete(t.entries, processID)
+	t.mu.Unlock()
+	if !ok {
+		return false
+	}
+	if entry.cancel != nil {
+		entry.cancel()
+	}
+	return true
+}
+
+// RemoveExact deletes entry only if it is still the registered entry for its
+// processID — a replacement registered under the same ID is left alone.
+func (t *PendingProcessTracker) RemoveExact(entry *pendingEntry) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if t.entries[entry.snapshot.ProcessID] == entry {
+		delete(t.entries, entry.snapshot.ProcessID)
+	}
+}
+
+// markReady removes dep from this launch's remaining wait set.
+func (e *pendingEntry) markReady(dep string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	delete(e.remaining, dep)
+	e.snapshot.WaitingFor = sortedKeys(e.remaining)
+}
+
+// fail transitions this launch to PendingFailed with the given reason, e.g.
+// "dependency_timeout:<dep>" or "dependency_failed:<dep>".
+func (e *pendingEntry) fail(reason string) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.snapshot.State = PendingFailed
+	e.snapshot.FailureReason = reason
 }
 
 // MarkReady removes dep from the remaining wait set for processID. If

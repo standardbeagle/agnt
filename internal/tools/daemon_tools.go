@@ -83,7 +83,9 @@ func (dt *DaemonTools) SessionCode() string {
 }
 
 // tryAutoAttach attempts to attach to a session for the current directory.
-// This is called once on first tool use. It's non-fatal if no session is found.
+// It runs once per daemon connection (the binding lives on the daemon's side
+// of the connection, so a new connection needs a new attach — see
+// forgetAttachment and reattach). It's non-fatal if no session is found.
 func (dt *DaemonTools) tryAutoAttach() {
 	dt.sessionMu.Lock()
 	if dt.attachAttempted || dt.noAutoAttach || dt.sessionCode != "" {
@@ -93,34 +95,77 @@ func (dt *DaemonTools) tryAutoAttach() {
 	dt.attachAttempted = true
 	dt.sessionMu.Unlock()
 
+	dt.attach(dt.client.SessionAttach)
+}
+
+// attach binds a daemon connection to the session for the current directory
+// through sessionAttach (a SESSION ATTACH on that connection) and records the
+// resulting session code. Reports whether a session was attached.
+func (dt *DaemonTools) attach(sessionAttach func(directory string) (map[string]interface{}, error)) bool {
 	// Get current working directory
 	cwd, err := os.Getwd()
 	if err != nil {
 		// Best-effort: without a cwd we cannot resolve a session; log and skip.
 		debug.Log("daemon-tools", "auto-attach skipped: getwd failed: %v", err)
-		return
+		return false
 	}
 
 	// Try to attach via the daemon
-	result, err := dt.client.SessionAttach(cwd)
+	result, err := sessionAttach(cwd)
 	if err != nil {
 		// No session registered for this directory is the common case, not an
 		// error; surface to the debug log for diagnosis but do not fail the tool.
 		debug.Log("daemon-tools", "auto-attach: no session for %s: %v", cwd, err)
-		return
+		return false
 	}
 
 	// Successfully attached
-	if code, ok := result["session_code"].(string); ok && code != "" {
-		dt.sessionMu.Lock()
-		dt.sessionCode = code
-		dt.sessionMu.Unlock()
-
-		// Log the attachment (to stderr so it doesn't interfere with MCP)
-		if projectPath, ok := result["project_path"].(string); ok {
-			fmt.Fprintf(os.Stderr, "[agnt] Attached to session %s (project: %s)\n", code, projectPath)
-		}
+	code, ok := result["session_code"].(string)
+	if !ok || code == "" {
+		return false
 	}
+	dt.sessionMu.Lock()
+	dt.sessionCode = code
+	dt.sessionMu.Unlock()
+
+	// Log the attachment (to stderr so it doesn't interfere with MCP)
+	if projectPath, ok := result["project_path"].(string); ok {
+		fmt.Fprintf(os.Stderr, "[agnt] Attached to session %s (project: %s)\n", code, projectPath)
+	}
+	return true
+}
+
+// forgetAttachment drops the recorded session binding because the daemon
+// connection it was made on is gone. The next ensureConnected attaches the
+// new connection; until then the wrapper must not report itself attached.
+func (dt *DaemonTools) forgetAttachment() {
+	dt.sessionMu.Lock()
+	defer dt.sessionMu.Unlock()
+	dt.attachAttempted = false
+	dt.sessionCode = ""
+}
+
+// reattach restores the session binding on a connection the ResilientClient
+// just re-established. The daemon binds a session to a connection, not to a
+// client, so the fresh connection starts unbound even though this wrapper
+// still holds a session code; commands that resolve the project from the
+// connection (publish, PROC RUN without project_path) would otherwise fail
+// with "no active session with project path".
+//
+// It never fails the reconnect: with no session to attach (daemon restarted,
+// session ended) the stale code is dropped and the next tool call retries.
+func (dt *DaemonTools) reattach(client *daemonclient.Client) error {
+	dt.sessionMu.Lock()
+	skip := dt.noAutoAttach || !dt.attachAttempted
+	dt.sessionMu.Unlock()
+	if skip {
+		// Never attached on the old connection: the first tool call does it.
+		return nil
+	}
+	if !dt.attach(client.SessionAttach) {
+		dt.forgetAttachment()
+	}
+	return nil
 }
 
 // ensureConnected ensures we have a connection to the daemon with automatic version checking and upgrade.
@@ -147,8 +192,18 @@ func (dt *DaemonTools) ensureClient() error {
 		return nil
 	}
 
+	// A client that is present but not connected is replaced, not reused:
+	// close it so its reconnect loop does not outlive it, and forget the
+	// session binding that lived on its connection.
+	if dt.client != nil {
+		dt.client.Close()
+		dt.client = nil
+		dt.forgetAttachment()
+	}
+
 	// Create ResilientClient with version checking and auto-upgrade
 	resilientConfig := daemonclient.DefaultResilientClientConfig()
+	resilientConfig.OnReconnect = dt.reattach
 	resilientConfig.AutoStartConfig = dt.config
 	resilientConfig.ClientVersion = dt.version
 
@@ -207,6 +262,8 @@ func (dt *DaemonTools) resetClient() {
 		dt.client.Close()
 		dt.client = nil
 	}
+	// The session binding went with the connection.
+	dt.forgetAttachment()
 }
 
 // Close closes the daemon client connection.
@@ -497,6 +554,9 @@ Modes:
   background (default): Returns process_id immediately for tracking via proc tool
   foreground: Waits for completion, returns exit_code/state/runtime (output via proc)
   foreground-raw: Waits for completion, returns exit_code/state/runtime + stdout/stderr
+
+A script declared in .agnt.kdl runs with everything it declares there: env, cwd,
+shell, ports, url-matchers, depends-on, auto-restart, and lifecycle hooks.
 
 Auto-restart: Background processes automatically restart on crash (rate-limited to
 prevent loops: max 5 restarts/minute). Use no_auto_restart: true to disable.

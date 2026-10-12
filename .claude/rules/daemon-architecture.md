@@ -66,7 +66,13 @@ WSL wired/deferred status and accepted escape hatches: `.claude/rules/wsl-audit.
 
 ## Port-Kill Guard
 
-`ProcessManager.KillProcessByPort` (go-cli-server) re-discovers holders at fire time and kills all of them — any earlier self/managed filtering is void. **Every daemon port-kill routes through `killPortHoldersGuarded`** (`port_preflight.go`): re-scan right before the kill, refuse when the daemon or a managed PID holds the port, return protected PIDs for loud reporting. Callers: `daemon_shutdown.go`, `startup_resilience.go`, `hub_proc.go` (`PROC CLEANUP-PORT`), `killPortBlockers`. Regression: `TestKillPortHoldersGuarded_ProtectsSelf`.
+`ProcessManager.KillProcessByPort` (go-cli-server) re-discovers holders at fire time and kills all of them — any earlier self/managed filtering is void. **Every daemon port-kill routes through `killPortHoldersGuarded`** (`port_preflight.go`): re-scan right before the kill, refuse when the daemon, a managed PID, or a descendant of one (`managedTreeChecker` — the listener is usually a child of `cmd /c`, `npm run`, `dotnet watch`) holds the port, return protected PIDs for loud reporting. Callers: `daemon_shutdown.go`, `startup_resilience.go`, `hub_proc.go` (`PROC CLEANUP-PORT`), `killPortBlockers`. Regression: `TestKillPortHoldersGuarded_ProtectsSelf`.
+
+The guard reads both sides of the port probe. On native Windows every holder comes back on the Windows side and those PIDs are our own namespace (`windowsPIDsAreLocal`); under WSL they belong to the Windows kernel and are never compared with ours. Regression: `port_preflight_guard_test.go`.
+
+The autostart conflict scan covers the same ports the launch pre-flight cleans up (`withExpectedPorts`: declared, linked-proxy, command-line, package.json), so `prompt`/`fail` rule on every port a kill could reach.
+
+A declined kill (`port-conflict "skip"`, `AUTOSTART CONTINUE`) travels into the launch as `withPortCleanupDeclined(ctx)` → `StartScriptConfig.SkipPortCleanup` → `portKillDeclined`, so `startScriptWithRetry` kills nothing on that process's ports, on this start or a later restart.
 
 ## Silent Failure Prohibition
 

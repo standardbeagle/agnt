@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sync"
 	"testing"
 	"time"
@@ -466,3 +467,20 @@ type reportedAddr string
 
 func (a reportedAddr) Network() string { return "tcp" }
 func (a reportedAddr) String() string  { return string(a) }
+
+// Symlink creates newname as a symbolic link to oldname, skipping the test
+// when the host refuses to create one. Windows needs Developer Mode or an
+// elevated token (SeCreateSymbolicLinkPrivilege) for that; a test whose
+// subject is how symlinks are handled cannot run without it, and must say so
+// rather than fail as if the product were broken.
+func Symlink(t *testing.T, oldname, newname string) {
+	t.Helper()
+	err := os.Symlink(oldname, newname)
+	if err == nil {
+		return
+	}
+	if runtime.GOOS == "windows" {
+		t.Skipf("cannot create symlinks on this Windows host (enable Developer Mode or run elevated): %v", err)
+	}
+	t.Fatalf("creating symlink %s -> %s: %v", newname, oldname, err)
+}

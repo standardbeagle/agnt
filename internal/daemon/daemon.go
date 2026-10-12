@@ -277,7 +277,13 @@ type Daemon struct {
 	swallowSweeperStarted atomic.Bool
 	scriptRegistry        *script.Registry // Per-script state that persists across process restarts
 	scriptConfigs         sync.Map         // processID -> *config.ScriptConfig (agnt-specific config)
-	proxyConfigs          sync.Map         // proxyID -> configuredProxy (launch snapshot)
+	// portKillDeclined marks processes whose port cleanup was declined
+	// (port-conflict "skip", or AUTOSTART CONTINUE). startScriptWithRetry reads
+	// it on every launch — first start, PROC RESTART, auto-restart — and kills
+	// nothing on the process's ports while the mark is set. Not user-visible.
+	// Each StartScript call rewrites the mark; it is retired with scriptConfigs.
+	portKillDeclined sync.Map // processID -> struct{}
+	proxyConfigs     sync.Map // proxyID -> configuredProxy (launch snapshot)
 
 	// Session and scheduling (agnt-specific extensions)
 	sessionRegistry   *SessionRegistry

@@ -7,12 +7,21 @@ import (
 	"strings"
 )
 
-// pathListSep is the PATH entry separator for the current platform.
-func pathListSep() string {
-	if runtime.GOOS == "windows" {
-		return ";"
+// pathEnvIndex returns the index of the PATH entry in env, or -1. Environment
+// variable names are case-insensitive on Windows, where the variable is
+// usually spelled "Path": matching only "PATH=" there misses it, and adding a
+// second entry would replace the real search path instead of extending it.
+func pathEnvIndex(env []string) int {
+	for i, kv := range env {
+		name, _, ok := strings.Cut(kv, "=")
+		if !ok {
+			continue
+		}
+		if name == "PATH" || (runtime.GOOS == "windows" && strings.EqualFold(name, "PATH")) {
+			return i
+		}
 	}
-	return ":"
+	return -1
 }
 
 // PrependPATH returns env with dir prepended to PATH. If PATH is absent a
@@ -21,14 +30,12 @@ func PrependPATH(env []string, dir string) []string {
 	if dir == "" {
 		return env
 	}
-	prefix := "PATH="
-	for i, kv := range env {
-		if strings.HasPrefix(kv, prefix) {
-			env[i] = prefix + dir + pathListSep() + strings.TrimPrefix(kv, prefix)
-			return env
-		}
+	if i := pathEnvIndex(env); i >= 0 {
+		name, value, _ := strings.Cut(env[i], "=")
+		env[i] = name + "=" + dir + string(os.PathListSeparator) + value
+		return env
 	}
-	return append(env, prefix+dir)
+	return append(env, "PATH="+dir)
 }
 
 // ResolveRealBinary finds the real executable for cmd by scanning PATH and
@@ -37,11 +44,8 @@ func PrependPATH(env []string, dir string) []string {
 // found exactly like the shell would.
 func ResolveRealBinary(cmd string, env []string) string {
 	pathEnv := ""
-	for _, kv := range env {
-		if strings.HasPrefix(kv, "PATH=") {
-			pathEnv = strings.TrimPrefix(kv, "PATH=")
-			break
-		}
+	if i := pathEnvIndex(env); i >= 0 {
+		_, pathEnv, _ = strings.Cut(env[i], "=")
 	}
 	if pathEnv == "" {
 		pathEnv = os.Getenv("PATH")

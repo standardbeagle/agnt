@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/standardbeagle/agnt/internal/daemonclient"
+	"github.com/standardbeagle/agnt/internal/pathutil"
 )
 
 func TestGetProjectPath_FromEnvironment(t *testing.T) {
@@ -25,9 +26,10 @@ func TestGetProjectPath_FromEnvironment(t *testing.T) {
 	testPath := "/home/test/project"
 	os.Setenv("AGNT_PROJECT_PATH", testPath)
 
+	// The result is canonical (absolute; lowercased on Windows), not verbatim.
 	result := getProjectPath()
-	if result != testPath {
-		t.Errorf("Expected %q, got %q", testPath, result)
+	if want := pathutil.NormalizeProjectPath(testPath); result != want {
+		t.Errorf("Expected %q, got %q", want, result)
 	}
 }
 
@@ -47,7 +49,7 @@ func TestGetProjectPath_FromEnvironment_RelativePath(t *testing.T) {
 
 	result := getProjectPath()
 	cwd, _ := os.Getwd()
-	expected, _ := filepath.Abs(".")
+	expected := pathutil.NormalizeProjectPath(".")
 
 	if result != expected {
 		t.Errorf("Expected absolute path %q, got %q (cwd: %q)", expected, result, cwd)
@@ -74,7 +76,7 @@ func TestGetProjectPath_FallbackToCwd(t *testing.T) {
 		t.Fatalf("Failed to get cwd: %v", err)
 	}
 
-	if result != cwd {
+	if cwd = pathutil.NormalizeProjectPath(cwd); result != cwd {
 		t.Errorf("Expected cwd %q, got %q", cwd, result)
 	}
 }
@@ -99,7 +101,7 @@ func TestGetProjectPath_EmptyEnvFallbackToCwd(t *testing.T) {
 		t.Fatalf("Failed to get cwd: %v", err)
 	}
 
-	if result != cwd {
+	if cwd = pathutil.NormalizeProjectPath(cwd); result != cwd {
 		t.Errorf("Expected cwd %q when env is empty, got %q", cwd, result)
 	}
 }
@@ -120,8 +122,8 @@ func TestGetProjectPath_WithTempDir(t *testing.T) {
 	os.Setenv("AGNT_PROJECT_PATH", tmpDir)
 
 	result := getProjectPath()
-	if result != tmpDir {
-		t.Errorf("Expected %q, got %q", tmpDir, result)
+	if want := pathutil.NormalizeProjectPath(tmpDir); result != want {
+		t.Errorf("Expected %q, got %q", want, result)
 	}
 }
 

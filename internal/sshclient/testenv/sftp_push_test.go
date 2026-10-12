@@ -5,9 +5,11 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"fmt"
+	"github.com/standardbeagle/agnt/internal/testutil"
 	"io"
 	"net"
 	"os"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -159,7 +161,9 @@ func TestSFTPPush_DefaultDestination(t *testing.T) {
 
 	remotePath, err := sshclient.PushToInbox(sc, root, "", "note.txt", bytes.NewReader(content))
 	require.NoError(t, err)
-	require.Equal(t, filepath.Join(root, sshclient.DefaultInboxDir, "note.txt"), remotePath)
+	// The returned path is the remote one: SFTP paths are slash-joined
+	// whatever the local OS separator is.
+	require.Equal(t, path.Join(root, sshclient.DefaultInboxDir, "note.txt"), remotePath)
 
 	got, err := os.ReadFile(remotePath)
 	require.NoError(t, err)
@@ -180,30 +184,30 @@ func TestSFTPPush_DefaultDestination(t *testing.T) {
 func TestSFTPPush_TraversalRejectionMatrix(t *testing.T) {
 	cases := []struct {
 		name        string
-		destRelPath func(root string) string
+		destRelPath func(t *testing.T, root string) string
 		wantErr     bool
 	}{
 		{
 			name:        "legitimate nested path",
-			destRelPath: func(string) string { return "assets/img" },
+			destRelPath: func(*testing.T, string) string { return "assets/img" },
 			wantErr:     false,
 		},
 		{
 			name:        "parent traversal ../../",
-			destRelPath: func(string) string { return "../../etc" },
+			destRelPath: func(*testing.T, string) string { return "../../etc" },
 			wantErr:     true,
 		},
 		{
 			name:        "absolute path",
-			destRelPath: func(string) string { return "/etc" },
+			destRelPath: func(*testing.T, string) string { return "/etc" },
 			wantErr:     true,
 		},
 		{
 			name: "symlink escape",
-			destRelPath: func(root string) string {
+			destRelPath: func(t *testing.T, root string) string {
 				outside := filepath.Join(filepath.Dir(root), fmt.Sprintf("outside-%s", filepath.Base(root)))
 				require.NoError(t, os.MkdirAll(outside, 0o755))
-				require.NoError(t, os.Symlink(outside, filepath.Join(root, "escape")))
+				testutil.Symlink(t, outside, filepath.Join(root, "escape"))
 				return "escape"
 			},
 			wantErr: true,
@@ -213,7 +217,7 @@ func TestSFTPPush_TraversalRejectionMatrix(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			root, sc := newPushFixture(t)
-			destRelPath := tc.destRelPath(root)
+			destRelPath := tc.destRelPath(t, root)
 			content := []byte("payload-" + tc.name)
 
 			remotePath, err := sshclient.PushToInbox(sc, root, destRelPath, "payload.bin", bytes.NewReader(content))

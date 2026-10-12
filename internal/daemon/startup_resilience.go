@@ -46,6 +46,26 @@ type StartScriptConfig struct {
 	AutoRestart bool
 	// AutoRestartConfig is optional custom restart configuration
 	AutoRestartConfig *AutoRestartConfig
+	// SkipPortCleanup forbids killing whatever holds ExpectedPorts, both in the
+	// pre-flight cleanup and in EADDRINUSE recovery. Set when the port-conflict
+	// policy or the user declined the kill; the process then starts anyway and
+	// fails on bind if the port really is taken.
+	SkipPortCleanup bool
+}
+
+// portCleanupDeclinedKey marks a launch context whose port cleanup was
+// declined — by port-conflict "skip" or by AUTOSTART CONTINUE.
+type portCleanupDeclinedKey struct{}
+
+// withPortCleanupDeclined returns a ctx under which script launches kill no
+// port holders.
+func withPortCleanupDeclined(ctx context.Context) context.Context {
+	return context.WithValue(ctx, portCleanupDeclinedKey{}, true)
+}
+
+func portCleanupDeclined(ctx context.Context) bool {
+	declined, _ := ctx.Value(portCleanupDeclinedKey{}).(bool)
+	return declined
 }
 
 // StartScriptResult holds the result of starting a script.
@@ -96,6 +116,15 @@ func (d *Daemon) StartScript(ctx context.Context, cfg StartScriptConfig) (*Start
 	if len(cfg.URLMatchers) > 0 {
 		d.urlTracker.SetURLMatchers(cfg.ProcessID, cfg.URLMatchers)
 		debug.Log("daemon", "Pre-set URL matchers for %s: %v", cfg.ProcessID, cfg.URLMatchers)
+	}
+
+	// Record whether this process's port cleanup was declined. Every launch of
+	// it reads the mark, so a later auto-restart or PROC RESTART honours the
+	// decision too; a start that did not decline clears a stale one.
+	if cfg.SkipPortCleanup {
+		d.portKillDeclined.Store(cfg.ProcessID, struct{}{})
+	} else {
+		d.portKillDeclined.Delete(cfg.ProcessID)
 	}
 
 	// Start with automatic EADDRINUSE recovery.
@@ -348,8 +377,21 @@ func (d *Daemon) startScriptWithRetry(
 	// env vars at spawn, so the values never pass through the agent/channel.
 	env = d.injectSecretEnv(projectPath, env)
 
+	// A declined port cleanup means nothing on these ports is killed, here or in
+	// the EADDRINUSE recovery below. A held port is still reported, so the bind
+	// failure that follows has a visible cause.
+	_, killDeclined := d.portKillDeclined.Load(processID)
+
 	// Pre-flight cleanup: kill orphans on all expected ports
 	for _, port := range expectedPorts {
+		if killDeclined {
+			linuxPIDs, windowsPIDs := config.FindPIDsByPortTagged(ctx, port)
+			if holders := append(linuxPIDs, windowsPIDs...); len(holders) > 0 {
+				d.recordStartupEntry(processID, stripProcessPrefix(processID), "warning", "port_cleanup_declined",
+					fmt.Sprintf("port %d is held by PIDs %v; port cleanup was declined, so they were left running", port, holders), port)
+			}
+			continue
+		}
 		if killedPIDs, err := d.preflightPortCleanup(ctx, port); err != nil {
 			debug.Warn("daemon", "Pre-flight cleanup failed for port %d: %v", port, err)
 			d.recordStartupEntry(processID, "", "warning", "port_cleanup_failed",
@@ -421,8 +463,16 @@ func (d *Daemon) startScriptWithRetry(
 		return proc, nil
 	}
 
+	// EADDRINUSE recovery kills the port holder. With cleanup declined that is
+	// exactly what must not happen, so the failure is reported as it stands.
+	if startupErr.ErrorType == "EADDRINUSE" && killDeclined {
+		startupErr.Message = fmt.Sprintf("port %d already in use; port cleanup was declined, so the process holding it was not killed", startupErr.Port)
+		d.recordStartupEntry(processID, stripProcessPrefix(processID), "warning", "eaddrinuse_cleanup_declined",
+			startupErr.Message, startupErr.Port)
+	}
+
 	// Startup failed - check if it's EADDRINUSE
-	if startupErr.ErrorType != "EADDRINUSE" {
+	if startupErr.ErrorType != "EADDRINUSE" || killDeclined {
 		// When auto-restart is enabled, a quick exit (e.g. `exit 1`) is the
 		// first crash cycle — not a fatal failure. Return the failed proc so
 		// StartScript can register it with the auto-restarter. The auto-restarter
@@ -483,14 +533,17 @@ func (d *Daemon) startScriptWithRetry(
 			fmt.Sprintf("killed %d process(es) on port %d for EADDRINUSE recovery", len(killedPIDs), portToClean), portToClean)
 	}
 
-	// Retry: Start the process again
+	// Retry: Start the process again, with the same output callback as the
+	// first attempt — without it the recovered process is cut off from script
+	// history, output streaming, and alert classification.
 	result, err = d.hub.ProcessManager().StartOrReuse(ctx, process.ProcessConfig{
-		ID:          processID,
-		ProjectPath: projectPath,
-		WorkingDir:  workingDir,
-		Command:     command,
-		Args:        args,
-		Env:         env,
+		ID:             processID,
+		ProjectPath:    projectPath,
+		WorkingDir:     workingDir,
+		Command:        command,
+		Args:           args,
+		Env:            env,
+		OutputCallback: outputCB,
 	})
 	if err != nil {
 		return nil, &StartupError{

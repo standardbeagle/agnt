@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -16,33 +15,21 @@ import (
 
 // TestIntegration_OutputFormats tests all three output formats with real processes.
 func TestIntegration_OutputFormats(t *testing.T) {
-	// Create a temporary script that outputs in different formats
-	tmpDir := t.TempDir()
-
-	// Create a helper script that outputs JSON
-	jsonScript := filepath.Join(tmpDir, "json_output.sh")
-	err := os.WriteFile(jsonScript, []byte(`#!/bin/bash
-echo '{"type":"result","subtype":"success","result":"Integration test response","session_id":"int-123","total_cost_usd":0.001,"duration_ms":100,"num_turns":1}'
-`), 0755)
-	if err != nil {
-		t.Fatalf("Failed to create json script: %v", err)
-	}
-
-	// Create a helper script that outputs stream-json
-	streamScript := filepath.Join(tmpDir, "stream_output.sh")
-	err = os.WriteFile(streamScript, []byte(`#!/bin/bash
-echo '{"type":"init","session_id":"stream-456"}'
-echo '{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Streaming content"}]}}'
-echo '{"type":"result","result":"Final streaming result","session_id":"stream-456","total_cost_usd":0.002}'
-`), 0755)
-	if err != nil {
-		t.Fatalf("Failed to create stream script: %v", err)
-	}
+	// Helper processes (this test binary re-exec'd, see helper_process_test.go)
+	// stand in for agents that output in the different formats.
+	jsonScript, jsonEnv := helperScript(t, `{"type":"result","subtype":"success","result":"Integration test response","session_id":"int-123","total_cost_usd":0.001,"duration_ms":100,"num_turns":1}
+`)
+	streamScript, streamEnv := helperScript(t, `{"type":"init","session_id":"stream-456"}
+{"type":"assistant","message":{"role":"assistant","content":[{"type":"text","text":"Streaming content"}]}}
+{"type":"result","result":"Final streaming result","session_id":"stream-456","total_cost_usd":0.002}
+`)
 
 	t.Run("TextFormat", func(t *testing.T) {
+		echoCommand, echoEnv := helperAgent(t, "echo")
 		ch := NewWithConfig(Config{
 			Agent:              AgentCustom,
-			Command:            "echo",
+			Command:            echoCommand,
+			Env:                echoEnv,
 			NonInteractiveFlag: "",
 			OutputFormat:       "text",
 			Timeout:            5 * time.Second,
@@ -62,6 +49,7 @@ echo '{"type":"result","result":"Final streaming result","session_id":"stream-45
 		ch := NewWithConfig(Config{
 			Agent:              AgentCustom,
 			Command:            jsonScript,
+			Env:                jsonEnv,
 			NonInteractiveFlag: "",
 			OutputFormat:       "json",
 			OutputFormatFlag:   "--output-format", // Enable JSON support for custom agent
@@ -91,6 +79,7 @@ echo '{"type":"result","result":"Final streaming result","session_id":"stream-45
 		ch := NewWithConfig(Config{
 			Agent:              AgentCustom,
 			Command:            streamScript,
+			Env:                streamEnv,
 			NonInteractiveFlag: "",
 			OutputFormat:       "stream-json",
 			OutputFormatFlag:   "--output-format", // Enable JSON support for custom agent
@@ -116,44 +105,37 @@ echo '{"type":"result","result":"Final streaming result","session_id":"stream-45
 
 // TestIntegration_UniformAPIContract tests that all formats provide the same basic API.
 func TestIntegration_UniformAPIContract(t *testing.T) {
-	tmpDir := t.TempDir()
-
 	// All three formats should produce a Response with at minimum a Result field
 	formats := []struct {
 		name   string
 		format OutputFormat
-		script string
+		output string
 	}{
 		{
 			name:   "text",
 			format: OutputFormatText,
-			script: "#!/bin/bash\necho 'Hello from text'",
+			output: "Hello from text\n",
 		},
 		{
 			name:   "json",
 			format: OutputFormatJSON,
-			script: `#!/bin/bash
-echo '{"type":"result","result":"Hello from JSON"}'`,
+			output: `{"type":"result","result":"Hello from JSON"}` + "\n",
 		},
 		{
 			name:   "stream-json",
 			format: OutputFormatStreamJSON,
-			script: `#!/bin/bash
-echo '{"type":"result","result":"Hello from stream"}'`,
+			output: `{"type":"result","result":"Hello from stream"}` + "\n",
 		},
 	}
 
 	for _, f := range formats {
 		t.Run(f.name, func(t *testing.T) {
-			scriptPath := filepath.Join(tmpDir, f.name+"_script.sh")
-			err := os.WriteFile(scriptPath, []byte(f.script), 0755)
-			if err != nil {
-				t.Fatalf("Failed to create script: %v", err)
-			}
+			scriptPath, scriptEnv := helperScript(t, f.output)
 
 			ch := NewWithConfig(Config{
 				Agent:              AgentCustom,
 				Command:            scriptPath,
+				Env:                scriptEnv,
 				NonInteractiveFlag: "",
 				OutputFormat:       string(f.format),
 				Timeout:            5 * time.Second,
@@ -222,20 +204,14 @@ func TestIntegration_ExtractLastResponse(t *testing.T) {
 
 // TestIntegration_PTYMode tests output parsing when running in PTY mode.
 func TestIntegration_PTYMode(t *testing.T) {
-	tmpDir := t.TempDir()
-
-	// Create a script that outputs JSON (simulating a PTY-based tool)
-	ptyScript := filepath.Join(tmpDir, "pty_json.sh")
-	err := os.WriteFile(ptyScript, []byte(`#!/bin/bash
-echo '{"type":"result","result":"PTY JSON response","session_id":"pty-789"}'
-`), 0755)
-	if err != nil {
-		t.Fatalf("Failed to create script: %v", err)
-	}
+	// A helper process that outputs JSON (simulating a PTY-based tool)
+	ptyScript, ptyEnv := helperScript(t, `{"type":"result","result":"PTY JSON response","session_id":"pty-789"}
+`)
 
 	ch := NewWithConfig(Config{
 		Agent:              AgentCustom,
 		Command:            ptyScript,
+		Env:                ptyEnv,
 		NonInteractiveFlag: "",
 		OutputFormat:       "json",
 		OutputFormatFlag:   "--output-format", // Enable JSON support for custom agent

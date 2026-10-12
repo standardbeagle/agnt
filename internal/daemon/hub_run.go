@@ -385,9 +385,56 @@ type agntRunConfig struct {
 	NoAutoRestart bool `json:"no_auto_restart,omitempty"`
 }
 
+// Run modes on the wire (RunConfig.Mode, PROC RUN `mode`). Empty means background.
+const (
+	runModeBackground    = "background"
+	runModeForeground    = "foreground"
+	runModeForegroundRaw = "foreground-raw"
+)
+
+// validRunMode reports whether mode is one the daemon implements. An unknown
+// mode is refused rather than silently run in the background.
+func validRunMode(mode string) bool {
+	switch mode {
+	case "", runModeBackground, runModeForeground, runModeForegroundRaw:
+		return true
+	}
+	return false
+}
+
+func isForegroundRunMode(mode string) bool {
+	return mode == runModeForeground || mode == runModeForegroundRaw
+}
+
+// awaitForegroundRun implements the foreground modes: it blocks until proc
+// exits, then adds the completion fields to resp — exit_code, the final state,
+// and runtime, plus the captured stdout/stderr for foreground-raw.
+//
+// The wait ends early only when ctx does (the request was abandoned or the
+// daemon is stopping); the process is left running and the error says so. The
+// hub's STATUS frames keep the client's idle deadline alive meanwhile.
+func awaitForegroundRun(ctx context.Context, proc *goprocess.ManagedProcess, mode string, resp map[string]interface{}) error {
+	select {
+	case <-proc.Done():
+	case <-ctx.Done():
+		return fmt.Errorf("stopped waiting for process %q, which is still running: %w", proc.ID, ctx.Err())
+	}
+	resp["state"] = proc.State().String()
+	resp["exit_code"] = proc.ExitCode()
+	resp["runtime"] = formatDuration(proc.Runtime())
+	if mode == runModeForegroundRaw {
+		stdout, _ := proc.Stdout()
+		stderr, _ := proc.Stderr()
+		resp["stdout"] = string(stdout)
+		resp["stderr"] = string(stderr)
+	}
+	return nil
+}
+
 // hubHandleRun handles RUN and RUN-JSON commands (overrides Hub's built-in).
-// Adds atomic auto-restart registration for background processes and returns
-// "process_id" (matching what daemon_tools.go expects).
+// Returns "process_id" (matching what daemon_tools.go expects) and honours
+// RunConfig.Mode: background returns once the process is registered, the
+// foreground modes return when it exits.
 
 func (d *Daemon) hubHandleRun(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	cfg, err := unmarshalCommand[agntRunConfig](cmd)
@@ -397,6 +444,9 @@ func (d *Daemon) hubHandleRun(ctx context.Context, conn *hubpkg.Connection, cmd 
 
 	if cfg.Command == "" && cfg.ScriptName == "" {
 		return conn.WriteMissingParam("RUN", "command", "command or script_name required")
+	}
+	if !validRunMode(cfg.Mode) {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("unknown mode %q, valid: background, foreground, foreground-raw", cfg.Mode))
 	}
 
 	// Store the project key in the daemon's normalized form (lowercased on
@@ -444,6 +494,12 @@ func (d *Daemon) hubHandleRun(ctx context.Context, conn *hubpkg.Connection, cmd 
 		"reused":     result.Reused,
 		"cleaned":    result.Cleaned,
 		"command":    proc.Command,
+	}
+
+	if isForegroundRunMode(cfg.Mode) {
+		if err := awaitForegroundRun(ctx, proc, cfg.Mode, response); err != nil {
+			return conn.WriteErr(hubproto.ErrInternal, err.Error())
+		}
 	}
 
 	data, _ := json.Marshal(response)

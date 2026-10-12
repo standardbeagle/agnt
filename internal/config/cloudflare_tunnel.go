@@ -99,7 +99,10 @@ func (c *CloudflareTunnelConfig) CredentialsPath(projectDir string) (string, err
 		}
 		return filepath.Join(home, rest), nil
 	}
-	if !filepath.IsAbs(p) {
+	// A rooted path is never project-relative. filepath.IsAbs alone says no
+	// to "/etc/x" on Windows (no drive letter), which would graft it under
+	// the project directory.
+	if !filepath.IsAbs(p) && !strings.HasPrefix(p, "/") {
 		return filepath.Join(projectDir, p), nil
 	}
 	return p, nil

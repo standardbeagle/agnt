@@ -450,9 +450,7 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string, myState *process
 				if entry, ok := r.daemon.scriptRegistry.GetByProcessID(processID); ok {
 					restartScriptName = entry.Name
 				}
-				if err := RunLifecycleHook(scriptCfg.Hooks.OnRestart, restartScriptName, "restart", scriptCfg, exitCode); err != nil {
-					debug.Warn("daemon", "on-restart hook for %s: %v", restartScriptName, err)
-				}
+				r.daemon.runLifecycleHook(scriptCfg.Hooks.OnRestart, restartScriptName, "restart", scriptCfg, myState.projectPath, exitCode)
 			}
 		}
 
@@ -485,10 +483,12 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string, myState *process
 		// Restart with EADDRINUSE recovery (use startScriptWithRetry instead of StartScript
 		// to avoid re-registering for auto-restart, since we're already monitoring).
 		// No timeout — startup may take a long time (e.g., dotnet restore + compile).
+		r.daemon.readySignaler.Reset(processID)
 		proc, startupErr := r.daemon.startScriptWithRetry(r.ctx, processID, myState.projectPath, myState.workingDir, myState.command, myState.args, myState.env, myState.expectedPorts, false)
 
 		if startupErr != nil {
 			debug.Error("daemon", "Failed to restart process %s: %v", processID, startupErr)
+			r.daemon.readySignaler.SignalFailed(processID, startupErr)
 
 			// The monitor exits here, so the registration must go with it:
 			// leaving the entry would make IsRegistered report true with
@@ -516,6 +516,7 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string, myState *process
 		}
 
 		myState.recordRestart()
+		r.daemon.armReadiness(processID, myState.expectedPorts)
 		debug.Log("daemon", "Process %s restarted (new PID: %d)", processID, proc.PID())
 
 		// Log restart success to session log

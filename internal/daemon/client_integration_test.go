@@ -255,12 +255,13 @@ func TestSessionBasedCleanup(t *testing.T) {
 	}
 
 	// Start a process for project1 via Run (using raw mode)
+	sleepCmd, sleepArgs := stayAliveExec()
 	_, err = client1.Run(protocol.RunConfig{
 		ID:      "proc1",
 		Path:    project1,
 		Mode:    "background",
-		Command: "sleep",
-		Args:    []string{"100"},
+		Command: sleepCmd,
+		Args:    sleepArgs,
 		Raw:     true,
 	})
 	if err != nil {
@@ -279,8 +280,8 @@ func TestSessionBasedCleanup(t *testing.T) {
 		ID:      "proc2",
 		Path:    project2,
 		Mode:    "background",
-		Command: "sleep",
-		Args:    []string{"100"},
+		Command: sleepCmd,
+		Args:    sleepArgs,
 		Raw:     true,
 	})
 	if err != nil {

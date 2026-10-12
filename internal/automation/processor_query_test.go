@@ -62,6 +62,15 @@ func TestProcessHappyPath(t *testing.T) {
 		nil, &gotPrompt, &gotOpts,
 	)
 
+	// The fake answers instantly, and a clock with coarse resolution (Windows)
+	// can report zero elapsed time for it. Give the query a measurable span so
+	// "duration measured" is a property of the processor, not of the clock.
+	instant := p.queryFn
+	p.queryFn = func(ctx context.Context, prompt string, opts *claude.AgentOptions) ([]claude.MessageType, error) {
+		time.Sleep(5 * time.Millisecond)
+		return instant(ctx, prompt, opts)
+	}
+
 	res, err := p.Process(context.Background(), NewSummarizeTask("hello", nil))
 	require.NoError(t, err)
 	require.NotNil(t, res)

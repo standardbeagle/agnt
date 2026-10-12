@@ -1,6 +1,7 @@
 package sshclient
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -26,7 +27,7 @@ Host myserver
 	if hc.Port != 2222 {
 		t.Errorf("Port = %d, want 2222", hc.Port)
 	}
-	if len(hc.IdentityFile) != 1 || !strings.HasSuffix(hc.IdentityFile[0], "/.ssh/id_deploy") {
+	if len(hc.IdentityFile) != 1 || !strings.HasSuffix(filepath.ToSlash(hc.IdentityFile[0]), "/.ssh/id_deploy") {
 		t.Errorf("IdentityFile = %v, want one entry ending in /.ssh/id_deploy", hc.IdentityFile)
 	}
 }

@@ -1,6 +1,10 @@
 package daemon
 
-import "fmt"
+import (
+	"fmt"
+	"runtime"
+	"strconv"
+)
 
 // stayAliveSeconds is the single source of truth for how long a daemon test's
 // "keep this process merely present past the assertion" sleep lasts. Every
@@ -32,7 +36,64 @@ const stayAliveSeconds = 20
 
 // stayAliveCmd is the shell-command form, for KDL `run "..."` blocks and
 // lifecycle-hook command strings.
-func stayAliveCmd() string { return fmt.Sprintf("sleep %d", stayAliveSeconds) }
+//
+// The daemon runs a `run` string through the platform shell, and on native
+// Windows that is cmd.exe, which has no `sleep`. `ping -n N` waits about N-1
+// seconds, needs no console (unlike `timeout`), and is the keep-alive this
+// package already used on Windows.
+func stayAliveCmd() string {
+	name, args := stayAliveExec()
+	cmd := name
+	for _, a := range args {
+		cmd += " " + a
+	}
+	return cmd
+}
+
+// stayAliveExec is the direct-exec argv form, for goprocess.ProcessConfig and
+// protocol.RunConfig{Raw: true}, where no shell is involved and the command
+// must be a real executable on the host: `sleep` on Unix, `ping` on Windows.
+func stayAliveExec() (command string, args []string) {
+	if runtime.GOOS == "windows" {
+		return "ping", []string{"-n", strconv.Itoa(stayAliveSeconds + 1), "127.0.0.1"}
+	}
+	return "sleep", []string{strconv.Itoa(stayAliveSeconds)}
+}
+
+// echoExec is the direct-exec argv for a process that prints text and exits 0.
+// `echo` is an executable on Unix but only a cmd.exe builtin on Windows.
+func echoExec(text string) (command string, args []string) {
+	if runtime.GOOS == "windows" {
+		return "cmd.exe", []string{"/c", "echo", text}
+	}
+	return "echo", []string{text}
+}
+
+// failExec is the direct-exec argv for a process that starts and exits 1.
+// `false` is an executable on Unix only; without the Windows form a test
+// would see a start failure instead of the non-zero exit it means to observe.
+func failExec() (command string, args []string) {
+	if runtime.GOOS == "windows" {
+		return "cmd.exe", []string{"/c", "exit", "1"}
+	}
+	return "false", nil
+}
+
+// kdlExec renders a direct-exec argv as the `command` / `args` lines of a
+// .agnt.kdl script block.
+func kdlExec(command string, args []string) string {
+	out := fmt.Sprintf("command %q", command)
+	if len(args) > 0 {
+		out += "\n        args"
+		for _, a := range args {
+			out += fmt.Sprintf(" %q", a)
+		}
+	}
+	return out
+}
 
 // stayAliveArgs is the `sh -c` argv form, for goprocess.ProcessConfig.Args.
-func stayAliveArgs() []string { return []string{"-c", stayAliveCmd()} }
+// Unix-only by construction: its callers pair it with Command "sh".
+func stayAliveArgs() []string {
+	return []string{"-c", fmt.Sprintf("sleep %d", stayAliveSeconds)}
+}

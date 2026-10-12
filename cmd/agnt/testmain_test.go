@@ -11,6 +11,12 @@ import (
 )
 
 func TestMain(m *testing.M) {
+	// Re-exec'd as a stand-in child process (helper_process_test.go): act as
+	// the helper and exit before any suite setup runs.
+	if spec := os.Getenv(testHelperEnv); spec != "" {
+		os.Exit(runTestHelper(spec))
+	}
+
 	// Isolate the daemon socket so cmd/agnt tests spawn/use their OWN daemon
 	// rather than the host's real one. Without this, `agnt run` subprocesses
 	// connect to the shared default socket (the host daemon), hit a version

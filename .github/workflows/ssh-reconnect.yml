@@ -60,7 +60,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v6
         with:
-          go-version: '1.25'
+          go-version: '1.26'
 
       # sshd + ssh-keygen let the real-sshd freeze chaos test actually run
       # instead of self-skipping (NewSSHDFreezeHarness returns ErrSSHDNotFound

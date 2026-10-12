@@ -2,7 +2,6 @@ package browser
 
 import (
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 )
@@ -30,22 +29,15 @@ func CheckVersion() *VersionInfo {
 	return CheckVersionAt(path)
 }
 
-// CheckVersionAt checks the version of a specific Chrome binary.
+// CheckVersionAt checks the version of a specific Chrome binary. How the
+// version is read is platform-specific (readVersion): asking the binary is
+// only safe where `--version` prints and exits.
 func CheckVersionAt(path string) *VersionInfo {
-	info := &VersionInfo{Path: path}
-
-	// On Windows, `chrome.exe --version` opens a browser window.
-	// Use --headless=new --disable-gpu to prevent GUI, or try registry.
-	out, err := exec.Command(path, "--headless=new", "--disable-gpu", "--version").Output()
+	out, err := readVersion(path)
 	if err != nil {
-		// Fallback: try reading version from file properties on Windows
-		out, err = exec.Command(path, "--product-version").Output()
-		if err != nil {
-			return info
-		}
+		return &VersionInfo{Path: path}
 	}
-
-	info = parseVersionOutput(string(out))
+	info := parseVersionOutput(out)
 	info.Path = path
 	return info
 }

@@ -11,6 +11,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/tunnel"
+	"github.com/standardbeagle/go-cli-server/process"
 )
 
 // buildProxyServerConfig builds a proxy.ProxyConfig from a .agnt.kdl
@@ -258,18 +259,8 @@ func (d *Daemon) handleExplicitStart(event ProxyEvent) {
 	}
 
 	// Determine target URL from config
-	var targetURL string
-	if event.Config.URL != "" {
-		targetURL = event.Config.URL
-	} else if event.Config.Port > 0 {
-		host := event.Config.Host
-		if host == "" {
-			host = "localhost"
-		}
-		targetURL = fmt.Sprintf("http://%s:%d", host, event.Config.Port)
-	} else if event.Config.Target != "" {
-		targetURL = event.Config.Target
-	} else {
+	targetURL := event.Config.ExplicitTargetURL()
+	if targetURL == "" {
 		debug.Warn("daemon", "ExplicitStart event for %s has no target URL", event.ProxyID)
 		return
 	}
@@ -441,11 +432,7 @@ func (d *Daemon) handleFallbackPortCheck(event ProxyEvent) {
 	}
 
 	// No proxy exists — create one targeting the fallback port.
-	host := event.Config.Host
-	if host == "" {
-		host = "localhost"
-	}
-	targetURL := fmt.Sprintf("http://%s:%d", host, event.Config.FallbackPort)
+	targetURL := config.LocalHTTPURL(event.Config.Host, event.Config.FallbackPort)
 
 	proxyServerConfig := buildProxyServerConfig(fallbackProxyID, targetURL, event.Path, event.Config)
 
@@ -486,6 +473,20 @@ func (d *Daemon) handleFallbackPortCheck(event ProxyEvent) {
 	debug.Log("daemon", "Created fallback proxy %s targeting %s (script %s)", fallbackProxyID, targetURL, event.Config.Script)
 }
 
+// processIsLive reports whether the ProcessManager currently holds a running
+// or starting process under processID.
+func (d *Daemon) processIsLive(processID string) bool {
+	if d.hub == nil {
+		return false
+	}
+	proc, err := d.hub.ProcessManager().Get(processID)
+	if err != nil {
+		return false
+	}
+	state := proc.State()
+	return state == process.StateRunning || state == process.StateStarting
+}
+
 // handleScriptStopped handles script stopped events.
 // Stops all proxies associated with the script.
 func (d *Daemon) handleScriptStopped(event ProxyEvent) {
@@ -496,9 +497,15 @@ func (d *Daemon) handleScriptStopped(event ProxyEvent) {
 	// state lives for the process's lifetime, not just the autostart window, so
 	// a late-registering proxy gate can still observe it (see
 	// daemon_autostart.go startAutostartScripts NOTE). When the process truly
-	// stops, the fact is cleared — a restart re-arms a fresh signal.
-	if d.readySignaler != nil {
-		d.readySignaler.Cleanup(event.ScriptID)
+	// stops, the fact is cleared — a restart re-arms a fresh signal, and
+	// waiters still blocked carry over to it (ReadySignaler.Reset).
+	//
+	// This event is delivered asynchronously, so a restart may already have
+	// replaced the process and re-armed its readiness by the time it lands.
+	// Every start path resets readiness itself; resetting again here would
+	// wipe the replacement's signal and strand its dependents.
+	if d.readySignaler != nil && !d.processIsLive(event.ScriptID) {
+		d.readySignaler.Reset(event.ScriptID)
 	}
 
 	// Get all proxies for this script

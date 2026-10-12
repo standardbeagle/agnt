@@ -639,7 +639,7 @@ func ensureRemoteSessionAttachable(host string, client *sshclient.Client, name, 
 		return fmt.Errorf("agnt ssh: discovering remote daemon socket for reconnect check: %w", err)
 	}
 
-	localPath := sshclient.LocalForwardSocketPath(host) + fmt.Sprintf(".reconnect-probe-%d", time.Now().UnixNano())
+	localPath := sshclient.LocalForwardSocketPath(host) + fmt.Sprintf(".probe-%x", time.Now().UnixNano())
 	fw, err := sshclient.NewForwarder(client, remoteSocketPath, localPath)
 	if err != nil {
 		return fmt.Errorf("agnt ssh: opening reconnect probe forward: %w", err)
@@ -782,7 +782,7 @@ func startDaemonSocketForwarding(host string, client *sshclient.Client) func() {
 
 func writeDaemonSocketEnvHint(w io.Writer, endpoint string) {
 	if runtime.GOOS == "windows" {
-		fmt.Fprintf(w, "  $env:AGNT_DAEMON_SOCKET=%q\n", endpoint)
+		fmt.Fprintf(w, "  $env:AGNT_DAEMON_SOCKET='%s'\n", endpoint)
 		return
 	}
 	fmt.Fprintf(w, "  export AGNT_DAEMON_SOCKET=%s\n", endpoint)

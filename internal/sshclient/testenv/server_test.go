@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
@@ -11,6 +12,9 @@ import (
 )
 
 func TestServerConnectAndExec(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("SKIPPED: testenv.Server runs each exec through the host's /bin/sh, which native Windows does not provide")
+	}
 	auth, err := NewAuth("tester")
 	if err != nil {
 		t.Fatal(err)
@@ -38,8 +42,31 @@ func TestServerConnectAndExec(t *testing.T) {
 	}
 }
 
-func TestDiscoverMappedPortFallsBackToInspect(t *testing.T) {
-	runtime := filepath.Join(t.TempDir(), "runtime")
+// fakeContainerRuntime writes an executable standing in for docker/podman:
+// `port` fails the way a Docker-compatible daemon without that endpoint does,
+// `inspect` prints a published-port map. discoverMappedPort execs the path
+// directly, so the fixture is a /bin/sh script on Unix and a .cmd batch file
+// on Windows (which cannot exec a shebang script).
+func fakeContainerRuntime(t *testing.T) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		path := filepath.Join(t.TempDir(), "runtime.cmd")
+		script := "@echo off\r\n" +
+			"if \"%1\"==\"port\" (\r\n" +
+			"  echo Error response from daemon: page not found 1>&2\r\n" +
+			"  exit /b 1\r\n" +
+			")\r\n" +
+			"if \"%1\"==\"inspect\" (\r\n" +
+			"  echo {\"2222/tcp\":[{\"HostIp\":\"0.0.0.0\",\"HostPort\":\"49152\"}]}\r\n" +
+			"  exit /b 0\r\n" +
+			")\r\n" +
+			"exit /b 2\r\n"
+		if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	path := filepath.Join(t.TempDir(), "runtime")
 	script := `#!/bin/sh
 if [ "$1" = "port" ]; then
   echo 'Error response from daemon: page not found' >&2
@@ -51,10 +78,14 @@ if [ "$1" = "inspect" ]; then
 fi
 exit 2
 `
-	if err := os.WriteFile(runtime, []byte(script), 0o700); err != nil {
+	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	addr, err := discoverMappedPort(context.Background(), runtime, "fixture", "2222/tcp")
+	return path
+}
+
+func TestDiscoverMappedPortFallsBackToInspect(t *testing.T) {
+	addr, err := discoverMappedPort(context.Background(), fakeContainerRuntime(t), "fixture", "2222/tcp")
 	if err != nil {
 		t.Fatal(err)
 	}

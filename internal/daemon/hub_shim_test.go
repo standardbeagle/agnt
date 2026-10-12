@@ -200,8 +200,9 @@ func TestRouteShim_KillProbePasses(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	pm := d.hub.ProcessManager()
+	sleepCmd, sleepArgs := stayAliveExec()
 	result, err := pm.StartOrReuse(ctx, goprocess.ProcessConfig{
-		ID: "probe-sleeper", ProjectPath: project, Command: "sleep", Args: []string{"30"},
+		ID: "probe-sleeper", ProjectPath: project, Command: sleepCmd, Args: sleepArgs,
 	})
 	require.NoError(t, err)
 	managedPID := result.Process.PID()
@@ -235,12 +236,17 @@ func TestShimRunOneShot_ClientCancelStopsProcess(t *testing.T) {
 	d := shimTestDaemon(t)
 	project := shimTestProject(t, "scripts {}\n")
 
+	// A real long-lived executable on every OS (`sleep` is not one on Windows,
+	// where the one-shot would fail to start and this test would pass without
+	// ever having a process to cancel). The one-shot is the only shim-managed
+	// process in this daemon, so its registry id is matched by the shim- prefix.
+	sleepCmd, sleepArgs := stayAliveExec()
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan *protocol.ShimExecResponse, 1)
 	go func() {
 		done <- d.shimRunOneShot(ctx, &protocol.ShimExecRequest{
-			ProjectPath: project, Command: "sleep", Args: []string{"30"},
-		}, "sleep 30", "", nil, nil)
+			ProjectPath: project, Command: sleepCmd, Args: sleepArgs,
+		}, stayAliveCmd(), "", nil, nil)
 	}()
 
 	// Wait until the managed process exists, then kill the request context.
@@ -248,7 +254,7 @@ func TestShimRunOneShot_ClientCancelStopsProcess(t *testing.T) {
 	for {
 		started := false
 		for _, p := range d.hub.ProcessManager().List() {
-			if strings.HasPrefix(p.ID, "shim-sleep-30-") {
+			if strings.HasPrefix(p.ID, "shim-") {
 				started = true
 			}
 		}
@@ -271,7 +277,7 @@ func TestShimRunOneShot_ClientCancelStopsProcess(t *testing.T) {
 	}
 
 	for _, p := range d.hub.ProcessManager().List() {
-		assert.NotContains(t, p.ID, "shim-sleep-30", "cancelled one-shot must be deregistered")
+		assert.False(t, strings.HasPrefix(p.ID, "shim-"), "cancelled one-shot %q must be deregistered", p.ID)
 	}
 }
 
@@ -447,8 +453,9 @@ func TestRouteShim_KillMixedPIDsPasses(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	pm := d.hub.ProcessManager()
+	sleepCmd, sleepArgs := stayAliveExec()
 	result, err := pm.StartOrReuse(ctx, goprocess.ProcessConfig{
-		ID: "sleeper", ProjectPath: project, Command: "sleep", Args: []string{"30"},
+		ID: "sleeper", ProjectPath: project, Command: sleepCmd, Args: sleepArgs,
 	})
 	require.NoError(t, err)
 	managedPID := result.Process.PID()

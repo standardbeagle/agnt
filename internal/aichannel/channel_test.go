@@ -153,13 +153,15 @@ func TestIsAvailable_MissingCommand(t *testing.T) {
 }
 
 func TestIsAvailable_Echo(t *testing.T) {
-	// Echo should be available on all systems
+	// The helper process is this test binary, so it exists on every system.
+	command, env := helperAgent(t, "echo")
 	ch := NewWithConfig(Config{
 		Agent:   AgentCustom,
-		Command: "echo",
+		Command: command,
+		Env:     env,
 	})
 	if !ch.IsAvailable() {
-		t.Error("Channel with 'echo' command should be available")
+		t.Error("Channel with an existing command should be available")
 	}
 }
 
@@ -183,10 +185,12 @@ func TestSend_NotAvailable(t *testing.T) {
 }
 
 func TestSend_WithEcho(t *testing.T) {
-	// Use echo as a mock AI agent
+	// Use the echo helper process as a mock AI agent
+	command, env := helperAgent(t, "echo")
 	ch := NewWithConfig(Config{
 		Agent:              AgentCustom,
-		Command:            "echo",
+		Command:            command,
+		Env:                env,
 		NonInteractiveFlag: "", // echo doesn't need flags
 	})
 
@@ -201,9 +205,11 @@ func TestSend_WithEcho(t *testing.T) {
 }
 
 func TestSendAndParse_TextFormat(t *testing.T) {
+	command, env := helperAgent(t, "echo")
 	ch := NewWithConfig(Config{
 		Agent:              AgentCustom,
-		Command:            "echo",
+		Command:            command,
+		Env:                env,
 		NonInteractiveFlag: "",
 		OutputFormat:       "text",
 	})
@@ -219,10 +225,12 @@ func TestSendAndParse_TextFormat(t *testing.T) {
 }
 
 func TestSendAndParse_JSONFormat(t *testing.T) {
-	// Use printf to output JSON
+	// Use the printf helper process to output JSON
+	command, env := helperAgent(t, "printf")
 	ch := NewWithConfig(Config{
 		Agent:              AgentCustom,
-		Command:            "printf",
+		Command:            command,
+		Env:                env,
 		NonInteractiveFlag: "",
 		OutputFormat:       "json",
 		OutputFormatFlag:   "--output-format", // Enable JSON support for custom agent
@@ -244,9 +252,11 @@ func TestSendAndParse_JSONFormat(t *testing.T) {
 
 func TestSendAndParse_DefaultsToText(t *testing.T) {
 	// No OutputFormat specified - should default to text
+	command, env := helperAgent(t, "echo")
 	ch := NewWithConfig(Config{
 		Agent:              AgentCustom,
-		Command:            "echo",
+		Command:            command,
+		Env:                env,
 		NonInteractiveFlag: "",
 		// OutputFormat not set
 	})
@@ -262,10 +272,12 @@ func TestSendAndParse_DefaultsToText(t *testing.T) {
 }
 
 func TestSend_WithStdin(t *testing.T) {
-	// Use cat as a mock that reads stdin
+	// Use the cat helper process as a mock that reads stdin
+	command, env := helperAgent(t, "cat")
 	ch := NewWithConfig(Config{
 		Agent:              AgentCustom,
-		Command:            "cat",
+		Command:            command,
+		Env:                env,
 		NonInteractiveFlag: "",
 		UseStdin:           true,
 	})
@@ -281,10 +293,12 @@ func TestSend_WithStdin(t *testing.T) {
 }
 
 func TestSend_Timeout(t *testing.T) {
-	// Use sleep to test timeout
+	// Use the sleep helper process to test timeout
+	command, env := helperAgent(t, "sleep")
 	ch := NewWithConfig(Config{
 		Agent:              AgentCustom,
-		Command:            "sleep",
+		Command:            command,
+		Env:                env,
 		NonInteractiveFlag: "",
 		Timeout:            100 * time.Millisecond,
 	})
@@ -509,10 +523,12 @@ func TestConfigure_ClaudePTY(t *testing.T) {
 }
 
 func TestSend_WithPTY(t *testing.T) {
-	// Test PTY mode with echo command
+	// Test PTY mode with the echo helper process
+	command, env := helperAgent(t, "echo")
 	ch := NewWithConfig(Config{
 		Agent:              AgentCustom,
-		Command:            "echo",
+		Command:            command,
+		Env:                env,
 		NonInteractiveFlag: "",
 		UsePTY:             true,
 		Timeout:            5 * time.Second,

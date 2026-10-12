@@ -3,17 +3,19 @@
 package sshclient
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 )
 
 func TestWindowsNamedPipePaths(t *testing.T) {
-	forward := LocalForwardSocketPath("User@Example:22")
 	control, err := ControlSocketPath("User@Example:22")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, path := range []string{forward, control} {
+	for _, path := range []string{control} {
 		if !strings.HasPrefix(strings.ToLower(path), `\\.\pipe\agnt-ssh-`) {
 			t.Fatalf("not an agnt named pipe: %q", path)
 		}
@@ -36,12 +38,31 @@ func TestWindowsPipeCanonicalizationAvoidsSanitizationCollisions(t *testing.T) {
 }
 
 func TestWindowsListenersRejectFilesystemPaths(t *testing.T) {
-	if _, _, err := listenLocalForward(`C:\tmp\agnt.sock`); err == nil {
-		t.Fatal("filesystem forward path must fail loudly")
-	}
 	if _, err := listenControlTransport(`C:\tmp\agnt.ctl`); err == nil {
 		t.Fatal("filesystem control path must fail loudly")
 	}
+}
+
+// The forward and the daemon client must speak the same transport: a client
+// dialing the forward's path the way it dials any daemon socket must connect.
+func TestWindowsForwardIsDialableByDaemonClient(t *testing.T) {
+	path := filepath.Join(shortSocketDir(t), "fwd.sock")
+	ln, cleanup, err := listenLocalForward(path)
+	if err != nil {
+		t.Fatalf("listenLocalForward: %v", err)
+	}
+	defer cleanup()
+	go func() {
+		if conn, err := ln.Accept(); err == nil {
+			conn.Close()
+		}
+	}()
+
+	conn, err := daemonclient.Connect(path)
+	if err != nil {
+		t.Fatalf("daemon client could not dial the forward: %v", err)
+	}
+	conn.Close()
 }
 
 func TestWindowsDiscoveryFailsLoudly(t *testing.T) {

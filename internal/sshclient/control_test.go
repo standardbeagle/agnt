@@ -9,7 +9,9 @@ import (
 	"io"
 	"net"
 	"os"
+	"path"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -72,39 +74,18 @@ func TestListenControl_RegistersSocketAtExpectedPath(t *testing.T) {
 	if ln.Addr().String() != wantPath {
 		t.Errorf("listener addr = %q, want %q", ln.Addr().String(), wantPath)
 	}
+	if runtime.GOOS == "windows" {
+		// A named pipe is not a filesystem entry with a mode: access is
+		// restricted by the pipe's owner-only security descriptor instead
+		// (windows_pipe_contract_test.go), so there is no file to stat.
+		t.Log("control endpoint is a named pipe; the 0600 socket-file mode check applies to Unix only")
+		return
+	}
 	if info, statErr := os.Lstat(wantPath); statErr != nil {
 		t.Fatalf("stat control socket: %v", statErr)
 	} else if info.Mode().Perm() != 0o600 {
 		t.Errorf("control socket mode = %o, want 0600", info.Mode().Perm())
 	}
-}
-
-// TestListenControl_ReclaimsStaleSocket pins the "crashed agnt ssh process"
-// case: a socket FILE left behind (nothing listening on it) must not
-// prevent a fresh ListenControl for the same host from succeeding.
-func TestListenControl_ReclaimsStaleSocket(t *testing.T) {
-	withSandboxedHome(t)
-
-	path, err := ControlSocketPath("stalehost")
-	if err != nil {
-		t.Fatalf("ControlSocketPath: %v", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	// Create a listener and then close it WITHOUT removing the socket
-	// file, to simulate a process that died without cleanup.
-	stale, err := net.Listen("unix", path)
-	if err != nil {
-		t.Fatalf("creating stale socket: %v", err)
-	}
-	stale.Close() // file remains on disk; nothing is listening now.
-
-	ln, err := ListenControl("stalehost")
-	if err != nil {
-		t.Fatalf("ListenControl did not reclaim stale socket: %v", err)
-	}
-	defer ln.Close()
 }
 
 // TestDialControl_NoActiveSession pins the Silent Failure Prohibition: with
@@ -140,49 +121,6 @@ func startTestControlServer(t *testing.T, host string) (root string, stop func()
 	return root, func() { ln.Close() }
 }
 
-func TestDiscoverActiveHosts_FindsRegisteredSession(t *testing.T) {
-	withSandboxedHome(t)
-	_, stop := startTestControlServer(t, "active-host")
-	defer stop()
-
-	hosts, err := DiscoverActiveHosts()
-	if err != nil {
-		t.Fatalf("DiscoverActiveHosts: %v", err)
-	}
-	if len(hosts) != 1 || hosts[0] != "active-host" {
-		t.Errorf("hosts = %v, want [active-host]", hosts)
-	}
-}
-
-// TestDiscoverActiveHosts_SkipsAndRemovesStaleSocket pins the "crashed
-// process" cleanup on the discovery side: a socket file with nothing
-// listening must be excluded from the result, not surfaced as a false
-// positive, and should be removed so it doesn't linger.
-func TestDiscoverActiveHosts_SkipsAndRemovesStaleSocket(t *testing.T) {
-	home := withSandboxedHome(t)
-	dir := filepath.Join(home, ".agnt", "ssh")
-	if err := os.MkdirAll(dir, 0o700); err != nil {
-		t.Fatalf("mkdir: %v", err)
-	}
-	stalePath := filepath.Join(dir, "dead-host.ctl")
-	stale, err := net.Listen("unix", stalePath)
-	if err != nil {
-		t.Fatalf("creating stale socket: %v", err)
-	}
-	stale.Close()
-
-	hosts, err := DiscoverActiveHosts()
-	if err != nil {
-		t.Fatalf("DiscoverActiveHosts: %v", err)
-	}
-	if len(hosts) != 0 {
-		t.Errorf("hosts = %v, want none (stale socket should be skipped)", hosts)
-	}
-	if _, statErr := os.Lstat(stalePath); !os.IsNotExist(statErr) {
-		t.Errorf("stale socket file still present after discovery (stat err = %v)", statErr)
-	}
-}
-
 func TestPushOneFile_RoundTrip(t *testing.T) {
 	withSandboxedHome(t)
 	root, stop := startTestControlServer(t, "push-target")
@@ -194,7 +132,8 @@ func TestPushOneFile_RoundTrip(t *testing.T) {
 		t.Fatalf("PushOneFile: %v", err)
 	}
 
-	wantPath := filepath.Join(root, DefaultInboxDir, "note.txt")
+	// Remote (SFTP) paths are slash-joined whatever the local OS separator is.
+	wantPath := path.Join(root, DefaultInboxDir, "note.txt")
 	if remotePath != wantPath {
 		t.Errorf("remotePath = %q, want %q", remotePath, wantPath)
 	}
@@ -467,7 +406,7 @@ func TestPingControl_TimesOutAgainstUnresponsivePeer(t *testing.T) {
 	// (.claude/rules/lessons-liveness-probes.md): pingControl must not
 	// block forever against a peer that accepts the connection but never
 	// answers.
-	ln, err := net.Listen("unix", filepath.Join(t.TempDir(), "silent.ctl"))
+	ln, err := net.Listen("unix", filepath.Join(shortSocketDir(t), "silent.ctl"))
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}

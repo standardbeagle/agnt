@@ -88,8 +88,7 @@ scripts {
 		configContent := `
 scripts {
     quick {
-        command "echo"
-        args "goodbye"
+        ` + kdlExec(echoExec("goodbye")) + `
         autostart true
     }
 }
@@ -110,7 +109,9 @@ scripts {
 			if s != script.StateStopped && s != script.StateFailed {
 				return false
 			}
-			for _, line := range e.OutputLines() {
+			for _, line := range scriptOutputLines(e) {
+				// cmd.exe's echo ends lines with CRLF and OutputLines
+				// splits on LF only, so a Windows line keeps its CR.
 				if line == "goodbye" {
 					entry = e
 					return true
@@ -134,7 +135,7 @@ scripts {
 		configContent := `
 scripts {
     broken {
-        command "false"
+        ` + kdlExec(failExec()) + `
         autostart true
     }
 }
@@ -226,8 +227,7 @@ scripts {
 		configContent := `
 scripts {
     ephemeral {
-        command "echo"
-        args "done"
+        ` + kdlExec(echoExec("done")) + `
         autostart true
     }
 }

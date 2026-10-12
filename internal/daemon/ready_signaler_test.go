@@ -121,7 +121,7 @@ func TestReadySignaler_Cleanup(t *testing.T) {
 	t.Parallel()
 	rs := NewReadySignaler()
 	ch1 := rs.GetOrCreate("proc1")
-	rs.Cleanup("proc1")
+	rs.Reset("proc1")
 
 	// After cleanup, GetOrCreate should return a new channel.
 	ch2 := rs.GetOrCreate("proc1")
@@ -142,7 +142,7 @@ func TestReadySignaler_CleanupStopsProbe(t *testing.T) {
 	rs.StartPortProbe("proc1", port, ctx)
 
 	// Cleanup should cancel the probe.
-	rs.Cleanup("proc1")
+	rs.Reset("proc1")
 
 	// Now start a listener on that port -- probe should NOT signal.
 	ln2, err := net.Listen("tcp", fmt.Sprintf("localhost:%d", port))
@@ -158,7 +158,7 @@ func TestReadySignaler_CleanupNonexistent(t *testing.T) {
 	t.Parallel()
 	rs := NewReadySignaler()
 	// Should not panic.
-	rs.Cleanup("nonexistent")
+	rs.Reset("nonexistent")
 }
 
 func TestReadySignaler_PortProbeImmediateDetection(t *testing.T) {

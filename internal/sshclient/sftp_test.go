@@ -3,8 +3,10 @@ package sshclient
 import (
 	"bytes"
 	"errors"
+	"github.com/standardbeagle/agnt/internal/testutil"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -116,7 +118,8 @@ func TestPushToInbox_DefaultDestinationLandsInAgntInbox(t *testing.T) {
 		t.Fatalf("PushToInbox: %v", err)
 	}
 
-	wantPath := filepath.Join(root, DefaultInboxDir, "logo.png")
+	// Remote (SFTP) paths are slash-joined whatever the local OS separator is.
+	wantPath := path.Join(root, DefaultInboxDir, "logo.png")
 	if remotePath != wantPath {
 		t.Errorf("remotePath = %q, want %q", remotePath, wantPath)
 	}
@@ -145,7 +148,7 @@ func TestPushToInbox_ExplicitDestRelPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("PushToInbox: %v", err)
 	}
-	wantPath := filepath.Join(root, "assets", "img", "logo.png")
+	wantPath := path.Join(root, "assets", "img", "logo.png")
 	if remotePath != wantPath {
 		t.Errorf("remotePath = %q, want %q", remotePath, wantPath)
 	}
@@ -192,9 +195,7 @@ func TestPushToInbox_RejectsReservedFileNamesBeforeRemoteOps(t *testing.T) {
 func TestPushToInbox_RejectsSymlinkEscape(t *testing.T) {
 	root, sc := newSFTPFixture(t)
 	outside := t.TempDir()
-	if err := os.Symlink(outside, filepath.Join(root, "escape")); err != nil {
-		t.Fatalf("creating escape symlink: %v", err)
-	}
+	testutil.Symlink(t, outside, filepath.Join(root, "escape"))
 
 	_, err := PushToInbox(sc, root, "escape", "payload.txt", bytes.NewReader([]byte("x")))
 	if err == nil {
