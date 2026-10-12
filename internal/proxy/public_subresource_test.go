@@ -258,7 +258,7 @@ func TestSubresourceRouteRefusesDisallowedContentType(t *testing.T) {
 	f, _ := upstreamServing(t, map[string]struct{ ct, body string }{
 		"/thing": {"text/html", marker},
 	})
-	if _, _, err := f.fetchSubresource(context.Background(), "https://example.com/thing"); err == nil ||
+	if _, _, _, err := f.fetchSubresource(context.Background(), "https://example.com/thing"); err == nil ||
 		!strings.Contains(err.Error(), "content-type") {
 		t.Fatalf("refusal is not attributable to the content-type allowlist: %v", err)
 	}
@@ -345,7 +345,7 @@ func TestSubresourceGuardRechecksEveryRedirectHop(t *testing.T) {
 	_, f, dialed := testUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "https://169.254.169.254/latest/meta-data/", http.StatusFound)
 	}))
-	_, _, err := f.fetchSubresource(context.Background(), "https://example.com/site.css")
+	_, _, _, err := f.fetchSubresource(context.Background(), "https://example.com/site.css")
 	if err == nil {
 		t.Fatal("a subresource redirect into link-local space was followed")
 	}
@@ -365,7 +365,7 @@ func TestSubresourceRefusesUnsolicitedEncoding(t *testing.T) {
 		w.Header().Set("Content-Encoding", "br")
 		io.WriteString(w, "\x1b\x2a\x00\x84")
 	}))
-	_, _, err := f.fetchSubresource(context.Background(), "https://example.com/site.css")
+	_, _, _, err := f.fetchSubresource(context.Background(), "https://example.com/site.css")
 	if err == nil || !strings.Contains(err.Error(), "Content-Encoding") {
 		t.Fatalf("subresource reader accepted an unsolicited encoding: %v", err)
 	}

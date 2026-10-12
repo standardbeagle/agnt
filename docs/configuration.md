@@ -38,7 +38,7 @@ ManagerConfig{
 
 ## Port Conflict Pre-flight (`internal/daemon/port_preflight.go`, `daemon.go:RunAutostart`)
 
-Before launching autostart scripts, daemon scans all declared `ports` from autostart scripts for unmanaged processes. Configurable via `port-conflict` in `project` node of `.agnt.kdl`:
+Before launching autostart scripts, daemon scans every port it expects them to use — declared `ports`, plus ports derived from a linked proxy, the command line (`--port 5173`), or the `package.json` script — for unmanaged processes. A process the daemon manages, or a child of one, is never reported or killed. Configurable via `port-conflict` in `project` node of `.agnt.kdl`:
 
 ```kdl
 project {
@@ -48,10 +48,12 @@ project {
 
 | Policy | Behavior |
 |--------|----------|
-| `prompt` | Return conflicts to client, wait for `AUTOSTART CLEAR-PORTS` or `AUTOSTART CONTINUE` IPC |
+| `prompt` | Return conflicts to client, wait for `AUTOSTART CLEAR-PORTS` (kill, then start) or `AUTOSTART CONTINUE` (start, kill nothing) IPC |
 | `auto-kill` | Kill blocking process trees automatically, log what killed |
-| `skip` | Log warning, start scripts anyway (they'll fail on bind) |
+| `skip` | Log warning, start scripts anyway and kill nothing (they'll fail on bind) |
 | `fail` | Abort autostart entirely |
+
+A declined kill (`skip`, or `AUTOSTART CONTINUE`) also turns off the launch path's own pre-flight port cleanup and EADDRINUSE recovery for those scripts, including on later restarts; a held port is reported as `port_cleanup_declined` in the startup log.
 
 Kill uses `ProcessManager.KillProcessByPort()` with process-group SIGTERM → 3s wait → SIGKILL escalation + descendant tree walk. `AutostartResult` extended with `PortConflicts` and `PortsCleared` fields.
 
@@ -85,6 +87,24 @@ scripts {
   whole) enforces a hard upper bound; 0 removes the bound.
 - A non-numeric `timeout` fails the parse loudly rather than falling back to the
   indefinite-wait default.
+- **A dependency that fails to start is not "ready".** Its dependents are not
+  started; each is recorded as failed (`dependency_failed` in the startup log
+  and autostart result) and the failure cascades to their own dependents. An
+  expired `timeout` is different: the dependent still starts, with a
+  `dependency_wait_timeout` warning. The same applies to `proc run` /
+  `run_group` `depends_on`, where the pending process reports
+  `dependency_failed:<dep>` instead of `dependency_timeout:<dep>`.
+- A process still waiting on `depends_on` can be stopped: `proc stop` cancels
+  the pending launch (state `cancelled`), and so does the end of the project's
+  last session.
+
+## Lifecycle Hooks (`scripts.<name>.hooks`, `internal/daemon/hook_runner.go`)
+
+`on-start`, `on-stop`, `on-crash` and `on-restart` run in the script's own
+working directory (the project root, or its `cwd`), so a relative hook command
+resolves the same way the script's `run` does. A hook that exits non-zero or
+overruns its 5s window never blocks the lifecycle transition, and is reported
+as a `lifecycle_hook_failed` warning in the startup log.
 
 ## Autostart Cleanup Ordering (`internal/daemon/daemon_autostart.go`)
 
@@ -112,12 +132,16 @@ automation {
 |-----|---------|--------|
 | `max-sessions` | `4` (`DefaultAutomationMaxSessions`) | Maximum concurrent chromedp sessions. `Create` refuses at the cap with an actionable error naming the limit and how to free a slot; the check-and-increment is a single atomic step so the count never exceeds the ceiling even under concurrent creates. A non-positive value restores the default. |
 
-The ceiling is daemon-global and applied on session connect (last-writer-wins,
-the same reconfigure shape as `alerts.push`), so it takes effect for the whole
-daemon, not just the project whose `.agnt.kdl` set it. Lowering it below the
-current active count never evicts a session already in use — it only refuses new
-`Create` calls until the count drops. Runtime enforcement lives in
-`internal/chromedp/manager.go` (`SessionManager.SetMaxSessions` / `Start`).
+The quota is per project: a project's sessions count against its own
+`max-sessions`, so opening a second project with a different value does not
+change the first project's quota. Because every session is a host-memory cost,
+there is also a daemon-wide ceiling — the largest `max-sessions` any connected
+project declares — so two projects cannot add their quotas together. A project's
+quota is applied on session connect and dropped when its last session leaves.
+Lowering it below the current active count never evicts a session already in
+use — it only refuses new `Create` calls until the count drops. Runtime
+enforcement lives in `internal/chromedp/manager.go`
+(`SessionManager.SetProjectMaxSessions` / `Start`).
 
 ## Proxy Display Address (`proxies.<id>.status-url` in `.agnt.kdl`)
 
@@ -649,19 +673,19 @@ caps hold whether or not you later point a tunnel at it):
 
 ```kdl
 public-plane {
-    artifact-rate-per-minute 120   // sustained artifact GET budget per (share, IP)
-    artifact-burst 30              // token-bucket burst for artifact GETs per (share, IP)
-    outbound-rate-per-minute 60    // sustained guarded upstream-fetch budget per ORIGIN
-    outbound-burst 20              // token-bucket burst per upstream origin
+    artifact-rate-per-minute 240   // sustained share GET budget per (share, IP)
+    artifact-burst 128             // token-bucket burst for share GETs per (share, IP)
+    outbound-rate-per-minute 120   // sustained guarded upstream-fetch budget per ORIGIN
+    outbound-burst 96              // token-bucket burst per upstream origin
 }
 ```
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `artifact-rate-per-minute` | int | `120` | Sustained artifact-`GET` budget per (share, IP). Excess ⇒ `429` (constant body, no share id/token). |
-| `artifact-burst` | int | `30` | Burst allowance per (share, IP). A page load fans out to a few requests, so the burst exceeds one page's fan-out. |
-| `outbound-rate-per-minute` | int | `60` | Guarded upstream-fetch budget **per upstream origin, across all shares**. Over-budget ⇒ `503` before any outbound socket opens. |
-| `outbound-burst` | int | `20` | Burst allowance per upstream origin. |
+| `artifact-rate-per-minute` | int | `240` | Sustained `GET` budget per (share, IP), shared by the document, its subresources, `variants.json`, and `walkthrough.json`. Excess ⇒ `429` (constant body, no share id/token). |
+| `artifact-burst` | int | `128` | Burst allowance per (share, IP). One page load is the document, both JSON snapshots, and up to 64 rewritten subresources (more for references inside stylesheets), so the burst must exceed that fan-out. |
+| `outbound-rate-per-minute` | int | `120` | Guarded upstream-fetch budget **per upstream origin, across all shares**. Every redirect hop is charged to the origin it lands on. Over-budget ⇒ `503` before any outbound socket opens. |
+| `outbound-burst` | int | `96` | Burst allowance per upstream origin. Must cover one document plus its rewritten subresources (up to 64) when they share the document's origin. |
 
 The **outbound** cap is the amplification bound: with live-upstream publishing,
 each artifact request to an upstream-bearing share triggers one guarded outbound

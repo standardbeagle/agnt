@@ -90,7 +90,7 @@ func TestUpstreamDocumentRefusesUnsolicitedContentEncoding(t *testing.T) {
 				w.Header().Set("Content-Encoding", enc)
 				io.WriteString(w, "\x1b\x2a\x00\x84not-really-html")
 			}))
-			body, err := f.fetchDocument(context.Background(), "https://example.com/app")
+			body, _, err := f.fetchDocument(context.Background(), "https://example.com/app")
 			if err == nil {
 				t.Fatalf("Content-Encoding %q was accepted; encoded bytes would be spliced and served as HTML", enc)
 			}
@@ -117,7 +117,7 @@ func TestUpstreamDocumentAcceptsIdentityEncoding(t *testing.T) {
 			}
 			io.WriteString(w, upstreamDoc)
 		}))
-		if _, err := f.fetchDocument(context.Background(), "https://example.com/app"); err != nil {
+		if _, _, err := f.fetchDocument(context.Background(), "https://example.com/app"); err != nil {
 			t.Fatalf("Content-Encoding %q was refused: %v", enc, err)
 		}
 	}

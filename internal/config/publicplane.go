@@ -20,25 +20,39 @@ package config
 type PublicPlaneConfig struct {
 	// ArtifactRatePerMinute is the sustained artifact-GET budget per (share, IP).
 	ArtifactRatePerMinute int `json:"artifact_rate_per_minute"`
-	// ArtifactBurst is the token-bucket burst for artifact GETs per (share, IP).
-	// A page load fans out to a few requests (artifact + variants.json +
-	// walkthrough.json), so the burst must comfortably exceed one page's fan-out.
+	// ArtifactBurst is the token-bucket burst for share GETs per (share, IP).
+	// One page load is the document, variants.json, walkthrough.json, and every
+	// subresource the document references (the public plane rewrites up to 64
+	// per document, and each stylesheet can reference more), all drawn from this
+	// one bucket — so the burst must exceed a full page's fan-out, or a
+	// legitimate first load is refused part-way through.
 	ArtifactBurst int `json:"artifact_burst"`
 	// OutboundRatePerMinute is the sustained guarded-fetch budget per upstream
 	// origin, across every share that names that origin.
 	OutboundRatePerMinute int `json:"outbound_rate_per_minute"`
-	// OutboundBurst is the token-bucket burst for guarded fetches per origin.
+	// OutboundBurst is the token-bucket burst for guarded fetches per origin. A
+	// page whose assets live on its own origin costs one fetch for the document
+	// plus one per rewritten reference, and every redirect hop is charged too,
+	// so this must also exceed a full page's fan-out.
 	OutboundBurst int `json:"outbound_burst"`
 }
 
 // Public-plane rate defaults. Generous for a human viewer, a hard ceiling for a
 // flood. The outbound bound is deliberately tighter than the inbound one because
 // it protects a THIRD PARTY, not this daemon.
+//
+// Both bursts are sized to one full page load. The public plane rewrites up to
+// 64 subresource references per document (maxSubresourceRefsPerDocument in
+// internal/proxy), so a load is at least 1 document + 64 subresources outbound,
+// and that plus the two JSON snapshots inbound; the remainder is headroom for
+// redirect hops and the references inside stylesheets. A burst below that
+// refuses a legitimate page part-way through its first load —
+// TestPublicPlaneDefaults_AdmitOneFullPageLoad pins the relationship.
 const (
-	defaultPublicArtifactRatePerMinute = 120
-	defaultPublicArtifactBurst         = 30
-	defaultPublicOutboundRatePerMinute = 60
-	defaultPublicOutboundBurst         = 20
+	defaultPublicArtifactRatePerMinute = 240
+	defaultPublicArtifactBurst         = 128
+	defaultPublicOutboundRatePerMinute = 120
+	defaultPublicOutboundBurst         = 96
 )
 
 // DefaultPublicPlaneConfig returns the house public-plane rate limits.
@@ -75,10 +89,10 @@ func (p PublicPlaneConfig) Normalize() PublicPlaneConfig {
 // KDLPublicPlane is the KDL binding for the public-plane rate block.
 //
 //	public-plane {
-//	    artifact-rate-per-minute 120
-//	    artifact-burst 30
-//	    outbound-rate-per-minute 60
-//	    outbound-burst 20
+//	    artifact-rate-per-minute 240
+//	    artifact-burst 128
+//	    outbound-rate-per-minute 120
+//	    outbound-burst 96
 //	}
 type KDLPublicPlane struct {
 	ArtifactRatePerMinute int `kdl:"artifact-rate-per-minute"`

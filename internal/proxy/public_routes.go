@@ -128,14 +128,19 @@ type upstreamDocFetcher interface {
 	// fetchDocument returns the upstream HTML for rawURL, or a loud error. It
 	// must never return partial bytes alongside an error, and must never fall
 	// back to an unguarded fetch.
-	fetchDocument(ctx context.Context, rawURL string) ([]byte, error)
+	//
+	// finalURL is the URL the body was actually served from — rawURL itself, or
+	// the last hop when the origin redirected. Relative references in the body
+	// resolve against it, not against rawURL.
+	fetchDocument(ctx context.Context, rawURL string) (body []byte, finalURL string, err error)
 
 	// fetchSubresource returns one allowlisted subresource body plus its
 	// canonical media type, under the SAME guard obligations as fetchDocument
 	// (INV-16): origin and every redirect hop re-checked, fail-closed cap,
 	// pin-and-dial. A body whose media type is not on the INV-17 allowlist is an
-	// error, never a relayed body.
-	fetchSubresource(ctx context.Context, rawURL string) ([]byte, string, error)
+	// error, never a relayed body. finalURL is as for fetchDocument: the base a
+	// redirected stylesheet's own references resolve against.
+	fetchSubresource(ctx context.Context, rawURL string) (body []byte, mediaType, finalURL string, err error)
 }
 
 // PublicHandler serves the anonymous-viewer public plane. It is deny-by-default:
@@ -202,17 +207,47 @@ func NewPublicHandler(verifier PublicTokenVerifier, feedback FeedbackSink, maxBo
 		debug.Log("publish", "public plane: subresource signing key unavailable (%v) — the subresource route is disabled; proxied demos will render without upstream CSS/images", err)
 		signer = nil
 	}
-	return &PublicHandler{
+	h := &PublicHandler{
 		verifier:        verifier,
 		feedback:        feedback,
 		maxFeedbackBody: int64(maxBodyBytes),
 		assetPath:       PublicInstrumentationAssetPath(),
 		cspHash:         PublicInstrumentationAssetCSPHash(),
-		upstream:        &guardedUpstreamFetcher{},
 		artifactLimiter: publish.NewRateLimiter(ppc.ArtifactRatePerMinute, ppc.ArtifactBurst, nil),
 		outboundLimiter: publish.NewRateLimiter(ppc.OutboundRatePerMinute, ppc.OutboundBurst, nil),
 		signer:          signer,
 	}
+	// The fetcher charges the outbound budget for every redirect hop through
+	// the handler, so it reads whichever limiter WithRateLimits last installed.
+	h.upstream = &guardedUpstreamFetcher{admitHop: h.admitOutbound}
+	return h
+}
+
+// admitOutbound charges one guarded outbound request against the budget of the
+// origin it is about to reach, and reports whether it may proceed. It is the
+// single charging point for the outbound cap: the handlers call it for the
+// published URL, and the guarded fetcher calls it for every redirect hop, so a
+// redirect cannot move a fetch onto an origin whose budget is already spent.
+func (h *PublicHandler) admitOutbound(rawURL string) bool {
+	return h.outboundLimiter == nil || h.outboundLimiter.Allow(upstreamOriginKey(rawURL))
+}
+
+// admitArtifact charges one inbound request against the (share, client IP)
+// budget and, when it is spent, writes the 429. Every GET under a share draws
+// on it — the document, its subresources, and the JSON snapshots — because one
+// page load is all of them and they are one client's cost against one share.
+//
+// The token was already verified in serveShare, so a 429 here reveals nothing
+// the caller does not already hold (INV-9 / Secret Hygiene): the message is a
+// constant "rate limited", carries artifact-kind headers, and never names the
+// share or an internal id — the same shape as the feedback route's 429.
+func (h *PublicHandler) admitArtifact(w http.ResponseWriter, r *http.Request, shareID string) bool {
+	if h.artifactLimiter == nil || h.artifactLimiter.Allow(publish.ShareIPKey(shareID, r.RemoteAddr)) {
+		return true
+	}
+	h.writeHeaders(w.Header(), kindArtifact, "")
+	http.Error(w, "rate limited", http.StatusTooManyRequests)
+	return false
 }
 
 // WithRateLimits overrides the artifact and outbound rate limiters. It is the
@@ -259,6 +294,7 @@ func (h *PublicHandler) WithUpstreamSeam(seam UpstreamSeam) *PublicHandler {
 		resolve:   seam.Resolve,
 		dial:      seam.Dial,
 		tlsConfig: seam.TLSConfig,
+		admitHop:  h.admitOutbound,
 	}
 	return h
 }
@@ -346,9 +382,9 @@ func (h *PublicHandler) serveShare(w http.ResponseWriter, r *http.Request, p str
 	case subresourceSubPath:
 		h.serveSubresource(w, r, rev, shareID)
 	case "/variants.json":
-		h.serveVariants(w, r, rev)
+		h.serveVariants(w, r, rev, shareID)
 	case "/walkthrough.json":
-		h.serveWalkthrough(w, r, rev)
+		h.serveWalkthrough(w, r, rev, shareID)
 	case "/feedback":
 		h.serveFeedback(w, r, rev, shareID)
 	default:
@@ -374,14 +410,8 @@ func (h *PublicHandler) serveArtifact(w http.ResponseWriter, r *http.Request, re
 		methodNotAllowed(w, "GET, HEAD")
 		return
 	}
-	// Inbound rate cap per (share, client IP). The token was already verified in
-	// serveShare, so a 429 here reveals nothing the caller does not already hold
-	// (INV-9 / Secret Hygiene): the message is a constant "rate limited", carries
-	// artifact-kind headers, and never names the share or an internal id — the
-	// same shape as the feedback route's 429.
-	if h.artifactLimiter != nil && !h.artifactLimiter.Allow(publish.ShareIPKey(shareID, r.RemoteAddr)) {
-		h.writeHeaders(w.Header(), kindArtifact, "")
-		http.Error(w, "rate limited", http.StatusTooManyRequests)
+	// Inbound rate cap per (share, client IP).
+	if !h.admitArtifact(w, r, shareID) {
 		return
 	}
 	if rev != nil && rev.Upstream != nil && rev.Upstream.URL != "" {
@@ -429,13 +459,13 @@ func (h *PublicHandler) serveProxiedArtifact(w http.ResponseWriter, r *http.Requ
 	// name the same origin cannot amplify into unbounded outbound traffic at a
 	// third party. Refused with a generic 503 that does not distinguish a rate
 	// refusal from any other upstream failure (no oracle for the viewer).
-	if h.outboundLimiter != nil && !h.outboundLimiter.Allow(upstreamOriginKey(rev.Upstream.URL)) {
+	if !h.admitOutbound(rev.Upstream.URL) {
 		h.refuseUpstreamRate(w, rev.Upstream.URL)
 		return
 	}
-	body, err := h.upstream.fetchDocument(r.Context(), rev.Upstream.URL)
+	body, finalURL, err := h.upstream.fetchDocument(r.Context(), rev.Upstream.URL)
 	if err != nil {
-		h.refuseUpstream(w, err)
+		h.refuseUpstreamFetch(w, err)
 		return
 	}
 
@@ -453,7 +483,12 @@ func (h *PublicHandler) serveProxiedArtifact(w http.ResponseWriter, r *http.Requ
 	// the route it points at can serve only references this daemon minted
 	// (INV-16); with no signer it is a no-op and the document is served exactly
 	// as it was before the route existed.
-	body = rewriteUpstreamDocumentRefs(body, rev.Upstream.URL, token, shareID, h.signer)
+	//
+	// The base is the URL the document was actually served from. An origin that
+	// redirects /app to /app/index.html means its "theme.css" at
+	// /app/theme.css; resolving against the published URL would mint a signed
+	// reference to /theme.css instead.
+	body = rewriteUpstreamDocumentRefs(body, finalURL, token, shareID, h.signer)
 
 	doc := injectPublicBundle(body, h.assetPath, h.cspHash)
 	w.Header().Set("Content-Length", strconv.Itoa(len(doc)))
@@ -496,9 +531,7 @@ func (h *PublicHandler) serveSubresource(w http.ResponseWriter, r *http.Request,
 	}
 	// Same inbound bucket as the artifact GET: one page load is one document
 	// plus N subresources, so they are one client's budget against one share.
-	if h.artifactLimiter != nil && !h.artifactLimiter.Allow(publish.ShareIPKey(shareID, r.RemoteAddr)) {
-		h.writeHeaders(w.Header(), kindArtifact, "")
-		http.Error(w, "rate limited", http.StatusTooManyRequests)
+	if !h.admitArtifact(w, r, shareID) {
 		return
 	}
 
@@ -518,21 +551,23 @@ func (h *PublicHandler) serveSubresource(w http.ResponseWriter, r *http.Request,
 
 	// Per-origin outbound cap, shared with the document fetch: one origin, one
 	// budget, so a subresource flood cannot exceed what INV-13 permits per origin.
-	if h.outboundLimiter != nil && !h.outboundLimiter.Allow(upstreamOriginKey(rawURL)) {
+	if !h.admitOutbound(rawURL) {
 		h.refuseUpstreamRate(w, rawURL)
 		return
 	}
 
-	body, mediaType, err := h.upstreamFetcher().fetchSubresource(r.Context(), rawURL)
+	body, mediaType, finalURL, err := h.upstreamFetcher().fetchSubresource(r.Context(), rawURL)
 	if err != nil {
-		h.refuseUpstream(w, err)
+		h.refuseUpstreamFetch(w, err)
 		return
 	}
 
 	// A stylesheet's own url()/@import references are rewritten one level deeper,
-	// bounded by the nesting cap. Anything else is served byte-for-byte.
+	// bounded by the nesting cap. Anything else is served byte-for-byte. The
+	// base is where the stylesheet was actually served from, so a redirected
+	// stylesheet's relative references resolve as the browser would resolve them.
 	if mediaType == "text/css" {
-		body = rewriteUpstreamCSSRefs(body, rawURL, shareTokenFromPath(r.URL.Path), shareID, h.signer, depth)
+		body = rewriteUpstreamCSSRefs(body, finalURL, shareTokenFromPath(r.URL.Path), shareID, h.signer, depth)
 	}
 
 	h.writeHeaders(w.Header(), kindArtifact, "")
@@ -556,12 +591,12 @@ func (h *PublicHandler) upstreamFetcher() upstreamDocFetcher {
 // refusingFetcher is the fail-closed stand-in for a missing fetcher.
 type refusingFetcher struct{}
 
-func (refusingFetcher) fetchDocument(context.Context, string) ([]byte, error) {
-	return nil, fmt.Errorf("no upstream fetcher configured")
+func (refusingFetcher) fetchDocument(context.Context, string) ([]byte, string, error) {
+	return nil, "", fmt.Errorf("no upstream fetcher configured")
 }
 
-func (refusingFetcher) fetchSubresource(context.Context, string) ([]byte, string, error) {
-	return nil, "", fmt.Errorf("no upstream fetcher configured")
+func (refusingFetcher) fetchSubresource(context.Context, string) ([]byte, string, string, error) {
+	return nil, "", "", fmt.Errorf("no upstream fetcher configured")
 }
 
 // shareTokenFromPath recovers the token from an already-matched /s/{token}/sub
@@ -602,6 +637,28 @@ func (h *PublicHandler) refuseUpstream(w http.ResponseWriter, err error) {
 	debug.Log("publish", "public plane refused upstream: %v", err)
 	h.writeHeaders(w.Header(), kindArtifact, "")
 	http.Error(w, "upstream unavailable", http.StatusBadGateway)
+}
+
+// refuseUpstreamFetch maps a failed guarded fetch to its refusal: the outbound
+// rate refusal (503) when a redirect hop was denied its origin's budget, the
+// loud 502 for everything else. The two are the same refusals the handlers
+// issue before the fetch starts, so a viewer cannot tell which hop was capped.
+func (h *PublicHandler) refuseUpstreamFetch(w http.ResponseWriter, err error) {
+	var capped *outboundRateError
+	if errors.As(err, &capped) {
+		h.refuseUpstreamRate(w, capped.url)
+		return
+	}
+	h.refuseUpstream(w, err)
+}
+
+// outboundRateError is returned by the guarded walk when a redirect hop is
+// refused by the outbound cap. It carries the hop so the operator log names the
+// origin that was protected.
+type outboundRateError struct{ url string }
+
+func (e *outboundRateError) Error() string {
+	return "upstream: outbound rate cap reached for redirect target " + upstreamOriginKey(e.url)
 }
 
 // refuseUpstreamRate emits a 503 when the per-origin outbound budget is spent.
@@ -677,9 +734,12 @@ func (h *PublicHandler) serveSelfContainedArtifact(w http.ResponseWriter, r *htt
 }
 
 // serveVariants serves the immutable published variant-set snapshot as JSON.
-func (h *PublicHandler) serveVariants(w http.ResponseWriter, r *http.Request, rev *publish.PublishedWalkthrough) {
+func (h *PublicHandler) serveVariants(w http.ResponseWriter, r *http.Request, rev *publish.PublishedWalkthrough, shareID string) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		methodNotAllowed(w, "GET, HEAD")
+		return
+	}
+	if !h.admitArtifact(w, r, shareID) {
 		return
 	}
 	var vs any
@@ -694,9 +754,12 @@ func (h *PublicHandler) serveVariants(w http.ResponseWriter, r *http.Request, re
 }
 
 // serveWalkthrough serves the immutable published walkthrough script as JSON.
-func (h *PublicHandler) serveWalkthrough(w http.ResponseWriter, r *http.Request, rev *publish.PublishedWalkthrough) {
+func (h *PublicHandler) serveWalkthrough(w http.ResponseWriter, r *http.Request, rev *publish.PublishedWalkthrough, shareID string) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
 		methodNotAllowed(w, "GET, HEAD")
+		return
+	}
+	if !h.admitArtifact(w, r, shareID) {
 		return
 	}
 	h.writeJSON(w, r, rev)
@@ -990,6 +1053,13 @@ type guardedUpstreamFetcher struct {
 	resolve   publish.Resolver
 	dial      func(ctx context.Context, network, addr string) (net.Conn, error)
 	tlsConfig *tls.Config
+
+	// admitHop charges the outbound rate budget for a redirect hop and reports
+	// whether the walk may follow it. The caller charges the URL it asked for;
+	// every further hop is a further outbound request, possibly to a different
+	// origin, and is charged here before anything is resolved or dialed. Nil
+	// (a fetcher built directly by a test) follows redirects uncharged.
+	admitHop func(rawURL string) bool
 }
 
 func (f *guardedUpstreamFetcher) resolver() publish.Resolver {
@@ -1008,9 +1078,9 @@ func (f *guardedUpstreamFetcher) dialer() func(ctx context.Context, network, add
 
 // fetchDocument runs the guarded redirect walk and returns the upstream HTML.
 // Every return path is either a complete document or an error — never both.
-func (f *guardedUpstreamFetcher) fetchDocument(ctx context.Context, rawURL string) ([]byte, error) {
-	body, _, err := f.walk(ctx, rawURL, "text/html", readUpstreamDocument)
-	return body, err
+func (f *guardedUpstreamFetcher) fetchDocument(ctx context.Context, rawURL string) ([]byte, string, error) {
+	body, _, finalURL, err := f.walk(ctx, rawURL, "text/html", readUpstreamDocument)
+	return body, finalURL, err
 }
 
 // fetchSubresource runs the SAME guarded redirect walk for one subresource and
@@ -1018,7 +1088,7 @@ func (f *guardedUpstreamFetcher) fetchDocument(ctx context.Context, rawURL strin
 // walk() with fetchDocument is the point: there is one guarded fetch mechanism
 // on this plane, so a hop check cannot be present on one route and absent on the
 // other (INV-16).
-func (f *guardedUpstreamFetcher) fetchSubresource(ctx context.Context, rawURL string) ([]byte, string, error) {
+func (f *guardedUpstreamFetcher) fetchSubresource(ctx context.Context, rawURL string) ([]byte, string, string, error) {
 	return f.walk(ctx, rawURL, subresourceAcceptHeader, readUpstreamSubresource)
 }
 
@@ -1029,7 +1099,8 @@ const subresourceAcceptHeader = "text/css,image/*,font/*"
 
 // walk performs the guarded redirect walk and hands the terminal response to
 // read. Every return path is either a complete body or an error — never both.
-func (f *guardedUpstreamFetcher) walk(ctx context.Context, rawURL, accept string, read func(*http.Response) ([]byte, string, error)) ([]byte, string, error) {
+// finalURL is the hop the body came from.
+func (f *guardedUpstreamFetcher) walk(ctx context.Context, rawURL, accept string, read func(*http.Response) ([]byte, string, error)) (body []byte, mediaType, finalURL string, err error) {
 	ctx, cancel := context.WithTimeout(ctx, upstreamFetchTimeout)
 	defer cancel()
 
@@ -1037,28 +1108,35 @@ func (f *guardedUpstreamFetcher) walk(ctx context.Context, rawURL, accept string
 	for hop := 0; ; hop++ {
 		if hop > maxUpstreamRedirects {
 			// Fail closed: refuse, rather than serving whatever the last hop gave.
-			return nil, "", fmt.Errorf("upstream: redirect chain exceeded %d hops", maxUpstreamRedirects)
+			return nil, "", "", fmt.Errorf("upstream: redirect chain exceeded %d hops", maxUpstreamRedirects)
+		}
+		// The outbound cap on every hop past the first (the caller charged that
+		// one). Without this a redirect is a way around the cap: the budget of
+		// the origin that answers 302 is charged, and the origin it points at —
+		// the one that does the work — is reached for free.
+		if hop > 0 && f.admitHop != nil && !f.admitHop(current) {
+			return nil, "", "", &outboundRateError{url: current}
 		}
 		// INV-13 on EVERY hop, not just the origin. A chain whose final hop lands
 		// on 169.254.169.254 is refused at that hop.
 		addrs, err := publish.CheckUpstreamOrigin(ctx, current, f.resolver())
 		if err != nil {
-			return nil, "", fmt.Errorf("upstream refused: %w", err)
+			return nil, "", "", fmt.Errorf("upstream refused: %w", err)
 		}
 		resp, err := f.get(ctx, current, addrs[0], accept)
 		if err != nil {
-			return nil, "", fmt.Errorf("upstream fetch failed: %w", err)
+			return nil, "", "", fmt.Errorf("upstream fetch failed: %w", err)
 		}
 
 		if isRedirectStatus(resp.StatusCode) {
 			location := resp.Header.Get("Location")
 			resp.Body.Close()
 			if location == "" {
-				return nil, "", fmt.Errorf("upstream: %d with no Location", resp.StatusCode)
+				return nil, "", "", fmt.Errorf("upstream: %d with no Location", resp.StatusCode)
 			}
 			next, err := resolveRedirectTarget(current, location)
 			if err != nil {
-				return nil, "", fmt.Errorf("upstream: bad redirect target: %w", err)
+				return nil, "", "", fmt.Errorf("upstream: bad redirect target: %w", err)
 			}
 			current = next
 			continue
@@ -1067,9 +1145,9 @@ func (f *guardedUpstreamFetcher) walk(ctx context.Context, rawURL, accept string
 		body, mediaType, err := read(resp)
 		resp.Body.Close()
 		if err != nil {
-			return nil, "", err
+			return nil, "", "", err
 		}
-		return body, mediaType, nil
+		return body, mediaType, current, nil
 	}
 }
 

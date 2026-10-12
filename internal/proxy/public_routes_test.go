@@ -537,19 +537,19 @@ type countingFetcher struct {
 	err    error
 }
 
-func (f *countingFetcher) fetchDocument(_ context.Context, rawURL string) ([]byte, error) {
+func (f *countingFetcher) fetchDocument(_ context.Context, rawURL string) ([]byte, string, error) {
 	f.calls++
 	f.gotURL = rawURL
-	return f.body, f.err
+	return f.body, rawURL, f.err
 }
 
 // fetchSubresource keeps countingFetcher a complete upstreamDocFetcher. It
 // counts into the same call tally, so the "a revoked share does no outbound
 // work" assertions cover the subresource route too.
-func (f *countingFetcher) fetchSubresource(_ context.Context, rawURL string) ([]byte, string, error) {
+func (f *countingFetcher) fetchSubresource(_ context.Context, rawURL string) ([]byte, string, string, error) {
 	f.calls++
 	f.gotURL = rawURL
-	return f.body, "text/css", f.err
+	return f.body, "text/css", rawURL, f.err
 }
 
 const upstreamDoc = `<!DOCTYPE html><html><head><title>Live App</title></head>` +
@@ -836,7 +836,7 @@ func TestGuardedFetchDialsTheValidatedAddress(t *testing.T) {
 		io.WriteString(w, upstreamDoc)
 	}))
 
-	body, err := f.fetchDocument(context.Background(), "https://example.com/app?x=1")
+	body, _, err := f.fetchDocument(context.Background(), "https://example.com/app?x=1")
 	if err != nil {
 		t.Fatalf("guarded fetch of a public origin failed: %v", err)
 	}
@@ -945,7 +945,7 @@ func TestGuardedFetchRefusesPrivateOriginsWithoutDialing(t *testing.T) {
 					return nil, errors.New("must not dial")
 				},
 			}
-			if _, err := f.fetchDocument(context.Background(), c.rawURL); err == nil {
+			if _, _, err := f.fetchDocument(context.Background(), c.rawURL); err == nil {
 				t.Fatalf("%s was NOT refused", c.rawURL)
 			}
 			if dials != 0 {
@@ -967,7 +967,7 @@ func TestGuardedFetchRefusesPrivateOriginsWithoutDialing(t *testing.T) {
 			return nil, errors.New("must not dial")
 		},
 	}
-	if _, err := mixed.fetchDocument(context.Background(), "https://example.com/app"); err == nil {
+	if _, _, err := mixed.fetchDocument(context.Background(), "https://example.com/app"); err == nil {
 		t.Fatal("host with one private answer was not refused")
 	}
 	if dials != 0 {
@@ -1003,7 +1003,7 @@ func TestGuardedFetchRechecksEveryRedirectHop(t *testing.T) {
 		_, f, dialed := testUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			http.Redirect(w, r, "https://169.254.169.254/latest/meta-data/", http.StatusFound)
 		}))
-		_, err := f.fetchDocument(context.Background(), "https://example.com/app")
+		_, _, err := f.fetchDocument(context.Background(), "https://example.com/app")
 		if err == nil {
 			t.Fatal("redirect into cloud-metadata space was followed")
 		}
@@ -1028,7 +1028,7 @@ func TestGuardedFetchRechecksEveryRedirectHop(t *testing.T) {
 			w.Header().Set("Content-Type", "text/html")
 			io.WriteString(w, upstreamDoc)
 		}))
-		body, err := f.fetchDocument(context.Background(), "https://example.com/app")
+		body, _, err := f.fetchDocument(context.Background(), "https://example.com/app")
 		if err != nil {
 			t.Fatalf("legitimate redirect not followed: %v", err)
 		}
@@ -1047,7 +1047,7 @@ func TestGuardedFetchRechecksEveryRedirectHop(t *testing.T) {
 			hops++
 			http.Redirect(w, r, "/next"+strconv.Itoa(hops), http.StatusFound)
 		}))
-		if _, err := f.fetchDocument(context.Background(), "https://example.com/app"); err == nil {
+		if _, _, err := f.fetchDocument(context.Background(), "https://example.com/app"); err == nil {
 			t.Fatal("unbounded redirect chain was not refused")
 		}
 		if hops > maxUpstreamRedirects+1 {
@@ -1059,7 +1059,7 @@ func TestGuardedFetchRechecksEveryRedirectHop(t *testing.T) {
 		_, f, _ := testUpstream(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusFound)
 		}))
-		if _, err := f.fetchDocument(context.Background(), "https://example.com/app"); err == nil {
+		if _, _, err := f.fetchDocument(context.Background(), "https://example.com/app"); err == nil {
 			t.Fatal("3xx with no Location was accepted")
 		}
 	})
@@ -1101,7 +1101,7 @@ func TestGuardedFetchRefusesNonDocumentResponses(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			_, f, _ := testUpstream(t, c.handler)
-			body, err := f.fetchDocument(context.Background(), "https://example.com/app")
+			body, _, err := f.fetchDocument(context.Background(), "https://example.com/app")
 			if err == nil {
 				t.Fatalf("accepted a non-document upstream response (%d bytes)", len(body))
 			}
