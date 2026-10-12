@@ -157,8 +157,12 @@ func NewFeedbackStore(dir string, limits FeedbackLimits, now func() time.Time) (
 	return s, nil
 }
 
-// load reads and integrity-checks every share ring. Fails loud on the first
-// corrupt file.
+// load reads and integrity-checks every share ring, then applies retention to
+// it. Fails loud on the first corrupt file.
+//
+// Retention runs here because Accept is not a reliable trigger: a share that
+// stops receiving feedback would otherwise keep its expired rows on disk and
+// readable forever.
 func (s *FeedbackStore) load() error {
 	entries, err := os.ReadDir(s.dir)
 	if err != nil {
@@ -179,8 +183,39 @@ func (s *FeedbackStore) load() error {
 			return fmt.Errorf("%w: %s: %v", ErrFeedbackCorrupt, name, err)
 		}
 		s.byShare[sf.ShareID] = sf.Records
+		if err := s.expire(sf.ShareID); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// expire drops a share's rows that have aged past RetentionDays and makes the
+// drop durable. It is called on every path that exposes stored rows (load,
+// ReadByShare, Count), so retention holds for a share nobody is posting to.
+// Caller holds the lock, or is the single-threaded load.
+//
+// The in-memory ring is pruned even when the durable write fails, so an expired
+// row is never served; the error is returned so the caller can surface that the
+// on-disk copy still holds it.
+func (s *FeedbackStore) expire(shareID string) error {
+	records := s.byShare[shareID]
+	cutoff := s.now().Add(-time.Duration(s.limits.RetentionDays) * 24 * time.Hour)
+	// Rows are kept oldest first, so a fresh head means nothing has expired.
+	if len(records) == 0 || !records[0].CreatedAt.Before(cutoff) {
+		return nil
+	}
+	kept := s.prune(records)
+	if len(kept) == 0 {
+		delete(s.byShare, shareID)
+		err := os.Remove(filepath.Join(s.dir, feedbackFileName(shareID)))
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("publish: remove expired feedback: %w", err)
+		}
+		return nil
+	}
+	s.byShare[shareID] = kept
+	return s.persist(shareID, kept)
 }
 
 // decodeShareFeedback strictly decodes and integrity-checks a ring file.
@@ -336,6 +371,11 @@ func (s *FeedbackStore) ReadByShare(shareID, cursor string, limit int) (rows []F
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Retention applies to reads too: an expired row is not returned just
+	// because no new feedback arrived to evict it.
+	if err := s.expire(shareID); err != nil {
+		return nil, "", err
+	}
 	recs := s.byShare[shareID]
 	all := make([]FeedbackRecord, len(recs))
 	copy(all, recs)
@@ -385,10 +425,13 @@ func (s *FeedbackStore) DroppedByShare(shareID string) int64 {
 	return s.droppedByShare[shareID]
 }
 
-// Count returns the number of stored rows for a share (test/observability).
+// Count returns the number of stored, unexpired rows for a share.
 func (s *FeedbackStore) Count(shareID string) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// A failed durable write still leaves the in-memory ring pruned, which is
+	// what this count reports; ReadByShare returns the error.
+	_ = s.expire(shareID)
 	return len(s.byShare[shareID])
 }
 

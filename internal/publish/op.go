@@ -1,6 +1,10 @@
 package publish
 
-import "strings"
+import (
+	"sort"
+	"strconv"
+	"strings"
+)
 
 // allowedAttrName encodes the setAttribute name allowlist.
 //
@@ -244,7 +248,9 @@ func (o *Op) forbidExcept(allowed ...string) error {
 	return nil
 }
 
-// signature is a stable key for duplicate-op detection within a variant.
+// signature is a stable key for duplicate-op detection within a variant. It
+// covers every data field, Props included: two applyStyle ops on one selector
+// that set different properties are distinct ops, not duplicates.
 func (o *Op) signature() string {
 	var b strings.Builder
 	b.WriteString(string(o.Op))
@@ -268,5 +274,23 @@ func (o *Op) signature() string {
 	b.WriteString(o.Code)
 	b.WriteByte('|')
 	b.WriteString(o.Src)
+	// Props is a map, so its keys are sorted for a stable key. Each entry is
+	// length-prefixed so no property/value pair can be spelled to collide with
+	// a different one.
+	props := make([]string, 0, len(o.Props))
+	for prop := range o.Props {
+		props = append(props, prop)
+	}
+	sort.Strings(props)
+	for _, prop := range props {
+		val := o.Props[prop]
+		b.WriteByte('|')
+		b.WriteString(strconv.Itoa(len(prop)))
+		b.WriteByte(':')
+		b.WriteString(prop)
+		b.WriteString(strconv.Itoa(len(val)))
+		b.WriteByte(':')
+		b.WriteString(val)
+	}
 	return b.String()
 }
