@@ -15,3 +15,7 @@ import (
 func Scan() ([]ProcInfo, error) {
 	return nil, fmt.Errorf("process enumeration is not implemented on %s", runtime.GOOS)
 }
+
+// pidIsZombie has no implementation here, so a zombie is polled for the full
+// grace period by killPID, as every exited-but-unreaped process used to be.
+func pidIsZombie(pid int) bool { return false }

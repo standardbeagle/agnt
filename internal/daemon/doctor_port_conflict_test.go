@@ -64,7 +64,7 @@ func TestCheckPortConflicts_IncludesProcessNames(t *testing.T) {
 
 	names, ok := entry["process_names"].([]string)
 	require.True(t, ok, "process_names must be []string when at least one PID resolves")
-	require.NotEmpty(t, names, "own PID must resolve via /proc, so names must not be empty")
+	require.NotEmpty(t, names, "own PID must resolve through the local process table (/proc on Linux, sysctl on macOS), so names must not be empty")
 	for _, name := range names {
 		assert.NotEmpty(t, name, "every entry in process_names must be non-empty")
 	}

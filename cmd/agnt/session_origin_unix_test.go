@@ -3,7 +3,6 @@
 package main
 
 import (
-	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -58,6 +57,24 @@ func TestAttachAndSessionHostsCommandsExposeRemoteSurface(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = master.Close(); _ = tty.Close() })
+	// Drain the master while attach runs. What attach wrote must be read
+	// before the slave is closed: macOS discards a pty's unread output when
+	// the last slave descriptor closes, so reading the master only afterwards
+	// (which Linux allows) returned nothing there. The reader ends when the
+	// slave closes: EIO on Linux, EOF on macOS.
+	attachOut := make(chan []byte, 1)
+	go func() {
+		var buf []byte
+		chunk := make([]byte, 4096)
+		for {
+			n, readErr := master.Read(chunk)
+			buf = append(buf, chunk[:n]...)
+			if readErr != nil {
+				attachOut <- buf
+				return
+			}
+		}
+	}()
 	oldStdin, oldStdout := os.Stdin, os.Stdout
 	os.Stdin, os.Stdout = tty, tty
 	t.Cleanup(func() { os.Stdin, os.Stdout = oldStdin, oldStdout })
@@ -84,8 +101,13 @@ func TestAttachAndSessionHostsCommandsExposeRemoteSurface(t *testing.T) {
 	}
 	os.Stdin, os.Stdout = oldStdin, oldStdout
 	_ = tty.Close()
-	attachBytes, _ := io.ReadAll(master)
-	attachOutput := string(attachBytes)
+	var attachOutput string
+	select {
+	case out := <-attachOut:
+		attachOutput = string(out)
+	case <-time.After(5 * time.Second):
+		t.Fatal("pty master never reported the slave closing")
+	}
 	if !strings.Contains(attachOutput, "\x1b]0;agnt attach · surface-session\x07") {
 		t.Fatalf("actual attach output missing title: %q", attachOutput)
 	}

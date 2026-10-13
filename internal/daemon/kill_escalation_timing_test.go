@@ -25,6 +25,12 @@ import (
 // state byte can: 'Z' means the process was terminated.
 func procStopped(t *testing.T, pid int) bool {
 	t.Helper()
+	if _, err := os.Stat("/proc/self/stat"); err != nil {
+		// No /proc (macOS): "no entry" would be true for every PID. There
+		// startBlocker reaps the child as soon as it exits, so a dead blocker
+		// is simply gone and kill(pid, 0) says so.
+		return syscall.Kill(pid, 0) != nil
+	}
 	data, err := os.ReadFile("/proc/" + strconv.Itoa(pid) + "/stat")
 	if err != nil {
 		return true // entry gone entirely
@@ -55,7 +61,29 @@ func startBlocker(t *testing.T, ignoreSigterm bool) (pid, port int) {
 	stdout, err := cmd.StdoutPipe()
 	require.NoError(t, err)
 	require.NoError(t, cmd.Start())
-	t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+
+	// Who reaps the blocker decides what the kill under test can observe.
+	//
+	// The vendored kill (go-cli-server) waits for its targets with
+	// kill(pid, 0) and, to see through zombies, the state byte in
+	// /proc/<pid>/stat. With /proc, the blocker is left unreaped until cleanup:
+	// that is the harder case (an exited-but-unreaped target must count as
+	// gone) and the one these tests were written for.
+	//
+	// Without /proc (macOS) the vendored code cannot tell a zombie from a live
+	// process, so an unreaped blocker looks alive for the whole 3s ceiling
+	// even though it died at once. That is a property of being the test's own
+	// child, not of the kill: a real port blocker is not the daemon's child and
+	// is reaped by its own parent or by init. There the blocker is reaped as
+	// soon as it exits, so the kill sees it disappear. The vendored zombie
+	// blindness itself is an upstream item, not patched here.
+	if _, err := os.Stat("/proc/self/stat"); err != nil {
+		reaped := make(chan struct{})
+		go func() { _ = cmd.Wait(); close(reaped) }()
+		t.Cleanup(func() { _ = cmd.Process.Kill(); <-reaped })
+	} else {
+		t.Cleanup(func() { _ = cmd.Process.Kill(); _ = cmd.Wait() })
+	}
 
 	line, err := bufio.NewReader(stdout).ReadString('\n')
 	require.NoError(t, err, "blocker must report its bound port")

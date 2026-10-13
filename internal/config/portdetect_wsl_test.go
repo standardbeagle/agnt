@@ -4,8 +4,10 @@ package config
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -67,18 +69,25 @@ func TestParseTasklistCSV_Malformed(t *testing.T) {
 	assert.Len(t, got, 2, "malformed lines dropped, valid lines retained")
 }
 
-// TestProcessNamesByPIDs_LinuxOnly_NoTasklistCall asserts the Linux
-// fast path: when every PID resolves through /proc/<pid>/comm, the
-// function must NOT shell out to tasklist.exe. Validates the
-// "no new tasklist.exe call for purely-Linux port owners" acceptance
-// criterion.
+// TestProcessNamesByPIDs_LinuxOnly_NoTasklistCall asserts the local
+// fast path: when every PID resolves through the local kernel
+// (/proc/<pid>/comm on Linux, sysctl on macOS), the function must NOT
+// shell out to tasklist.exe. Validates the "no new tasklist.exe call
+// for purely-Linux port owners" acceptance criterion.
 func TestProcessNamesByPIDs_LinuxOnly_NoTasklistCall(t *testing.T) {
-	// Use the test process itself as a known-resolvable Linux PID.
+	// Use the test process itself as a known-resolvable local PID.
 	self := os.Getpid()
 
 	got := ProcessNamesByPIDs(context.Background(), []int{self})
 
-	assert.NotEmpty(t, got[self], "self PID must resolve via /proc")
+	assert.NotEmpty(t, got[self], "self PID must resolve through the local process table")
+	if runtime.GOOS == "linux" {
+		// The Linux-specific half: the name is the kernel's comm.
+		comm, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", self))
+		if assert.NoError(t, err) {
+			assert.Equal(t, strings.TrimSpace(string(comm)), got[self], "on Linux the name is /proc/<pid>/comm")
+		}
+	}
 
 	// We can't directly assert "tasklist.exe was not called" without
 	// instrumenting exec, but the callPath returned by the test-only

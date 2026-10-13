@@ -25,3 +25,4 @@ func (*SSHDFreezeHarness) Addr() string  { return "" }
 func (*SSHDFreezeHarness) Freeze() error { return ErrSSHDNotFound }
 func (*SSHDFreezeHarness) Resume() error { return ErrSSHDNotFound }
 func (*SSHDFreezeHarness) Kill() error   { return nil }
+func (*SSHDFreezeHarness) Log() string   { return "" }

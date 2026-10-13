@@ -131,11 +131,16 @@ func TestNamedTunnelStartEndToEnd(t *testing.T) {
 }
 
 func TestNamedTunnelRefusesBadCredentialBeforeSpawning(t *testing.T) {
+	// Any binary that exists, so the start gets past "cloudflared not found"
+	// to the credential check. Looked up rather than hard-coded: `true` is
+	// /bin/true on Linux and /usr/bin/true on macOS.
+	trueBin, err := exec.LookPath("true")
+	require.NoError(t, err, "a POSIX host has `true` on PATH")
 	tun := New(Config{
-		Provider: ProviderCloudflare, LocalPort: 1, BinaryPath: "/bin/true",
+		Provider: ProviderCloudflare, LocalPort: 1, BinaryPath: trueBin,
 		Named: &NamedCloudflare{TunnelID: "tid", Hostname: "h", CredentialsFile: writeCredential(t, 0o644)},
 	})
-	err := tun.Start(context.Background())
+	err = tun.Start(context.Background())
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "chmod 600")
 	assert.Equal(t, StateFailed, tun.State())

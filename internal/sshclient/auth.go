@@ -2,6 +2,7 @@ package sshclient
 
 import (
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"strings"
@@ -17,16 +18,19 @@ import (
 // its keys; (b) IdentityFile(s) from resolved ssh_config, parsed as PEM,
 // prompting interactively for a passphrase when a key is encrypted; (c)
 // interactive keyboard-interactive/password fallback if the above yield no
-// methods. Methods are composable — the ssh package itself tries each in
-// order and advances only on failure, per its own retry semantics.
+// methods.
+//
+// Agent keys and identity files are ONE "publickey" method, not two. The ssh
+// library tries each method NAME once: after a first publickey method fails it
+// skips every later method that is also called publickey. With the agent and
+// the identity files as separate methods, a reachable agent that did not hold
+// the right key (or held none, which is how macOS's launchd agent starts)
+// meant the identity files were never offered at all, and the connection
+// failed with "attempted methods [none publickey]".
 func BuildAuthMethods(identityFiles []string, prompter Prompter) []ssh.AuthMethod {
 	var methods []ssh.AuthMethod
 
-	if am := agentAuthMethod(); am != nil {
-		methods = append(methods, am)
-	}
-
-	if am := identityFileAuthMethod(identityFiles, prompter); am != nil {
+	if am := publicKeyAuthMethod(agentSigners(), identityFiles, prompter); am != nil {
 		methods = append(methods, am)
 	}
 
@@ -35,10 +39,9 @@ func BuildAuthMethods(identityFiles []string, prompter Prompter) []ssh.AuthMetho
 	return methods
 }
 
-// agentAuthMethod connects to SSH_AUTH_SOCK and returns an AuthMethod
-// offering all keys the agent holds, or nil if no agent socket is
-// configured or reachable.
-func agentAuthMethod() ssh.AuthMethod {
+// agentSigners connects to SSH_AUTH_SOCK and returns the function listing the
+// keys the agent holds, or nil if no agent socket is configured or reachable.
+func agentSigners() func() ([]ssh.Signer, error) {
 	sock := os.Getenv("SSH_AUTH_SOCK")
 	if sock == "" {
 		return nil
@@ -47,25 +50,31 @@ func agentAuthMethod() ssh.AuthMethod {
 	if err != nil {
 		return nil
 	}
-	ag := agent.NewClient(conn)
-	return ssh.PublicKeysCallback(ag.Signers)
+	return agent.NewClient(conn).Signers
 }
 
-// identityFileAuthMethod offers the keys in identityFiles, loading them only
-// when the SSH library asks for them.
+// publicKeyAuthMethod offers the agent's keys first, then the identity files,
+// as a single publickey method (see BuildAuthMethods). Returns nil when there
+// is neither an agent nor an identity file.
 //
-// The library tries auth methods in order and stops at the first that works,
-// so with an agent holding the right key this callback never runs and an
-// encrypted key file never prompts. (It used to be parsed up front, on every
-// dial and every ProxyJump hop: a passphrase prompt before the agent had been
-// tried at all.) Encrypted keys still prompt via prompter when they are
-// needed, never silently skipped. Returns nil if no identity files were given.
-func identityFileAuthMethod(identityFiles []string, prompter Prompter) ssh.AuthMethod {
-	if len(identityFiles) == 0 {
+// The keys are listed only when the library reaches publickey auth, and an
+// encrypted identity file is not decrypted even then: it is offered by its
+// public half, and the passphrase is asked for only if the server accepts that
+// key and a signature is actually needed (lazyIdentity). So an agent that holds
+// the right key never causes a passphrase prompt.
+func publicKeyAuthMethod(agentKeys func() ([]ssh.Signer, error), identityFiles []string, prompter Prompter) ssh.AuthMethod {
+	if agentKeys == nil && len(identityFiles) == 0 {
 		return nil
 	}
 	return ssh.PublicKeysCallback(func() ([]ssh.Signer, error) {
 		var signers []ssh.Signer
+		if agentKeys != nil {
+			// An agent that cannot list its keys is not a reason to give up
+			// on the identity files.
+			if fromAgent, err := agentKeys(); err == nil {
+				signers = append(signers, fromAgent...)
+			}
+		}
 		for _, path := range identityFiles {
 			signer, err := cachedIdentity(path, prompter)
 			if err != nil {
@@ -93,10 +102,19 @@ func cachedIdentity(path string, prompter Prompter) (ssh.Signer, error) {
 	if err != nil {
 		return nil, err
 	}
-	identityCache.Store(path, signer)
+	// A lazy signer caches itself once it has been unlocked; until then each
+	// dial builds a fresh one, so a wrong passphrase is not remembered.
+	if _, lazy := signer.(*lazyIdentity); !lazy {
+		identityCache.Store(path, signer)
+	}
 	return signer, nil
 }
 
+// loadIdentityFile returns a signer for the key at path. An unencrypted key
+// is parsed directly. An encrypted key whose public half is known without the
+// passphrase (OpenSSH-format keys carry it in the clear; otherwise a
+// path+".pub" file) comes back as a lazyIdentity. Only when the public half
+// cannot be found is the passphrase asked for here.
 func loadIdentityFile(path string, prompter Prompter) (ssh.Signer, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
@@ -108,15 +126,83 @@ func loadIdentityFile(path string, prompter Prompter) (ssh.Signer, error) {
 	}
 
 	var passphraseErr *ssh.PassphraseMissingError
-	if isPassphraseMissing(err, &passphraseErr) {
-		passphrase := promptPassphrase(prompter, path)
-		signer, err = ssh.ParsePrivateKeyWithPassphrase(data, []byte(passphrase))
-		if err != nil {
-			return nil, fmt.Errorf("parsing encrypted key with provided passphrase: %w", err)
-		}
-		return signer, nil
+	if !isPassphraseMissing(err, &passphraseErr) {
+		return nil, err
 	}
-	return nil, err
+	pub := passphraseErr.PublicKey
+	if pub == nil {
+		if pubData, readErr := os.ReadFile(path + ".pub"); readErr == nil {
+			pub, _, _, _, _ = ssh.ParseAuthorizedKey(pubData)
+		}
+	}
+	if pub == nil {
+		return unlockIdentity(path, data, prompter)
+	}
+	return &lazyIdentity{path: path, data: data, pub: pub, prompter: prompter}, nil
+}
+
+// unlockIdentity asks for the passphrase and decrypts the key.
+func unlockIdentity(path string, data []byte, prompter Prompter) (ssh.Signer, error) {
+	passphrase := promptPassphrase(prompter, path)
+	signer, err := ssh.ParsePrivateKeyWithPassphrase(data, []byte(passphrase))
+	if err != nil {
+		return nil, fmt.Errorf("parsing encrypted key with provided passphrase: %w", err)
+	}
+	return signer, nil
+}
+
+// lazyIdentity is an encrypted identity file offered by its public key. The
+// passphrase prompt happens on the first signature, which the library asks for
+// only after the server has said it would accept this key.
+type lazyIdentity struct {
+	path     string
+	data     []byte
+	pub      ssh.PublicKey
+	prompter Prompter
+
+	mu     sync.Mutex
+	signer ssh.Signer
+}
+
+func (l *lazyIdentity) PublicKey() ssh.PublicKey { return l.pub }
+
+func (l *lazyIdentity) unlock() (ssh.Signer, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.signer != nil {
+		return l.signer, nil
+	}
+	signer, err := unlockIdentity(l.path, l.data, l.prompter)
+	if err != nil {
+		return nil, err
+	}
+	l.signer = signer
+	identityCache.Store(l.path, signer)
+	return signer, nil
+}
+
+func (l *lazyIdentity) Sign(rand io.Reader, data []byte) (*ssh.Signature, error) {
+	signer, err := l.unlock()
+	if err != nil {
+		return nil, err
+	}
+	return signer.Sign(rand, data)
+}
+
+// SignWithAlgorithm makes lazyIdentity an ssh.AlgorithmSigner, without which
+// the library would restrict an RSA key to the legacy SHA-1 signature.
+func (l *lazyIdentity) SignWithAlgorithm(rand io.Reader, data []byte, algorithm string) (*ssh.Signature, error) {
+	signer, err := l.unlock()
+	if err != nil {
+		return nil, err
+	}
+	if as, ok := signer.(ssh.AlgorithmSigner); ok {
+		return as.SignWithAlgorithm(rand, data, algorithm)
+	}
+	if algorithm != "" && algorithm != l.pub.Type() {
+		return nil, fmt.Errorf("sshclient: key %s cannot sign with %s", l.path, algorithm)
+	}
+	return signer.Sign(rand, data)
 }
 
 // isPassphraseMissing checks (via errors.As-equivalent type assertion,

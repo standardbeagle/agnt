@@ -48,12 +48,18 @@ func readRawControlResponse(t *testing.T, conn net.Conn) controlResponse {
 	return response
 }
 
-// withSandboxedHome points os.UserHomeDir (via $HOME) at a fresh t.TempDir
-// so control-socket tests never touch the real invoking user's
+// withSandboxedHome points os.UserHomeDir (via $HOME) at a fresh temp
+// directory so control-socket tests never touch the real invoking user's
 // ~/.agnt/ssh directory.
+//
+// The directory is a short one (shortSocketDir), not t.TempDir(): control
+// sockets are bound at $HOME/.agnt/ssh/<host>.ctl, t.TempDir() embeds the
+// test's name, and a Unix socket path is limited to 104 bytes on macOS (108 on
+// Linux). A long test name pushed the path over and bind failed with
+// "invalid argument".
 func withSandboxedHome(t *testing.T) string {
 	t.Helper()
-	home := t.TempDir()
+	home := shortSocketDir(t)
 	t.Setenv("HOME", home)
 	return home
 }

@@ -292,10 +292,16 @@ func ProcessNameByPID(pid int) string {
 	return ""
 }
 
-// procNameLinux returns the process name from /proc/<pid>/comm, falling
-// back to /proc/<pid>/cmdline. Returns empty when the PID has no /proc
-// entry (e.g. Windows-side PID seen from WSL).
+// procNameLinux returns the name of a process in this kernel's own PID
+// namespace (the name is historical: it is the local lookup on every Unix).
+// On Linux that is /proc/<pid>/comm, falling back to /proc/<pid>/cmdline; on
+// macOS, which has no /proc, a sysctl read (platform.ProcessName). Returns
+// empty when the PID is not a local process (e.g. a Windows-side PID seen
+// from WSL).
 func procNameLinux(pid int) string {
+	if runtime.GOOS == "darwin" {
+		return platform.ProcessName(pid)
+	}
 	if runtime.GOOS == "linux" {
 		data, err := os.ReadFile(fmt.Sprintf("/proc/%d/comm", pid))
 		if err == nil {

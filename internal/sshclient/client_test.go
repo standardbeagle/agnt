@@ -344,7 +344,7 @@ func TestReconnectHarness_SSHDFreezeBlocksResponses(t *testing.T) {
 	}
 	sshClient, err := ssh.Dial("tcp", harness.Addr(), clientCfg)
 	if err != nil {
-		t.Fatalf("dialing real sshd harness: %v", err)
+		t.Fatalf("dialing real sshd harness: %v\nsshd log:\n%s", err, harness.Log())
 	}
 	defer sshClient.Close()
 

@@ -4,6 +4,7 @@ package platform
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -245,11 +246,35 @@ func hasWindowsExecutableSuffix(raw string) bool {
 
 // killPID sends SIGTERM, waits, then SIGKILL.
 func killPID(pid int, gracefulTimeout int) error {
-	return killPIDWith(pid, gracefulTimeout, ProcessBirthID, syscall.Getpgid, syscall.Kill)
+	return killPIDProbed(pid, gracefulTimeout, ProcessBirthID, syscall.Getpgid, syscall.Kill, pidIsZombie)
 }
 
+// killPIDWith is killPIDProbed without the zombie probe, for tests that drive
+// the signalling logic with invented PIDs.
 func killPIDWith(pid int, gracefulTimeout int, birthFn func(int) (string, bool),
 	getpgidFn func(int) (int, error), killFn func(int, syscall.Signal) error,
+) error {
+	return killPIDProbed(pid, gracefulTimeout, birthFn, getpgidFn, killFn, func(int) bool { return false })
+}
+
+// killPIDProbed is killPID with every host operation injected.
+//
+// "Gone" during the grace period means either kill(pid, 0) fails or zombieFn
+// says the process is a zombie. A zombie has exited: it holds no descriptors
+// and no port, and only waits for its parent to reap it. kill(pid, 0) still
+// succeeds for one, so without the probe a target that died at once on SIGTERM
+// was polled for the whole grace period whenever its parent had not reaped it
+// yet.
+//
+// At escalation, ESRCH from the leadership lookup also means gone, and is
+// success: on macOS getpgid fails that way for a zombie even while kill(pid, 0)
+// succeeds, and on any OS the process can exit between the last poll and the
+// lookup. Reporting that as "pid changed before SIGKILL escalation" called a
+// completed kill a failure. A process that exists with a different birth
+// identity is a recycled PID and still fails closed.
+func killPIDProbed(pid int, gracefulTimeout int, birthFn func(int) (string, bool),
+	getpgidFn func(int) (int, error), killFn func(int, syscall.Signal) error,
+	zombieFn func(int) bool,
 ) error {
 	if pid <= 1 {
 		return fmt.Errorf("invalid pid %d", pid)
@@ -269,7 +294,7 @@ func killPIDWith(pid int, gracefulTimeout int, birthFn func(int) (string, bool),
 
 	deadline := time.Now().Add(time.Duration(gracefulTimeout) * time.Second)
 	for time.Now().Before(deadline) {
-		if err := killFn(pid, 0); err != nil {
+		if err := killFn(pid, 0); err != nil || zombieFn(pid) {
 			return nil // process gone
 		}
 		time.Sleep(100 * time.Millisecond)
@@ -278,6 +303,9 @@ func killPIDWith(pid int, gracefulTimeout int, birthFn func(int) (string, bool),
 	// PID reuse can occur during the grace delay. Fail closed unless the same
 	// kernel birth identity is still present immediately before escalation.
 	groupLeader, err = verifiedPIDLeadership(pid, birth, birthFn, getpgidFn)
+	if errors.Is(err, syscall.ESRCH) {
+		return nil // exited during the grace period: nothing left to escalate against
+	}
 	if err != nil {
 		return fmt.Errorf("pid %d changed before SIGKILL escalation: %w", pid, err)
 	}

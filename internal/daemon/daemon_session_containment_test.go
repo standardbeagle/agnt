@@ -24,6 +24,10 @@ import (
 // dependency) while still exercising a real bind/listen pair.
 const portHolderEnv = "AGNT_TEST_PORTHOLDER"
 
+// portHolderSetsidEnv makes the port holder call setsid(2) on itself before it
+// binds, so it leaves the session and process group it was started in.
+const portHolderSetsidEnv = "AGNT_TEST_PORTHOLDER_SETSID"
+
 func TestMain(m *testing.M) {
 	if port := os.Getenv(portHolderEnv); port != "" {
 		runPortHolder(port)
@@ -108,6 +112,15 @@ func TestMain(m *testing.M) {
 // rather than silently passing on a stale port. SIGTERM/SIGKILL from the
 // daemon's pgid reaper will tear it down.
 func runPortHolder(port string) {
+	// The escape fixture: detach into a new session before binding, the way
+	// `setsid cmd &` does. Done with the syscall rather than the setsid(1)
+	// binary, which is util-linux and does not exist on macOS.
+	if os.Getenv(portHolderSetsidEnv) != "" {
+		if _, err := syscall.Setsid(); err != nil {
+			fmt.Fprintf(os.Stderr, "portholder: setsid failed: %v\n", err)
+			os.Exit(3)
+		}
+	}
 	addr := "127.0.0.1:" + port
 	l, err := net.Listen("tcp", addr)
 	if err != nil {
@@ -311,19 +324,22 @@ func TestSessionContainment_SetsidEscapes(t *testing.T) {
 
 	port := pickFreePort(t)
 
-	// Outer: session A's pgid. Inner (after `setsid`): its own fresh pgid.
-	// `exec setsid` replaces the shell subprocess so the escaped PID is
-	// easy to read by polling the outfile.
+	// Outer: session A's pgid. Inner (after setsid): its own fresh pgid.
+	// The port holder calls setsid(2) on itself (portHolderSetsidEnv) instead
+	// of being launched through setsid(1): that binary is util-linux, absent
+	// on macOS, where `setsid: command not found` left the port unbound. The
+	// backgrounded job of a non-interactive sh is not a process-group leader,
+	// so the call succeeds, and $! is the escaped process itself.
 	pidFile := fmt.Sprintf("/tmp/.agnt-setsid-escape-%d.pid", port)
 	t.Cleanup(func() { _ = os.Remove(pidFile) })
 
 	shellCmd := fmt.Sprintf(
-		"(setsid %s >/tmp/.agnt-setsid-%d.out 2>&1 </dev/null & echo $! >%s) ; sleep 30",
+		"(%s >/tmp/.agnt-setsid-%d.out 2>&1 </dev/null & echo $! >%s) ; sleep 30",
 		self, port, pidFile,
 	)
 
 	cmd := exec.Command("sh", "-c", shellCmd)
-	cmd.Env = append(os.Environ(), portHolderEnv+"="+strconv.Itoa(port))
+	cmd.Env = append(os.Environ(), portHolderEnv+"="+strconv.Itoa(port), portHolderSetsidEnv+"=1")
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	require.NoError(t, cmd.Start())
 

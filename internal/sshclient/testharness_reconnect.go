@@ -9,7 +9,6 @@
 package sshclient
 
 import (
-	"bufio"
 	"errors"
 	"fmt"
 	"io"
@@ -18,12 +17,13 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/standardbeagle/agnt/internal/platform"
 )
 
 // This file backs the Unix real-sshd freeze simulation. It is intentionally
@@ -50,9 +50,24 @@ var ErrSSHDNotFound = errors.New("sshclient: sshd (or ssh-keygen) not found on P
 // exactly the "frozen but connected" shape a reconnect state machine must
 // detect via a bounded liveness probe rather than a transport-level error.
 type SSHDFreezeHarness struct {
-	cmd  *exec.Cmd
-	addr string
-	dir  string
+	cmd     *exec.Cmd
+	addr    string
+	dir     string
+	logPath string
+}
+
+// Log returns what the sshd subprocess has logged so far (LogLevel VERBOSE).
+// Put it in the failure message of any dial against the harness: the client
+// only ever learns "unable to authenticate", the server log says why.
+func (h *SSHDFreezeHarness) Log() string {
+	data, err := os.ReadFile(h.logPath)
+	if err != nil {
+		return fmt.Sprintf("(sshd log unavailable: %v)", err)
+	}
+	if len(data) == 0 {
+		return "(sshd logged nothing)"
+	}
+	return string(data)
 }
 
 // NewSSHDFreezeHarness generates a throwaway host key + authorized_keys pair,
@@ -108,21 +123,32 @@ PasswordAuthentication no
 KbdInteractiveAuthentication no
 UsePAM no
 StrictModes no
-LogLevel QUIET
+LogLevel VERBOSE
 `, port, hostKeyPath, authorizedKeysPath, pidPath)
 	if err := os.WriteFile(configPath, []byte(configContent), 0o600); err != nil {
 		return nil, fmt.Errorf("sshclient: writing sshd_config: %w", err)
 	}
 
+	// -e sends sshd's log to stderr; keep it in a file so a failed dial can
+	// say why the server refused (see Log) instead of only what the client saw.
+	logPath := filepath.Join(dir, "sshd.log")
+	logFile, err := os.Create(logPath)
+	if err != nil {
+		return nil, fmt.Errorf("sshclient: creating sshd log: %w", err)
+	}
 	cmd := exec.Command(sshdPath, "-f", configPath, "-D", "-e")
-	if err := cmd.Start(); err != nil {
+	cmd.Stderr = logFile
+	err = cmd.Start()
+	logFile.Close() // the child holds its own descriptor
+	if err != nil {
 		return nil, fmt.Errorf("sshclient: starting sshd: %w", err)
 	}
 
 	h := &SSHDFreezeHarness{
-		cmd:  cmd,
-		addr: net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
-		dir:  dir,
+		cmd:     cmd,
+		addr:    net.JoinHostPort("127.0.0.1", strconv.Itoa(port)),
+		dir:     dir,
+		logPath: logPath,
 	}
 	if err := h.waitForListen(5 * time.Second); err != nil {
 		cmd.Process.Kill()
@@ -248,13 +274,21 @@ func (h *SSHDFreezeHarness) Kill() error {
 }
 
 // descendantPIDs returns rootPID plus every process transitively forked from
-// it, discovered via a single /proc walk (Linux-specific, matching this
-// file's build tag — sshd's fork-per-connection model is what makes a
-// listener-only SIGSTOP insufficient in the first place).
+// it, from one process-table snapshot (sshd's fork-per-connection model is
+// what makes a listener-only SIGSTOP insufficient in the first place).
+//
+// The snapshot is platform.Scan: /proc on Linux, sysctl on macOS. This used to
+// read /proc directly, so on macOS Freeze failed with "open /proc: no such
+// file or directory". On a Unix with no Scan implementation the error is
+// returned and the caller's test fails loudly rather than freezing nothing.
 func descendantPIDs(rootPID int) ([]int, error) {
-	children, err := procChildrenByParent()
+	procs, err := platform.Scan()
 	if err != nil {
 		return nil, err
+	}
+	children := make(map[int][]int)
+	for _, p := range procs {
+		children[p.PPID] = append(children[p.PPID], p.PID)
 	}
 	result := []int{rootPID}
 	queue := []int{rootPID}
@@ -267,59 +301,6 @@ func descendantPIDs(rootPID int) ([]int, error) {
 		}
 	}
 	return result, nil
-}
-
-// procChildrenByParent scans /proc/<pid>/stat for every process on the host
-// and returns a parent-pid -> child-pids map.
-func procChildrenByParent() (map[int][]int, error) {
-	entries, err := os.ReadDir("/proc")
-	if err != nil {
-		return nil, err
-	}
-	children := make(map[int][]int)
-	for _, entry := range entries {
-		pid, err := strconv.Atoi(entry.Name())
-		if err != nil {
-			continue
-		}
-		ppid, ok := readStatPPID(pid)
-		if !ok {
-			continue
-		}
-		children[ppid] = append(children[ppid], pid)
-	}
-	return children, nil
-}
-
-// readStatPPID reads the parent PID out of /proc/<pid>/stat. Field 4 is
-// PPID, but field 2 (comm) is parenthesized and may itself contain spaces or
-// closing parens, so the split point is the *last* ")" in the line, per the
-// documented proc(5) parsing approach.
-func readStatPPID(pid int) (int, bool) {
-	f, err := os.Open(fmt.Sprintf("/proc/%d/stat", pid))
-	if err != nil {
-		return 0, false
-	}
-	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	if !scanner.Scan() {
-		return 0, false
-	}
-	line := scanner.Text()
-	closeParen := strings.LastIndexByte(line, ')')
-	if closeParen < 0 || closeParen+2 >= len(line) {
-		return 0, false
-	}
-	fields := strings.Fields(line[closeParen+2:])
-	// fields[0] is state (field 3); fields[1] is ppid (field 4).
-	if len(fields) < 2 {
-		return 0, false
-	}
-	ppid, err := strconv.Atoi(fields[1])
-	if err != nil {
-		return 0, false
-	}
-	return ppid, true
 }
 
 // signalAll sends sig to every pid, collecting the first non-ESRCH error but

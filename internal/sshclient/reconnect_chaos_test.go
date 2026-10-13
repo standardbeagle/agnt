@@ -246,7 +246,7 @@ func TestReconnectChaos_RealSSHDFreezeThenReconnect(t *testing.T) {
 
 	client, err := dial(context.Background())
 	if err != nil {
-		t.Fatalf("initial dial to real sshd: %v", err)
+		t.Fatalf("initial dial to real sshd: %v\nsshd log:\n%s", err, harness.Log())
 	}
 	// A short keepalive so the *real* detector — not a hand-rolled probe —
 	// trips the black hole quickly: interval 30ms > sendTimeout 10ms, so each

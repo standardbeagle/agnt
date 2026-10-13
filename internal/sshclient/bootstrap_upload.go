@@ -118,7 +118,19 @@ func writeUploadTemp(session uploadWriteSession, src io.Reader, writeCmd string)
 	return hex.EncodeToString(hasher.Sum(nil)), writeStderr.String(), nil
 }
 
-// remoteSHA256 runs sha256sum on remotePath and returns the hex digest.
+// remoteSHA256Command is the shell command that prints remotePath's SHA-256.
+//
+// sha256sum is GNU coreutils and is not installed on macOS, which is a
+// supported bootstrap target; macOS ships `shasum` (Perl) instead. Both print
+// "<hex digest>  <path>", so the caller reads the first field either way.
+// When neither exists the shell's "shasum: command not found" reaches the
+// caller as the integrity-check error, and nothing is activated.
+func remoteSHA256Command(remotePath string) string {
+	q := platform.ShellQuote(remotePath)
+	return "if command -v sha256sum >/dev/null 2>&1; then sha256sum " + q + "; else shasum -a 256 " + q + "; fi"
+}
+
+// remoteSHA256 hashes remotePath on the remote host and returns the hex digest.
 func remoteSHA256(client *ssh.Client, remotePath string) (string, error) {
 	session, err := client.NewSession()
 	if err != nil {
@@ -129,7 +141,7 @@ func remoteSHA256(client *ssh.Client, remotePath string) (string, error) {
 	var stdout, stderr bytes.Buffer
 	session.Stdout = &stdout
 	session.Stderr = &stderr
-	if err := session.Run("sha256sum " + platform.ShellQuote(remotePath)); err != nil {
+	if err := session.Run(remoteSHA256Command(remotePath)); err != nil {
 		return "", fmt.Errorf("%w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
 	}
 

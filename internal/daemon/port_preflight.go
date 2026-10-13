@@ -348,7 +348,10 @@ func killPortBlockers(ctx context.Context, pm *goprocess.ProcessManager, eventHu
 		if linuxPresent {
 			_, protected, err := killPortHoldersGuarded(ctx, pm, c.Port)
 			if err != nil {
-				errs = append(errs, fmt.Sprintf("linux kill failed: %v", err))
+				// "local": these are PIDs of this kernel (Linux, macOS, WSL's
+				// Linux side), as opposed to the Windows-side PIDs below. It
+				// used to say "linux", on a Mac too.
+				errs = append(errs, fmt.Sprintf("local kill failed: %v", err))
 			}
 			if len(protected) > 0 {
 				msg := fmt.Sprintf("port %d held by daemon or managed process (PIDs %v), kill skipped", c.Port, protected)

@@ -3,6 +3,9 @@ package sshclient
 import (
 	"bytes"
 	"context"
+	"crypto/ed25519"
+	"crypto/rand"
+	"encoding/pem"
 	"errors"
 	"net"
 	"os"
@@ -166,6 +169,99 @@ func TestBuildAuthMethods_IdentityFilesAreLazy(t *testing.T) {
 	}
 	if out.Len() != 0 {
 		t.Fatalf("identity file was read while building the auth chain: %q", out.String())
+	}
+}
+
+// The ssh library tries each auth method NAME once. An agent and the identity
+// files used to be two "publickey" methods, so whenever an agent was reachable
+// and did not hold the right key the identity file was never offered. macOS
+// always has a (usually empty) launchd agent, which is how this surfaced: every
+// fixture dial there failed with "attempted methods [none publickey]".
+func TestPublicKeyAuthMethod_IdentityFileOfferedAfterAgentKeys(t *testing.T) {
+	_, wrongPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wrongSigner, err := ssh.NewSignerFromKey(wrongPriv)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	agents := map[string]func() ([]ssh.Signer, error){
+		"agent with no keys":       func() ([]ssh.Signer, error) { return nil, nil },
+		"agent with the wrong key": func() ([]ssh.Signer, error) { return []ssh.Signer{wrongSigner}, nil },
+		"agent that cannot list":   func() ([]ssh.Signer, error) { return nil, errors.New("agent refused") },
+	}
+	for name, agentKeys := range agents {
+		t.Run(name, func(t *testing.T) {
+			keyPath := filepath.Join(t.TempDir(), "id_test")
+			privPEM, pub := generateClientKey(t)
+			if err := os.WriteFile(keyPath, privPEM, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			fixture := newFixtureServer(t)
+			fixture.authorizedKey = pub
+			defer fixture.serve(t)()
+
+			prompter := Prompter{In: strings.NewReader(""), Out: &discardWriter{}}
+			client, err := ssh.Dial("tcp", fixture.addr, &ssh.ClientConfig{
+				User:            "tester",
+				Auth:            []ssh.AuthMethod{publicKeyAuthMethod(agentKeys, []string{keyPath}, prompter)},
+				HostKeyCallback: ssh.InsecureIgnoreHostKey(), // fixture only; auth is what is under test
+			})
+			if err != nil {
+				t.Fatalf("identity file was not offered alongside the agent: %v", err)
+			}
+			client.Close()
+		})
+	}
+}
+
+// An encrypted identity file is offered by its public key; the passphrase is
+// asked for only when a signature is needed.
+func TestLoadIdentityFile_EncryptedKeyIsNotUnlockedUntilItSigns(t *testing.T) {
+	_, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := ssh.MarshalPrivateKeyWithPassphrase(priv, "", []byte("s3cret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPath := filepath.Join(t.TempDir(), "id_enc")
+	if err := os.WriteFile(keyPath, pem.EncodeToMemory(block), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var out bytes.Buffer
+	prompter := Prompter{In: strings.NewReader("s3cret\n"), Out: &out}
+	signer, err := cachedIdentity(keyPath, prompter)
+	if err != nil {
+		t.Fatalf("cachedIdentity: %v", err)
+	}
+	if _, lazy := signer.(*lazyIdentity); !lazy {
+		t.Fatalf("encrypted key came back as %T, want *lazyIdentity", signer)
+	}
+	if out.Len() != 0 {
+		t.Fatalf("passphrase was asked for before any signature: %q", out.String())
+	}
+	if _, isAlgo := signer.(ssh.AlgorithmSigner); !isAlgo {
+		t.Fatal("lazy identity must be an AlgorithmSigner (RSA keys need SHA-2 signatures)")
+	}
+
+	sig, err := signer.Sign(rand.Reader, []byte("payload"))
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	if err := signer.PublicKey().Verify([]byte("payload"), sig); err != nil {
+		t.Fatalf("signature does not verify against the advertised public key: %v", err)
+	}
+	if !strings.Contains(out.String(), "Enter passphrase") {
+		t.Fatalf("no passphrase prompt on first signature; output %q", out.String())
+	}
+	// Unlocked once: the next dial finds the decrypted signer in the cache.
+	if _, cached := identityCache.Load(keyPath); !cached {
+		t.Fatal("unlocked identity was not cached")
 	}
 }
 

@@ -115,7 +115,17 @@ func TestPromptDelivery_CheatSheetViaFlagAndContextFile(t *testing.T) {
 // each running proxy gets a diagnose hint line pointing at the click flow,
 // alongside the existing proxylog/get_incidents hints.
 func TestProxyHintLinesIncludeDiagnose(t *testing.T) {
-	dir := t.TempDir()
+	// The proxy is registered under `dir` and looked up under os.Getwd()
+	// after chdir. Those must be the same string. On macOS the temp root is a
+	// symlink (/tmp → /private/tmp, /var/folders → /private/var/folders) and
+	// getcwd returns the resolved form, so the proxy registered under the
+	// unresolved path was filtered out as another project's. `agnt run` has
+	// one process and one Getwd for both sides; only the test had two
+	// spellings.
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolving temp dir: %v", err)
+	}
 	chdir(t, dir)
 
 	socketPath := filepath.Join(t.TempDir(), "hint-daemon.sock")

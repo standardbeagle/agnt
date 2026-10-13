@@ -20,6 +20,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/daemonclient"
+	"github.com/standardbeagle/agnt/internal/selflog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -32,12 +33,25 @@ import (
 func redirectDropLog(t *testing.T) string {
 	t.Helper()
 	tmp := t.TempDir()
+	// The hook dispatcher writes drops to the unified self-error log
+	// (selflog.DefaultPath() → <user cache dir>/agnt/errors.log), viewable via
+	// `agnt hook log`. AGNT_ERROR_LOG is unset so the user cache dir drives it.
+	//
+	// Which variable moves the user cache dir depends on the OS:
+	// os.UserCacheDir reads XDG_CACHE_HOME on Linux but $HOME/Library/Caches
+	// on macOS, where XDG_CACHE_HOME is ignored. Setting only XDG_CACHE_HOME
+	// left macOS writing to the runner's real ~/Library/Caches while the test
+	// read an empty temp file. Both are set, and the path is asked of the
+	// code under test rather than rebuilt here.
 	t.Setenv("XDG_CACHE_HOME", tmp)
-	// The hook dispatcher now writes drops to the unified self-error log
-	// (selflog.DefaultPath() → <cache>/agnt/errors.log), viewable via
-	// `agnt hook log`. AGNT_ERROR_LOG is unset so XDG_CACHE_HOME drives it.
+	t.Setenv("HOME", tmp)
 	t.Setenv("AGNT_ERROR_LOG", "")
-	return filepath.Join(tmp, "agnt", "errors.log")
+	path := selflog.DefaultPath()
+	rel, err := filepath.Rel(tmp, path)
+	if err != nil || strings.HasPrefix(rel, "..") {
+		t.Fatalf("drop-log path %q is not under the test's temp dir %q; the redirect did not take", path, tmp)
+	}
+	return path
 }
 
 // readDropLogLines returns the non-empty lines of the drop-log at path, or

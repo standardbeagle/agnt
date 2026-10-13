@@ -14,6 +14,20 @@ import (
 // /proc and enumerates through sysctl in process_scan_darwin.go; other Unixes
 // get the stub in process_scan_other.go.
 
+// pidIsZombie reports whether pid has exited but not been reaped: state 'Z'
+// in /proc/<pid>/stat. False when the entry is gone or unreadable.
+func pidIsZombie(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return false
+	}
+	fields := parseStatFieldsAfterComm(data)
+	return len(fields) > 0 && fields[0] == "Z"
+}
+
 // Scan returns all running processes by reading /proc on Linux.
 func Scan() ([]ProcInfo, error) {
 	return scanProc()
