@@ -67,9 +67,12 @@ jobs:
 
           Write-Host "Building old version from tag: $oldTag"
 
-          # Save current state
-          $currentBranch = git rev-parse --abbrev-ref HEAD
-          Write-Host "Current branch: $currentBranch"
+          # Save current state. Use the commit, not the branch name: on a
+          # pull_request run HEAD is detached, `--abbrev-ref HEAD` prints
+          # "HEAD", and `git checkout HEAD` is a no-op that leaves the old
+          # tag checked out, so every later step would test the old source.
+          $currentBranch = git rev-parse HEAD
+          Write-Host "Current commit: $currentBranch"
 
           # Checkout old tag
           git checkout $oldTag

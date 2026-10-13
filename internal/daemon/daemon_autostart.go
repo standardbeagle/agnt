@@ -347,6 +347,15 @@ func (d *Daemon) registerAndStartScripts(ctx context.Context, cfg *config.AgntCo
 	// This handles the case where scripts were removed from .agnt.kdl between sessions.
 	for _, entry := range d.scriptRegistry.List(projectPath) {
 		if _, inConfig := cfg.Scripts[entry.Name]; !inConfig {
+			// A process started by the RUN verb is in the registry by design
+			// and in no config. Autostart runs asynchronously after SESSION
+			// REGISTER, so an agent's first `run` can land before this prune;
+			// removing its entry would leave a live process the registry no
+			// longer tracks (no cleanup, no state). Config reconcile skips
+			// these for the same reason (reconcile_apply.go).
+			if _, adHoc := d.runLaunches.Load(entry.ProcessID); adHoc {
+				continue
+			}
 			d.scriptRegistry.Remove(entry.Name, projectPath)
 			d.scriptConfigs.Delete(entry.ProcessID)
 			d.portKillDeclined.Delete(entry.ProcessID)
