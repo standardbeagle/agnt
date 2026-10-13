@@ -311,7 +311,9 @@ func TestBrowserSessionAPI_GlobalScopeRefused(t *testing.T) {
 // local browser on the same proxy, tunnel still bound, is not.
 func TestBrowserSessionStoreAPI_UntrustedCallerRefused(t *testing.T) {
 	f := newTwoProjectFixture(t)
-	f.proxyA.SetPublicURL("https://abc.trycloudflare.com")
+	tunnelDone := make(chan struct{})
+	t.Cleanup(func() { close(tunnelDone) })
+	f.proxyA.SetTunnelURL("https://abc.trycloudflare.com", tunnelDone, proxy.TunnelKindCloudflareQuick)
 	api := dialBrowserAPIWith(t, f.proxyA, http.Header{
 		"Host":             {"abc.trycloudflare.com"},
 		"Origin":           {"https://abc.trycloudflare.com"},

@@ -9,12 +9,14 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 )
 
 func TestAutoStartDaemon(t *testing.T) {
 	// No t.Parallel(): spawns the real agnt daemon binary and force-kills by pgrep pattern.
 	// Use a unique socket for this test (platform-appropriate path)
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	socketPath := filepath.Join(tmpDir, "test-autostart.sock")
 
 	// Ensure any existing daemon is stopped

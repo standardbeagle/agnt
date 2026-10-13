@@ -2,11 +2,16 @@ package main
 
 import (
 	"bytes"
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -325,5 +330,147 @@ func TestPublishFeedback_NeverWritesIntoTheStoreItReads(t *testing.T) {
 		if after[path] != data {
 			t.Fatalf("a read rewrote %s", path)
 		}
+	}
+}
+
+// writeLegacyAddScriptRecord writes, into a serve store, a LIVE share record of
+// the kind a pre-2026-08-18 build stored: a walkthrough whose variant set
+// carries an addScript op. No current publish path can produce one, so the
+// record is built by hand with a valid checksum (sha256 over the record with
+// its checksum blank — the store's own rule).
+func writeLegacyAddScriptRecord(t *testing.T, sharesDir, id, projectPath, sourceFile string) string {
+	t.Helper()
+	pw, err := publish.DecodePublishedWalkthrough([]byte(reviewFixWalkthroughJSON))
+	if err != nil {
+		t.Fatal(err)
+	}
+	pw.VariantSet = &publish.VariantSet{Version: publish.SchemaV1, ID: "vs", Variants: []publish.Variant{{
+		ID:  "a",
+		Ops: []publish.Op{{Op: publish.OpAddScript, Code: "document.getElementById('agnt-demo-indicator').remove()"}},
+	}}}
+	sh := publish.Share{
+		ID:          id,
+		TokenHash:   strings.Repeat("ab", 32),
+		ProjectPath: projectPath,
+		Walkthrough: pw,
+		Digest:      "legacy-digest",
+		SourceFile:  sourceFile,
+		CreatedAt:   time.Unix(1_690_000_000, 0).UTC(),
+	}
+	unsigned, err := json.Marshal(&sh)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sum := sha256.Sum256(unsigned)
+	sh.Checksum = hex.EncodeToString(sum[:])
+	data, err := json.MarshalIndent(&sh, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(sharesDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(sharesDir, id+".json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+// TestPublishServe_QuarantinedShareIsReportedAndDoesNotStopTheRun: a serve store
+// holding one share from before the addScript gate must not stop the folder
+// from being served. The share is reported loudly at startup, its healthy
+// sibling is published and reachable, and — its file having since been fixed —
+// it is retired in favour of a fresh share rather than left quarantined.
+func TestPublishServe_QuarantinedShareIsReportedAndDoesNotStopTheRun(t *testing.T) {
+	dir := t.TempDir()
+	storeDir := filepath.Join(t.TempDir(), "store")
+	sharesDir := filepath.Join(storeDir, "shares")
+	for _, name := range []string{"good.json", "old.json"} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(reviewFixWalkthroughJSON), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	recordPath := writeLegacyAddScriptRecord(t, sharesDir, "legacyshare", dir, "old.json")
+
+	// Premise: the store really does quarantine that record (and loads).
+	pre, err := publish.OpenReadOnly(sharesDir, nil)
+	if err != nil {
+		t.Fatalf("premise broken: the store must load with the legacy record present: %v", err)
+	}
+	if q := pre.Quarantined(); len(q) != 1 || q[0].ID != "legacyshare" {
+		t.Fatalf("premise broken: the legacy record must be quarantined, got %+v", q)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	var out bytes.Buffer
+	var mu sync.Mutex
+	var published []publishedShare
+	var addr string
+	err = runPublishServe(ctx, publishServeOptions{
+		Dir: dir, Addr: "127.0.0.1:0", StoreDir: storeDir, Out: &out,
+		OnPublish: func(_ string, shares []publishedShare) {
+			mu.Lock()
+			published = append([]publishedShare(nil), shares...)
+			mu.Unlock()
+		},
+		OnListen: func(a string) {
+			addr = a
+			// The plane is up: check it serves, then end the run.
+			mu.Lock()
+			shares := append([]publishedShare(nil), published...)
+			mu.Unlock()
+			for _, sh := range shares {
+				resp, gerr := http.Get("http://" + a + "/s/" + sh.Token)
+				if gerr != nil {
+					t.Errorf("GET %s: %v", sh.File, gerr)
+					continue
+				}
+				resp.Body.Close()
+				if resp.StatusCode != http.StatusOK {
+					t.Errorf("%s must be served, got %d", sh.File, resp.StatusCode)
+				}
+			}
+			cancel()
+		},
+	})
+	if err != nil {
+		t.Fatalf("a quarantined share must not stop the serve run: %v\n%s", err, out.String())
+	}
+	if addr == "" {
+		t.Fatalf("the listener never came up:\n%s", out.String())
+	}
+
+	text := out.String()
+	for _, want := range []string{
+		"QUARANTINED", "legacyshare", "NOT being served",
+		"addScript is not permitted on a published walkthrough", "INV-14",
+		"old.json", recordPath,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("the startup output must report the quarantine, missing %q in:\n%s", want, text)
+		}
+	}
+	// Both files were published — the healthy one, and old.json under a NEW share.
+	if len(published) != 2 {
+		t.Fatalf("both files must be published, got %+v", published)
+	}
+	for _, sh := range published {
+		if sh.ID == "legacyshare" || sh.Token == "" {
+			t.Fatalf("%s must be served by a fresh share with a printable token, got id=%q", sh.File, sh.ID)
+		}
+	}
+
+	// Afterwards the store holds no quarantine: the legacy share is a tombstone.
+	post, err := publish.OpenReadOnly(sharesDir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if q := post.Quarantined(); len(q) != 0 {
+		t.Fatalf("the superseded share must not stay quarantined, got %+v", q)
+	}
+	if info, err := post.Status("legacyshare"); err != nil || !info.Revoked {
+		t.Fatalf("the superseded share must be revoked, got %+v err=%v", info, err)
 	}
 }

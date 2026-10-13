@@ -52,10 +52,10 @@ func (d *Daemon) ReconcileProjectConfig(ctx context.Context, projectPath string)
 		default:
 			continue
 		}
-		// A process started by the top-level RUN verb is an ad-hoc command,
-		// not something .agnt.kdl declares. It is never "running, no longer
+		// An ad-hoc launch (RUN, inline PROC RUN, PROC RUN-GROUP) is not
+		// something .agnt.kdl declares. It is never "running, no longer
 		// declared": config reconcile leaves it alone.
-		if _, adHoc := d.runLaunches.Load(entry.ProcessID); adHoc {
+		if d.isAdHocLaunch(entry.ProcessID) {
 			continue
 		}
 		if sc, ok := d.scriptConfigs.Load(entry.ProcessID); ok {

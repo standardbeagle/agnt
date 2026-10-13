@@ -50,9 +50,14 @@ scripts {
 `, stayAliveCmd(), ephemeralPort(t), stayAliveCmd())
 }
 
-// newDaemon boots a daemon with a unique socket under dir and registers a
-// t.Cleanup that stops it gracefully (2 s budget).
-func newDaemon(t *testing.T, dir string) *Daemon {
+// newDaemon boots a daemon with a unique socket and registers a t.Cleanup that
+// stops it gracefully (2 s budget).
+//
+// The socket does not go under dir: callers pass a t.TempDir(), whose path
+// embeds the test name and overflows a Unix socket's 104-byte limit on macOS.
+// It gets its own short directory (shortTempDir); dir is kept so the call
+// sites read as before.
+func newDaemon(t *testing.T, _ string) *Daemon {
 	t.Helper()
 	// Route through NewForTest, NOT New()+Start(): Start() runs the host-global
 	// startup ops (cleanupOrphans, startupPortCleanup, startupOrphanPGIDScan,
@@ -62,7 +67,7 @@ func newDaemon(t *testing.T, dir string) *Daemon {
 	// exercises autostart, not the startup ops, so it must skip them. NewForTest
 	// registers its own t.Cleanup(Stop).
 	return NewForTest(t, DaemonConfig{
-		SocketPath:   filepath.Join(dir, "test.sock"),
+		SocketPath:   filepath.Join(shortTempDir(t), "test.sock"),
 		MaxClients:   10,
 		WriteTimeout: 5 * time.Second,
 	})

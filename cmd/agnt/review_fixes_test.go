@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/standardbeagle/agnt/internal/config"
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 )
 
 // TestListenOverlaySocketRefusesLiveSocket: "stale socket" removal used to be
@@ -17,7 +18,7 @@ import (
 // session's socket and took its browser events. A socket something answers on
 // is left alone and the second listener fails loud.
 func TestListenOverlaySocketRefusesLiveSocket(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "o.sock")
+	path := filepath.Join(sockdir.Short(t), "o.sock")
 
 	first, err := listenOverlaySocket(path)
 	if err != nil {
@@ -52,7 +53,7 @@ func TestListenOverlaySocketRefusesLiveSocket(t *testing.T) {
 // TestListenOverlaySocketReclaimsStaleSocket: a leftover socket file nothing
 // listens on (a crashed session) is still replaced.
 func TestListenOverlaySocketReclaimsStaleSocket(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "o.sock")
+	path := filepath.Join(sockdir.Short(t), "o.sock")
 
 	dead, err := net.Listen("unix", path)
 	if err != nil {
@@ -90,7 +91,7 @@ func TestListenOverlaySocketReclaimsStaleSocket(t *testing.T) {
 // TestOverlayEndpointEmptyUntilListening: the daemon must never be handed the
 // path of a socket this session is not serving.
 func TestOverlayEndpointEmptyUntilListening(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "o.sock")
+	path := filepath.Join(sockdir.Short(t), "o.sock")
 
 	holder, err := listenOverlaySocket(path)
 	if err != nil {
@@ -124,7 +125,7 @@ func TestOverlayEndpointEmptyUntilListening(t *testing.T) {
 		t.Fatalf("failed overlay removed another session's socket: %v", err)
 	}
 
-	free := filepath.Join(t.TempDir(), "free.sock")
+	free := filepath.Join(sockdir.Short(t), "free.sock")
 	ok := newOverlay(free, nil)
 	if err := ok.Start(t.Context()); err != nil {
 		t.Fatalf("Start on a free path: %v", err)

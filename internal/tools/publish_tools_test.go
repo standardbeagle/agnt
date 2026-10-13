@@ -297,3 +297,40 @@ func renderText(t *testing.T, res *mcp.CallToolResult) string {
 	}
 	return tc.Text
 }
+
+// TestFormatShare_QuarantineIsNotHidden: a quarantined share is never rendered
+// as "live". The listing says it is not served, why, and how to clear it.
+func TestFormatShare_QuarantineIsNotHidden(t *testing.T) {
+	q := protocol.PublishShareInfo{
+		ID: "share-q", Title: "Old tour", Steps: 1, TokenHashPrefix: "abcd1234", CreatedAt: "2026-07-01T00:00:00Z",
+		Quarantined:      true,
+		QuarantineReason: "addScript is not permitted on a published walkthrough (INV-14)",
+		RecordPath:       "/state/publish/share-q.json",
+	}
+	got := formatShare(q)
+	for _, want := range []string{
+		"share-q", "QUARANTINED", "not served",
+		"addScript is not permitted on a published walkthrough (INV-14)",
+		`publish {action: "revoke", id: "share-q"}`,
+		"/state/publish/share-q.json",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("quarantined share rendering is missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "[live]") {
+		t.Fatalf("a quarantined share must not be rendered as live:\n%s", got)
+	}
+
+	// Near miss: a healthy share is plain "live" with no quarantine lines.
+	live := formatShare(protocol.PublishShareInfo{ID: "share-ok", Title: "Tour", TokenHashPrefix: "abcd1234"})
+	if !strings.Contains(live, "[live]") || strings.Contains(live, "QUARANTINED") || strings.Contains(live, "reason:") {
+		t.Fatalf("a healthy share must render as live only:\n%s", live)
+	}
+	// Near miss: once revoked it is an ordinary tombstone — no "clear it" advice.
+	q.Revoked = true
+	revoked := formatShare(q)
+	if !strings.Contains(revoked, "[revoked]") || strings.Contains(revoked, "clear it") {
+		t.Fatalf("a revoked share must render as revoked, without clearing advice:\n%s", revoked)
+	}
+}

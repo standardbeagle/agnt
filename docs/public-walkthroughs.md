@@ -672,21 +672,39 @@ with one message, and it is applied in three places:
 | Where | What happens |
 |---|---|
 | **Publish** — `Op.Validate` (`internal/publish/op.go`), reached from `Store.Create` / `Store.PublishFile` through `PublishedWalkthrough.Validate` | The artifact is refused, naming that an authored script can defeat the disclosure and to remove the op. Under `serve` this is the invalid-file policy of §2: one such file aborts the whole run, valid siblings included, because an aborted load is what keeps a partial set from reaching the mass-revoking reconcile |
-| **Load** — `Store.load` (`internal/publish/share_store.go`) | A **live** stored share that carries the op fails the store load with the same reason, naming the record file to delete. This is the case of a share stored before the gate |
+| **Load** — `Store.load` (`internal/publish/share_store.go`) | A **live** stored share that carries the op is **quarantined** with the same reason: loaded, reported, and not served. Every other share loads normally. This is the case of a share stored before the gate |
 | **Render** — `validateOp` in the public bundle's variant engine | The op is refused by name and nothing is rendered for it. The engine has no script primitive at all: it never creates a script element |
 
-**A share stored before 2026-08-18 that carries `addScript` is no longer
-served.** Until this was closed, publish refused the op but `Store.load` checked
-only a record's checksum, so such a share kept loading and kept being served
-with its script — pinned in `script-src` and run by the bundle. That was a live
-way round INV-14 for exactly the shares that predate it. Now the store **fails to
-load** while such a record is live: the daemon reports
-`publish_store_load_failed` naming the record (so no share is served until it is
-dealt with), and `agnt publish serve` refuses to start. Delete the named record
-file, or republish the walkthrough without the op, and restart. It is neither
-served with its script nor quietly served without it. A **revoked** record
-carrying the op is exempt — it is never served, and a tombstone cannot take the
-store down.
+**A share stored before 2026-08-18 that carries `addScript` is quarantined.**
+Until this was closed, publish refused the op but `Store.load` checked only a
+record's checksum, so such a share kept loading and kept being served with its
+script — pinned in `script-src` and run by the bundle. That was a live way round
+INV-14 for exactly the shares that predate it. Now, at load:
+
+- **It is not served.** The share is indexed for neither its token nor its
+  file, so its link returns the same `404` an unknown token gets — a viewer
+  cannot tell a quarantined share from one that never existed. It is neither
+  served with its script nor quietly served without it.
+- **Nothing else is affected.** The store loads and every other share serves.
+  One stale record does not take the plane down. (Only this one reason
+  quarantines: a record that fails to decode or fails its checksum is
+  corruption and still fails the whole load, loudly, as before.)
+- **It is reported.** The daemon reports each quarantined share at startup;
+  `publish {action: "list"}` and `status` show it as `QUARANTINED — not served`
+  with the reason and the stored record's path, never as `live`; `agnt publish
+  serve` prints a `QUARANTINED` block per share on boot. `rotate` is refused for
+  it — a fresh token would put it back in front of viewers.
+- **How to clear it.** On the daemon: `publish {action: "revoke", id: "<id>"}`.
+  Revoke works on a quarantined share exactly as on any other and leaves an
+  ordinary tombstone; then publish the walkthrough again without the op for a
+  fresh link. Under `serve` (which has no revoke of its own) the **file** clears
+  it: fix the file and it is republished under a **new** share and link while
+  the quarantined one is retired; delete the file and the ordinary reconcile
+  revokes it. If the file still carries the op, `serve` refuses to start for
+  the usual invalid-file reason (§2) — after printing the quarantine block.
+- **The record file is never modified by the quarantine itself.** It changes
+  only when you clear it. A record that was already **revoked** when it was
+  stored needs no quarantine: it is never served and is simply ignored.
 
 The machinery that used to serve an admitted body is removed rather than left
 dormant: the per-revision script budget, the per-revision `script-src` hash, the

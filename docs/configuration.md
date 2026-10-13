@@ -278,7 +278,8 @@ control WebSocket classifies each connection once, when it opens:
 - **Your own browser on this machine keeps full control** (panel messages,
   sketch and design handoffs, secret entry, voice, the `session`/`store` API)
   on a loopback proxy, on a `0.0.0.0` bind, and while a Cloudflare quick tunnel
-  is bound to the proxy.
+  or `tailscale serve` that agnt started (the `tunnel` tool with `proxy_id`) is
+  bound to the proxy.
 - **A visitor through an unauthenticated public tunnel** (`tunnel cloudflare`,
   `tunnel ngrok`, or `cloudflare-tunnel` with `allow-unauthenticated`) can load
   the app, and its page telemetry is recorded — marked `untrusted`, never
@@ -288,13 +289,14 @@ control WebSocket classifies each connection once, when it opens:
   panel shows an error toast saying so.
 - A visitor through a `cloudflare-tunnel` behind Cloudflare Access, and an
   identified tailnet peer on a `bind "tailscale"` proxy, are trusted as you are.
-- While an **ngrok** or **tailscale** tunnel (or any public URL other than a
-  `*.trycloudflare.com` one or the proxy's own `cloudflare-tunnel`) is bound,
-  your local browser is refused those features too. Cloudflare's forwarding
-  behaviour was captured live. ngrok's is documented but unverified.
-  `tailscale serve` was captured, but Funnel shares its `*.ts.net` hostnames
-  and the proxy cannot tell which bound the URL. The rule that recognises the
-  local browser is not applied on an assumption.
+- While an **ngrok** tunnel, or a public URL agnt did not bind through a
+  tunnel of its own (a `public-url` you set, whatever its hostname), is bound,
+  your local browser is refused those features too. Cloudflare quick tunnels
+  and `tailscale serve` were captured live; ngrok's behaviour is documented
+  but unverified, and a URL of unknown origin could be anything (Tailscale
+  Funnel shares `*.ts.net` with serve). The rule that recognises the local
+  browser goes by what started the tunnel, and is not applied on an
+  assumption.
 
 The exact rule, the list of gated frame types and its limits are in
 `docs/mcp-tools.md` § Who may drive the agent through the control WebSocket.

@@ -13,6 +13,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/agentadapter"
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/daemonclient"
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 )
 
 // TestBuildAgntSystemPrompt_IncludesCheatSheetByDefault guards the wiring
@@ -128,7 +129,7 @@ func TestProxyHintLinesIncludeDiagnose(t *testing.T) {
 	}
 	chdir(t, dir)
 
-	socketPath := filepath.Join(t.TempDir(), "hint-daemon.sock")
+	socketPath := filepath.Join(sockdir.Short(t), "hint-daemon.sock")
 	_ = daemon.NewForTest(t, daemon.DaemonConfig{SocketPath: socketPath})
 	client := daemonclient.NewClient(daemonclient.WithSocketPath(socketPath))
 	if err := client.Connect(); err != nil {

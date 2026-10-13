@@ -23,6 +23,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/daemonclient"
 
 	"github.com/standardbeagle/agnt/internal/scope"
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 	"github.com/standardbeagle/go-cli-server/process"
 	"github.com/standardbeagle/go-cli-server/script"
 	"github.com/stretchr/testify/assert"
@@ -96,7 +97,7 @@ func setupDaemonForE2E(t *testing.T) *e2eEnv {
 
 	binaryPath := e2eAgntBinary(t)
 
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "e2e.sock")
 
 	// The daemon writes its log under XDG_STATE_HOME. Without this the test
@@ -1625,7 +1626,7 @@ func setupDaemonForCrashTest(t *testing.T) (*e2eEnv, string) {
 
 	binaryPath := e2eAgntBinary(t)
 
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "e2e.sock")
 	stateHome := filepath.Join(tmpDir, "state")
 	require.NoError(t, os.MkdirAll(stateHome, 0755))
@@ -1672,7 +1673,9 @@ func createRecoveryDaemon(t *testing.T, stateHome, projectDir string, crashedTra
 	// enters crash recovery mode.
 	require.NoError(t, crashedTracker.SetDaemonPID(fakeCrashedDaemonPID))
 
-	sockPath := filepath.Join(projectDir, "recovery.sock")
+	// Not under projectDir: that is a t.TempDir(), too long a parent for a
+	// Unix socket on macOS (sun_path is 104 bytes).
+	sockPath := filepath.Join(shortTempDir(t), "recovery.sock")
 
 	// Ensure XDG_STATE_HOME points to the same location
 	t.Setenv("XDG_STATE_HOME", stateHome)

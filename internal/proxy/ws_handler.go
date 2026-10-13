@@ -133,15 +133,19 @@ func (ps *ProxyServer) controlCallerTrusted(r *http.Request) bool {
 //
 // and one precondition on the posture:
 //
-//	(e) the public URL bound to this proxy, if any, belongs to a provider
-//	    whose forwarding behaviour was captured live (localRuleVerifiedTunnel)
-//	    or is the proxy's own named tunnel, which has a separate ingress
-//	    listener. With any other public URL bound — ngrok, or a static
-//	    public-url in front of something unknown — the rule does not apply
-//	    and the caller falls through to devOIDCCaller, which refuses it. The
-//	    rule's safety against a tunnel visitor rests on what that provider's
-//	    edge does with Host and its own headers; for a provider nobody has
-//	    observed, that is an assumption, and an assumption is not a control.
+//	(e) the public URL bound to this proxy, if any, was bound by a tunnel
+//	    agnt itself started, of a kind whose origin-side behaviour was
+//	    captured live (localRuleTunnelKinds): a Cloudflare quick tunnel or
+//	    `tailscale serve`; or it is the proxy's own named tunnel, which has
+//	    a separate ingress listener. The kind comes from what started the
+//	    tunnel (publicURLBinding.kind), never from the URL's hostname: the
+//	    same *.ts.net names serve both `tailscale serve` and the public,
+//	    uncaptured Funnel. A public URL bound any other way — an operator's
+//	    public-url, an ngrok tunnel, anything of unknown origin — does not
+//	    get the rule, and the caller falls through to devOIDCCaller, which
+//	    refuses it. The rule's safety against a tunnel visitor rests on what
+//	    that provider's edge does with Host and its own headers; where
+//	    nobody has observed that, it is an assumption, not a control.
 //
 // Who is on the other side, and what stops them:
 //
@@ -184,39 +188,8 @@ func (ps *ProxyServer) controlCallerTrusted(r *http.Request) bool {
 //   - Another process on this machine. It can forge all four — and can
 //     already read the project and type into the terminal. Out of scope, as
 //     it is for every loopback listener.
-//
-// localRuleVerifiedTunnelSuffixes are the public-URL host suffixes of the
-// tunnel providers whose origin-side behaviour (Host forwarded, headers added,
-// client-sent copies overwritten or rejected) was captured live AND whose
-// hostnames identify that one kind of tunnel. Add one only with both.
-//
-// *.ts.net is deliberately absent although `tailscale serve` was captured:
-// Tailscale Funnel — public, and not captured — uses the same hostnames, and a
-// bound URL does not say which of the two put it there. The proxy is handed a
-// tunnel's URL without its provider or kind (SetTunnelURL), so it cannot tell
-// "the serve tunnel agnt started" from "a .ts.net URL bound some other way",
-// and does not grant the rule on a guess. *.trycloudflare.com has no such
-// twin: only Cloudflare quick tunnels live there.
-var localRuleVerifiedTunnelSuffixes = []string{".trycloudflare.com"}
-
-// localRuleVerifiedTunnel reports whether publicURL is an https URL on one of
-// those providers' hostnames.
-func localRuleVerifiedTunnel(publicURL string) bool {
-	u, err := url.Parse(publicURL)
-	if err != nil || u.Scheme != "https" {
-		return false
-	}
-	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
-	for _, suffix := range localRuleVerifiedTunnelSuffixes {
-		if strings.HasSuffix(host, suffix) && len(host) > len(suffix) {
-			return true
-		}
-	}
-	return false
-}
-
 func (ps *ProxyServer) isLocalControlCaller(r *http.Request) bool {
-	if pub := ps.GetPublicURL(); pub != "" && pub != ps.namedTunnelURL() && !localRuleVerifiedTunnel(pub) {
+	if !ps.localRuleAppliesToPublicURL() {
 		return false // (e)
 	}
 	peer, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -522,4 +495,36 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 			handler(connState, &msg)
 		}
 	}
+}
+
+// localRuleTunnelKinds are the tunnel kinds whose origin-side behaviour (Host
+// forwarded, headers added, client-sent copies overwritten or rejected) was
+// captured live, each with the hostname suffix its URLs must carry. The kind
+// is the source of truth; the suffix is a second lock, so a mislabelled or
+// misdirected binding still has to look like what it claims to be. Add a kind
+// only with a capture. ngrok is absent: it has not been captured.
+var localRuleTunnelKinds = map[TunnelKind]string{
+	TunnelKindCloudflareQuick: ".trycloudflare.com",
+	TunnelKindTailscaleServe:  ".ts.net",
+}
+
+// localRuleAppliesToPublicURL is condition (e) of isLocalControlCaller.
+func (ps *ProxyServer) localRuleAppliesToPublicURL() bool {
+	binding := ps.activePublicURL()
+	if binding == nil || binding.url == "" {
+		return true // nothing bound
+	}
+	if binding.url == ps.namedTunnelURL() {
+		return true // the named tunnel has its own ingress listener
+	}
+	suffix, captured := localRuleTunnelKinds[binding.kind]
+	if !captured || binding.done == nil {
+		return false // not a live tunnel agnt started, or not a captured kind
+	}
+	u, err := url.Parse(binding.url)
+	if err != nil || u.Scheme != "https" {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	return strings.HasSuffix(host, suffix) && len(host) > len(suffix)
 }

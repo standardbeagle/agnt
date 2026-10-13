@@ -613,103 +613,267 @@ func legacyShare(id, token string, withScript bool) Share {
 	}
 }
 
-// TestStoredAddScriptShareIsRefusedAtLoad closes the INV-14 gap on the load
+// quarantineReasonLiteral is the INV-14 refusal, spelled out. Assertions compare
+// against this literal and not against errAddScriptRefused(), so a reworded or
+// emptied reason fails here.
+const quarantineReasonLiteral = "addScript is not permitted on a published walkthrough"
+
+// TestStoredAddScriptShareIsQuarantinedAtLoad closes the INV-14 gap on the load
 // path. Publish has refused addScript since 2026-08-18, but Store.load checked
 // only a record's checksum, so a share stored before that gate was indexed and
 // served — its variants.json carried the op, script-src was widened by its
-// hash, and the public bundle ran it. It must now be refused, loudly, by the
-// INV-14 rule: neither served with its script nor quietly served without it.
-func TestStoredAddScriptShareIsRefusedAtLoad(t *testing.T) {
-	const token = "legacy-token"
+// hash, and the public bundle ran it.
+//
+// Such a share is now QUARANTINED: the store loads, every other share serves,
+// and the one carrying the op is neither served with its script nor quietly
+// served without it. It is reported (Quarantined, Status, List) and cleared by
+// Revoke. Nothing but this one reason quarantines — corruption still fails.
+func TestStoredAddScriptShareIsQuarantinedAtLoad(t *testing.T) {
+	const legacyToken = "legacy-token"
+	const healthyToken = "healthy-token"
 
-	t.Run("live share carrying addScript fails the load by INV-14", func(t *testing.T) {
-		dir := t.TempDir()
-		path := writeStoredShare(t, dir, legacyShare("legacy1", token, true))
-
-		// Premise: the record is intact — it decodes and its checksum matches —
-		// so the refusal below is the INV-14 rule's and not a corruption error.
-		raw, err := os.ReadFile(path)
+	// setup writes one quarantined-to-be share and one healthy share.
+	setup := func(t *testing.T) (dir, legacyPath string, legacyBytes []byte) {
+		t.Helper()
+		dir = t.TempDir()
+		legacyPath = writeStoredShare(t, dir, legacyShare("legacy1", legacyToken, true))
+		writeStoredShare(t, dir, legacyShare("healthy1", healthyToken, false))
+		raw, err := os.ReadFile(legacyPath)
 		if err != nil {
 			t.Fatal(err)
 		}
+		// Premise: the record is intact — it decodes and its checksum matches —
+		// so what happens to it is the INV-14 rule's doing, not corruption's.
 		if _, err := decodeRecord(raw); err != nil {
 			t.Fatalf("premise broken: the legacy record must decode with a valid checksum, got %v", err)
 		}
+		return dir, legacyPath, raw
+	}
 
-		for name, open := range map[string]func() (*Store, error){
-			"New":          func() (*Store, error) { return New(dir, nil) },
-			"OpenReadOnly": func() (*Store, error) { return OpenReadOnly(dir, nil) },
-		} {
-			s, err := open()
-			if !errors.Is(err, ErrUnservable) {
-				t.Fatalf("%s: a stored share carrying addScript must fail the load with ErrUnservable, got store=%v err=%v", name, s != nil, err)
+	for name, open := range map[string]func(string) (*Store, error){
+		"New":          func(dir string) (*Store, error) { return New(dir, nil) },
+		"OpenReadOnly": func(dir string) (*Store, error) { return OpenReadOnly(dir, nil) },
+	} {
+		t.Run(name+": the store loads, the healthy share serves, the quarantined one does not", func(t *testing.T) {
+			dir, legacyPath, before := setup(t)
+			s, err := open(dir)
+			if err != nil {
+				t.Fatalf("one stored share carrying addScript must not fail the load: %v", err)
 			}
-			if errors.Is(err, ErrCorrupt) {
-				t.Fatalf("%s: the record is intact; the refusal must not be reported as corruption: %v", name, err)
-			}
-			msg := err.Error()
-			// The verdict, as literals: the rule, the record, and what to do.
-			for _, want := range []string{"addScript is not permitted on a published walkthrough", "INV-14", "legacy1", path, "delete"} {
-				if !strings.Contains(msg, want) {
-					t.Fatalf("%s: the refusal must contain %q, got: %s", name, want, msg)
-				}
-			}
-			// The dangerous side effect is unreachable: there is no store to
-			// verify the token against, so nothing can serve the revision —
-			// with the script or without it.
-			if s != nil {
-				t.Fatalf("%s: a refused load must not hand back a usable store", name)
-			}
-		}
-		// The load refused; it did not rewrite or remove the record.
-		after, err := os.ReadFile(path)
-		if err != nil || !bytes.Equal(raw, after) {
-			t.Fatalf("a refused load must leave the record as it found it (err = %v)", err)
-		}
-	})
 
-	t.Run("near miss: the same share without the op loads and serves", func(t *testing.T) {
-		dir := t.TempDir()
-		writeStoredShare(t, dir, legacyShare("clean1", token, false))
+			// The healthy sibling is untouched by its neighbour.
+			rev, id, ok := s.VerifyToken(healthyToken)
+			if !ok || id != "healthy1" || rev == nil {
+				t.Fatalf("the healthy share must serve, got id=%q ok=%v", id, ok)
+			}
+			if d, ok := s.ShareDigest("healthy1"); !ok || d == "" {
+				t.Fatalf("the healthy share must name its revision, got %q ok=%v", d, ok)
+			}
+
+			// The quarantined share is not served. Its token gets EXACTLY what a
+			// token that never existed gets — same values, no distinguishing
+			// answer for an anonymous viewer.
+			qRev, qID, qOK := s.VerifyToken(legacyToken)
+			uRev, uID, uOK := s.VerifyToken("a-token-nobody-ever-minted")
+			if qOK || qRev != nil || qID != "" {
+				t.Fatalf("the quarantined share was served: rev=%v id=%q ok=%v", qRev != nil, qID, qOK)
+			}
+			if qOK != uOK || qID != uID || (qRev == nil) != (uRev == nil) {
+				t.Fatalf("a quarantined token must be indistinguishable from an unknown one: (%v,%q,%v) vs (%v,%q,%v)",
+					qRev != nil, qID, qOK, uRev != nil, uID, uOK)
+			}
+			// Nor can its revision be named for a subresource reference.
+			if d, ok := s.ShareDigest("legacy1"); ok || d != "" {
+				t.Fatalf("a quarantined share must name no revision, got %q ok=%v", d, ok)
+			}
+
+			// It is reported, with everything a startup log or a listing needs.
+			q := s.Quarantined()
+			if len(q) != 1 {
+				t.Fatalf("Quarantined() = %+v, want exactly the one legacy share", q)
+			}
+			got := q[0]
+			if got.ID != "legacy1" || got.ProjectPath != "/proj" || got.RecordPath != legacyPath || got.Title == "" {
+				t.Fatalf("Quarantined() entry is incomplete: %+v (want id legacy1, project /proj, record %s)", got, legacyPath)
+			}
+			if !strings.Contains(got.Reason, quarantineReasonLiteral) || !strings.Contains(got.Reason, "INV-14") {
+				t.Fatalf("the quarantine reason must be the INV-14 rule, got %q", got.Reason)
+			}
+
+			// The owner is not left guessing: Status and List flag it.
+			info, err := s.Status("legacy1")
+			if err != nil || !info.Quarantined || info.Revoked ||
+				!strings.Contains(info.QuarantineReason, quarantineReasonLiteral) || info.RecordPath != legacyPath {
+				t.Fatalf("Status must flag the quarantine with reason and record, got %+v err=%v", info, err)
+			}
+			flagged := map[string]bool{}
+			for _, sh := range s.List("/proj") {
+				flagged[sh.ID] = sh.Quarantined
+			}
+			if len(flagged) != 2 || !flagged["legacy1"] || flagged["healthy1"] {
+				t.Fatalf("List must show both shares and flag only the quarantined one, got %v", flagged)
+			}
+			if healthy, _ := s.Status("healthy1"); healthy.Quarantined || healthy.QuarantineReason != "" || healthy.RecordPath != "" {
+				t.Fatalf("a healthy share must carry no quarantine fields, got %+v", healthy)
+			}
+
+			// A fresh token would put it back in front of viewers: refused.
+			if _, err := s.Rotate("legacy1"); !errors.Is(err, ErrUnservable) && !errors.Is(err, ErrReadOnly) {
+				t.Fatalf("Rotate on a quarantined share must be refused, got %v", err)
+			}
+			if _, _, ok := s.VerifyToken(legacyToken); ok {
+				t.Fatal("the quarantined share became servable after a refused Rotate")
+			}
+
+			// Loading (and everything above) left the record exactly as found.
+			after, err := os.ReadFile(legacyPath)
+			if err != nil || !bytes.Equal(before, after) {
+				t.Fatalf("the quarantined record file must be untouched (err = %v)", err)
+			}
+		})
+	}
+
+	t.Run("Rotate refusal is the quarantine's, by its own sentinel", func(t *testing.T) {
+		dir, _, _ := setup(t)
 		s, err := New(dir, nil)
 		if err != nil {
-			t.Fatalf("a legacy share with no addScript must still load: %v", err)
+			t.Fatal(err)
 		}
-		rev, id, ok := s.VerifyToken(token)
-		if !ok || id != "clean1" || rev == nil {
-			t.Fatalf("the clean legacy share must verify and serve, got id=%q ok=%v", id, ok)
+		_, err = s.Rotate("legacy1")
+		if !errors.Is(err, ErrUnservable) || !strings.Contains(err.Error(), quarantineReasonLiteral) {
+			t.Fatalf("Rotate must be refused by ErrUnservable carrying the reason, got %v", err)
+		}
+		// Near miss: the healthy share rotates.
+		if _, err := s.Rotate("healthy1"); err != nil {
+			t.Fatalf("a healthy share must still rotate: %v", err)
 		}
 	})
 
-	t.Run("near miss: a REVOKED share carrying the op does not take the store down", func(t *testing.T) {
+	t.Run("Revoke clears the quarantine, and it stays cleared across a restart", func(t *testing.T) {
+		dir, _, _ := setup(t)
+		s, err := New(dir, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.Revoke("legacy1"); err != nil {
+			t.Fatalf("Revoke is the supported way to clear a quarantine; it must work: %v", err)
+		}
+		if q := s.Quarantined(); len(q) != 0 {
+			t.Fatalf("a revoked share must leave the quarantine list, got %+v", q)
+		}
+		info, err := s.Status("legacy1")
+		if err != nil || !info.Revoked || info.Quarantined {
+			t.Fatalf("after Revoke it is an ordinary tombstone, got %+v err=%v", info, err)
+		}
+		if _, _, ok := s.VerifyToken(legacyToken); ok {
+			t.Fatal("a revoked quarantined share was served")
+		}
+		// Restart: the tombstone still carries the op, and is simply ignored.
+		again, err := New(dir, nil)
+		if err != nil {
+			t.Fatalf("reload after clearing: %v", err)
+		}
+		if q := again.Quarantined(); len(q) != 0 {
+			t.Fatalf("a revoked record carrying the op must not be re-quarantined, got %+v", q)
+		}
+		if _, _, ok := again.VerifyToken(legacyToken); ok {
+			t.Fatal("the tombstone was served after a restart")
+		}
+		if _, _, ok := again.VerifyToken(healthyToken); !ok {
+			t.Fatal("the healthy share must still serve after the restart")
+		}
+	})
+
+	t.Run("a record stored already revoked is ignored, not quarantined", func(t *testing.T) {
 		dir := t.TempDir()
-		revoked := legacyShare("gone1", token, true)
+		revoked := legacyShare("gone1", legacyToken, true)
 		revoked.Revoked = true
 		writeStoredShare(t, dir, revoked)
-		writeStoredShare(t, dir, legacyShare("clean2", "other-token", false))
-
+		writeStoredShare(t, dir, legacyShare("healthy1", healthyToken, false))
 		s, err := New(dir, nil)
 		if err != nil {
 			t.Fatalf("a tombstone carrying addScript must not fail the load: %v", err)
 		}
-		// It stays a tombstone: listed for audit, never served.
-		if _, _, ok := s.VerifyToken(token); ok {
-			t.Fatal("the revoked share's token verified — a revoked revision carrying addScript was served")
+		if q := s.Quarantined(); len(q) != 0 {
+			t.Fatalf("a revoked record needs no quarantine, got %+v", q)
 		}
-		if info, err := s.Status("gone1"); err != nil || !info.Revoked {
-			t.Fatalf("the tombstone must remain visible as revoked, got %+v err=%v", info, err)
+		if _, _, ok := s.VerifyToken(legacyToken); ok {
+			t.Fatal("a revoked revision carrying addScript was served")
 		}
-		if _, _, ok := s.VerifyToken("other-token"); !ok {
-			t.Fatal("the unrelated live share must still serve")
+		if info, err := s.Status("gone1"); err != nil || !info.Revoked || info.Quarantined {
+			t.Fatalf("the tombstone must stay visible as revoked only, got %+v err=%v", info, err)
 		}
 	})
 
-	t.Run("one refused share fails the whole store, live siblings included", func(t *testing.T) {
+	t.Run("quarantine is not widened: real corruption still fails the load", func(t *testing.T) {
+		dir, legacyPath, raw := setup(t)
+		// Flip one byte of the quarantined record's body: now it is corrupt.
+		broken := bytes.Replace(raw, []byte("wt-legacy1"), []byte("wt-legacyX"), 1)
+		if bytes.Equal(broken, raw) {
+			t.Fatal("premise broken: the tamper did not change the record")
+		}
+		if err := os.WriteFile(legacyPath, broken, 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := New(dir, nil); !errors.Is(err, ErrCorrupt) {
+			t.Fatalf("a checksum mismatch must fail the load as ErrCorrupt, got %v", err)
+		}
+		// And a truncated healthy record fails it too.
+		dir2, _, _ := setup(t)
+		healthyPath := filepath.Join(dir2, "healthy1"+recordSuffix)
+		if err := os.WriteFile(healthyPath, []byte(`{"id":"healthy1"`), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := New(dir2, nil); !errors.Is(err, ErrCorrupt) {
+			t.Fatalf("a truncated record must fail the load as ErrCorrupt, got %v", err)
+		}
+	})
+
+	t.Run("a folder-served share is superseded when its file publishes clean, and revoked when the file goes", func(t *testing.T) {
 		dir := t.TempDir()
-		writeStoredShare(t, dir, legacyShare("clean3", "other-token", false))
-		writeStoredShare(t, dir, legacyShare("legacy2", token, true))
-		if _, err := New(dir, nil); !errors.Is(err, ErrUnservable) {
-			t.Fatalf("the load must fail loud rather than serve around the refused share, got %v", err)
+		a := legacyShare("legacyA", legacyToken, true)
+		a.SourceFile = "a.json"
+		b := legacyShare("legacyB", "token-b", true)
+		b.SourceFile = "b.json"
+		writeStoredShare(t, dir, a)
+		writeStoredShare(t, dir, b)
+		s, err := New(dir, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(s.Quarantined()) != 2 {
+			t.Fatalf("premise broken: both folder shares must start quarantined, got %+v", s.Quarantined())
+		}
+
+		// a.json is fixed and republished: a NEW share and token, the old one retired.
+		newID, newToken, _, err := s.PublishFile(fileWalkthrough("wt-a", "clean"), "/proj", "a.json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if newID == "legacyA" || newToken == "" {
+			t.Fatalf("the clean publish must mint a fresh share, got id=%q token-empty=%v", newID, newToken == "")
+		}
+		if _, id, ok := s.VerifyToken(newToken); !ok || id != newID {
+			t.Fatal("the freshly published share must serve")
+		}
+		if _, _, ok := s.VerifyToken(legacyToken); ok {
+			t.Fatal("the quarantined predecessor's token was served")
+		}
+		if info, _ := s.Status("legacyA"); !info.Revoked || info.Quarantined {
+			t.Fatalf("the superseded share must be a tombstone, got %+v", info)
+		}
+
+		// b.json is deleted: the ordinary reconcile revokes it.
+		revoked, err := s.ReconcileFiles("/proj", []string{"a.json"})
+		if err != nil || len(revoked) != 1 || revoked[0] != "legacyB" {
+			t.Fatalf("reconcile must revoke the share whose file is gone, got %v err=%v", revoked, err)
+		}
+		if q := s.Quarantined(); len(q) != 0 {
+			t.Fatalf("nothing should remain quarantined, got %+v", q)
+		}
+		// The store reloads cleanly: no two live shares claim a.json.
+		if _, err := New(dir, nil); err != nil {
+			t.Fatalf("reload after supersede + reconcile: %v", err)
 		}
 	})
 }

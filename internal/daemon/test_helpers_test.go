@@ -88,8 +88,5 @@ func TestNewForTest_HubAccepts(t *testing.T) {
 // create an import cycle).
 func ephemeralTestSockPath(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp(os.TempDir(), "dt")
-	require.NoError(t, err)
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	return dir + "/s.sock"
+	return shortTempDir(t) + "/s.sock"
 }

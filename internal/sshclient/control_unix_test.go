@@ -13,6 +13,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 )
 
 func installControlUnixHook(t *testing.T, stage, path string, fn func()) {
@@ -65,7 +67,7 @@ func assertControlRoute(t *testing.T, path, project string) {
 }
 
 func TestListenControlTransportLiveCollisionPreservesOwner(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "live.ctl")
+	path := filepath.Join(sockdir.Short(t), "live.ctl")
 	first, err := listenControlTransport(path)
 	if err != nil {
 		t.Fatalf("first listen: %v", err)
@@ -94,7 +96,7 @@ func TestListenControlTransportLiveCollisionPreservesOwner(t *testing.T) {
 }
 
 func TestListenControlTransportReclaimsConclusiveStaleSocket(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "stale.ctl")
+	path := filepath.Join(sockdir.Short(t), "stale.ctl")
 	makeStaleControlSocket(t, path)
 
 	replacement, err := listenControlTransport(path)
@@ -107,7 +109,7 @@ func TestListenControlTransportReclaimsConclusiveStaleSocket(t *testing.T) {
 func TestListenControlTransportReplacementSurvivesEveryClaimInterval(t *testing.T) {
 	for _, stage := range []string{"listen-after-probe", "after-quarantine", "listen-before-delete"} {
 		t.Run(stage, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "replace.ctl")
+			path := filepath.Join(sockdir.Short(t), "replace.ctl")
 			makeStaleControlSocket(t, path)
 			var replacement net.Listener
 			installControlUnixHook(t, stage, path, func() {
@@ -128,7 +130,7 @@ func TestListenControlTransportReplacementSurvivesEveryClaimInterval(t *testing.
 }
 
 func TestOwnedControlListenerCloseNeverUnlinksNewerGeneration(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "generation.ctl")
+	path := filepath.Join(sockdir.Short(t), "generation.ctl")
 	first, err := listenControlTransport(path)
 	if err != nil {
 		t.Fatal(err)
@@ -316,7 +318,7 @@ func TestListenAndDiscoveryPreserveInconclusiveResponders(t *testing.T) {
 	for _, operation := range []string{"listen", "discover"} {
 		for _, tc := range responses {
 			t.Run(operation+"-"+tc.name, func(t *testing.T) {
-				dir := t.TempDir()
+				dir := shortSocketDir(t) // a socket is bound in it
 				if operation == "discover" {
 					withShortSandboxedHome(t)
 					home := os.Getenv("HOME")

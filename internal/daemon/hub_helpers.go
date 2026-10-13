@@ -569,7 +569,13 @@ func (d *Daemon) fireToIncidentBusForOwner(entry proxy.LogEntry, proxyID string,
 				d.startSwallowSweeperOnce()
 			}
 		case proxy.LogTypeError:
-			d.swallowDetector.RecordAppError(proxyID, time.Now())
+			// Only an error the app itself is known to have raised clears a
+			// pending fault. One reported by an untrusted connection is that
+			// sender's claim: counting it would let a tunnel visitor mask a
+			// swallowed fault by sending an error frame.
+			if !entry.Untrusted && (entry.Error == nil || !entry.Error.Untrusted) {
+				d.swallowDetector.RecordAppError(proxyID, time.Now())
+			}
 		}
 	}
 

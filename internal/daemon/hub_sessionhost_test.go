@@ -15,6 +15,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/sessionhost"
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 	"github.com/stretchr/testify/require"
 )
@@ -59,7 +60,7 @@ func (r *rawConn) readResponse(t *testing.T) *hubproto.Response {
 
 func newSessionHostTestDaemon(t *testing.T) (*Daemon, string) {
 	t.Helper()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 	d := NewForTest(t, DaemonConfig{
 		SocketPath:   sockPath,

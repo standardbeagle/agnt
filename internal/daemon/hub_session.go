@@ -307,6 +307,9 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 	// Scheduled tasks persist per project; pick up the ones a previous daemon
 	// lifetime left for this project now that it has a session again.
 	d.scheduler.RestoreProject(session.ProjectPath)
+	// A quarantined share is reported at boot, but this project's startup log
+	// is cleared with its last session: tell every new session again.
+	d.logQuarantinedSharesForProject(session.ProjectPath)
 
 	// Rebind overlay endpoints for existing proxies that may have been
 	// created before this session registered.

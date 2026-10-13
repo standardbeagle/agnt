@@ -156,7 +156,7 @@ func (ps *ProxyServer) serveNamedTunnel(ctx context.Context, ln net.Listener, ha
 		Named:      &named,
 	})
 	tun.OnURL(func(url string) {
-		ps.SetTunnelURL(url, tun.Done())
+		ps.SetTunnelURL(url, tun.Done(), TunnelKindCloudflareNamed)
 		ps.logNamedTunnel(DiagnosticInfo, "named_tunnel_connected",
 			fmt.Sprintf("named tunnel connected: %s", url))
 	})

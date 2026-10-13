@@ -397,14 +397,11 @@ func TestServePushQueue_OverflowIsReturnedToPushCaller(t *testing.T) {
 	}
 }
 
+// withShortSandboxedHome is withSandboxedHome for callers that do not need the
+// path back. Both use the shared short socket directory.
 func withShortSandboxedHome(t *testing.T) {
 	t.Helper()
-	home, err := os.MkdirTemp("/tmp", "pq-")
-	if err != nil {
-		t.Fatalf("short temp HOME: %v", err)
-	}
-	t.Cleanup(func() { os.RemoveAll(home) })
-	t.Setenv("HOME", home)
+	withSandboxedHome(t)
 }
 
 func TestPingControl_TimesOutAgainstUnresponsivePeer(t *testing.T) {

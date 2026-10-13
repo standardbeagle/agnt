@@ -5,7 +5,6 @@ package daemon
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -68,11 +67,13 @@ func hasReadyEvent(events []AutostartProgress, script, dep string) bool {
 // fails the test — the property the old version could not detect.
 func TestDepsIntegration(t *testing.T) {
 	clusterDir := t.TempDir()
-	sockPath := filepath.Join(clusterDir, "test.sock")
 	// newDaemon routes through NewForTest: skips host-global startup ops and,
 	// crucially here, sets StartupMonitorTimeout to 200ms so a successful start
 	// is not serialized behind a 3s crash-watch window.
 	d := newDaemon(t, clusterDir)
+	// The daemon's socket is in a short directory of newDaemon's choosing, not
+	// under clusterDir: ask the daemon where it is listening.
+	sockPath := d.config.SocketPath
 
 	// client_starts_after_server_url: "server" prints a URL after ~1s (URL
 	// detection is the readiness signal), then stays alive; "client" depends on

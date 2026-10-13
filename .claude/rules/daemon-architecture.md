@@ -150,7 +150,7 @@ Take an id, not a filter; lookup goes through `getSessionScoped` so fuzzy matchi
 
 More than one candidate is reported as ambiguous with the projects that have it, never as "not found". A session-bound caller's short names never reach another project.
 
-`RUN` replies with the derived id in `id`/`process_id` and the short name in `name`. A `RUN` process is marked in `runLaunches`: `AUTOSTART RECONCILE` ignores it (it is not a config script), and the mark carries `enable_stdin` to every launch of it.
+`RUN` replies with the derived id in `id`/`process_id` and the short name in `name`. An **ad-hoc launch** — `RUN`, `PROC RUN` in inline mode, a `PROC RUN-GROUP` member — is marked in `runLaunches`; `isAdHocLaunch` (`hub_run.go`) is the one definition. It is in the registry and in no config, so `AUTOSTART RECONCILE` does not stop it, the autostart prune does not delete its entry, and a zero exit inside the startup watch is logged as `completed` (info), not as a failed start. `PROC RUN from_config` is the declared script: never marked, follows config. The mark also carries `RUN`'s `enable_stdin` to every launch of the process.
 
 ### Debug-exempt
 

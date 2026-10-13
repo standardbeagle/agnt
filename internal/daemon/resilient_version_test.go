@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/daemonclient"
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 
 	"github.com/standardbeagle/go-cli-server/process"
 	"github.com/stretchr/testify/require"
@@ -18,7 +19,7 @@ func TestResilientClient_VersionValidation(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	daemonConfig := DaemonConfig{
@@ -205,7 +206,7 @@ func TestResilientClient_VersionCheckAfterReconnect(t *testing.T) {
 		t.Skip("skipping integration test in short mode")
 	}
 
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	// Start daemon

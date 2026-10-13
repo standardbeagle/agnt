@@ -167,3 +167,40 @@ func TestGetIncidents_RendersUntrustedIncidentLabelled(t *testing.T) {
 		t.Errorf("JSON view lost the source or the label: %s", encoded)
 	}
 }
+
+// The proxylog summary groups errors by message. An untrusted error — marked
+// on the entry or on its payload — is its own labelled group; the trusted
+// error of the same text keeps its count and its derived type.
+func TestProxyLogSummary_UntrustedErrorsAreGroupedApartAndLabelled(t *testing.T) {
+	const text = "TypeError: x is undefined"
+	entry := func(envelope, payload bool) interface{} {
+		e := map[string]interface{}{"type": "error", "error": map[string]interface{}{"message": text}}
+		if envelope {
+			e["untrusted"] = true
+		}
+		if payload {
+			e["error"].(map[string]interface{})["untrusted"] = true
+		}
+		return e
+	}
+	summary := buildProxyLogSummary([]interface{}{
+		entry(false, false), entry(false, false), entry(true, false), entry(false, true),
+	}, map[string]bool{"errors": true}, 20)
+
+	counts := map[string]int{}
+	for _, g := range summary.UniqueErrors {
+		counts[g.Message] = g.Count
+	}
+	if len(counts) != 2 {
+		t.Fatalf("got %d error groups, want 2: %+v", len(counts), summary.UniqueErrors)
+	}
+	if counts[text] != 2 {
+		t.Errorf("trusted group count = %d, want 2 (%+v)", counts[text], counts)
+	}
+	if counts[untrustedLabelLiteral+text] != 2 {
+		t.Errorf("untrusted group count = %d, want 2 under the labelled message (%+v)", counts[untrustedLabelLiteral+text], counts)
+	}
+	if summary.ErrorsByType["TypeError"] != 4 {
+		t.Errorf("the label must not change the derived error type: %+v", summary.ErrorsByType)
+	}
+}

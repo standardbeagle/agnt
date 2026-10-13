@@ -21,6 +21,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/sshclient"
 	"github.com/standardbeagle/agnt/internal/sshclient/testenv"
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -266,9 +267,9 @@ func TestSSHClientSurfaces_WithRealSSHFixture(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = client.Close() })
 	wrapped := &sshclient.Client{SSH: client}
-	remoteSocket := filepath.Join(t.TempDir(), "remote-daemon.sock")
+	remoteSocket := filepath.Join(sockdir.Short(t), "remote-daemon.sock")
 	_ = daemon.NewForTest(t, daemon.DaemonConfig{SocketPath: remoteSocket})
-	localSocket := filepath.Join(t.TempDir(), "ssh-fixture-host.sock")
+	localSocket := filepath.Join(sockdir.Short(t), "ssh-fixture-host.sock")
 	forwarder, err := sshclient.NewForwarder(wrapped, remoteSocket, localSocket)
 	if err != nil {
 		t.Fatal(err)

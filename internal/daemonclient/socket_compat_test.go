@@ -3,6 +3,8 @@ package daemonclient
 import (
 	"os"
 	"testing"
+
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 )
 
 func TestDefaultSocketConfig(t *testing.T) {
@@ -45,7 +47,7 @@ func TestDefaultSocketPath_AGNTSocketWinsOverAGNTDaemonSocket(t *testing.T) {
 
 func TestNewSocketManager(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := tmpDir + "/test.sock"
 
 	config := SocketConfig{
@@ -85,7 +87,7 @@ func TestNewSocketManager_DefaultPath(t *testing.T) {
 
 func TestSocketManager_ListenAndClose(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := tmpDir + "/listen-test.sock"
 
 	config := SocketConfig{

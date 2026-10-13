@@ -16,6 +16,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/daemonclient"
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 	"github.com/standardbeagle/agnt/internal/tools"
 	"github.com/standardbeagle/go-sdk/jsonrpc"
 	"github.com/standardbeagle/go-sdk/mcp"
@@ -476,7 +477,7 @@ func TestRegisterChannelSession_DisabledReturnsNil(t *testing.T) {
 // is cleared. This test starts a real daemon so the resilient client can
 // connect.
 func TestRegisterChannelSession_SetsSessionCode(t *testing.T) {
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	d := daemon.New(daemon.DaemonConfig{
@@ -531,7 +532,7 @@ func TestRegisterChannelSession_SetsSessionCode(t *testing.T) {
 // TestRegisterChannelSession_CloseIdempotent verifies that calling Close
 // multiple times on the handle is safe.
 func TestRegisterChannelSession_CloseIdempotent(t *testing.T) {
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	d := daemon.New(daemon.DaemonConfig{
@@ -596,7 +597,7 @@ func TestChannelSession_ConcurrentCloseAndHeartbeat(t *testing.T) {
 		t.Skip("skipping stress in short mode")
 	}
 
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	d := daemon.New(daemon.DaemonConfig{

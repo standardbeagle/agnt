@@ -126,9 +126,9 @@ type hookInvocation struct {
 	// dropLogPath is the absolute path to append drop-log entries to on
 	// the "wedged daemon" failure path. When empty, runHookInternal
 	// defaults to the unified self-error log at selflog.DefaultPath()
-	// (`${XDG_CACHE_HOME:-$HOME/.cache}/agnt/errors.log`), viewable via
-	// `agnt hook log`. Tests override this via AGNT_ERROR_LOG /
-	// XDG_CACHE_HOME or by passing an explicit path.
+	// (agnt/errors.log in the per-user cache directory, which differs by
+	// OS), viewable via `agnt hook log`. Tests override this via
+	// AGNT_ERROR_LOG or by passing an explicit path.
 	dropLogPath string
 
 	// now is an optional time source for deterministic drop-log

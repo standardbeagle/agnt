@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 )
 
 // TestOrphanScan_ConfigDisabledByDefault verifies the test-safe default:
@@ -23,7 +25,7 @@ import (
 // before any of the fields that Start() populates are touched.
 func TestOrphanScan_ConfigDisabledByDefault(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	d := New(DaemonConfig{
@@ -73,7 +75,7 @@ func TestOrphanScan_ConfigDisabledByDefault(t *testing.T) {
 // build tag (daemon_orphan_pgid_test.go).
 func TestOrphanScan_ConfigEnabledOptIn(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	d := New(DaemonConfig{

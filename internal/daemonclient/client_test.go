@@ -5,11 +5,13 @@ package daemonclient
 import (
 	"path/filepath"
 	"testing"
+
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 )
 
 func TestClient_ConnectToNonExistentDaemon(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	client := NewClient(WithSocketPath(sockPath))
@@ -21,7 +23,7 @@ func TestClient_ConnectToNonExistentDaemon(t *testing.T) {
 
 func TestClient_NotConnected(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "nonexistent.sock")
 
 	client := NewClient(WithSocketPath(sockPath))

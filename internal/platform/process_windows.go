@@ -3,50 +3,64 @@
 package platform
 
 import (
+	"errors"
 	"fmt"
-	"os/exec"
-	"strconv"
-	"strings"
 	"syscall"
+	"unsafe"
+
+	"golang.org/x/sys/windows"
 )
 
-// Scan returns all running processes using tasklist on Windows.
+// Scan returns all running processes on Windows.
 func Scan() ([]ProcInfo, error) {
 	return scanWindows()
 }
 
-// scanWindows uses tasklist to enumerate processes on Windows.
+// scanWindows enumerates processes from a Toolhelp snapshot: one kernel call,
+// no child process.
+//
+// It used to run `tasklist /fo CSV /nh` and parse the output. That had two
+// defects. tasklist takes from half a second to several seconds and ran with
+// no deadline and no way to cancel, so the daemon's autostart worker (which
+// scans on every autostart, collectManagedPIDs) could still be parked in it
+// after Daemon.Stop had returned. And tasklist reports no parent PID, so
+// every ProcInfo.PPID was 0: the parent-chain walks that protect a managed
+// process's children from port cleanup found no children on Windows.
+//
+// Command and Cmdline are both the image name ("node.exe"), as before; the
+// full command line and the working directory need a per-process handle and
+// are not read here.
 func scanWindows() ([]ProcInfo, error) {
-	cmd := exec.Command("tasklist", "/fo", "CSV", "/nh")
-	output, err := cmd.Output()
+	snapshot, err := windows.CreateToolhelp32Snapshot(windows.TH32CS_SNAPPROCESS, 0)
 	if err != nil {
-		return nil, fmt.Errorf("tasklist: %w", err)
+		return nil, fmt.Errorf("process snapshot: %w", err)
 	}
+	defer windows.CloseHandle(snapshot)
 
-	var procs []ProcInfo
-	for _, line := range strings.Split(string(output), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" {
-			continue
-		}
-		// CSV format: "Image Name","PID","Session Name","Session#","Mem Usage"
-		fields := strings.Split(line, ",")
-		if len(fields) < 2 {
-			continue
-		}
-		name := strings.Trim(fields[0], `"`)
-		pidStr := strings.Trim(fields[1], `"`)
-		pid, err := strconv.Atoi(pidStr)
-		if err != nil {
-			continue
-		}
-		procs = append(procs, ProcInfo{
-			PID:     pid,
-			Command: name,
-			Cmdline: name,
-		})
+	var entry windows.ProcessEntry32
+	entry.Size = uint32(unsafe.Sizeof(entry))
+	if err := windows.Process32First(snapshot, &entry); err != nil {
+		return nil, fmt.Errorf("process snapshot: %w", err)
 	}
-	return procs, nil
+	var procs []ProcInfo
+	for {
+		// PID 0 is the System Idle Process, a placeholder with no image.
+		if entry.ProcessID != 0 {
+			name := windows.UTF16ToString(entry.ExeFile[:])
+			procs = append(procs, ProcInfo{
+				PID:     int(entry.ProcessID),
+				PPID:    int(entry.ParentProcessID),
+				Command: name,
+				Cmdline: name,
+			})
+		}
+		if err := windows.Process32Next(snapshot, &entry); err != nil {
+			if errors.Is(err, windows.ERROR_NO_MORE_FILES) {
+				return procs, nil
+			}
+			return nil, fmt.Errorf("process snapshot: %w", err)
+		}
+	}
 }
 
 // killPID terminates a process on Windows.

@@ -82,7 +82,7 @@ func TestDevOIDCTailnetCaller(t *testing.T) {
 
 	// A quick tunnel bound to the proxy disqualifies tailnet callers too.
 	done := make(chan struct{})
-	ps.SetTunnelURL("https://random.trycloudflare.com", done)
+	ps.SetTunnelURL("https://random.trycloudflare.com", done, TunnelKindCloudflareQuick)
 	if c := ps.devOIDCCaller(tailnetRequest("100.78.9.121", host, nil)); c.TailnetLogin != "" {
 		t.Fatalf("with a quick tunnel bound: %+v", c)
 	}

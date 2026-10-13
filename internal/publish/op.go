@@ -56,7 +56,8 @@ func isClassIdent(s string) bool { return fullIdRe.MatchString(s) }
 // errAddScriptRefused is THE addScript refusal — the only one, and the same
 // text on every path that can meet the op: publish (Op.Validate, reached from
 // Store.Create and Store.PublishFile through PublishedWalkthrough.Validate) and
-// load (Store.load, for a record stored before the gate).
+// load (Store.load, where it is the reason a record stored before the gate is
+// quarantined — see QuarantinedShare).
 //
 // INV-14 / operator decision 2026-08-18 (task 01M09KYHZ0CFAX2NVGMAQJ1WFW,
 // option (a)): a published walkthrough is served on the public plane AS the

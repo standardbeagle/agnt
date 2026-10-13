@@ -116,7 +116,7 @@ func TestDevOIDCLocalRequestClassification(t *testing.T) {
 
 	// A quick tunnel bound to the proxy makes its own listener public.
 	done := make(chan struct{})
-	ps.SetTunnelURL("https://random.trycloudflare.com", done)
+	ps.SetTunnelURL("https://random.trycloudflare.com", done, TunnelKindCloudflareQuick)
 	if code, _ := oidcGet(t, ps, "/__agnt/oidc/state", local, nil); code != http.StatusForbidden {
 		t.Errorf("with a quick tunnel bound: %d, want 403", code)
 	}

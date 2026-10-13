@@ -20,7 +20,8 @@
 // addScript op that appended a script element for a CSP-pinned body. A
 // published walkthrough always carries the mandatory disclosure indicator, and
 // script in the indicator's own realm can remove it, so the op is refused at
-// publish, refused at load, and this renderer has NO handler for it: no script
+// publish, a stored share carrying it is quarantined at load, and this
+// renderer has NO handler for it: no script
 // element is ever created here, and there is no dynamic-code sink. validateOp
 // refuses the op by name (ADD_SCRIPT_REFUSED) so a tampered snapshot carrying
 // it gets a reason that says why, not a generic "unknown op".

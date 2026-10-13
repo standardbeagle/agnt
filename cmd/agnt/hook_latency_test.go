@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 )
 
 // percentile returns the p-quantile (0..1) of an already-sorted slice.
@@ -62,7 +64,7 @@ func TestHook_LatencyWithinBaselineFactor(t *testing.T) {
 	// dials per sample mirror the dispatcher's own shape (NewClient.Connect
 	// availability dial + HookSend's dedicated short-lived socket), so the
 	// baseline tracks the same socket-setup jitter the dispatcher pays.
-	echoSock := filepath.Join(t.TempDir(), "echo.sock")
+	echoSock := filepath.Join(sockdir.Short(t), "echo.sock")
 	ln, err := net.Listen("unix", echoSock)
 	if err != nil {
 		t.Fatalf("echo listen: %v", err)

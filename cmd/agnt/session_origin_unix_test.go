@@ -14,6 +14,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 )
 
 // This test attaches to a daemon-owned session-host PTY running `sh -c cat`
@@ -21,8 +22,15 @@ import (
 // are unsupported on native Windows (attach registers a loud stub there), so
 // the behaviour under test exists only on Unix.
 func TestAttachAndSessionHostsCommandsExposeRemoteSurface(t *testing.T) {
-	project := t.TempDir()
-	socketPath := filepath.Join(t.TempDir(), "ssh-fixture-host.sock")
+	// The commands under test take the project from the working directory,
+	// which the OS reports with symlinks resolved. On macOS the temp dir is
+	// reached through one (/tmp, /var → /private/...), so register the
+	// session under the resolved spelling the commands will ask for.
+	project, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	socketPath := filepath.Join(sockdir.Short(t), "ssh-fixture-host.sock")
 	_ = daemon.NewForTest(t, daemon.DaemonConfig{SocketPath: socketPath})
 	client := daemonclient.NewClient(daemonclient.WithSocketPath(socketPath))
 	if err := client.Connect(); err != nil {

@@ -436,15 +436,36 @@ func awaitForegroundRun(ctx context.Context, proc *goprocess.ManagedProcess, mod
 	return nil
 }
 
-// runLaunch marks a process started by the top-level RUN verb. Read by
-// startScriptWithRetry (stdin, on every launch of the process including a
-// restart) and by config reconcile (a RUN process is not declared in
-// .agnt.kdl, so the config has no opinion on whether it should be running).
-// Not user-visible. Stored by hubHandleRun, retired with scriptConfigs.
+// runLaunch marks an ad-hoc launch: a process started from a command line the
+// caller supplied — the top-level RUN verb, PROC RUN in inline mode, PROC
+// RUN-GROUP — rather than from a script .agnt.kdl declares. It has a
+// script-registry entry like any managed process, but the config has no
+// opinion on it, so everything that compares the registry with the config
+// asks isAdHocLaunch first:
+//
+//   - config reconcile does not stop it as "running, no longer declared";
+//   - the autostart prune does not delete its entry as "not in config";
+//   - a zero exit inside the startup watch is a finished one-shot, not a
+//     failed start (StartScript).
+//
+// A PROC RUN from_config process is declared in config and is never marked.
+// Not user-visible. Stored by markAdHocLaunch, retired with scriptConfigs.
 type runLaunch struct {
 	// stdin is RunConfig.EnableStdin: the process gets a stdin pipe that
 	// PROC STDIN writes to.
 	stdin bool
+}
+
+// markAdHocLaunch records processID as an ad-hoc launch (see runLaunch).
+func (d *Daemon) markAdHocLaunch(processID string, stdin bool) {
+	d.runLaunches.Store(processID, runLaunch{stdin: stdin})
+}
+
+// isAdHocLaunch is the single definition of "this process is an ad-hoc
+// command, not a config script" (see runLaunch).
+func (d *Daemon) isAdHocLaunch(processID string) bool {
+	_, ok := d.runLaunches.Load(processID)
+	return ok
 }
 
 // runStdinEnabled reports whether processID was started by RUN with a stdin
@@ -569,7 +590,7 @@ func (d *Daemon) hubHandleRun(ctx context.Context, conn *hubpkg.Connection, cmd 
 		Args:    cfg.Args,
 		Env:     envSliceToMap(cfg.Env),
 	}
-	d.runLaunches.Store(processID, runLaunch{stdin: cfg.EnableStdin})
+	d.markAdHocLaunch(processID, cfg.EnableStdin)
 
 	// startedProc returns the process this RUN spawned: one registered under
 	// the id that is not the stopped instance found above, and that got as far

@@ -12,11 +12,13 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 )
 
 func TestStartupPortCleanup_NoPersistedProxies(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := tmpDir + "/test.sock"
 	statePath := tmpDir + "/state.json"
 
@@ -38,7 +40,7 @@ func TestStartupPortCleanup_NoPersistedProxies(t *testing.T) {
 
 func TestStartupPortCleanup_PortFree(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := tmpDir + "/test.sock"
 	statePath := tmpDir + "/state.json"
 
@@ -70,7 +72,7 @@ func TestStartupPortCleanup_KillsOrphan(t *testing.T) {
 		t.Skip("don't run as root")
 	}
 
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := tmpDir + "/test.sock"
 	statePath := tmpDir + "/state.json"
 
@@ -110,7 +112,7 @@ func TestStartupPortCleanup_KillsOrphan(t *testing.T) {
 
 func TestStartupPortCleanup_SkipsManagedPIDs(t *testing.T) {
 	// No t.Parallel(): uses production Start() (walks /proc, kills PIDs by port).
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := tmpDir + "/test.sock"
 	statePath := tmpDir + "/state.json"
 
@@ -153,7 +155,7 @@ func TestStartupPortCleanup_MultipleProxies(t *testing.T) {
 		t.Skip("don't run as root")
 	}
 
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := tmpDir + "/test.sock"
 	statePath := tmpDir + "/state.json"
 
@@ -184,7 +186,7 @@ func TestStartupPortCleanup_MultipleProxies(t *testing.T) {
 
 func TestCollectPersistedPorts(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := tmpDir + "/test.sock"
 	statePath := tmpDir + "/state.json"
 

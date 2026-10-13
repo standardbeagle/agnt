@@ -11,6 +11,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/daemonclient"
 
 	"github.com/standardbeagle/agnt/internal/incident"
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -21,7 +22,7 @@ import (
 // refactor.
 func TestSessionRegister_AsyncReturnsImmediately(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	// Script that takes well over the 100ms registration budget to start.
@@ -73,7 +74,7 @@ scripts {
 }
 
 func TestSessionRegister_AutostartConsoleErrorReachesOwningAgent(t *testing.T) {
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".agnt.kdl"), []byte(`
 scripts {
@@ -111,7 +112,7 @@ scripts {
 // done, if the run is trivial) and the second sees status=joined.
 func TestSessionRegister_JoinAsObserver(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	configContent := `
@@ -170,7 +171,7 @@ scripts {
 // synchronously because the run finishes before WriteJSON returns.
 func TestSessionRegister_EmptyConfigReturnsDone(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	// No .agnt.kdl — autostart is a no-op and completes immediately.
@@ -213,7 +214,7 @@ func TestSessionRegister_EmptyConfigReturnsDone(t *testing.T) {
 // every reconnect.
 func TestSessionRegister_ReconnectPreservesStartedAt(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	// No .agnt.kdl — autostart is a no-op so both registrations complete fast.
@@ -262,7 +263,7 @@ func TestSessionRegister_ReconnectPreservesStartedAt(t *testing.T) {
 // so far.
 func TestSessionRegister_ProgressSnapshotIncludesHistory(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	// Dependency chain so there is a real sequence of events before the
@@ -336,7 +337,7 @@ scripts {
 // projects are independent.
 func TestSessionRegister_NoGlobalSerialization(t *testing.T) {
 	t.Parallel()
-	root := t.TempDir()
+	root := sockdir.Short(t)
 	sockPath := filepath.Join(root, "test.sock")
 
 	projectA := filepath.Join(root, "project-a")
@@ -481,7 +482,7 @@ func TestSessionRegister_ReconnectInheritsUnsuppliedFields(t *testing.T) {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			tmpDir := t.TempDir()
+			tmpDir := sockdir.Short(t)
 			sockPath := filepath.Join(tmpDir, "test.sock")
 
 			// No .agnt.kdl — autostart is a no-op so registration completes fast.
@@ -558,7 +559,7 @@ func TestSessionRegister_ReconnectInheritsUnsuppliedFields(t *testing.T) {
 // then run deferred cleanup against a daemon-owned PTY).
 func TestSessionRegister_RejectsSessionHostOwnedCode(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	// No .agnt.kdl — the register is rejected before autostart runs anyway.

@@ -353,7 +353,7 @@ func (d *Daemon) registerAndStartScripts(ctx context.Context, cfg *config.AgntCo
 			// removing its entry would leave a live process the registry no
 			// longer tracks (no cleanup, no state). Config reconcile skips
 			// these for the same reason (reconcile_apply.go).
-			if _, adHoc := d.runLaunches.Load(entry.ProcessID); adHoc {
+			if d.isAdHocLaunch(entry.ProcessID) {
 				continue
 			}
 			d.scriptRegistry.Remove(entry.Name, projectPath)

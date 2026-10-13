@@ -45,6 +45,15 @@ func (s upgradeShape) request() *http.Request {
 	return r
 }
 
+// startedTunnel binds url to ps the way a tunnel agnt started does: with the
+// tunnel's lifetime and its kind.
+func startedTunnel(t *testing.T, ps *ProxyServer, url string, kind TunnelKind) {
+	t.Helper()
+	done := make(chan struct{})
+	t.Cleanup(func() { close(done) })
+	ps.SetTunnelURL(url, done, kind)
+}
+
 // localBrowser is the developer's own browser on this machine.
 func localBrowser() upgradeShape {
 	return upgradeShape{peer: "127.0.0.1:53120", host: gateLocalHost, origin: gateLocalOrigin}
@@ -75,10 +84,27 @@ func TestControlCallerTrusted_LocalBrowserKeepsControl(t *testing.T) {
 	t.Run("no tunnel", func(t *testing.T) {
 		assert.True(t, newGateProxy(t).controlCallerTrusted(localBrowser().request()))
 	})
-	t.Run("cloudflare quick tunnel bound", func(t *testing.T) {
+	t.Run("cloudflare quick tunnel started by agnt", func(t *testing.T) {
 		ps := newGateProxy(t)
-		ps.SetPublicURL(gateTunnelURL)
+		startedTunnel(t, ps, gateTunnelURL, TunnelKindCloudflareQuick)
 		assert.True(t, ps.controlCallerTrusted(localBrowser().request()))
+	})
+	t.Run("tailscale serve started by agnt", func(t *testing.T) {
+		ps := newGateProxy(t)
+		startedTunnel(t, ps, "https://build1.example.ts.net", TunnelKindTailscaleServe)
+		assert.True(t, ps.controlCallerTrusted(localBrowser().request()))
+
+		// A tailnet peer through that serve, as captured at the origin:
+		// loopback peer, the tailnet name as Host, tailscaled's headers.
+		visitor := upgradeShape{
+			peer: "127.0.0.1:53122", host: "build1.example.ts.net", origin: "https://build1.example.ts.net",
+			headers: map[string]string{
+				"X-Forwarded-For":      "100.101.102.103",
+				"X-Forwarded-Host":     "build1.example.ts.net",
+				"Tailscale-User-Login": "peer@example.com",
+			},
+		}
+		assert.False(t, ps.controlCallerTrusted(visitor.request()))
 	})
 	t.Run("bound to every interface", func(t *testing.T) {
 		ps, err := NewProxyServer(ProxyConfig{
@@ -97,7 +123,7 @@ func TestControlCallerTrusted_LocalBrowserKeepsControl(t *testing.T) {
 	})
 	t.Run("by loopback address", func(t *testing.T) {
 		ps := newGateProxy(t)
-		ps.SetPublicURL(gateTunnelURL)
+		startedTunnel(t, ps, gateTunnelURL, TunnelKindCloudflareQuick)
 		s := upgradeShape{peer: "127.0.0.1:53120", host: "127.0.0.1:8123", origin: "http://127.0.0.1:8123"}
 		assert.True(t, ps.controlCallerTrusted(s.request()))
 	})
@@ -110,7 +136,7 @@ func TestControlCallerTrusted_LocalBrowserKeepsControl(t *testing.T) {
 // trusted on this proxy, so a refusal below is the changed field's doing.
 func TestControlCallerTrusted_NearMissesRefused(t *testing.T) {
 	ps := newGateProxy(t)
-	ps.SetPublicURL(gateTunnelURL)
+	startedTunnel(t, ps, gateTunnelURL, TunnelKindCloudflareQuick)
 	if !ps.controlCallerTrusted(localBrowser().request()) {
 		t.Fatalf("premise broken: the local browser shape must be trusted before any field is changed")
 	}
@@ -174,29 +200,62 @@ func TestControlCallerTrusted_NearMissesRefused(t *testing.T) {
 	}
 }
 
-// (e): the rule is applied only where the tunnel's behaviour has been
-// observed. With ngrok — or an unknown public URL — bound, the local browser
-// is not recognised (the pre-existing behaviour), because the rule's safety
-// there would rest on undocumented-in-practice provider behaviour.
-func TestControlCallerTrusted_UnverifiedTunnelDoesNotGetLocalRule(t *testing.T) {
-	for _, publicURL := range []string{
-		"https://abc123.ngrok-free.app",
-		"https://abc123.ngrok.io",
-		"https://dev.example.com",
-		// tailscale serve was captured, but Funnel (public, uncaptured) shares
-		// *.ts.net and a bound URL does not say which put it there.
-		"https://build1.example.ts.net",
-		"http://abc.trycloudflare.com",            // not https
-		"https://trycloudflare.com",               // the bare suffix, not a tunnel host
-		"https://abc.trycloudflare.com.evil.test", // suffix in the middle
-		"https://evil-trycloudflare.com",
-	} {
-		t.Run(publicURL, func(t *testing.T) {
+// (e): the rule is granted by what started the tunnel, never by what its URL
+// looks like. Every binding below leaves the local browser unrecognised (the
+// pre-existing behaviour): a URL bound without a tunnel of agnt's own, a
+// provider that was not captured, or a kind whose URL is not what that kind
+// produces. The premise — the same proxy with a captured kind IS trusted — is
+// the LocalBrowserKeepsControl test above.
+func TestControlCallerTrusted_PublicURLWithoutACapturedTunnelKindDoesNotGetLocalRule(t *testing.T) {
+	cases := map[string]func(t *testing.T, ps *ProxyServer){
+		// Bound some other way: no provider at all.
+		"operator public-url on ts.net":           func(_ *testing.T, ps *ProxyServer) { ps.SetPublicURL("https://build1.example.ts.net") },
+		"operator public-url on trycloudflare":    func(_ *testing.T, ps *ProxyServer) { ps.SetPublicURL(gateTunnelURL) },
+		"operator public-url on an unknown host":  func(_ *testing.T, ps *ProxyServer) { ps.SetPublicURL("https://dev.example.com") },
+		"tunnel of unknown kind on ts.net":        func(t *testing.T, ps *ProxyServer) { startedTunnel(t, ps, "https://build1.example.ts.net", "") },
+		"tunnel of unknown kind on trycloudflare": func(t *testing.T, ps *ProxyServer) { startedTunnel(t, ps, gateTunnelURL, "") },
+		// A provider that was not captured.
+		"ngrok tunnel": func(t *testing.T, ps *ProxyServer) {
+			startedTunnel(t, ps, "https://abc123.ngrok-free.app", TunnelKindNgrok)
+		},
+		"ngrok tunnel on a lookalike host": func(t *testing.T, ps *ProxyServer) {
+			startedTunnel(t, ps, gateTunnelURL, TunnelKindNgrok)
+		},
+		// The second lock: a captured kind whose URL is not that kind's.
+		"quick tunnel kind, http URL": func(t *testing.T, ps *ProxyServer) {
+			startedTunnel(t, ps, "http://abc.trycloudflare.com", TunnelKindCloudflareQuick)
+		},
+		"quick tunnel kind, bare suffix": func(t *testing.T, ps *ProxyServer) {
+			startedTunnel(t, ps, "https://trycloudflare.com", TunnelKindCloudflareQuick)
+		},
+		"quick tunnel kind, suffix in the middle": func(t *testing.T, ps *ProxyServer) {
+			startedTunnel(t, ps, "https://abc.trycloudflare.com.evil.test", TunnelKindCloudflareQuick)
+		},
+		"quick tunnel kind, ts.net URL": func(t *testing.T, ps *ProxyServer) {
+			startedTunnel(t, ps, "https://build1.example.ts.net", TunnelKindCloudflareQuick)
+		},
+		"tailscale serve kind, trycloudflare URL": func(t *testing.T, ps *ProxyServer) {
+			startedTunnel(t, ps, gateTunnelURL, TunnelKindTailscaleServe)
+		},
+	}
+	for name, bind := range cases {
+		t.Run(name, func(t *testing.T) {
 			ps := newGateProxy(t)
-			ps.SetPublicURL(publicURL)
+			bind(t, ps)
 			assert.False(t, ps.controlCallerTrusted(localBrowser().request()))
 		})
 	}
+}
+
+// When the tunnel exits, its binding goes with it and the proxy is an ordinary
+// loopback proxy again.
+func TestControlCallerTrusted_TunnelBindingEndsWithTheTunnel(t *testing.T) {
+	ps := newGateProxy(t)
+	done := make(chan struct{})
+	ps.SetTunnelURL("https://abc123.ngrok-free.app", done, TunnelKindNgrok)
+	require.False(t, ps.controlCallerTrusted(localBrowser().request()), "premise: refused while the ngrok tunnel is up")
+	close(done)
+	assert.True(t, ps.controlCallerTrusted(localBrowser().request()))
 }
 
 // The named tunnel's ingress listener carries only tunnel traffic: nothing
@@ -353,7 +412,7 @@ func overlaySaw(oc *overlayCapture, text string) bool {
 func TestAgentInput_E2E_LocalDeliveredTunnelVisitorRefused(t *testing.T) {
 	backend := newWrapBackend(t)
 	ps := startWrapProxy(t, backend)
-	ps.SetPublicURL(gateTunnelURL)
+	startedTunnel(t, ps, gateTunnelURL, TunnelKindCloudflareQuick)
 	oc, socketPath := startOverlayCapture(t)
 	ps.OverlayNotifier().SetEndpoint(socketPath)
 

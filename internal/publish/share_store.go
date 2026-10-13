@@ -77,11 +77,12 @@ var (
 	// integrity checksum does not match — the store fails loud rather than
 	// silently dropping the record or serving an empty store.
 	ErrCorrupt = errors.New("publishstore: corrupt record")
-	// ErrUnservable is returned by New/OpenReadOnly when a LIVE stored record is
-	// intact but may not be served under the current rules (today: it carries an
-	// addScript op, INV-14). It is distinct from ErrCorrupt — the bytes are what
-	// was written — but fails the load the same way: loudly, naming the record.
-	ErrUnservable = errors.New("publishstore: stored share may not be served")
+	// ErrUnservable is returned by an operation that would put a QUARANTINED
+	// share back in front of viewers (today: Rotate). A quarantined share's
+	// record is intact but may not be served under the current rules — see
+	// Store.Quarantined. It is NOT a load error: load quarantines the one share
+	// and carries on. The only thing a quarantined share accepts is Revoke.
+	ErrUnservable = errors.New("publishstore: share is quarantined and may not be served")
 	// ErrReadOnly is returned by every mutating operation on a store opened with
 	// OpenReadOnly (or OpenFeedbackStoreReadOnly). A read-only store never
 	// creates, rewrites, or removes anything on disk.
@@ -157,6 +158,42 @@ type ShareInfo struct {
 	CreatedAt       time.Time  `json:"created_at"`
 	RotatedAt       *time.Time `json:"rotated_at,omitempty"`
 	RevokedAt       *time.Time `json:"revoked_at,omitempty"`
+	// Quarantined is true for a share the store loaded but will not serve (see
+	// Store.Quarantined). Its token resolves to not-found. QuarantineReason and
+	// RecordPath are set only when it is.
+	Quarantined      bool   `json:"quarantined,omitempty"`
+	QuarantineReason string `json:"quarantine_reason,omitempty"`
+	RecordPath       string `json:"record_path,omitempty"`
+}
+
+// QuarantinedShare describes one share the store loaded but refuses to serve.
+//
+// There is exactly ONE reason a share is quarantined: its stored record is
+// live, intact, and carries an addScript op (INV-14) — it was written before
+// publish began refusing that op on 2026-08-18. Nothing else quarantines: a
+// record that fails to decode or fails its checksum is corruption and still
+// fails the whole load (ErrCorrupt).
+//
+// A quarantined share is never indexed for serving, so its token gets exactly
+// the not-found an unknown token gets; it is never served with its script and
+// never quietly served without it. Its record file is left untouched. It stays
+// visible to its owner (Status/List report it, flagged) and is cleared by
+// Revoke — which tombstones it like any share — or, for a folder-served share,
+// when its file is republished without the op or deleted.
+type QuarantinedShare struct {
+	// ID is the viewer-safe share id.
+	ID string
+	// Title is the stored walkthrough's title, for a human-readable report.
+	Title string
+	// ProjectPath is the owning project (the scope a report must be sent to).
+	ProjectPath string
+	// SourceFile is the folder-relative file a `publish serve` share tracks;
+	// "" for a share created through the control plane.
+	SourceFile string
+	// Reason is why it may not be served — the same INV-14 text publish gives.
+	Reason string
+	// RecordPath is the record file on disk, unchanged by the quarantine.
+	RecordPath string
 }
 
 // Store is the durable, authoritative publish store. Safe for concurrent use.
@@ -174,6 +211,11 @@ type Store struct {
 	// folder-served shares, so an edited file resolves back to its existing
 	// share (and token). Keyed by OWNER + FILENAME, never by content digest.
 	bySource map[string]string
+	// quarantined holds the shares load refused to index for serving, by id.
+	// Such a share IS in byID (so its owner can see and revoke it) and is in
+	// NEITHER byHash NOR bySource (so no token and no file resolves to it).
+	// Readers: Quarantined (startup reports, user-visible), Status/List.
+	quarantined map[string]QuarantinedShare
 }
 
 // New opens (creating if absent) the durable publish store rooted at dir and
@@ -192,11 +234,12 @@ func New(dir string, now func() time.Time) (*Store, error) {
 		return nil, fmt.Errorf("publishstore: create dir: %w", err)
 	}
 	s := &Store{
-		dir:      dir,
-		now:      now,
-		byID:     make(map[string]*Share),
-		byHash:   make(map[string]string),
-		bySource: make(map[string]string),
+		dir:         dir,
+		now:         now,
+		byID:        make(map[string]*Share),
+		byHash:      make(map[string]string),
+		bySource:    make(map[string]string),
+		quarantined: make(map[string]QuarantinedShare),
 	}
 	if err := s.load(); err != nil {
 		return nil, err
@@ -218,12 +261,13 @@ func OpenReadOnly(dir string, now func() time.Time) (*Store, error) {
 		now = time.Now
 	}
 	s := &Store{
-		dir:      dir,
-		now:      now,
-		readOnly: true,
-		byID:     make(map[string]*Share),
-		byHash:   make(map[string]string),
-		bySource: make(map[string]string),
+		dir:         dir,
+		now:         now,
+		readOnly:    true,
+		byID:        make(map[string]*Share),
+		byHash:      make(map[string]string),
+		bySource:    make(map[string]string),
+		quarantined: make(map[string]QuarantinedShare),
 	}
 	if err := s.load(); err != nil {
 		return nil, err
@@ -255,14 +299,24 @@ func (s *Store) load() error {
 		// INV-14 at LOAD. Publish has refused addScript since 2026-08-18, but a
 		// record written before that gate carries the op and — because load
 		// checked only the checksum — was indexed and served, script and all.
-		// A live share carrying it is therefore refused here, by the same
-		// refusal publish gives, and the store fails loud naming the record:
-		// it is neither served with its script nor quietly served without it.
-		// A REVOKED record is exempt: it is never served, and a tombstone must
-		// not be able to take the store down.
+		// A LIVE share carrying it is QUARANTINED: kept in byID so its owner can
+		// see and revoke it, and indexed in neither byHash nor bySource, so no
+		// token and no file resolves to it. It is neither served with its script
+		// nor quietly served without it, and every other share loads normally —
+		// one stale record must not take the plane down. The record file is not
+		// touched. A REVOKED record carrying the op needs nothing: it is never
+		// served. This is the ONLY quarantine reason; corruption still fails.
 		if !sh.Revoked && carriesAddScript(sh.Walkthrough) {
-			return fmt.Errorf("%w: %s: share %s (%q): %v — it was stored before that rule and can no longer be served; delete %s (or republish the walkthrough without the op) and restart",
-				ErrUnservable, name, sh.ID, sh.info().Title, errAddScriptRefused(), path)
+			s.byID[sh.ID] = sh
+			s.quarantined[sh.ID] = QuarantinedShare{
+				ID:          sh.ID,
+				Title:       sh.info().Title,
+				ProjectPath: sh.ProjectPath,
+				SourceFile:  sh.SourceFile,
+				Reason:      errAddScriptRefused().Error(),
+				RecordPath:  path,
+			}
+			continue
 		}
 		s.byID[sh.ID] = sh
 		if sh.Revoked {
@@ -331,6 +385,10 @@ func (s *Store) Rotate(id string) (token string, err error) {
 	if cur.Revoked {
 		return "", ErrRevoked
 	}
+	if q, held := s.quarantined[id]; held {
+		// A fresh token would index the share for serving again.
+		return "", fmt.Errorf("%w: %s — revoke it to clear it", ErrUnservable, q.Reason)
+	}
 	token, hash, err := mintToken()
 	if err != nil {
 		return "", err
@@ -380,6 +438,9 @@ func (s *Store) revokeLocked(id string) error {
 		return err
 	}
 	s.byID[id] = &updated
+	// A quarantined share that is revoked is an ordinary tombstone from here
+	// on: this is the supported way to clear a quarantine.
+	delete(s.quarantined, id)
 	delete(s.byHash, cur.TokenHash) // token verifies no more, immediately
 	if cur.SourceFile != "" {
 		// Drop the file mapping so the filename coming back mints a FRESH share
@@ -400,7 +461,34 @@ func (s *Store) Status(id string) (ShareInfo, error) {
 	if !ok {
 		return ShareInfo{}, ErrNotFound
 	}
-	return sh.info(), nil
+	return s.infoLocked(sh), nil
+}
+
+// Quarantined returns the shares this store loaded but refuses to serve, sorted
+// by id. It is what a startup report and an owner-facing listing are built
+// from: a quarantine that nobody is told about is a share that silently went
+// dark. The result is a snapshot; Revoke removes a share from it.
+func (s *Store) Quarantined() []QuarantinedShare {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([]QuarantinedShare, 0, len(s.quarantined))
+	for _, q := range s.quarantined {
+		out = append(out, q)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].ID < out[j].ID })
+	return out
+}
+
+// infoLocked is Share.info plus the quarantine flag, which lives on the store
+// rather than the record. Caller holds the lock.
+func (s *Store) infoLocked(sh *Share) ShareInfo {
+	info := sh.info()
+	if q, held := s.quarantined[sh.ID]; held {
+		info.Quarantined = true
+		info.QuarantineReason = q.Reason
+		info.RecordPath = q.RecordPath
+	}
+	return info
 }
 
 // List returns redaction-safe views of every share owned by projectPath
@@ -413,7 +501,7 @@ func (s *Store) List(projectPath string) []ShareInfo {
 		if sh.ProjectPath != projectPath {
 			continue
 		}
-		out = append(out, sh.info())
+		out = append(out, s.infoLocked(sh))
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
@@ -449,6 +537,12 @@ func (s *Store) VerifyToken(token string) (rev *PublishedWalkthrough, shareID st
 	if sh == nil || sh.Revoked {
 		return nil, "", false
 	}
+	// A quarantined share is never in byHash, so this cannot be reached for
+	// one; the check is the second lock on the same door, and it answers with
+	// the SAME not-found as an unknown token — a viewer learns nothing.
+	if _, held := s.quarantined[id]; held {
+		return nil, "", false
+	}
 	// Authoritative accept gate: constant-time compare of the stored hash against
 	// the candidate hash (INV-3, no plain-== fallback).
 	if subtle.ConstantTimeCompare([]byte(sh.TokenHash), []byte(hash)) != 1 {
@@ -470,6 +564,9 @@ func (s *Store) ShareDigest(id string) (digest string, ok bool) {
 	defer s.mu.RUnlock()
 	sh := s.byID[id]
 	if sh == nil || sh.Revoked {
+		return "", false
+	}
+	if _, held := s.quarantined[id]; held {
 		return "", false
 	}
 	return sh.Digest, true
@@ -513,6 +610,18 @@ func (s *Store) PublishFile(pw *PublishedWalkthrough, projectPath, fileName stri
 		sh, token, err := s.createShareLocked(pw, projectPath, fileName)
 		if err != nil {
 			return "", "", "", err
+		}
+		// The file has now been published clean (pw validated above). A
+		// quarantined share that tracked this same file is superseded: tombstone
+		// it, so the folder is not left with a quarantine nothing can clear —
+		// `publish serve` has no revoke of its own. The new share and token are
+		// already committed, so a failure here is reported but does not undo them.
+		for id, q := range s.quarantined {
+			if q.ProjectPath == projectPath && q.SourceFile == fileName {
+				if rerr := s.revokeLocked(id); rerr != nil {
+					return sh.ID, token, sh.RevisionID, fmt.Errorf("publishstore: published %s but could not retire its quarantined predecessor %s: %w", fileName, id, rerr)
+				}
+			}
 		}
 		return sh.ID, token, sh.RevisionID, nil
 	}

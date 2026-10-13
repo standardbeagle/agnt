@@ -3,8 +3,10 @@
 // to their caller and so would otherwise vanish.
 //
 // Unlike internal/debug (which only writes when debug mode is enabled),
-// selflog always writes, to a single rotating file at
-// ${XDG_CACHE_HOME:-$HOME/.cache}/agnt/errors.log. The two writers that
+// selflog always writes, to a single rotating file: agnt/errors.log in the
+// per-user cache directory (os.UserCacheDir: ${XDG_CACHE_HOME:-$HOME/.cache}
+// on Linux, ~/Library/Caches on macOS, %LocalAppData% on Windows; see
+// DefaultPath). The two writers that
 // matter most run when the daemon is unreachable — the `agnt hook`
 // dispatcher (a separate short-lived process) and the incident pinger — so
 // the log is file-based with no daemon dependency: the viewer command
@@ -42,8 +44,10 @@ type Entry struct {
 }
 
 // DefaultPath resolves the persistent error-log location. AGNT_ERROR_LOG
-// wins (tests and power users redirect with one env var); otherwise it
-// follows the XDG cache convention, matching internal/debug's log dir.
+// wins (tests and power users redirect with one env var); otherwise it is
+// agnt/errors.log under os.UserCacheDir, matching internal/debug's log dir.
+// That honours XDG_CACHE_HOME on Linux only: on macOS and Windows the
+// variable is not consulted.
 func DefaultPath() string {
 	if p := os.Getenv("AGNT_ERROR_LOG"); p != "" {
 		return p

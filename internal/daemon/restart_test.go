@@ -13,6 +13,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/daemonclient"
 
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 	"github.com/stretchr/testify/require"
 )
 
@@ -63,7 +64,7 @@ func restartProcessWithRetry(t *testing.T, client *daemonclient.Client, processI
 // TestRestartIntegration_ProcRestart tests single process restart.
 func TestRestartIntegration_ProcRestart(t *testing.T) {
 	// No t.Parallel(): starts real sleep process; PID-reuse kills it under high concurrency.
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	_ = NewForTest(t, DaemonConfig{
@@ -128,7 +129,7 @@ func TestRestartIntegration_ProcRestart(t *testing.T) {
 // TestRestartIntegration_ProcRestart_NonExistent tests restarting a non-existent process.
 func TestRestartIntegration_ProcRestart_NonExistent(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	_ = NewForTest(t, DaemonConfig{
@@ -157,7 +158,7 @@ func TestRestartIntegration_ProcRestart_NonExistent(t *testing.T) {
 // test. Running serially (no t.Parallel) guarantees that — and matches the
 // rule that real-OS-process/port tests must not race each other.
 func TestRestartIntegration_ProxyRestart(t *testing.T) {
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	_ = NewForTest(t, DaemonConfig{
@@ -240,7 +241,7 @@ func TestRestartIntegration_ProxyRestart(t *testing.T) {
 // TestRestartIntegration_ProxyRestart_NonExistent tests restarting a non-existent proxy.
 func TestRestartIntegration_ProxyRestart_NonExistent(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	_ = NewForTest(t, DaemonConfig{
@@ -265,7 +266,7 @@ func TestRestartIntegration_ProxyRestart_NonExistent(t *testing.T) {
 // TestRestartIntegration_StopAll tests stopping all processes and proxies.
 func TestRestartIntegration_StopAll(t *testing.T) {
 	// No t.Parallel(): starts real sleep processes; PID-reuse kills them under high concurrency.
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	_ = NewForTest(t, DaemonConfig{
@@ -362,7 +363,7 @@ func TestRestartIntegration_StopAll(t *testing.T) {
 // TestRestartIntegration_RestartAll tests restarting all processes and proxies.
 func TestRestartIntegration_RestartAll(t *testing.T) {
 	// No t.Parallel(): starts real sleep process; PID-reuse kills it under high concurrency.
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	_ = NewForTest(t, DaemonConfig{
@@ -487,7 +488,7 @@ func TestRestartIntegration_RestartAll(t *testing.T) {
 // TestRestartIntegration_StopAll_Empty tests stop all with no resources.
 func TestRestartIntegration_StopAll_Empty(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	_ = NewForTest(t, DaemonConfig{
@@ -531,7 +532,7 @@ func TestRestartIntegration_StopAll_Empty(t *testing.T) {
 // TestRestartIntegration_RestartAll_Empty tests restart all with no resources.
 func TestRestartIntegration_RestartAll_Empty(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	_ = NewForTest(t, DaemonConfig{
@@ -581,7 +582,7 @@ func startProxyBackendForRestart(t *testing.T) (backendURL, tmpDir, sockPath str
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(backend.Close)
-	tmpDir = t.TempDir()
+	tmpDir = sockdir.Short(t)
 	sockPath = filepath.Join(tmpDir, "test.sock")
 	return backend.URL, tmpDir, sockPath
 }

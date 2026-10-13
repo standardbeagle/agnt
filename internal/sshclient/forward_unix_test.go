@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 )
 
 // The Forwarder tests below bind and dial unix-domain socket FILES on both
@@ -59,7 +61,7 @@ func startEchoUnixServer(t *testing.T, path string) (stop func()) {
 }
 
 func TestForwarder_ProxiesBytesRoundTripThroughStreamLocalChannel(t *testing.T) {
-	remoteSocketDir := t.TempDir()
+	remoteSocketDir := sockdir.Short(t)
 	remoteSocketPath := filepath.Join(remoteSocketDir, "daemon.sock")
 	stopEcho := startEchoUnixServer(t, remoteSocketPath)
 	defer stopEcho()
@@ -73,7 +75,7 @@ func TestForwarder_ProxiesBytesRoundTripThroughStreamLocalChannel(t *testing.T) 
 
 	client := dialFixtureClient(t, fixture)
 
-	localDir := t.TempDir()
+	localDir := sockdir.Short(t)
 	localSocketPath := filepath.Join(localDir, "local.sock")
 	fwd, err := NewForwarder(client, remoteSocketPath, localSocketPath)
 	if err != nil {
@@ -103,7 +105,7 @@ func TestForwarder_ProxiesBytesRoundTripThroughStreamLocalChannel(t *testing.T) 
 }
 
 func TestForwarder_ConcurrentClientsGetIndependentStreams(t *testing.T) {
-	remoteSocketDir := t.TempDir()
+	remoteSocketDir := sockdir.Short(t)
 	remoteSocketPath := filepath.Join(remoteSocketDir, "daemon.sock")
 	stopEcho := startEchoUnixServer(t, remoteSocketPath)
 	defer stopEcho()
@@ -117,7 +119,7 @@ func TestForwarder_ConcurrentClientsGetIndependentStreams(t *testing.T) {
 
 	client := dialFixtureClient(t, fixture)
 
-	localDir := t.TempDir()
+	localDir := sockdir.Short(t)
 	localSocketPath := filepath.Join(localDir, "local.sock")
 	fwd, err := NewForwarder(client, remoteSocketPath, localSocketPath)
 	if err != nil {
@@ -163,7 +165,7 @@ func TestForwarder_ConcurrentClientsGetIndependentStreams(t *testing.T) {
 }
 
 func TestForwarder_DisconnectRemovesSocketFile_ReconnectRecreates(t *testing.T) {
-	remoteSocketDir := t.TempDir()
+	remoteSocketDir := sockdir.Short(t)
 	remoteSocketPath := filepath.Join(remoteSocketDir, "daemon.sock")
 	stopEcho := startEchoUnixServer(t, remoteSocketPath)
 	defer stopEcho()
@@ -177,7 +179,7 @@ func TestForwarder_DisconnectRemovesSocketFile_ReconnectRecreates(t *testing.T) 
 
 	client := dialFixtureClient(t, fixture)
 
-	localDir := t.TempDir()
+	localDir := sockdir.Short(t)
 	localSocketPath := filepath.Join(localDir, "local.sock")
 
 	fwd, err := NewForwarder(client, remoteSocketPath, localSocketPath)
@@ -224,7 +226,7 @@ func TestForwarder_PauseKeepsSocketBoundAndRejectsNewConnections(t *testing.T) {
 	defer stopFixture()
 
 	client := dialFixtureClient(t, fixture)
-	localSocketPath := filepath.Join(t.TempDir(), "local.sock")
+	localSocketPath := filepath.Join(sockdir.Short(t), "local.sock")
 	fwd, err := NewForwarder(client, "/remote.sock", localSocketPath)
 	if err != nil {
 		t.Fatal(err)
@@ -255,7 +257,7 @@ func TestForwarder_PauseKeepsSocketBoundAndRejectsNewConnections(t *testing.T) {
 }
 
 func TestForwarder_PauseBetweenLocalAndRemoteTrackDrainsRegistry(t *testing.T) {
-	remoteSocketPath := filepath.Join(t.TempDir(), "daemon.sock")
+	remoteSocketPath := filepath.Join(sockdir.Short(t), "daemon.sock")
 	stopEcho := startEchoUnixServer(t, remoteSocketPath)
 	defer stopEcho()
 	fixture := newFixtureServer(t)
@@ -263,7 +265,7 @@ func TestForwarder_PauseBetweenLocalAndRemoteTrackDrainsRegistry(t *testing.T) {
 	stopFixture := fixture.serve(t)
 	defer stopFixture()
 
-	localPath := filepath.Join(t.TempDir(), "local.sock")
+	localPath := filepath.Join(sockdir.Short(t), "local.sock")
 	fwd, err := NewForwarder(dialFixtureClient(t, fixture), remoteSocketPath, localPath)
 	if err != nil {
 		t.Fatal(err)
@@ -307,7 +309,7 @@ func TestForwarder_PauseBetweenLocalAndRemoteTrackDrainsRegistry(t *testing.T) {
 }
 
 func TestForwarder_StaleSocketFileFromCrashedRun_IsRebound(t *testing.T) {
-	remoteSocketDir := t.TempDir()
+	remoteSocketDir := sockdir.Short(t)
 	remoteSocketPath := filepath.Join(remoteSocketDir, "daemon.sock")
 	stopEcho := startEchoUnixServer(t, remoteSocketPath)
 	defer stopEcho()
@@ -319,7 +321,7 @@ func TestForwarder_StaleSocketFileFromCrashedRun_IsRebound(t *testing.T) {
 	stopFixture := fixture.serve(t)
 	defer stopFixture()
 
-	localDir := t.TempDir()
+	localDir := sockdir.Short(t)
 	localSocketPath := filepath.Join(localDir, "local.sock")
 
 	// Simulate a crashed prior run: a listener bound, then killed without

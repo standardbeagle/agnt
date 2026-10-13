@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/tunnel"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
@@ -83,7 +84,11 @@ func (d *Daemon) hubHandleTunnelStart(ctx context.Context, conn *hubpkg.Connecti
 	// Update proxy public URL if proxy_id specified
 	if config.ProxyID != "" {
 		if p, err := getSessionScoped(d, conn, config.ProxyID, d.proxym.GetWithPathFilter); err == nil {
-			p.SetTunnelURL(publicURL, t.Done())
+			// Tell the proxy what started this tunnel, not just its URL: the
+			// control WebSocket's local-caller rule is granted per tunnel
+			// kind, and a hostname cannot stand in for it (tailscale serve
+			// and the public Funnel share *.ts.net).
+			p.SetTunnelURL(publicURL, t.Done(), tunnelKindFor(provider))
 		}
 	}
 
@@ -97,6 +102,23 @@ func (d *Daemon) hubHandleTunnelStart(ctx context.Context, conn *hubpkg.Connecti
 
 	data, _ := json.Marshal(resp)
 	return conn.WriteJSON(data)
+}
+
+// tunnelKindFor maps the provider TUNNEL START launched to the kind the proxy
+// records with the URL. TUNNEL START runs each provider one way only: a
+// Cloudflare quick tunnel (never a named one — those are declared on the
+// proxy), `tailscale serve` (never Funnel), `ngrok http`. An unrecognised
+// provider maps to "", which the proxy treats as unknown.
+func tunnelKindFor(provider tunnel.Provider) proxy.TunnelKind {
+	switch provider {
+	case tunnel.ProviderCloudflare:
+		return proxy.TunnelKindCloudflareQuick
+	case tunnel.ProviderTailscale:
+		return proxy.TunnelKindTailscaleServe
+	case tunnel.ProviderNgrok:
+		return proxy.TunnelKindNgrok
+	}
+	return ""
 }
 
 // hubHandleTunnelStop handles TUNNEL STOP command.

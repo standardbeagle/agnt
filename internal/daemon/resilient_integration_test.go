@@ -8,11 +8,12 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 )
 
 // TestResilientClient_WrapperMethods tests the ResilientClient wrapper methods with a running daemon.
 func TestResilientClient_WrapperMethods(t *testing.T) {
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	// Start a daemon
@@ -209,7 +210,7 @@ func TestResilientClient_WrapperMethods(t *testing.T) {
 
 // TestResilientClient_ProxyExtendedMethods tests additional proxy-related resilient client methods.
 func TestResilientClient_ProxyExtendedMethods(t *testing.T) {
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	_ = NewForTest(t, DaemonConfig{
@@ -334,7 +335,7 @@ func TestResilientClient_ProxyExtendedMethods(t *testing.T) {
 
 // TestResilientClient_SessionMethods tests session-related resilient client methods.
 func TestResilientClient_SessionMethods(t *testing.T) {
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	_ = NewForTest(t, DaemonConfig{
@@ -442,7 +443,7 @@ func TestResilientClient_SessionMethods(t *testing.T) {
 
 // TestResilientClient_TunnelMethods tests tunnel-related resilient client methods.
 func TestResilientClient_TunnelMethods(t *testing.T) {
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	_ = NewForTest(t, DaemonConfig{
@@ -496,7 +497,7 @@ func TestResilientClient_TunnelMethods(t *testing.T) {
 
 // TestResilientClient_ChaosMethods tests chaos-related resilient client methods.
 func TestResilientClient_ChaosMethods(t *testing.T) {
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	_ = NewForTest(t, DaemonConfig{
@@ -640,7 +641,7 @@ func TestResilientClient_ChaosMethods(t *testing.T) {
 
 // TestResilientClient_AdditionalMethods tests remaining uncovered resilient client methods.
 func TestResilientClient_AdditionalMethods(t *testing.T) {
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	_ = NewForTest(t, DaemonConfig{

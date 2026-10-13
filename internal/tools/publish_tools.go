@@ -354,9 +354,22 @@ func discoverServeStores() []ServeStoreInfo {
 
 func formatShare(s protocol.PublishShareInfo) string {
 	state := "live"
-	if s.Revoked {
+	switch {
+	case s.Revoked:
 		state = "revoked"
+	case s.Quarantined:
+		// Not "live": its token resolves to not-found. Say so, say why, and say
+		// how to clear it — a share that silently went dark is the failure.
+		state = "QUARANTINED — not served"
 	}
-	return fmt.Sprintf("- %s [%s] %q steps=%d hash=%s created=%s\n",
+	line := fmt.Sprintf("- %s [%s] %q steps=%d hash=%s created=%s\n",
 		s.ID, state, s.Title, s.Steps, s.TokenHashPrefix, s.CreatedAt)
+	if s.Quarantined && !s.Revoked {
+		line += fmt.Sprintf("  reason: %s\n", s.QuarantineReason)
+		line += fmt.Sprintf("  clear it: publish {action: \"revoke\", id: %q} (then publish the walkthrough again without the op for a fresh link)\n", s.ID)
+		if s.RecordPath != "" {
+			line += fmt.Sprintf("  record: %s\n", s.RecordPath)
+		}
+	}
+	return line
 }

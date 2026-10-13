@@ -14,6 +14,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/sshclient"
 	"github.com/standardbeagle/agnt/internal/sshclient/testenv"
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
 	"golang.org/x/crypto/ssh/knownhosts"
@@ -205,7 +206,7 @@ func TestHostKeyMismatchHardFailsWithoutPrompt(t *testing.T) {
 
 func startAgent(t *testing.T, privateKey []byte) {
 	t.Helper()
-	sock := filepath.Join(t.TempDir(), "agent.sock")
+	sock := filepath.Join(sockdir.Short(t), "agent.sock")
 	listener, err := net.Listen("unix", sock)
 	if err != nil {
 		t.Fatal(err)

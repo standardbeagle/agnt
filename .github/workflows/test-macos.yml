@@ -20,12 +20,6 @@ jobs:
     name: go vet + go test -p 1 ./... (macOS)
     runs-on: macos-latest
     timeout-minutes: 60
-    env:
-      # macOS caps a Unix socket path at 104 bytes and its default temp dir is
-      # /var/folders/<hash>/T (about 50 bytes before the test name), so every
-      # test that binds a socket under t.TempDir() fails with "bind: invalid
-      # argument". The product itself uses /tmp for its sockets on Unix.
-      TMPDIR: /tmp
     steps:
       - name: Checkout code
         uses: actions/checkout@v6

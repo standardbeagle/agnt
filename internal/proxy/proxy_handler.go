@@ -191,13 +191,37 @@ type publicURLBinding struct {
 	url      string
 	done     <-chan struct{}
 	previous *publicURLBinding
+	// kind says what put the URL here: the tunnel agnt itself started
+	// (SetTunnelURL), or "" for a URL bound any other way (SetPublicURL — an
+	// operator's public-url, a restored value). It is the source of truth for
+	// the control WebSocket's local-caller rule; a hostname is not, because
+	// the same hostnames serve kinds of tunnel that behave differently.
+	kind TunnelKind
 }
 
-// SetTunnelURL binds URL rewriting to the lifetime of a tunnel.
-func (ps *ProxyServer) SetTunnelURL(url string, done <-chan struct{}) {
+// TunnelKind names the kind of tunnel agnt started in front of a proxy.
+type TunnelKind string
+
+const (
+	// TunnelKindCloudflareQuick is `cloudflared tunnel --url` (a
+	// *.trycloudflare.com quick tunnel) pointed at the proxy's own listener.
+	TunnelKindCloudflareQuick TunnelKind = "cloudflare-quick"
+	// TunnelKindCloudflareNamed is the proxy's own named Cloudflare tunnel,
+	// which forwards to a separate ingress listener.
+	TunnelKindCloudflareNamed TunnelKind = "cloudflare-named"
+	// TunnelKindTailscaleServe is `tailscale serve` (tailnet-private).
+	TunnelKindTailscaleServe TunnelKind = "tailscale-serve"
+	// TunnelKindNgrok is `ngrok http`.
+	TunnelKindNgrok TunnelKind = "ngrok"
+)
+
+// SetTunnelURL binds URL rewriting to the lifetime of a tunnel agnt started.
+// kind is what started it; pass "" only when that is genuinely unknown, in
+// which case the binding gets no treatment that depends on the provider.
+func (ps *ProxyServer) SetTunnelURL(url string, done <-chan struct{}, kind TunnelKind) {
 	for {
 		previous := ps.activePublicURL()
-		binding := &publicURLBinding{url: url, done: done, previous: previous}
+		binding := &publicURLBinding{url: url, done: done, previous: previous, kind: kind}
 		if ps.publicURL.CompareAndSwap(previous, binding) {
 			return
 		}

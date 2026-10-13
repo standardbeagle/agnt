@@ -1,9 +1,10 @@
 package testenv_test
 
 import (
-	"os"
 	"runtime"
 	"testing"
+
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 )
 
 // requirePOSIXHost skips a test whose fixture runs "remote" commands through
@@ -19,15 +20,9 @@ func requirePOSIXHost(t *testing.T) {
 }
 
 // shortSocketDir returns a fresh directory whose path is short enough to hold
-// a unix-domain socket. t.TempDir() embeds the test name, which on Windows
-// pushes the socket path past the ~108-byte sun_path limit, so bind fails with
-// "invalid argument".
+// a unix-domain socket. It is sockdir.Short, the one implementation shared by
+// every package's tests; see that package for the sun_path limit.
 func shortSocketDir(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp("", "ssh")
-	if err != nil {
-		t.Fatalf("creating short socket dir: %v", err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	return dir
+	return sockdir.Short(t)
 }

@@ -25,19 +25,8 @@ var (
 var hookLogCmd = &cobra.Command{
 	Use:   "log",
 	Short: "Show agnt's persistent self-error log (hook drops & fire-and-forget failures)",
-	Long: `Show the persistent self-error log at ${XDG_CACHE_HOME:-$HOME/.cache}/agnt/errors.log.
-
-This is where agnt records its OWN failures that, by design, must stay silent
-to the caller: hook-dispatcher drops (daemon wedged/unreachable), incident
-pinger delivery failures, and similar fire-and-forget paths. Each line is:
-
-  <RFC3339 timestamp> <component> <message>
-
-Examples:
-  agnt hook log                 # last 50 entries
-  agnt hook log --tail 200      # last 200
-  agnt hook log --follow        # stream new entries as they land
-  agnt hook log --clear         # wipe the log`,
+	// Long is set in init from hookLogLong: it names the log's real path on
+	// this machine, which is only known at run time.
 	RunE: func(cmd *cobra.Command, args []string) error {
 		path := hookLogPath
 		if path == "" {
@@ -73,6 +62,39 @@ Examples:
 		}
 		return nil
 	},
+}
+
+// hookLogLong is the long help for `agnt hook log`, built around path, the
+// log's location on this machine (selflog.DefaultPath()).
+//
+// The help used to state ${XDG_CACHE_HOME:-$HOME/.cache}/agnt/errors.log for
+// everyone. That is right on Linux only: the log lives in the per-user cache
+// directory (os.UserCacheDir), which is ~/Library/Caches on macOS and
+// %LocalAppData% on Windows, and XDG_CACHE_HOME is not consulted there. So the
+// help prints the path the command will actually read.
+func hookLogLong(path string) string {
+	where := "The location could not be determined on this machine (no cache or home\ndirectory); pass --path or set AGNT_ERROR_LOG."
+	if path != "" {
+		where = "On this machine it is:\n\n  " + path + "\n\n" +
+			"That is agnt/errors.log in the per-user cache directory (~/.cache or\n" +
+			"$XDG_CACHE_HOME on Linux, ~/Library/Caches on macOS, %LocalAppData% on\n" +
+			"Windows). AGNT_ERROR_LOG, when set, replaces the whole path."
+	}
+	return `Show agnt's persistent self-error log.
+
+` + where + `
+
+This is where agnt records its OWN failures that, by design, must stay silent
+to the caller: hook-dispatcher drops (daemon wedged/unreachable), incident
+pinger delivery failures, and similar fire-and-forget paths. Each line is:
+
+  <RFC3339 timestamp> <component> <message>
+
+Examples:
+  agnt hook log                 # last 50 entries
+  agnt hook log --tail 200      # last 200
+  agnt hook log --follow        # stream new entries as they land
+  agnt hook log --clear         # wipe the log`
 }
 
 func printSelfLogEntry(w io.Writer, e selflog.Entry) {
@@ -116,7 +138,8 @@ func init() {
 	hookLogCmd.Flags().IntVar(&hookLogTail, "tail", 50, "Show the last N entries (0 = all)")
 	hookLogCmd.Flags().BoolVar(&hookLogClear, "clear", false, "Clear the self-error log and exit")
 	hookLogCmd.Flags().BoolVarP(&hookLogFollow, "follow", "f", false, "Stream new entries as they are appended")
-	hookLogCmd.Flags().StringVar(&hookLogPath, "path", "", "Override the log path (default: selflog.DefaultPath())")
+	hookLogCmd.Long = hookLogLong(selflog.DefaultPath())
+	hookLogCmd.Flags().StringVar(&hookLogPath, "path", "", "Read this file instead of the default log (see the path above)")
 	// stdout is the deliverable here; keep usage noise off it on error.
 	hookLogCmd.SilenceUsage = true
 	hookCmd.AddCommand(hookLogCmd)

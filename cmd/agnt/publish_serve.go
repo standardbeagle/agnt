@@ -581,6 +581,7 @@ func runPublishServe(ctx context.Context, opts publishServeOptions) error {
 	// source. serve uses its OWN store (not the daemon's), so these paths are the
 	// only pointer to where shares and viewer feedback actually live.
 	fmt.Fprintf(opts.Out, "publish serve: share store %s\n", filepath.Join(storeDir, "shares"))
+	printQuarantinedShares(opts.Out, store.Quarantined())
 	fmt.Fprintf(opts.Out, "publish serve: feedback store %s (read it with: agnt publish feedback --dir %s)\n", filepath.Join(storeDir, "feedback"), dir)
 	// Capture the baseline before publishing. A later baseline could include
 	// an edit that happened after publication but before the watcher started,
@@ -685,6 +686,23 @@ func runPublishServe(ctx context.Context, opts publishServeOptions) error {
 		return err
 	case err := <-watchErr:
 		return err
+	}
+}
+
+// printQuarantinedShares reports, loudly and one block per share, every share
+// the store loaded but will not serve. Such a share's link returns 404 to its
+// viewers from this run on, so saying nothing would be a link that silently
+// died. serve has no revoke command; a quarantined share here is cleared by its
+// FILE: republished without the op it is retired and replaced by a fresh share,
+// and deleted it is revoked by the ordinary reconcile.
+func printQuarantinedShares(out io.Writer, quarantined []publish.QuarantinedShare) {
+	for _, q := range quarantined {
+		fmt.Fprintf(out, "publish serve: QUARANTINED — share %s %q is NOT being served; its link now returns 404.\n", q.ID, q.Title)
+		fmt.Fprintf(out, "  reason: %s\n", q.Reason)
+		if q.SourceFile != "" {
+			fmt.Fprintf(out, "  to clear it: remove the op from %s (it is then republished under a NEW link), or delete that file\n", q.SourceFile)
+		}
+		fmt.Fprintf(out, "  stored record (left untouched): %s\n", q.RecordPath)
 	}
 }
 

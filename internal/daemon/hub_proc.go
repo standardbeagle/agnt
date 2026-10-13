@@ -1056,8 +1056,15 @@ func (d *Daemon) hubHandleProcRun(ctx context.Context, conn *hubpkg.Connection, 
 	// port resolution falls back to command-line / PORT env scanning in
 	// getExpectedPortsForScript.
 	processID := makeProcessID(projectPath, name)
-	// A PROC RUN under this name supersedes an earlier top-level RUN of it.
-	d.runLaunches.Delete(processID)
+	// An inline PROC RUN is an ad-hoc command, like a top-level RUN: config
+	// reconcile and the autostart prune leave it alone. A from_config launch
+	// is the declared script and follows config — including when it replaces
+	// an earlier ad-hoc launch under the same name.
+	if payload.FromConfig {
+		d.runLaunches.Delete(processID)
+	} else {
+		d.markAdHocLaunch(processID, false)
+	}
 	d.registerIncidentProcessOwner(processID, conn.SessionCode())
 	result := d.StartProcessWithDeps(ctx, name, scriptCfg, projectPath, deps, depTimeout)
 	foreground := isForegroundRunMode(payload.Mode)
@@ -1074,6 +1081,11 @@ func (d *Daemon) hubHandleProcRun(ctx context.Context, conn *hubpkg.Connection, 
 			return conn.WriteErr(hubproto.ErrInternal, result.Err.Error())
 		}
 		result.State = proc.State().String()
+		// An inline one-shot that exited 0 did not fail; the registry entry
+		// StartScriptExplicit marked failed is put right, as for RUN.
+		if !payload.FromConfig {
+			d.settleRunEntry(name, projectPath, proc)
+		}
 	}
 
 	processID = result.ProcessID

@@ -42,7 +42,7 @@ Drain goroutine never blocks on slow consumer: `BroadcastLogEntry` uses channel-
 
 ## Persistent self-error log (`agnt hook log`)
 
-The dispatcher exits 0 even when the daemon is wedged, so a dropped event would otherwise vanish. On the wedged-daemon path (reachable but enqueue deadline exceeded) it appends one line to the always-on **self-error log** at `${XDG_CACHE_HOME:-$HOME/.cache}/agnt/errors.log` (`internal/selflog`, overridable via `AGNT_ERROR_LOG`). This is the unified sink for agnt's fire-and-forget failures — the incident pinger's delivery failures land here too. Line format: `<RFC3339> <component> <message>` (component = the hook event for drops, e.g. `post-tool-use`).
+The dispatcher exits 0 even when the daemon is wedged, so a dropped event would otherwise vanish. On the wedged-daemon path (reachable but enqueue deadline exceeded) it appends one line to the always-on **self-error log**: `agnt/errors.log` in the per-user cache directory (`internal/selflog`, overridable via `AGNT_ERROR_LOG`). That directory is `${XDG_CACHE_HOME:-$HOME/.cache}` on Linux, `~/Library/Caches` on macOS and `%LocalAppData%` on Windows; `XDG_CACHE_HOME` is only consulted on Linux. `agnt hook log --help` prints the exact path on the machine it runs on. This is the unified sink for agnt's fire-and-forget failures — the incident pinger's delivery failures land here too. Line format: `<RFC3339> <component> <message>` (component = the hook event for drops, e.g. `post-tool-use`).
 
 Unlike `internal/debug` (only writes when debug mode is on), selflog is always-on and file-based with no daemon dependency, so it survives the outage that produced the drop. View it:
 

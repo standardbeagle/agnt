@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/standardbeagle/agnt/internal/daemonclient"
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,7 +18,7 @@ import (
 // A stale legacy socket file (nothing listening behind it) is removed, so the
 // next startup does not keep re-inspecting it.
 func TestMigrateLegacySocket_RemovesStaleFile(t *testing.T) {
-	dir := t.TempDir()
+	dir := sockdir.Short(t)
 	legacy := filepath.Join(dir, "legacy.sock")
 	require.NoError(t, os.WriteFile(legacy, nil, 0o600))
 
@@ -30,7 +31,7 @@ func TestMigrateLegacySocket_RemovesStaleFile(t *testing.T) {
 
 // Nothing at the legacy path means nothing to do — and no error.
 func TestMigrateLegacySocket_NoLegacySocketIsNoop(t *testing.T) {
-	dir := t.TempDir()
+	dir := sockdir.Short(t)
 	legacy := filepath.Join(dir, "absent.sock")
 
 	d := NewForTest(t, DaemonConfig{SocketPath: filepath.Join(dir, "new.sock")})
@@ -43,7 +44,7 @@ func TestMigrateLegacySocket_NoLegacySocketIsNoop(t *testing.T) {
 // The migration must not run at all when the daemon was pointed at an explicit
 // socket path: that caller owns the socket layout, legacy path included.
 func TestMigrateLegacySocket_SkippedForCustomSocketPath(t *testing.T) {
-	dir := t.TempDir()
+	dir := sockdir.Short(t)
 	d := NewForTest(t, DaemonConfig{SocketPath: filepath.Join(dir, "custom.sock")})
 
 	// Guard fires before any filesystem access, so a non-existent legacy path is

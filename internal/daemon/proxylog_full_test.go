@@ -11,6 +11,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 	"github.com/stretchr/testify/require"
 )
 
@@ -20,7 +21,7 @@ import (
 // from the daemon's TrafficLogger over the wire.
 func TestProxyLogQueryFull_PreservesResponseBody(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	d := NewForTest(t, DaemonConfig{

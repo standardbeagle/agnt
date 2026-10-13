@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/daemonclient"
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 
 	"github.com/standardbeagle/go-cli-server/process"
 	"github.com/stretchr/testify/require"
@@ -99,7 +100,7 @@ func TestDaemonUpgrade_FullCycle(t *testing.T) {
 	binaryVersion := getBinaryVersion(t, daemonPath)
 	t.Logf("Binary version: %s", binaryVersion)
 
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	// Start daemon
@@ -206,7 +207,7 @@ func TestUpgradeLock_ConcurrentAttempts(t *testing.T) {
 	// Find the agnt binary for testing
 	daemonPath := findAgntBinary(t)
 
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	// Start daemon
@@ -290,7 +291,7 @@ func TestUpgradeStaleSocket(t *testing.T) {
 	// Find the agnt binary for testing
 	daemonPath := findAgntBinary(t)
 
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	// Create a real stale Unix socket (not a regular file)
@@ -347,7 +348,7 @@ func TestUpgradeVersionCheck(t *testing.T) {
 	// Find the agnt binary for testing
 	daemonPath := findAgntBinary(t)
 
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	// Start daemon

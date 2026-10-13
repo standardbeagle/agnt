@@ -16,6 +16,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/scope"
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 	"github.com/stretchr/testify/require"
 )
 
@@ -530,7 +531,7 @@ func TestHubIntegration_CurrentPageCommands(t *testing.T) {
 // the lookup should succeed without ambiguity.
 func TestHubIntegration_SessionScopedProxyLookup(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	// Create two project directories
@@ -1244,7 +1245,7 @@ func TestDefaultDaemonConfig(t *testing.T) {
 // TestDaemon_Wait tests the Wait method.
 func TestDaemon_Wait(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	daemon := NewForTest(t, DaemonConfig{
@@ -1671,7 +1672,7 @@ func TestHubIntegration_TunnelValidation(t *testing.T) {
 // TestHubIntegration_ProcListFilters tests PROC LIST with different filters.
 func TestHubIntegration_ProcListFilters(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	// Create subdirectories for different projects
@@ -1809,7 +1810,7 @@ func TestHubIntegration_ProcListFilters(t *testing.T) {
 // TestDaemon_RestoreProxies tests proxy restoration from state.
 func TestDaemon_RestoreProxies(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 	statePath := filepath.Join(tmpDir, "state.json")
 
@@ -1986,7 +1987,7 @@ func TestHubIntegration_SessionScheduleAndCancel(t *testing.T) {
 // TestHubIntegration_RunAutostart tests RunAutostart functionality.
 func TestDaemon_RunAutostart(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	// Create a minimal agnt.kdl config with no autostart
@@ -2030,7 +2031,7 @@ func TestDaemon_RunAutostart(t *testing.T) {
 // real 30s timer, per the task's test-seam constraint.
 func TestHubIntegration_FallbackPortCheck_EventLoopCreatesProxy(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	daemon := NewForTest(t, DaemonConfig{
@@ -2109,7 +2110,7 @@ func TestHubIntegration_FallbackPortCheck_EventLoopCreatesProxy(t *testing.T) {
 // startup_proxy_fallback_skipped_already_running entry instead.
 func TestHubIntegration_FallbackPortCheck_URLDetectedWinsRace(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	daemon := NewForTest(t, DaemonConfig{
@@ -2222,7 +2223,7 @@ func TestHubIntegration_CleanupSessionResources(t *testing.T) {
 // TestDaemon_RestoreProxies_ErrorPaths tests error scenarios in proxy restoration.
 func TestDaemon_RestoreProxies_ErrorPaths(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 	statePath := filepath.Join(tmpDir, "state.json")
 
@@ -2451,7 +2452,7 @@ func TestHubIntegration_ProxyHandlerErrors(t *testing.T) {
 
 func TestHubIntegration_SessionOverlayScoping(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	projectA := filepath.Join(tmpDir, "project-a")

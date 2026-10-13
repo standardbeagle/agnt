@@ -21,9 +21,7 @@ import (
 // that started it (seen on beagle-ab2, 2026-09-27).
 func TestE2E_DaemonRestart_ReturnsAndLeavesADetachedDaemon(t *testing.T) {
 	bin := e2eAgntBinary(t)
-	dir, err := os.MkdirTemp("", "agnt-restart-")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	dir := shortTempDir(t) // holds the daemon socket
 	socket := filepath.Join(dir, "d.sock")
 
 	first := exec.Command(bin, "daemon", "start", "--socket", socket)

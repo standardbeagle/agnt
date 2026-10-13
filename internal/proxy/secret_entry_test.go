@@ -13,13 +13,13 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -44,9 +44,7 @@ func startOverlayCapture(t *testing.T) (*overlayCapture, string) {
 	// Not t.TempDir(): its name embeds the test name, and on Windows that
 	// pushes the socket path past the 108-byte sun_path limit, so bind fails
 	// with "invalid argument". A short MkdirTemp name keeps it well under.
-	sockDir, err := os.MkdirTemp("", "ovl")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = os.RemoveAll(sockDir) })
+	sockDir := sockdir.Short(t)
 	socketPath := filepath.Join(sockDir, "overlay.sock")
 	ln, err := net.Listen("unix", socketPath)
 	require.NoError(t, err)

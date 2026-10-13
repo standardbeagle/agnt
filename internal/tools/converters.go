@@ -188,7 +188,7 @@ func convertToPageSummary(m map[string]interface{}, detailSet map[string]bool, l
 				if iType == "" {
 					iType = "unknown"
 				}
-				summary.InteractionsByType[iType]++
+				summary.InteractionsByType[untrustedTypeKey(im, iType)]++
 			}
 		}
 
@@ -205,7 +205,7 @@ func convertToPageSummary(m map[string]interface{}, detailSet map[string]bool, l
 			}
 			for i := start; i < len(interactions); i++ {
 				if im, ok := interactions[i].(map[string]interface{}); ok {
-					summary.Interactions = append(summary.Interactions, im)
+					summary.Interactions = append(summary.Interactions, labelUntrustedItem(im))
 				}
 			}
 		} else {
@@ -220,7 +220,7 @@ func convertToPageSummary(m map[string]interface{}, detailSet map[string]bool, l
 			}
 			for i := start; i < len(interactions); i++ {
 				if im, ok := interactions[i].(map[string]interface{}); ok {
-					summary.RecentInteractions = append(summary.RecentInteractions, im)
+					summary.RecentInteractions = append(summary.RecentInteractions, labelUntrustedItem(im))
 				}
 			}
 		}
@@ -237,7 +237,7 @@ func convertToPageSummary(m map[string]interface{}, detailSet map[string]bool, l
 				if mType == "" {
 					mType = "unknown"
 				}
-				summary.MutationsByType[mType]++
+				summary.MutationsByType[untrustedTypeKey(mm, mType)]++
 			}
 		}
 
@@ -254,7 +254,7 @@ func convertToPageSummary(m map[string]interface{}, detailSet map[string]bool, l
 			}
 			for i := start; i < len(mutations); i++ {
 				if mm, ok := mutations[i].(map[string]interface{}); ok {
-					summary.Mutations = append(summary.Mutations, mm)
+					summary.Mutations = append(summary.Mutations, labelUntrustedItem(mm))
 				}
 			}
 		} else {
@@ -269,7 +269,7 @@ func convertToPageSummary(m map[string]interface{}, detailSet map[string]bool, l
 			}
 			for i := start; i < len(mutations); i++ {
 				if mm, ok := mutations[i].(map[string]interface{}); ok {
-					summary.RecentMutations = append(summary.RecentMutations, mm)
+					summary.RecentMutations = append(summary.RecentMutations, labelUntrustedItem(mm))
 				}
 			}
 		}
@@ -451,6 +451,16 @@ func buildProxyLogSummary(entries []interface{}, detailSet map[string]bool, limi
 				errors = append(errors, data)
 
 				msg := getString(data, "message")
+				// An error from an untrusted connection (marked on the entry
+				// or on its payload) is grouped apart from a trusted error
+				// of the same text, under a labelled message. rawMsg keeps
+				// the unlabelled text for the type derivation below.
+				rawMsg := msg
+				entryUntrusted, _ := em["untrusted"].(bool)
+				payloadUntrusted, _ := data["untrusted"].(bool)
+				if entryUntrusted || payloadUntrusted {
+					msg = untrustedEntryLabel + msg
+				}
 				// FrontendError carries no dedicated "type" field on the wire,
 				// so reading data["type"] always missed and bucketed every error
 				// as {"Error": N}. Derive the JS error class from the message
@@ -458,7 +468,7 @@ func buildProxyLogSummary(entries []interface{}, detailSet map[string]bool, limi
 				// if a future producer ever sends one.
 				errType := getString(data, "type")
 				if errType == "" {
-					errType = classifyErrorType(msg)
+					errType = classifyErrorType(rawMsg)
 				}
 				summary.ErrorsByType[errType]++
 
@@ -922,7 +932,7 @@ func convertToPageSessionOutput(m map[string]interface{}) PageSessionOutput {
 				for k, v := range em {
 					errMap[k] = v
 				}
-				output.Errors = append(output.Errors, errMap)
+				output.Errors = append(output.Errors, labelUntrustedItem(errMap))
 			}
 		}
 	}
@@ -934,7 +944,7 @@ func convertToPageSessionOutput(m map[string]interface{}) PageSessionOutput {
 				for k, v := range im {
 					interactionMap[k] = v
 				}
-				output.Interactions = append(output.Interactions, interactionMap)
+				output.Interactions = append(output.Interactions, labelUntrustedItem(interactionMap))
 			}
 		}
 	}
@@ -946,7 +956,7 @@ func convertToPageSessionOutput(m map[string]interface{}) PageSessionOutput {
 				for k, v := range mm {
 					mutationMap[k] = v
 				}
-				output.Mutations = append(output.Mutations, mutationMap)
+				output.Mutations = append(output.Mutations, labelUntrustedItem(mutationMap))
 			}
 		}
 	}

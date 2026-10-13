@@ -825,6 +825,12 @@ type PublishShareInfo struct {
 	CreatedAt       string `json:"created_at"`
 	RotatedAt       string `json:"rotated_at,omitempty"`
 	RevokedAt       string `json:"revoked_at,omitempty"`
+	// Quarantined marks a share the store loaded but will not serve (its token
+	// resolves to not-found). QuarantineReason says why and RecordPath names the
+	// stored record; both are set only for a quarantined share. Revoke clears it.
+	Quarantined      bool   `json:"quarantined,omitempty"`
+	QuarantineReason string `json:"quarantine_reason,omitempty"`
+	RecordPath       string `json:"record_path,omitempty"`
 }
 
 // PublishListResult is the response to PUBLISH LIST.

@@ -11,6 +11,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/daemonclient"
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 	"github.com/standardbeagle/go-sdk/mcp"
 
 	"github.com/stretchr/testify/assert"
@@ -231,10 +232,7 @@ func TestDemoHandler_ListEndToEnd(t *testing.T) {
 // shortDemoSock returns a socket path short enough for the unix socket limit.
 func shortDemoSock(t *testing.T) string {
 	t.Helper()
-	dir, err := os.MkdirTemp(os.TempDir(), "d")
-	require.NoError(t, err)
-	t.Cleanup(func() { _ = os.RemoveAll(dir) })
-	return filepath.Join(dir, "s.sock")
+	return filepath.Join(sockdir.Short(t), "s.sock")
 }
 
 // TestDemoHandler_RecordManagedProcess exercises the full record path against a

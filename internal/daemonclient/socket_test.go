@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 )
 
 func TestDefaultSocketPath(t *testing.T) {
@@ -67,7 +69,7 @@ func containsString(s, substr string) bool {
 func TestSocketManager_Listen(t *testing.T) {
 	t.Parallel()
 	// Use temp directory for test socket
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "test.sock")
 
 	config := SocketConfig{
@@ -141,7 +143,7 @@ func TestSocketManager_Listen(t *testing.T) {
 
 func TestSocketManager_CleanupStale(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "stale.sock")
 
 	// Create a stale socket (no listener)
@@ -173,7 +175,7 @@ func TestSocketManager_CleanupStale(t *testing.T) {
 
 func TestConnect(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "connect.sock")
 
 	// Connect to non-existent socket should fail
@@ -212,7 +214,7 @@ func TestConnect(t *testing.T) {
 
 func TestIsRunning(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "running.sock")
 
 	// Should return false for non-existent socket
@@ -277,7 +279,7 @@ func TestIsRunning(t *testing.T) {
 
 func TestSocketPermissions(t *testing.T) {
 	t.Parallel()
-	tmpDir := t.TempDir()
+	tmpDir := sockdir.Short(t)
 	sockPath := filepath.Join(tmpDir, "perms.sock")
 
 	// Test with custom permissions

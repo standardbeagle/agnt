@@ -409,6 +409,8 @@ func (d *Daemon) StartProcessGroup(
 	for i := range processes {
 		gp := processes[i]
 		idx := i
+		// Group members are inline definitions: ad-hoc launches (see runLaunch).
+		d.markAdHocLaunch(makeProcessID(projectPath, gp.Name), false)
 		wg.Add(1)
 		go func() {
 			defer wg.Done()

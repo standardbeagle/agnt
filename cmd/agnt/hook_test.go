@@ -21,6 +21,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/selflog"
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -89,7 +90,7 @@ func startTestHookDaemon(t *testing.T) (sockPath string, sink *captureHookSinkCL
 // implement testing.TB so this factors out the one t.Cleanup call.
 func startTestHookDaemonTB(tb testing.TB) (sockPath string, sink *captureHookSinkCLI) {
 	tb.Helper()
-	tmpDir := tb.TempDir()
+	tmpDir := sockdir.Short(tb)
 	sockPath = filepath.Join(tmpDir, "agnt.sock")
 
 	d := daemon.New(daemon.DaemonConfig{
@@ -285,7 +286,7 @@ func TestHook_MalformedTag(t *testing.T) {
 // be noise on every single hook call.
 func TestHook_DaemonDown_ExitsZeroSilently(t *testing.T) {
 	dropLog := redirectDropLog(t)
-	tmp := t.TempDir()
+	tmp := sockdir.Short(t)
 	sock := filepath.Join(tmp, "does-not-exist.sock")
 
 	stderr := &bytes.Buffer{}
@@ -319,7 +320,7 @@ func TestHook_WedgedDaemon_ExitsZeroWithDropLog(t *testing.T) {
 	dropLog := redirectDropLog(t)
 
 	// A tempdir sock path keeps the test hermetic.
-	tmp := t.TempDir()
+	tmp := sockdir.Short(t)
 	sock := filepath.Join(tmp, "wedged.sock")
 	ln, err := net.Listen("unix", sock)
 	require.NoError(t, err)

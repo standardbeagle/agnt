@@ -798,6 +798,10 @@ func (d *Daemon) bootstrap() error {
 	} else {
 		d.publishStore = store
 		d.daemonStartupLog("info", "publish_store_loaded", "publish store loaded")
+		// A stored share the store loaded but will not serve is not a load
+		// failure — its siblings work — so nothing above reports it. Say so
+		// here, per share, where the agent and the session log can see it.
+		d.logQuarantinedShares(store.Quarantined())
 	}
 
 	// Build the public plane: the durable feedback store, the P7 public handler
@@ -872,6 +876,73 @@ func (d *Daemon) bootstrap() error {
 	}()
 
 	return nil
+}
+
+// publishShareQuarantinedEvent is the startup-log event type for a stored share
+// the publish store refuses to serve.
+const publishShareQuarantinedEvent = "publish_share_quarantined"
+
+// quarantinedShareLogName is the startup-log name a quarantined share's entry
+// is recorded under, so each share has one entry that can be found again.
+func quarantinedShareLogName(shareID string) string {
+	return "publish-share-" + shareID
+}
+
+// logQuarantinedShares writes one error-level startup-log entry per share the
+// publish store quarantined (publish.Store.Quarantined): the share id, its
+// title, the reason it may not be served, and the record file. The entry is
+// stamped with the share's project, so that project's startup_log shows it; a
+// share with no project path is recorded daemon-wide.
+//
+// A share that already has its entry in the log is skipped, so calling this at
+// boot and again when the project's session registers does not repeat it.
+func (d *Daemon) logQuarantinedShares(shares []publish.QuarantinedShare) {
+	if d.startupErrorStore == nil {
+		return
+	}
+	for _, q := range shares {
+		name := quarantinedShareLogName(q.ID)
+		projectPath := normalizePath(q.ProjectPath)
+		processID := makeProcessID(projectPath, name)
+		already := false
+		for _, e := range d.startupErrorStore.Query(StartupLogFilter{ProcessID: processID, Level: "error"}) {
+			if e.EventType == publishShareQuarantinedEvent {
+				already = true
+				break
+			}
+		}
+		if already {
+			continue
+		}
+		title := q.Title
+		if title == "" {
+			title = "(untitled)"
+		}
+		msg := fmt.Sprintf("published share %s (%q) is quarantined and is NOT being served: %s. Other shares are unaffected. To clear it, revoke share %s, or delete its record file: %s",
+			q.ID, title, q.Reason, q.ID, q.RecordPath)
+		if q.SourceFile != "" {
+			msg += fmt.Sprintf(" (source file: %s)", q.SourceFile)
+		}
+		d.startupLog(projectPath).Error(name, publishShareQuarantinedEvent, msg)
+		debug.Error("daemon", "%s", msg)
+	}
+}
+
+// logQuarantinedSharesForProject repeats the report for one project's shares.
+// The project's startup log is cleared when its last session leaves, and the
+// boot-time entry goes with it; a session that registers afterwards must still
+// be told.
+func (d *Daemon) logQuarantinedSharesForProject(projectPath string) {
+	if d.publishStore == nil || projectPath == "" {
+		return
+	}
+	var mine []publish.QuarantinedShare
+	for _, q := range d.publishStore.Quarantined() {
+		if normalizePath(q.ProjectPath) == normalizePath(projectPath) {
+			mine = append(mine, q)
+		}
+	}
+	d.logQuarantinedShares(mine)
 }
 
 // runHeartbeatSweep calls SessionRegistry.CheckHeartbeats every interval until

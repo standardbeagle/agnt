@@ -303,6 +303,10 @@ func publishErr(conn *hubpkg.Connection, err error) error {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	case errors.Is(err, publish.ErrRevoked):
 		return conn.WriteErr(hubproto.ErrInvalidState, err.Error())
+	case errors.Is(err, publish.ErrUnservable):
+		// A quarantined share: the state, not the daemon, is what is wrong, and
+		// the message already says how to clear it (revoke).
+		return conn.WriteErr(hubproto.ErrInvalidState, err.Error())
 	default:
 		return conn.WriteErr(hubproto.ErrInternal, err.Error())
 	}
@@ -326,5 +330,10 @@ func shareInfoToWire(info publish.ShareInfo) protocol.PublishShareInfo {
 		CreatedAt:       info.CreatedAt.Format(time.RFC3339),
 		RotatedAt:       rfc3339Ptr(info.RotatedAt),
 		RevokedAt:       rfc3339Ptr(info.RevokedAt),
+		// Never hide a quarantine from the owner: status and list both carry
+		// the flag, the reason, and the record file.
+		Quarantined:      info.Quarantined,
+		QuarantineReason: info.QuarantineReason,
+		RecordPath:       info.RecordPath,
 	}
 }

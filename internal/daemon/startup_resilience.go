@@ -135,6 +135,27 @@ func (d *Daemon) StartScript(ctx context.Context, cfg StartScriptConfig) (*Start
 		// Clean up pre-set matchers on failure
 		d.urlTracker.SetURLMatchers(cfg.ProcessID, nil)
 
+		// Any exit inside the startup watch comes back as a startup error.
+		// For an ad-hoc launch that exited 0 it is a one-shot command that
+		// finished — a build, a migration, an `echo`. Recording that as an
+		// error told the agent a successful command had failed to start. The
+		// error is still returned: callers that need the distinction (PROC
+		// RUN, RUN, dependency ordering) read the process's exit themselves.
+		if d.isAdHocLaunch(cfg.ProcessID) {
+			if exited, getErr := d.hub.ProcessManager().GetByPath(cfg.ProcessID, projectPath); getErr == nil &&
+				exited.State() == process.StateStopped && exited.ExitCode() == 0 {
+				d.startupErrorStore.Add(&StartupLogEntry{
+					ProcessID:  cfg.ProcessID,
+					ScriptName: stripProcessPrefix(cfg.ProcessID),
+					Level:      "info",
+					EventType:  "completed",
+					Message:    fmt.Sprintf("command finished with exit code 0 (runtime %s)", formatRestartRuntime(exited.Runtime())),
+					Timestamp:  time.Now(),
+				})
+				return nil, startupErr
+			}
+		}
+
 		// Record in startup error store for later diagnosis
 		d.startupErrorStore.Add(&StartupLogEntry{
 			ProcessID:  cfg.ProcessID,

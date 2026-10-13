@@ -56,8 +56,9 @@ const (
 	OpSetHTML  OpType = "setHTML"
 	OpAddStyle OpType = "addStyle"
 
-	// OpAddScript is REFUSED everywhere (INV-14): at publish by Op.Validate and
-	// at load by Store.load. The constant exists to name the op in that refusal.
+	// OpAddScript is REFUSED everywhere (INV-14): Op.Validate rejects it at
+	// publish, and Store.load quarantines a stored live share that carries it.
+	// The constant exists to name the op in that refusal.
 	OpAddScript OpType = "addScript"
 )
 

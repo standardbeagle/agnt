@@ -2,11 +2,11 @@ package daemon
 
 import (
 	"context"
-	"os"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 )
 
 // NewForTest constructs a Daemon and brings it up via the minimum wiring
@@ -117,20 +117,11 @@ func NewForTest(t *testing.T, cfg DaemonConfig) *Daemon {
 	return d
 }
 
-// shortTempDir creates a temp directory with a short path to stay within
-// the unix socket path length limit (~108 chars) on Windows.
+// shortTempDir returns a temp directory short enough to hold a Unix socket
+// (sun_path is 104 bytes on macOS, 108 on Linux and Windows). It is
+// sockdir.Short, the one implementation every package's tests share; the name
+// is kept because this package's tests call it in hundreds of places.
 func shortTempDir(t *testing.T) string {
 	t.Helper()
-	base := os.TempDir()
-	if runtime.GOOS == "windows" {
-		// Use a short base to avoid exceeding socket path limits.
-		base = `C:\tmp`
-		os.MkdirAll(base, 0755)
-	}
-	dir, err := os.MkdirTemp(base, "d")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
-	return dir
+	return sockdir.Short(t)
 }
