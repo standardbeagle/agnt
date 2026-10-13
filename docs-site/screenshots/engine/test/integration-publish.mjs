@@ -20,6 +20,26 @@ if (!have('ffmpeg') || !have('ffprobe')) {
 }
 
 const ff = (args) => execFileSync('ffmpeg', ['-y', '-v', 'error', ...args], {stdio: ['ignore', 'inherit', 'inherit']});
+// ffmpeg's webp decoder cannot read an ANIMATED webp ("image data not found"),
+// so the animation is measured from its RIFF container instead: the VP8X chunk
+// carries the canvas size, and each frame is one ANMF chunk.
+const webpAnim = (f) => {
+  const b = fs.readFileSync(f);
+  if (b.toString('latin1', 0, 4) !== 'RIFF' || b.toString('latin1', 8, 12) !== 'WEBP') return null;
+  let width = 0, height = 0, frames = 0;
+  for (let o = 12; o + 8 <= b.length;) {
+    const id = b.toString('latin1', o, o + 4);
+    const size = b.readUInt32LE(o + 4);
+    if (id === 'VP8X') {
+      width = b.readUIntLE(o + 12, 3) + 1;
+      height = b.readUIntLE(o + 15, 3) + 1;
+    }
+    if (id === 'ANMF') frames++;
+    o += 8 + size + (size & 1);
+  }
+  return {width, height, frames};
+};
+
 const dims = (f) => execFileSync('ffprobe', ['-v', 'error', '-select_streams', 'v:0',
   '-show_entries', 'stream=width,height', '-of', 'csv=p=0', f]).toString().trim().split('\n')[0];
 
@@ -53,8 +73,9 @@ ff(['-f', 'lavfi', '-i', 'testsrc=size=1440x900:rate=25', '-t', '4',
 const r = publishDemo(dirs, {log: quiet});
 check(fs.readFileSync(p.destWebm).equals(fs.readFileSync(p.srcWebm)), 'clip is copied byte-for-byte');
 check(fs.existsSync(p.destPoster) && dims(p.destPoster) === '960,600', `poster is 960 wide (${fs.existsSync(p.destPoster) ? dims(p.destPoster) : 'absent'})`);
-check(fs.existsSync(p.destAnim) && dims(p.destAnim) === '720,450', `animation is 720 wide (${fs.existsSync(p.destAnim) ? dims(p.destAnim) : 'absent'})`);
-check(fs.statSync(p.destAnim).size > fs.statSync(p.destPoster).size, 'animation carries more than one frame (larger than the still)');
+const anim = fs.existsSync(p.destAnim) ? webpAnim(p.destAnim) : null;
+check(anim && anim.width === 720 && anim.height === 450, `animation is 720 wide (${anim ? anim.width + ',' + anim.height : 'absent'})`);
+check(anim && anim.frames > 1, `animation carries more than one frame (${anim ? anim.frames : 0})`);
 check(r.vtt === null && !fs.existsSync(p.destVtt), 'silent demo publishes no .vtt');
 check(r.embed.includes('/video/fixture.webm') && r.embed.includes('/img/fixture-poster.webp'), 'embed snippet names the published paths');
 
