@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -79,22 +82,150 @@ func (l *wsFrameLimiter) reserve(now time.Time, size int) time.Duration {
 }
 
 // controlCallerTrusted reports whether the caller behind a control WebSocket
-// upgrade is one the dev OIDC issuer would serve: a verified Cloudflare Access
-// identity, an identified tailnet peer, or a request that can only have come
-// from this machine. Everything else — above all an unauthenticated tunnel
-// visitor, who can open this socket because checkWSOrigin trusts the bound
-// public URL — is refused the frames that write secrets or spend the
-// operator's API keys (secret_submit, voice_start).
+// upgrade may use the privileged frames: the ones that reach the agent
+// (panel_message, sketch, the design_* and responsive_* handoffs), write
+// secrets or project data (secret_submit, store_request), drive sessions
+// (session_request) or spend the operator's API keys (voice_start). It is
+// evaluated once, on the upgrade request, and pinned on the connection; no
+// later frame can change it.
 //
-// It reuses devOIDCCaller so the two surfaces cannot drift: the decision
-// comes from the listener and TCP peer the request arrived on, and a
-// client-supplied header can only take trust away.
+// Trusted, in order:
+//
+//  1. a verified Cloudflare Access identity (named-tunnel ingress);
+//  2. the local developer's own browser — isLocalControlCaller;
+//  3. whoever the dev OIDC issuer would serve (devOIDCCaller): an identified
+//     tailnet peer, or its own notion of a local request.
+//
+// A request from the named tunnel's ingress listener is only ever (1): that
+// listener carries nothing but tunnel traffic, so no property of the request
+// can make it local. Everything else is refused — above all an
+// unauthenticated tunnel visitor, who can open this socket because
+// checkWSOrigin trusts the bound public URL.
 func (ps *ProxyServer) controlCallerTrusted(r *http.Request) bool {
 	if _, ok := AccessIdentityFrom(r.Context()); ok {
 		return true
 	}
+	if tunnelled, _ := r.Context().Value(tunnelledKey{}).(bool); tunnelled {
+		return false
+	}
+	if ps.isLocalControlCaller(r) {
+		return true
+	}
 	caller := ps.devOIDCCaller(r)
 	return caller.Local || caller.TailnetLogin != ""
+}
+
+// isLocalControlCaller is the local-caller rule for the control WebSocket: it
+// recognises the developer's own browser on this machine even while the proxy
+// is also exposed (a quick tunnel bound to its listener, or a 0.0.0.0 bind) —
+// postures in which devOIDCCaller, which must be far stricter because it mints
+// identity tokens, calls nobody local. Without it, exposing a proxy took the
+// panel, secrets, voice and the session/store API away from the developer too.
+//
+// ALL four must hold, and each is the only thing stopping some attacker:
+//
+//	(a) the TCP peer is loopback;
+//	(b) Host is a loopback authority on the proxy's bound port;
+//	(c) Origin is that same loopback origin (sameLoopbackOrigin — the very
+//	    test checkWSOrigin's loopback branch applies);
+//	(d) no reverse-proxy fingerprint header is present
+//	    (hasReverseProxyFingerprint, the one list devOIDCCaller also uses).
+//
+// and one precondition on the posture:
+//
+//	(e) the public URL bound to this proxy, if any, belongs to a provider
+//	    whose forwarding behaviour was captured live (localRuleVerifiedTunnel)
+//	    or is the proxy's own named tunnel, which has a separate ingress
+//	    listener. With any other public URL bound — ngrok, or a static
+//	    public-url in front of something unknown — the rule does not apply
+//	    and the caller falls through to devOIDCCaller, which refuses it. The
+//	    rule's safety against a tunnel visitor rests on what that provider's
+//	    edge does with Host and its own headers; for a provider nobody has
+//	    observed, that is an assumption, and an assumption is not a control.
+//
+// Who is on the other side, and what stops them:
+//
+//   - A visitor through a tunnel. The tunnel agent (cloudflared, ngrok,
+//     tailscaled) runs on this machine and dials the proxy over loopback, so
+//     (a) is TRUE for every tunnelled request and proves nothing here. The
+//     visitor controls the path, the Origin (a non-browser client sends any
+//     value) and most headers, so (c) proves nothing either. What they do not
+//     control is what the provider's edge decides: the Host it routes by and
+//     forwards, and the headers it adds.
+//     Cloudflare (captured live against a quick tunnel): every request
+//     reaches the origin with Cf-Ray, Cf-Connecting-Ip and X-Forwarded-For/
+//     -Proto; a client-sent X-Forwarded-For is appended to, a client-sent
+//     Cf-Connecting-Ip is rejected at the edge. So (d) fails for every
+//     visitor, whatever they send — and by default (b) fails too, since
+//     cloudflared forwards the public hostname as Host.
+//     tailscale serve (captured live, node to node): Host is always the
+//     node's tailnet name, never loopback (a request by tailnet IP gets a 404
+//     from tailscale and never arrives); X-Forwarded-For/-Host and
+//     Tailscale-User-* are set by tailscaled, client-sent values overwritten.
+//     So (b) and (d) each fail.
+//     ngrok has NOT been captured. Its documentation says the same (public
+//     Host unless --host-header=rewrite; X-Forwarded-* added), but this rule
+//     does not lean on that: see (e).
+//     agnt never starts a tunnel with a Host rewrite. An operator who runs
+//     their own with one (cloudflared --http-host-header) gives up (b) and
+//     is left with (d) alone.
+//   - A reverse proxy the operator runs themselves on this machine, set to
+//     rewrite Host to localhost AND add no forwarding header. Its visitors
+//     satisfy all four. Nothing in the request distinguishes them; this rule
+//     cannot help that setup, and neither could the one it supplements.
+//   - A machine on the LAN, when the proxy is bound beyond loopback. It can
+//     send Host, Origin and no fingerprints at will; (a) is what refuses it —
+//     the peer address is the kernel's, not a header.
+//   - A web page the developer happens to visit. A browser sets Origin
+//     itself, so a page on another site that opens a socket to
+//     localhost:<port> fails (c); and one that rebinds its own hostname to
+//     127.0.0.1 has that hostname as Host and Origin, failing (b) and (c).
+//     Both are refused the upgrade by checkWSOrigin before they get here.
+//   - Another process on this machine. It can forge all four — and can
+//     already read the project and type into the terminal. Out of scope, as
+//     it is for every loopback listener.
+//
+// localRuleVerifiedTunnelSuffixes are the public-URL host suffixes of the
+// tunnel providers whose origin-side behaviour (Host forwarded, headers added,
+// client-sent copies overwritten or rejected) was captured live: Cloudflare
+// quick tunnels and tailscale serve. Add a provider here only with a capture.
+var localRuleVerifiedTunnelSuffixes = []string{".trycloudflare.com", ".ts.net"}
+
+// localRuleVerifiedTunnel reports whether publicURL is an https URL on one of
+// those providers' hostnames.
+func localRuleVerifiedTunnel(publicURL string) bool {
+	u, err := url.Parse(publicURL)
+	if err != nil || u.Scheme != "https" {
+		return false
+	}
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	for _, suffix := range localRuleVerifiedTunnelSuffixes {
+		if strings.HasSuffix(host, suffix) && len(host) > len(suffix) {
+			return true
+		}
+	}
+	return false
+}
+
+func (ps *ProxyServer) isLocalControlCaller(r *http.Request) bool {
+	if pub := ps.GetPublicURL(); pub != "" && pub != ps.namedTunnelURL() && !localRuleVerifiedTunnel(pub) {
+		return false // (e)
+	}
+	peer, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		return false
+	}
+	if ip := net.ParseIP(peer); ip == nil || !ip.IsLoopback() {
+		return false // (a)
+	}
+	_, port, err := net.SplitHostPort(r.Host)
+	if err != nil || port != strconv.Itoa(ps.BoundPort()) || !isLoopbackAuthority(r.Host) {
+		return false // (b)
+	}
+	if !sameLoopbackOrigin(r) {
+		return false // (c)
+	}
+	return !hasReverseProxyFingerprint(r) // (d)
 }
 
 // errorHandler handles proxy errors.

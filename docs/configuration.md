@@ -269,6 +269,32 @@ reports the URL the proxy then serves (with any dev-oidc URLs that no longer
 match it). A proxy started through the `proxy` MCP tool has no config node, so
 the command refuses it rather than writing keys nothing reads.
 
+### Exposure and the browser panel
+
+Widening who can reach a proxy — `bind`, a quick tunnel, `cloudflare-tunnel` —
+does not widen who can drive the agent through it. The injected panel's
+control WebSocket classifies each connection once, when it opens:
+
+- **Your own browser on this machine keeps full control** (panel messages,
+  sketch and design handoffs, secret entry, voice, the `session`/`store` API)
+  on a loopback proxy, on a `0.0.0.0` bind, and while a Cloudflare quick tunnel
+  or `tailscale serve` is bound to the proxy.
+- **A visitor through an unauthenticated public tunnel** (`tunnel cloudflare`,
+  `tunnel ngrok`, or `cloudflare-tunnel` with `allow-unauthenticated`) can load
+  the app and its page telemetry is recorded, but cannot send anything to the
+  agent, write secrets or the store, reach sessions, or start voice. They see
+  an error toast saying so.
+- A visitor through a `cloudflare-tunnel` behind Cloudflare Access, and an
+  identified tailnet peer on a `bind "tailscale"` proxy, are trusted as you are.
+- While an **ngrok** tunnel (or any public URL other than a
+  `*.trycloudflare.com` / `*.ts.net` one) is bound, your local browser is
+  refused those features too. Cloudflare's and tailscale's forwarding
+  behaviour was captured live; ngrok's is documented but unverified, and the
+  rule that recognises the local browser is not applied on an assumption.
+
+The exact rule, the list of gated frame types and its limits are in
+`docs/mcp-tools.md` § Who may drive the agent through the control WebSocket.
+
 ### HTTPS on the tailnet
 
 When the tailnet issues HTTPS certificates (HTTPS enabled on the DNS page of
@@ -766,9 +792,10 @@ on one resolved address (`PublicHandler.remoteAddr`, reduced by
   **rightmost** entry of `X-Forwarded-For`, which is the one the local agent
   appended; entries to its left are whatever the viewer sent and are never
   read. A missing header, or a value that is not an IP address, falls back to
-  the socket peer. The `ngrok` / `tailscale` rule is **unverified against a
-  live tunnel** (it follows those agents' generally known behaviour, not a
-  capture); the per-share aggregate bucket below bounds a share either way.
+  the socket peer. The `cloudflare` and `tailscale` rules were checked against
+  live tunnels; the `ngrok` rule was **not** (it follows that agent's generally
+  known behaviour); the per-share aggregate bucket below bounds a share either
+  way.
 - The daemon's `AGNT_PUBLIC_ADDR` listener **always** uses the socket peer. It
   starts no tunnel of its own, so there is no hop whose header it can trust,
   and there is no trusted-proxy setting. Behind a tunnel or reverse proxy you

@@ -166,9 +166,31 @@ func (ps *ProxyServer) tailnetWhois(ctx context.Context, ip string) string {
 // somewhere else, e.g. a hand-run `cloudflared --url` agnt does not know
 // about. Using client-controlled headers is safe here: they can only take
 // access away.
+//
+// This list and the prefixes below are the single source of truth for "was
+// this relayed": the dev OIDC caller classification and the control
+// WebSocket's local-caller rule (isLocalControlCaller) both read them. What
+// each provider adds:
+//
+//   - Cloudflare (captured live against a quick tunnel): Cf-Ray,
+//     Cf-Connecting-Ip, X-Forwarded-For, X-Forwarded-Proto on every request;
+//     Cdn-Loop and the other Cf-* headers by its documentation. A
+//     client-supplied X-Forwarded-For is appended to, and a client-supplied
+//     Cf-Connecting-Ip is rejected at the edge (403), so a visitor cannot
+//     arrive without them.
+//   - tailscale serve (captured live, node to node): X-Forwarded-For,
+//     X-Forwarded-Host and Tailscale-User-Login/-Name, each set by tailscaled
+//     with any client-supplied value overwritten.
+//   - ngrok (documented, NOT captured live): X-Forwarded-For/-Proto/-Host.
+//   - Via, X-Real-Ip, Forwarded: what a hand-run nginx/caddy/haproxy adds.
 var reverseProxyFingerprints = []string{
-	"Cf-Ray", "Cf-Connecting-Ip", "Tailscale-User-Login", "X-Forwarded-For", "Forwarded",
+	"Cf-Ray", "Cf-Connecting-Ip", "Cdn-Loop", "Tailscale-User-Login",
+	"X-Forwarded-For", "X-Forwarded-Proto", "X-Forwarded-Host", "Forwarded",
+	"Via", "X-Real-Ip",
 }
+
+// reverseProxyFingerprintPrefixes match whole header families (lower-case).
+var reverseProxyFingerprintPrefixes = []string{"cf-", "ngrok-", "tailscale-", "x-forwarded-"}
 
 // isLocalDevOIDCRequest reports whether a request on the proxy's own
 // listener can only have come from this machine.
@@ -198,8 +220,11 @@ func hasReverseProxyFingerprint(r *http.Request) bool {
 		}
 	}
 	for name := range r.Header {
-		if strings.HasPrefix(strings.ToLower(name), "ngrok-") {
-			return true
+		lower := strings.ToLower(name)
+		for _, prefix := range reverseProxyFingerprintPrefixes {
+			if strings.HasPrefix(lower, prefix) {
+				return true
+			}
 		}
 	}
 	return false

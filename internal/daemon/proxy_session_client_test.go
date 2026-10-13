@@ -63,8 +63,14 @@ type browserAPI struct {
 
 func dialBrowserAPI(t *testing.T, ps *proxy.ProxyServer) *browserAPI {
 	t.Helper()
+	return dialBrowserAPIWith(t, ps, http.Header{"Origin": {"http://" + ps.ListenAddr}})
+}
+
+// dialBrowserAPIWith opens the control WebSocket with the given upgrade
+// headers ("Host" sets the request's Host).
+func dialBrowserAPIWith(t *testing.T, ps *proxy.ProxyServer, header http.Header) *browserAPI {
+	t.Helper()
 	u := url.URL{Scheme: "ws", Host: ps.ListenAddr, Path: "/__devtool_metrics"}
-	header := http.Header{"Origin": {"http://" + ps.ListenAddr}}
 	var conn *websocket.Conn
 	require.Eventually(t, func() bool {
 		c, _, err := websocket.DefaultDialer.Dial(u.String(), header)
@@ -299,13 +305,20 @@ func TestBrowserSessionAPI_GlobalScopeRefused(t *testing.T) {
 	assert.Contains(t, proxyDiagnosticEvents(f.proxyA), "ws_scope_refused")
 }
 
-// An untrusted caller — here, any connection made once a quick tunnel shares
-// the proxy's listener — is refused both APIs before anything is read,
-// written or sent.
+// An untrusted caller — a visitor through a quick tunnel, in the shape it
+// reaches the proxy: public Host and Origin, the edge's headers, a loopback
+// peer — is refused both APIs before anything is read, written or sent. The
+// local browser on the same proxy, tunnel still bound, is not.
 func TestBrowserSessionStoreAPI_UntrustedCallerRefused(t *testing.T) {
 	f := newTwoProjectFixture(t)
 	f.proxyA.SetPublicURL("https://abc.trycloudflare.com")
-	api := dialBrowserAPI(t, f.proxyA)
+	api := dialBrowserAPIWith(t, f.proxyA, http.Header{
+		"Host":             {"abc.trycloudflare.com"},
+		"Origin":           {"https://abc.trycloudflare.com"},
+		"Cf-Ray":           {"8f2a1b3c4d5e6f70-SJC"},
+		"Cf-Connecting-Ip": {"203.0.113.9"},
+		"X-Forwarded-For":  {"203.0.113.9"},
+	})
 
 	reason := api.refused("store", "set", map[string]interface{}{"scope": "global", "key": "k", "value": "v"})
 	assert.Contains(t, reason, "requires a local, tailnet or Cloudflare Access-verified caller")
@@ -320,6 +333,13 @@ func TestBrowserSessionStoreAPI_UntrustedCallerRefused(t *testing.T) {
 	api.refused("session", "schedule", map[string]interface{}{"code": f.codeA, "duration": "1h", "message": "x"})
 	assert.Empty(t, f.d.scheduler.ListTasks(f.dirA, false))
 	assert.Contains(t, proxyDiagnosticEvents(f.proxyA), "ws_privileged_frame_refused")
+
+	// The same proxy, tunnel still bound, serves its local browser: the
+	// refusals above were the visitor's shape, not the tunnel's presence.
+	local := dialBrowserAPI(t, f.proxyA)
+	local.ok("store", "set", map[string]interface{}{"scope": "global", "key": "local-ok", "value": "v"})
+	_, err = f.d.storem.Get(f.dirA, store.ScopeGlobal, "", "local-ok")
+	assert.NoError(t, err)
 }
 
 // With no session running for the proxy's project, session operations fail

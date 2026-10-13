@@ -1,12 +1,14 @@
 package proxy
 
 import (
+	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/gorilla/websocket"
 	"github.com/standardbeagle/agnt/internal/debug"
 	storepkg "github.com/standardbeagle/agnt/internal/store"
 )
@@ -45,6 +47,9 @@ type wsConnState struct {
 	// one per connection.
 	refusalReported  bool
 	frameCapReported bool
+	// refusalToastAt is when this connection was last shown the agent-input
+	// refusal toast (read loop only).
+	refusalToastAt time.Time
 
 	// voiceMu guards voicePending (voice_start dials in flight) and
 	// voiceBacklog (audio frames held for them). It is the one piece of
@@ -78,6 +83,45 @@ func (c *wsConnState) refusePrivileged(msgType string) bool {
 			Message:   fmt.Sprintf("proxy %s refused a %s frame: the control WebSocket caller is not local, tailnet-identified or Cloudflare Access-verified (for example it arrived through an unauthenticated tunnel)", c.ps.ID, msgType),
 			Data:      map[string]any{"proxy_id": c.ps.ID, "frame_type": msgType},
 		})
+	}
+	return true
+}
+
+// agentInputRefusalToastEvery spaces out the refusal toast, so a page that
+// streams refused frames (design_state on every selection) shows one notice,
+// not a stack of them.
+const agentInputRefusalToastEvery = 5 * time.Second
+
+// refuseAgentInput gates a frame whose handler hands browser content to the
+// agent: into its terminal through the overlay, and into the traffic log that
+// channel mode forwards as user actions. For an untrusted connection the
+// frame is dropped whole, before anything is logged, saved or forwarded.
+//
+// These frame types carry no request id and get no reply of their own, so the
+// refusal is shown as a toast on the sender's own connection (toast.js renders
+// it) — a refused sender sees why, rather than a panel that silently does
+// nothing — on top of the diagnostic refusePrivileged records.
+func (c *wsConnState) refuseAgentInput(msgType string) bool {
+	if !c.refusePrivileged(msgType) {
+		return false
+	}
+	if now := time.Now(); now.Sub(c.refusalToastAt) >= agentInputRefusalToastEvery {
+		c.refusalToastAt = now
+		// Broadcast lane on this one connection: best-effort, never blocks
+		// the read loop on an untrusted peer.
+		if frame, err := json.Marshal(map[string]interface{}{
+			"type": "toast",
+			"payload": map[string]interface{}{
+				"type":     "error",
+				"title":    "Not sent to the agent",
+				"message":  "This connection cannot send to the agent: " + privilegedRefusalMessage + ".",
+				"duration": 8000,
+			},
+		}); err == nil {
+			if wErr := c.asyncConn.WriteMessage(websocket.TextMessage, frame); wErr != nil {
+				debug.Log("proxy", "failed to send agent-input refusal toast: %v", wErr)
+			}
+		}
 	}
 	return true
 }
@@ -188,7 +232,13 @@ func (c *wsConnState) handleError(msg *wsMessage) {
 	// Auto-forward browser errors to overlay for PTY injection. The
 	// error is already in the traffic log (LogError above), so overlay
 	// forwarding is supplementary — surface a failure to the debug log.
-	if c.ps.overlayNotifier.IsEnabled() {
+	//
+	// Only for a trusted connection. An error frame's text is whatever the
+	// sender says it is, and this forward types it into the agent's terminal.
+	// An untrusted visitor's errors stay telemetry (logged above); no toast or
+	// diagnostic for that, since the visitor did nothing wrong and a public
+	// page would raise one per visitor.
+	if c.trusted && c.ps.overlayNotifier.IsEnabled() {
 		if err := c.ps.overlayNotifier.NotifyBrowserError(c.ps.ID, errEntry); err != nil {
 			debug.Log("proxy", "failed to forward browser error to overlay: %v", err)
 		}
@@ -411,6 +461,9 @@ func (c *wsConnState) handleSecretSubmit(msg *wsMessage) {
 // handlePanelMessage handles a message from the floating indicator panel,
 // resolving attachment file paths from the session capture store.
 func (c *wsConnState) handlePanelMessage(msg *wsMessage) {
+	if c.refuseAgentInput("panel_message") {
+		return
+	}
 	panelMsg := parsePanelMessage(msg.Data, c.id, c.timestamp, msg.URL)
 
 	// Process attachments: resolve file paths from registry or save inline data
@@ -555,6 +608,9 @@ func (c *wsConnState) handleWalkthroughEvent(msg *wsMessage) {
 
 // handleSketch handles a sketch/wireframe from sketch mode.
 func (c *wsConnState) handleSketch(msg *wsMessage) {
+	if c.refuseAgentInput("sketch") {
+		return
+	}
 	sketchEntry := parseSketchEntry(msg.Data, c.id, c.timestamp, msg.URL)
 
 	// Save sketch image to audit directory
@@ -609,6 +665,9 @@ func (c *wsConnState) handleSketchCapture(msg *wsMessage) {
 // handleDesignState handles design state when an element is selected for
 // iteration.
 func (c *wsConnState) handleDesignState(msg *wsMessage) {
+	if c.refuseAgentInput("design_state") {
+		return
+	}
 	designState := parseDesignState(msg.Data, c.id, c.timestamp, msg.URL)
 	// Persist the whole-page thumbnail (if any) as an on-disk JPEG, same
 	// treatment as the segment screenshot.
@@ -629,6 +688,9 @@ func (c *wsConnState) handleDesignState(msg *wsMessage) {
 
 // handleDesignRequest handles a request for new design alternatives.
 func (c *wsConnState) handleDesignRequest(msg *wsMessage) {
+	if c.refuseAgentInput("design_request") {
+		return
+	}
 	designRequest := parseDesignRequest(msg.Data, c.id, c.timestamp, msg.URL)
 	// Persist the live-segment screenshot (if any) so the agent message can
 	// reference an on-disk PNG instead of a giant inline data URL.
@@ -649,6 +711,9 @@ func (c *wsConnState) handleDesignRequest(msg *wsMessage) {
 
 // handleDesignChat handles a chat message about a selected element.
 func (c *wsConnState) handleDesignChat(msg *wsMessage) {
+	if c.refuseAgentInput("design_chat") {
+		return
+	}
 	designChat := parseDesignChat(msg.Data, c.id, c.timestamp, msg.URL)
 	if shot := getStringField(msg.Data, "screenshot"); strings.HasPrefix(shot, "data:") {
 		if p, err := c.ps.saveScreenshot("design-"+designChat.Selector, shot); err == nil {
@@ -667,6 +732,9 @@ func (c *wsConnState) handleDesignChat(msg *wsMessage) {
 
 // handleDesignEdit handles a committed direct-manipulation geometry edit.
 func (c *wsConnState) handleDesignEdit(msg *wsMessage) {
+	if c.refuseAgentInput("design_edit") {
+		return
+	}
 	designEdit := parseDesignEdit(msg.Data, c.id, c.timestamp, msg.URL)
 	c.ps.logger.LogDesignEdit(designEdit)
 
@@ -681,6 +749,9 @@ func (c *wsConnState) handleDesignEdit(msg *wsMessage) {
 // handleResponsiveRequest handles a handoff from responsive mode requesting
 // agent fixes.
 func (c *wsConnState) handleResponsiveRequest(msg *wsMessage) {
+	if c.refuseAgentInput("responsive_request") {
+		return
+	}
 	responsiveRequest := parseResponsiveRequest(msg.Data, c.id, c.timestamp, msg.URL)
 	c.ps.logger.LogResponsiveRequest(responsiveRequest)
 
@@ -695,6 +766,9 @@ func (c *wsConnState) handleResponsiveRequest(msg *wsMessage) {
 // handleResponsiveState handles responsive mode panel state (current width +
 // shift count).
 func (c *wsConnState) handleResponsiveState(msg *wsMessage) {
+	if c.refuseAgentInput("responsive_state") {
+		return
+	}
 	responsiveState := parseResponsiveState(msg.Data, c.id, c.timestamp, msg.URL)
 	c.ps.logger.LogResponsiveState(responsiveState)
 

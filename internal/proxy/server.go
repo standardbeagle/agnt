@@ -1070,16 +1070,12 @@ func (ps *ProxyServer) runServer(ctx context.Context, listener net.Listener) {
 // prevents a hostname rebound to the local listener from authorizing itself.
 // A configured public URL is also trusted because it is an explicit proxy host.
 func (ps *ProxyServer) checkWSOrigin(r *http.Request) bool {
-	origin := r.Header.Get("Origin")
-	if origin == "" {
-		return false
-	}
-	u, err := url.Parse(origin)
-	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") {
+	u, ok := wsOrigin(r)
+	if !ok {
 		return false
 	}
 	sameOrigin := strings.EqualFold(u.Host, r.Host)
-	if sameOrigin && isLoopbackAuthority(r.Host) {
+	if sameLoopbackOrigin(r) {
 		return true
 	}
 	if publicURL := ps.GetPublicURL(); publicURL != "" {
@@ -1093,6 +1089,30 @@ func (ps *ProxyServer) checkWSOrigin(r *http.Request) bool {
 	// DNS rebinding: an attacker-controlled hostname is never the node's own
 	// identity. Checked last so loopback traffic never pays the lookup.
 	return sameOrigin && ps.isTailnetAuthority(r.Context(), r.Host)
+}
+
+// wsOrigin parses the request's Origin header as a browser origin: an http(s)
+// URL with a host and no userinfo. ok is false for anything else, including an
+// absent header.
+func wsOrigin(r *http.Request) (*url.URL, bool) {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return nil, false
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" || u.User != nil || (u.Scheme != "http" && u.Scheme != "https") {
+		return nil, false
+	}
+	return u, true
+}
+
+// sameLoopbackOrigin reports whether the request's Origin names the same
+// authority as its Host and that authority is loopback. It is checkWSOrigin's
+// first accepting branch, and — being the one place that test is spelled — also
+// the Origin half of the local-caller rule (isLocalControlCaller).
+func sameLoopbackOrigin(r *http.Request) bool {
+	u, ok := wsOrigin(r)
+	return ok && strings.EqualFold(u.Host, r.Host) && isLoopbackAuthority(r.Host)
 }
 
 // tailnetIdentityTTL bounds how long a `tailscale status` answer is reused.

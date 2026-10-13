@@ -68,6 +68,8 @@ Every listener ships **loopback-only** (`127.0.0.1`, never `0.0.0.0`). Only the 
 
 Grades: `tunnel cloudflare`/`ngrok` are public and unauthenticated; a `cloudflare-tunnel` block is public behind Cloudflare Access; `tunnel tailscale` and `bind "tailscale"` are tailnet-private. A non-loopback, non-tailnet `bind` requires `allow-external`; the tailnet exemption is checked on the resolved address (`platform.IsTailnetAddress`), never the token.
 
+Reaching a listener is not the same as driving the agent. The dev proxy's control WebSocket classifies each connection once, at upgrade (`controlCallerTrusted`, `internal/proxy/ws_handler.go`): agent-input, secret, session/store and voice frames are accepted only from a Cloudflare Access-verified caller, an identified tailnet peer, or the local browser (loopback peer, loopback `Host` and `Origin` on the proxy's port, no reverse-proxy headers). An unauthenticated tunnel visitor is refused them. The local-browser rule applies only where the tunnel's forwarding behaviour was captured live (Cloudflare quick tunnels, `tailscale serve`); with ngrok bound the local browser is refused too.
+
 The first three listeners are hardened to public standard in every posture: read-header/read/write/idle timeouts, `MaxHeaderBytes`, a concurrent-connection cap, and a request-rate cap. Unbounded is a defect. Every share route is rate-capped. Known residuals: upstream fetches are not cached (the outbound bounds are a per-origin rate cap and a plane-wide concurrency ceiling), and per-client limits are keyed on the socket peer except behind `agnt publish serve --tunnel cloudflare`, so behind any other tunnel or reverse proxy every viewer shares that hop's address.
 
 ## Conventions

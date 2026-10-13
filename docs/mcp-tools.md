@@ -846,14 +846,10 @@ Both are **scoped to the proxy's own project, and the page cannot change that**:
   overwritten, deleted, or cleared, and `metadata.secret` /
   `metadata.fingerprint` cannot be set.
 
-Both are **refused to an untrusted caller** — the same test `secret_submit` and
-voice use (`controlCallerTrusted`, `internal/proxy/ws_handler.go`): the
-connection must be local to the machine on the proxy's loopback listener, an
-identified tailnet peer, or carry a verified Cloudflare Access identity. A
-visitor arriving through an unauthenticated tunnel gets "not available on this
-connection" and a `ws_privileged_frame_refused` diagnostic. While a quick
-tunnel is bound to a proxy, connections on its listener cannot be told apart
-from tunnel traffic, so local pages are refused too.
+Both are **refused to an untrusted caller** (the request's promise rejects with
+"not available on this connection: …"). Who is trusted is one rule, stated
+under *Tunnel Integration* § Who may drive the agent through the control
+WebSocket.
 
 Limits per request: store key 256 bytes, `scopeKey` 2048 bytes, value 256 KiB
 (as JSON), metadata 16 KiB; session message 16 KiB; one reply 1 MiB (a larger
@@ -1124,6 +1120,73 @@ The loopback-only rule for arbitrary hostnames is deliberate: a hostname an
 attacker rebinds to your listener would otherwise satisfy same-origin. A
 node's own tailnet identity is never attacker-controlled, so it is safe to
 trust.
+
+### Who may drive the agent through the control WebSocket
+
+Being allowed to open the socket (above) is not being allowed to use all of
+it. Each connection is classified once, on its upgrade request
+(`controlCallerTrusted`, `internal/proxy/ws_handler.go`), and the answer is
+pinned for the life of the connection; nothing a later frame says changes it.
+
+**Trusted** — any one of:
+
+1. A verified Cloudflare Access identity (a request through a named tunnel's
+   ingress; that listener trusts nothing else).
+2. The local developer's browser. All of: the TCP peer is loopback; `Host` is a
+   loopback name or address on the proxy's own port; `Origin` is that same
+   loopback origin; and the request carries none of the headers a tunnel or
+   reverse proxy adds (`Cf-*`, `Cdn-Loop`, `X-Forwarded-*`, `Forwarded`,
+   `Tailscale-*`, `Ngrok-*`, `Via`, `X-Real-Ip`).
+3. Whoever the dev OIDC issuer would serve: an identified tailnet peer on a
+   `bind "tailscale"` proxy, or a local request on an un-tunnelled loopback
+   proxy.
+
+**What an untrusted connection — for example a visitor on an unauthenticated
+public tunnel — cannot do.** These frame types are refused:
+
+| Frame | What it would have done |
+|---|---|
+| `panel_message`, `sketch`, `design_state`, `design_request`, `design_chat`, `design_edit`, `responsive_request`, `responsive_state` | put text, attachments or a design/responsive handoff in front of the agent (its terminal via the overlay, and the event stream) |
+| `secret_submit` | write a project secret |
+| `session_request` | list sessions, send or schedule a message to one |
+| `store_request` | read or write the project store |
+| `voice_start` | open a transcription session on the operator's Deepgram key |
+
+A refused agent-input frame is dropped before anything is logged or saved; the
+sender sees an error toast ("Not sent to the agent", at most one per five
+seconds), request/reply frames get an error reply, and the first refusal on a
+connection is recorded as a `ws_privileged_frame_refused` diagnostic. A browser
+`error` frame from an untrusted connection is still logged, but is not typed
+into the agent's terminal.
+
+**What it can still do.** It is still a page on the proxy: page telemetry
+(`error`, `performance`, `custom_log`, `interactions`, `mutations`,
+`walkthrough_event`), captures (`screenshot`, `element_capture`,
+`sketch_capture`, binary screenshot frames, which are written under
+`.agnt/audit`), `execution` replies, `frame_active`, and `chaos_request` are
+not gated by this rule. Telemetry is recorded in the traffic log, which the
+agent reads and which channel mode forwards — treat a publicly tunnelled dev
+proxy's log as containing visitor-authored text.
+
+**The local browser keeps full control while the proxy is exposed** — with a
+Cloudflare quick tunnel or `tailscale serve` bound to it, or on a `0.0.0.0`
+bind. A tunnel's agent runs on this machine, so a tunnelled request also
+arrives from a loopback peer; what separates it from the local browser is the
+`Host` the provider forwards and the headers it adds, neither of which the
+visitor controls. For Cloudflare quick tunnels and `tailscale serve` that was
+captured live at the origin: `Host` is always the public / tailnet name, the
+provider's headers are always present, and client-supplied copies are appended
+to, overwritten or rejected at the edge. **ngrok was not captured** (its
+documented behaviour is the same), so rule 2 is not applied while an ngrok URL —
+or any public URL other than a `*.trycloudflare.com` or `*.ts.net` one — is
+bound: there the local browser is refused too, as before, and the gated
+features come back when the tunnel stops.
+
+Limits of rule 2: a reverse proxy you run yourself on the same machine that
+rewrites `Host` to `localhost:<port>` and adds no forwarding header makes its
+visitors indistinguishable from you; so does a hand-run tunnel started with a
+Host rewrite if its provider's headers were ever absent. Another process on
+this machine can forge everything, and can already reach your terminal.
 
 ### Bounds when you tunnel a listener
 
