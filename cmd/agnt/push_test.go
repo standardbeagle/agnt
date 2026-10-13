@@ -9,6 +9,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/standardbeagle/agnt/internal/sshclient"
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 )
 
 func TestSplitPushArgs_SingleFileNeverTreatedAsDest(t *testing.T) {
@@ -159,7 +160,9 @@ func skipWithoutControlDiscovery(t *testing.T) {
 
 func TestResolveActiveHost_MultipleSessionsRequiresHostFlag(t *testing.T) {
 	skipWithoutControlDiscovery(t)
-	t.Setenv("HOME", t.TempDir())
+	// The control sockets live under $HOME/.agnt/ssh, so HOME must be short
+	// enough for a Unix socket path (see sockdir).
+	t.Setenv("HOME", sockdir.Short(t))
 	fakePingListener(t, "host-a")
 	fakePingListener(t, "host-b")
 
@@ -177,7 +180,7 @@ func TestResolveActiveHost_MultipleSessionsRequiresHostFlag(t *testing.T) {
 
 func TestResolveActiveHost_SingleSessionResolves(t *testing.T) {
 	skipWithoutControlDiscovery(t)
-	t.Setenv("HOME", t.TempDir())
+	t.Setenv("HOME", sockdir.Short(t))
 	fakePingListener(t, "only-host")
 
 	host, err := resolveActiveHost()

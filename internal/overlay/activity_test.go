@@ -57,16 +57,17 @@ func TestActivityMonitorStateTransitions(t *testing.T) {
 		t.Errorf("initial state = %v, want ActivityIdle", am.State())
 	}
 
-	// Small write should not trigger active (below MinActiveBytes)
+	// Small write should not trigger active (below MinActiveBytes). Write
+	// decides the transition synchronously, so the state is read straight
+	// after it: a sleep here only gives the 100ms idle timeout a chance to
+	// fire first on a loaded machine.
 	am.Write([]byte("abc"))
-	time.Sleep(10 * time.Millisecond)
 	if am.State() != ActivityIdle {
 		t.Errorf("state after small write = %v, want ActivityIdle", am.State())
 	}
 
 	// Larger write should trigger active
 	am.Write([]byte("defgh")) // Now at 8 bytes total, > 5
-	time.Sleep(10 * time.Millisecond)
 	if am.State() != ActivityActive {
 		t.Errorf("state after large write = %v, want ActivityActive", am.State())
 	}
