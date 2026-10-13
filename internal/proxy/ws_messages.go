@@ -47,6 +47,8 @@ type wsConnState struct {
 	// one per connection.
 	refusalReported  bool
 	frameCapReported bool
+	// execRefusalReported keeps ws_exec_result_refused to one per connection.
+	execRefusalReported bool
 	// refusalToastAt is when this connection was last shown the agent-input
 	// refusal toast (read loop only).
 	refusalToastAt time.Time
@@ -85,6 +87,15 @@ func (c *wsConnState) refusePrivileged(msgType string) bool {
 		})
 	}
 	return true
+}
+
+// record writes a browser-sourced entry to the traffic log, stamped with this
+// connection's trust. Every handler that logs what a connection sent goes
+// through here (TestUntrustedConnectionEntriesAreAllMarked holds them to it),
+// so an untrusted sender's text is never recorded as if the page or the
+// developer had said it.
+func (c *wsConnState) record(entry LogEntry) {
+	c.ps.logger.LogFromConnection(entry, !c.trusted)
 }
 
 // agentInputRefusalToastEvery spaces out the refusal toast, so a page that
@@ -164,6 +175,12 @@ var wsMessageHandlers = map[string]func(c *wsConnState, msg *wsMessage){
 // voice session is live, otherwise a screenshot PNG frame with the
 // [1 byte: idLen][id][PNG] layout.
 func (c *wsConnState) handleBinaryFrame(rawMessage []byte) {
+	// A binary frame is voice audio (voice_start is refused to an untrusted
+	// connection, so it has no session) or a screenshot to write under the
+	// project's .agnt/audit. Neither is for an untrusted connection.
+	if c.refusePrivileged("binary capture") {
+		return
+	}
 	c.voiceMu.Lock()
 	if c.voicePending > 0 {
 		// Audio for a session whose Deepgram dial is still in flight. Past
@@ -211,6 +228,11 @@ func (c *wsConnState) handleBinaryFrame(rawMessage []byte) {
 // active interaction target. MCP exec / audits default to it (always-wrap
 // model).
 func (c *wsConnState) handleFrameActive(msg *wsMessage) {
+	// The active frame is where the agent's next exec runs and what its
+	// audits read. An untrusted connection does not get to choose it.
+	if c.refusePrivileged("frame_active") {
+		return
+	}
 	c.ps.SetActiveFrame(msg.FrameID)
 }
 
@@ -226,7 +248,8 @@ func (c *wsConnState) handleError(msg *wsMessage) {
 		Stack:     getStringField(msg.Data, "stack"),
 		URL:       msg.URL,
 	}
-	c.ps.logger.LogError(errEntry, msg.FrameID)
+	errEntry.Untrusted = !c.trusted
+	c.record(LogEntry{Type: LogTypeError, FrameID: msg.FrameID, Error: &errEntry})
 	c.ps.pageTracker.TrackError(errEntry, msg.SessionID, msg.FrameID)
 
 	// Auto-forward browser errors to overlay for PTY injection. The
@@ -276,22 +299,27 @@ func (c *wsConnState) handlePerformance(msg *wsMessage) {
 		}
 	}
 
-	c.ps.logger.LogPerformance(metric, msg.FrameID)
+	c.record(LogEntry{Type: LogTypePerformance, FrameID: msg.FrameID, Performance: &metric})
 	c.ps.pageTracker.TrackPerformance(metric, msg.SessionID, msg.FrameID)
 }
 
 func (c *wsConnState) handleCustomLog(msg *wsMessage) {
-	c.ps.logger.LogCustom(CustomLog{
+	c.record(LogEntry{Type: LogTypeCustom, FrameID: msg.FrameID, Custom: &CustomLog{
 		ID:        c.id,
 		Timestamp: c.timestamp,
 		Level:     getStringField(msg.Data, "level"),
 		Message:   getStringField(msg.Data, "message"),
 		Data:      msg.Data,
 		URL:       msg.URL,
-	}, msg.FrameID)
+	}})
 }
 
 func (c *wsConnState) handleScreenshot(msg *wsMessage) {
+	// Writes a file under the project's .agnt/audit: not for an untrusted
+	// connection.
+	if c.refusePrivileged("screenshot") {
+		return
+	}
 	// Save screenshot to temp file
 	dataURL := getStringField(msg.Data, "data")
 	name := getStringField(msg.Data, "name")
@@ -335,6 +363,13 @@ func (c *wsConnState) handleScreenshot(msg *wsMessage) {
 }
 
 func (c *wsConnState) handleExecution(msg *wsMessage) {
+	// An exec result is handed to the agent as the page's answer to its own
+	// code. Execs are only ever sent to trusted connections, so an untrusted
+	// one has nothing to answer: refused before anything is logged or saved.
+	if c.refusePrivileged("execution") {
+		return
+	}
+
 	// Log JavaScript execution result
 	execID := getStringField(msg.Data, "exec_id")
 	duration := time.Duration(getInt64Field(msg.Data, "duration")) * time.Millisecond
@@ -351,6 +386,27 @@ func (c *wsConnState) handleExecution(msg *wsMessage) {
 		Data:      msg.Data,
 	}
 
+	// The reply is bound to the connection, not to the id: a pending exec may
+	// be answered only by a connection it was sent to. Knowing (or guessing)
+	// an exec id proves nothing — ids are sent in the clear to every target
+	// and follow a pattern. An answer from any other connection is dropped
+	// before it is logged or saved, and the exec stays pending for its target.
+	if v, pending := c.ps.pendingExecs.Load(execID); pending && !v.(*pendingExec).sentTo(c.connID) {
+		debug.Log("proxy", "dropped execution result for %s on proxy %s: connection %s was not sent that exec", execID, c.ps.ID, c.connID)
+		if !c.execRefusalReported {
+			c.execRefusalReported = true
+			c.ps.logger.LogDiagnostic(ProxyDiagnostic{
+				Timestamp: time.Now(),
+				Level:     DiagnosticWarning,
+				Category:  "proxy",
+				Event:     "ws_exec_result_refused",
+				Message:   fmt.Sprintf("proxy %s dropped an execution result from a connection the exec was not sent to", c.ps.ID),
+				Data:      map[string]any{"proxy_id": c.ps.ID, "exec_id": execID},
+			})
+		}
+		return
+	}
+
 	// Save large results to file
 	if filePath, err := c.ps.saveLargeResult(execID, result); err == nil && filePath != "" {
 		execResult.FilePath = filePath
@@ -360,16 +416,8 @@ func (c *wsConnState) handleExecution(msg *wsMessage) {
 
 	c.ps.logger.LogExecution(execResult)
 
-	// Send result to waiting channel if one exists
-	if ch, ok := c.ps.pendingExecs.LoadAndDelete(execID); ok {
-		resultChan := ch.(chan *ExecutionResult)
-		select {
-		case resultChan <- &execResult:
-			close(resultChan)
-		default:
-			close(resultChan)
-		}
-	}
+	// Send result to the waiter, if this exec is still pending.
+	c.ps.deliverExecResult(execID, c.connID, &execResult)
 }
 
 // handleInteractions handles batched interaction events from the frontend.
@@ -378,7 +426,8 @@ func (c *wsConnState) handleInteractions(msg *wsMessage) {
 	for _, eventData := range events {
 		if em, ok := eventData.(map[string]interface{}); ok {
 			interaction := parseInteractionEvent(em, c.id, c.timestamp, msg.URL)
-			c.ps.logger.LogInteraction(interaction, msg.FrameID)
+			interaction.Untrusted = !c.trusted
+			c.record(LogEntry{Type: LogTypeInteraction, FrameID: msg.FrameID, Interaction: &interaction})
 			c.ps.pageTracker.TrackInteraction(interaction, msg.SessionID, msg.FrameID)
 		}
 	}
@@ -390,7 +439,8 @@ func (c *wsConnState) handleMutations(msg *wsMessage) {
 	for _, eventData := range events {
 		if em, ok := eventData.(map[string]interface{}); ok {
 			mutation := parseMutationEvent(em, c.id, c.timestamp, msg.URL)
-			c.ps.logger.LogMutation(mutation, msg.FrameID)
+			mutation.Untrusted = !c.trusted
+			c.record(LogEntry{Type: LogTypeMutation, FrameID: msg.FrameID, Mutation: &mutation})
 			c.ps.pageTracker.TrackMutation(mutation, msg.SessionID, msg.FrameID)
 		}
 	}
@@ -603,7 +653,7 @@ func (c *wsConnState) handleWalkthroughEvent(msg *wsMessage) {
 		Mode:      getStringField(msg.Data, "mode"),
 		Message:   getStringField(msg.Data, "message"),
 	}
-	c.ps.logger.LogWalkthrough(wt)
+	c.record(LogEntry{Type: LogTypeWalkthrough, Walkthrough: &wt})
 }
 
 // handleSketch handles a sketch/wireframe from sketch mode.
@@ -641,12 +691,17 @@ func (c *wsConnState) handleSketch(msg *wsMessage) {
 // reference ID.
 func (c *wsConnState) handleElementCapture(msg *wsMessage) {
 	capture := parseElementCapture(msg.Data, c.timestamp, msg.URL)
-	c.ps.logger.LogElementCapture(capture)
+	c.record(LogEntry{Type: LogTypeElementCapture, ElementCapture: &capture})
 }
 
 // handleSketchCapture handles a sketch capture from the panel with a
 // reference ID.
 func (c *wsConnState) handleSketchCapture(msg *wsMessage) {
+	// Writes a file under the project's .agnt/audit: not for an untrusted
+	// connection.
+	if c.refusePrivileged("sketch_capture") {
+		return
+	}
 	capture := parseSketchCapture(msg.Data, c.timestamp, msg.URL)
 
 	// Save sketch image to file if present
@@ -811,6 +866,12 @@ func (c *wsConnState) handleStoreRequestMsg(msg *wsMessage) {
 // panel (serialised via asyncConn). Acts directly on this proxy's chaos
 // engine — no daemon round trip.
 func (c *wsConnState) handleChaosRequestMsg(msg *wsMessage) {
+	// Failure injection into the operator's proxy: not for an untrusted
+	// connection. chaos_response is the reply the panel already renders.
+	if c.refusePrivileged("chaos_request") {
+		writeControlResponse(c.asyncConn, "chaos_response", getStringField(msg.Data, "request_id"), nil, privilegedRefusalMessage)
+		return
+	}
 	c.spawnHandler(func() { c.ps.handleChaosRequest(c.asyncConn, msg.Data) })
 }
 

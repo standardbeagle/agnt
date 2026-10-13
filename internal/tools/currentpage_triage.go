@@ -162,7 +162,7 @@ func topErrors(errs []map[string]interface{}, n int) []ErrorSummary {
 	byMsg := map[string]*ErrorSummary{}
 	var order []string
 	for _, e := range errs {
-		msg := getString(e, "message")
+		msg := errorMessageLabelled(e)
 		key := msg
 		if len(key) > 100 {
 			key = key[:100]

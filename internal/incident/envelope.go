@@ -15,16 +15,25 @@ import (
 type Source string
 
 const (
-	SourceBrowserJS     Source = "browser_js"
-	SourceHTTP5xx       Source = "http_5xx"
-	SourceHTTP4xx       Source = "http_4xx"
-	SourceTransportErr  Source = "transport_err"
-	SourceProxyDiag     Source = "proxy_diag"
-	SourceProcessAlert  Source = "process_alert"
-	SourceProcessOutput Source = "process_output"
-	SourceProcessCrash  Source = "process_crash"
-	SourceBuildFail     Source = "build_fail"
-	SourceChaosSwallow  Source = "chaos_swallowed_error"
+	SourceBrowserJS Source = "browser_js"
+	// SourceBrowserJSUntrusted is a browser error reported over the control
+	// WebSocket by a connection the proxy does not trust — for example a
+	// visitor on an unauthenticated public tunnel (proxy.LogEntry.Untrusted).
+	// Its text is the sender's choice. It is a source of its own, not a flag
+	// on SourceBrowserJS, for two reasons: the source is part of the
+	// fingerprint, so such a report can never merge into — and borrow the
+	// standing of — the same error reported by a trusted page; and every
+	// rendering that names an incident's source names this one.
+	SourceBrowserJSUntrusted Source = "browser_js_untrusted"
+	SourceHTTP5xx            Source = "http_5xx"
+	SourceHTTP4xx            Source = "http_4xx"
+	SourceTransportErr       Source = "transport_err"
+	SourceProxyDiag          Source = "proxy_diag"
+	SourceProcessAlert       Source = "process_alert"
+	SourceProcessOutput      Source = "process_output"
+	SourceProcessCrash       Source = "process_crash"
+	SourceBuildFail          Source = "build_fail"
+	SourceChaosSwallow       Source = "chaos_swallowed_error"
 	// SourceExternal is a failure reported from outside agnt's own monitors
 	// (CI, deploy logs, a hosted service) through the error_queue tool.
 	SourceExternal Source = "external"

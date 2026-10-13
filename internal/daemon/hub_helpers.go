@@ -603,7 +603,12 @@ func (d *Daemon) fireToIncidentBusForOwner(entry proxy.LogEntry, proxyID string,
 		if entry.Error == nil {
 			return
 		}
-		ev := incident.FromFrontendError(*entry.Error, proxyID, entry.FrameID)
+		// The entry's trust marker decides, whichever of the envelope or the
+		// payload carries it: an untrusted report must reach the adapter
+		// marked, or it would be ingested as the page's own error.
+		fe := *entry.Error
+		fe.Untrusted = fe.Untrusted || entry.Untrusted
+		ev := incident.FromFrontendError(fe, proxyID, entry.FrameID)
 		if d.stampIncidentOwner(&ev, &d.incidentProxyOwner, proxyID, owner) {
 			d.incidentBus.Publish(ev)
 		}

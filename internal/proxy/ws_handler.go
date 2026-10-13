@@ -187,9 +187,17 @@ func (ps *ProxyServer) controlCallerTrusted(r *http.Request) bool {
 //
 // localRuleVerifiedTunnelSuffixes are the public-URL host suffixes of the
 // tunnel providers whose origin-side behaviour (Host forwarded, headers added,
-// client-sent copies overwritten or rejected) was captured live: Cloudflare
-// quick tunnels and tailscale serve. Add a provider here only with a capture.
-var localRuleVerifiedTunnelSuffixes = []string{".trycloudflare.com", ".ts.net"}
+// client-sent copies overwritten or rejected) was captured live AND whose
+// hostnames identify that one kind of tunnel. Add one only with both.
+//
+// *.ts.net is deliberately absent although `tailscale serve` was captured:
+// Tailscale Funnel — public, and not captured — uses the same hostnames, and a
+// bound URL does not say which of the two put it there. The proxy is handed a
+// tunnel's URL without its provider or kind (SetTunnelURL), so it cannot tell
+// "the serve tunnel agnt started" from "a .ts.net URL bound some other way",
+// and does not grant the rule on a guess. *.trycloudflare.com has no such
+// twin: only Cloudflare quick tunnels live there.
+var localRuleVerifiedTunnelSuffixes = []string{".trycloudflare.com"}
 
 // localRuleVerifiedTunnel reports whether publicURL is an https URL on one of
 // those providers' hostnames.
@@ -385,6 +393,13 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	defer asyncConn.Close()
 	defer handlerWG.Wait()
 
+	// Decided once, from the listener and connection the upgrade arrived on —
+	// never from anything a later frame says — and pinned on the writer before
+	// it is registered, so broadcasts for trusted clients (exec, toasts, the
+	// agent's output) never see this connection as anything else.
+	trusted := ps.controlCallerTrusted(r)
+	asyncConn.trusted = trusted
+
 	// Store connection for sending messages
 	ps.wsConns.Store(connID, asyncConn)
 	debug.Log("proxy", "WebSocket client connected: proxy=%s connID=%s remote=%s", ps.ID, connID, r.RemoteAddr)
@@ -420,9 +435,7 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		connID:       connID,
 		captures:     make(map[string]string),
 		spawnHandler: spawnHandler,
-		// Decided once, from the listener and connection the upgrade arrived
-		// on — never from anything a later frame says.
-		trusted: ps.controlCallerTrusted(r),
+		trusted:      trusted,
 	}
 	frames := newWSFrameLimiter(time.Now())
 

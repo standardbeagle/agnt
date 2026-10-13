@@ -137,7 +137,7 @@ func convertToPageSummary(m map[string]interface{}, detailSet map[string]bool, l
 
 		for _, e := range errors {
 			if em, ok := e.(map[string]interface{}); ok {
-				msg := getString(em, "message")
+				msg := errorMessageLabelled(em)
 				errType := getString(em, "type")
 				if errType == "" {
 					errType = "Error"
@@ -329,7 +329,7 @@ func categorizeResource(url string) string {
 // This prevents token overflow when returning error details for pages with many errors.
 func convertToCompactError(em map[string]interface{}) CompactError {
 	compact := CompactError{
-		Message: getString(em, "message"),
+		Message: errorMessageLabelled(em),
 		Type:    getString(em, "type"),
 		URL:     getString(em, "url"),
 	}

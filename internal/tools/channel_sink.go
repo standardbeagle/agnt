@@ -79,6 +79,17 @@ func (s *ChannelSink) HandleEntry(ctx context.Context, entry proxy.LogEntry) {
 	if pipelineOwned(entry) {
 		return
 	}
+	// An entry from an untrusted control connection (proxy.LogEntry.Untrusted
+	// — for example a visitor on an unauthenticated public tunnel) is that
+	// sender's text. A channel event is pushed into the agent's context as
+	// something the page or the developer did, so such an entry is never
+	// pushed from here, whatever its type or level. It stays in the traffic
+	// log, where a deliberate proxylog pull shows it with its marker; an
+	// untrusted browser error still reaches the agent, labelled, through the
+	// incident pipeline.
+	if entry.Untrusted {
+		return
+	}
 	content, meta := extractChannelFields(entry)
 	if content == "" {
 		return

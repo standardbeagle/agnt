@@ -278,19 +278,23 @@ control WebSocket classifies each connection once, when it opens:
 - **Your own browser on this machine keeps full control** (panel messages,
   sketch and design handoffs, secret entry, voice, the `session`/`store` API)
   on a loopback proxy, on a `0.0.0.0` bind, and while a Cloudflare quick tunnel
-  or `tailscale serve` is bound to the proxy.
+  is bound to the proxy.
 - **A visitor through an unauthenticated public tunnel** (`tunnel cloudflare`,
   `tunnel ngrok`, or `cloudflare-tunnel` with `allow-unauthenticated`) can load
-  the app and its page telemetry is recorded, but cannot send anything to the
-  agent, write secrets or the store, reach sessions, or start voice. They see
-  an error toast saying so.
+  the app, and its page telemetry is recorded — marked `untrusted`, never
+  pushed to the agent, and labelled wherever the agent reads it. They cannot
+  send anything to the agent, answer or see a `proxy exec`, inject chaos,
+  write captures, secrets or the store, reach sessions, or start voice; the
+  panel shows an error toast saying so.
 - A visitor through a `cloudflare-tunnel` behind Cloudflare Access, and an
   identified tailnet peer on a `bind "tailscale"` proxy, are trusted as you are.
-- While an **ngrok** tunnel (or any public URL other than a
-  `*.trycloudflare.com` / `*.ts.net` one) is bound, your local browser is
-  refused those features too. Cloudflare's and tailscale's forwarding
-  behaviour was captured live; ngrok's is documented but unverified, and the
-  rule that recognises the local browser is not applied on an assumption.
+- While an **ngrok** or **tailscale** tunnel (or any public URL other than a
+  `*.trycloudflare.com` one or the proxy's own `cloudflare-tunnel`) is bound,
+  your local browser is refused those features too. Cloudflare's forwarding
+  behaviour was captured live. ngrok's is documented but unverified.
+  `tailscale serve` was captured, but Funnel shares its `*.ts.net` hostnames
+  and the proxy cannot tell which bound the URL. The rule that recognises the
+  local browser is not applied on an assumption.
 
 The exact rule, the list of gated frame types and its limits are in
 `docs/mcp-tools.md` § Who may drive the agent through the control WebSocket.

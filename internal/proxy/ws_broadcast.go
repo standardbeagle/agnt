@@ -27,6 +27,52 @@ func (ps *ProxyServer) broadcastRaw(data []byte) int {
 	return sent
 }
 
+// connTrusted reports whether a wsConns registry value is a trusted
+// connection. A connection registered by handleWebSocket carries the verdict
+// controlCallerTrusted reached on its upgrade (default: untrusted). Any other
+// value is a writer a test stored directly; production has no such entry.
+func connTrusted(value interface{}) bool {
+	if aw, ok := value.(*asyncWSWriter); ok {
+		return aw.trusted
+	}
+	return true
+}
+
+// trustedConnIDs lists the registry ids of the trusted connections.
+func (ps *ProxyServer) trustedConnIDs() []string {
+	var ids []string
+	ps.wsConns.Range(func(key, value interface{}) bool {
+		if id, ok := key.(string); ok && connTrusted(value) {
+			ids = append(ids, id)
+		}
+		return true
+	})
+	return ids
+}
+
+// sendToConns sends data to the named connections, returning how many took it.
+func (ps *ProxyServer) sendToConns(connIDs []string, data []byte) int {
+	sent := 0
+	for _, id := range connIDs {
+		value, ok := ps.wsConns.Load(id)
+		if !ok {
+			continue
+		}
+		if conn := connFromMap(value); conn != nil && conn.WriteMessage(websocket.TextMessage, data) == nil {
+			sent++
+		}
+	}
+	return sent
+}
+
+// broadcastTrusted is broadcastRaw for frames that carry the agent's or the
+// operator's own material — terminal output previews, tool-call events, the
+// secret-entry prompt. A visitor on an unauthenticated tunnel is a connected
+// client too, and must not be sent them.
+func (ps *ProxyServer) broadcastTrusted(data []byte) int {
+	return ps.sendToConns(ps.trustedConnIDs(), data)
+}
+
 // ProxyDiagnosticLevel indicates the severity of a diagnostic event.
 type ProxyDiagnosticLevel string
 
@@ -129,7 +175,9 @@ func (ps *ProxyServer) BroadcastToastOpts(o ToastOptions) (int, error) {
 		return 0, fmt.Errorf("failed to marshal toast: %w", err)
 	}
 
-	sentCount := ps.broadcastRaw(messageBytes)
+	// Toasts carry agent- and operator-authored text (and, with Input, the
+	// secret-entry prompt): trusted connections only.
+	sentCount := ps.broadcastTrusted(messageBytes)
 	debug.Log("proxy", "BroadcastToast: sent=%d total=%d", sentCount, connCount)
 
 	// Return success even with no clients - caller can check sent_count
@@ -155,7 +203,8 @@ func (ps *ProxyServer) BroadcastOutputPreview(lines []string, throbber string) i
 		return 0
 	}
 
-	return ps.broadcastRaw(messageBytes)
+	// The agent's terminal output: trusted connections only.
+	return ps.broadcastTrusted(messageBytes)
 }
 
 // BroadcastToolEvent sends an agent tool-call state event to all connected
@@ -180,7 +229,8 @@ func (ps *ProxyServer) BroadcastToolEvent(name, action, detail string) int {
 		return 0
 	}
 
-	return ps.broadcastRaw(messageBytes)
+	// The agent's commands and file paths: trusted connections only.
+	return ps.broadcastTrusted(messageBytes)
 }
 
 // BroadcastProxyDiagnostic sends a diagnostic event to all connected browser clients.

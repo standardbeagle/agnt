@@ -13,7 +13,7 @@ import (
 func TestCancelExecution(t *testing.T) {
 	ps := &ProxyServer{ID: "px1"}
 	ch := make(chan *ExecutionResult, 1)
-	ps.pendingExecs.Store("exec-1", ch)
+	ps.pendingExecs.Store("exec-1", &pendingExec{result: ch})
 
 	ps.CancelExecution("exec-1")
 

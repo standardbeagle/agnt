@@ -80,11 +80,6 @@ func TestControlCallerTrusted_LocalBrowserKeepsControl(t *testing.T) {
 		ps.SetPublicURL(gateTunnelURL)
 		assert.True(t, ps.controlCallerTrusted(localBrowser().request()))
 	})
-	t.Run("tailscale serve bound", func(t *testing.T) {
-		ps := newGateProxy(t)
-		ps.SetPublicURL("https://build1.example.ts.net")
-		assert.True(t, ps.controlCallerTrusted(localBrowser().request()))
-	})
 	t.Run("bound to every interface", func(t *testing.T) {
 		ps, err := NewProxyServer(ProxyConfig{
 			ID: "gate-lan", TargetURL: "http://localhost:3000", ListenPort: 8123,
@@ -188,6 +183,9 @@ func TestControlCallerTrusted_UnverifiedTunnelDoesNotGetLocalRule(t *testing.T) 
 		"https://abc123.ngrok-free.app",
 		"https://abc123.ngrok.io",
 		"https://dev.example.com",
+		// tailscale serve was captured, but Funnel (public, uncaptured) shares
+		// *.ts.net and a bound URL does not say which put it there.
+		"https://build1.example.ts.net",
 		"http://abc.trycloudflare.com",            // not https
 		"https://trycloudflare.com",               // the bare suffix, not a tunnel host
 		"https://abc.trycloudflare.com.evil.test", // suffix in the middle

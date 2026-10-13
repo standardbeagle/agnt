@@ -148,6 +148,10 @@ type FrontendError struct {
 	Error     string    `json:"error,omitempty"`
 	Stack     string    `json:"stack,omitempty"`
 	URL       string    `json:"url"` // Page URL where error occurred
+	// Untrusted mirrors LogEntry.Untrusted onto the payload, for the consumers
+	// that receive the payload without its envelope (the page tracker behind
+	// currentpage, the incident adapter).
+	Untrusted bool `json:"untrusted,omitempty"`
 }
 
 // PerformanceMetric represents frontend performance data.
@@ -239,6 +243,8 @@ type InteractionEvent struct {
 	Value     string                 `json:"value,omitempty"`    // For input events (sanitized, no passwords)
 	URL       string                 `json:"url"`
 	Data      map[string]interface{} `json:"data,omitempty"` // Extra data (scroll_position, etc.)
+	// Untrusted mirrors LogEntry.Untrusted (see FrontendError.Untrusted).
+	Untrusted bool `json:"untrusted,omitempty"`
 }
 
 // InteractionTarget describes the DOM element that was interacted with.
@@ -290,6 +296,8 @@ type MutationEvent struct {
 	// caused it (the browser walks recent interaction history within a 500ms
 	// window). Nil when no interaction preceded the mutation.
 	TriggeredBy *MutationTrigger `json:"triggered_by,omitempty"`
+	// Untrusted mirrors LogEntry.Untrusted (see FrontendError.Untrusted).
+	Untrusted bool `json:"untrusted,omitempty"`
 }
 
 // MutationTrigger describes the user interaction the browser correlated to a
@@ -612,7 +620,23 @@ type LogEntry struct {
 	// emitted it (the always-wrap model — docs/responsive-canonical-target.md
 	// §5.2). Empty for server-sourced entries (HTTP) and for unframed/legacy
 	// pages. Carried once on the envelope rather than on each typed payload.
-	FrameID           string              `json:"frame_id,omitempty"`
+	FrameID string `json:"frame_id,omitempty"`
+	// Untrusted marks an entry whose content was sent over the control
+	// WebSocket by a connection controlCallerTrusted refused — for example a
+	// visitor on an unauthenticated public tunnel. Everything in the payload
+	// is that sender's choice of text. It is kept so the operator can see it,
+	// and carried here so nothing downstream hands it to the agent as if the
+	// page (or the developer) had said it: ChannelSink does not push such an
+	// entry, the incident adapter labels and separately fingerprints it, and
+	// proxylog/currentpage show the marker.
+	//
+	// The zero value means "not untrusted browser input", which is the truth
+	// for every entry the proxy writes itself (HTTP traffic, diagnostics,
+	// process output, hooks) and for browser input from a trusted connection.
+	// Entries recorded from a connection are stamped by the one function that
+	// records them (wsConnState.record), so a connection's trust cannot be
+	// forgotten per handler.
+	Untrusted         bool                `json:"untrusted,omitempty"`
 	HTTP              *HTTPLogEntry       `json:"http,omitempty"`
 	Error             *FrontendError      `json:"error,omitempty"`
 	Performance       *PerformanceMetric  `json:"performance,omitempty"`

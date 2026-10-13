@@ -105,6 +105,15 @@ func NewTrafficLogger(maxSize int) *TrafficLogger {
 	}
 }
 
+// LogFromConnection records an entry whose payload came from a control
+// WebSocket connection, stamped with that connection's trust. It is the only
+// way such an entry gets the Untrusted mark; the typed Log* methods below are
+// for entries the proxy originates and for trusted callers.
+func (tl *TrafficLogger) LogFromConnection(entry LogEntry, untrusted bool) {
+	entry.Untrusted = untrusted
+	tl.log(entry)
+}
+
 // LogHTTP adds an HTTP request/response log entry.
 func (tl *TrafficLogger) LogHTTP(entry HTTPLogEntry) {
 	tl.log(LogEntry{

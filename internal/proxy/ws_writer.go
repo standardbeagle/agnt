@@ -49,6 +49,11 @@ type asyncWSWriter struct {
 	control chan wsControlFrame
 	msgType int
 
+	// trusted is controlCallerTrusted's verdict for the connection this writer
+	// belongs to, set once by handleWebSocket before the writer is registered
+	// and never changed. The zero value is untrusted.
+	trusted bool
+
 	done     chan struct{} // closed by Close; unblocks senders and the drain loop
 	once     sync.Once
 	closeErr error // result of the one conn.Close, set inside once

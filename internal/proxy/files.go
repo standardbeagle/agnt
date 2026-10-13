@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/debug"
@@ -299,7 +300,8 @@ func (ps *ProxyServer) ExecuteJavaScript(code string, frameID ...string) (string
 
 	// Create result channel for this execution
 	resultChan := make(chan *ExecutionResult, 1)
-	ps.pendingExecs.Store(execID, resultChan)
+	pending := &pendingExec{result: resultChan}
+	ps.pendingExecs.Store(execID, pending)
 
 	message := map[string]interface{}{
 		"type":     "execute",
@@ -310,19 +312,25 @@ func (ps *ProxyServer) ExecuteJavaScript(code string, frameID ...string) (string
 
 	messageBytes, err := json.Marshal(message)
 	if err != nil {
-		ps.pendingExecs.CompareAndDelete(execID, resultChan)
+		ps.pendingExecs.CompareAndDelete(execID, pending)
 		close(resultChan)
 		return "", nil, fmt.Errorf("failed to marshal message: %w", err)
 	}
 
-	// Send to all connected clients
-	sentCount := ps.broadcastRaw(messageBytes)
+	// Send to the trusted connections only, and remember which: the code is
+	// the agent's, and the result goes back to the agent as the page's answer,
+	// so an untrusted connection must neither see the one nor supply the
+	// other. Recording the targets before any send means a reply cannot arrive
+	// ahead of the binding.
+	targets := ps.trustedConnIDs()
+	pending.setTargets(targets)
+	sentCount := ps.sendToConns(targets, messageBytes)
 
 	if sentCount == 0 {
 		debug.Log("proxy", "ExecuteJavaScript: no connected clients for proxy %s", ps.ID)
 		// Only if it is still ours: a client that replied in the window has
 		// already taken (and closed) the channel.
-		if ps.pendingExecs.CompareAndDelete(execID, resultChan) {
+		if ps.pendingExecs.CompareAndDelete(execID, pending) {
 			close(resultChan)
 		}
 		return execID, nil, fmt.Errorf("no connected clients")
@@ -344,8 +352,61 @@ func (ps *ProxyServer) ExecuteJavaScript(code string, frameID ...string) (string
 // page navigates or reloads mid-exec. Safe against the ws_handler delivery race:
 // LoadAndDelete is atomic, so exactly one of cancel/deliver wins.
 func (ps *ProxyServer) CancelExecution(execID string) {
-	if ch, ok := ps.pendingExecs.LoadAndDelete(execID); ok {
-		resultChan := ch.(chan *ExecutionResult)
-		close(resultChan)
+	if v, ok := ps.pendingExecs.LoadAndDelete(execID); ok {
+		close(v.(*pendingExec).result)
 	}
+}
+
+// pendingExec is one exec awaiting its result: the channel the caller waits
+// on, and the connections the code was sent to. Only one of those connections
+// may answer it (deliverExecResult). An exec id is not a credential — it is
+// broadcast in the clear and follows a guessable pattern — so the reply is
+// bound to the identity of a connection the exec went to, not to knowing the
+// id.
+type pendingExec struct {
+	result chan *ExecutionResult
+
+	mu      sync.Mutex
+	targets map[string]struct{}
+}
+
+func (p *pendingExec) setTargets(connIDs []string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.targets = make(map[string]struct{}, len(connIDs))
+	for _, id := range connIDs {
+		p.targets[id] = struct{}{}
+	}
+}
+
+func (p *pendingExec) sentTo(connID string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	_, ok := p.targets[connID]
+	return ok
+}
+
+// deliverExecResult hands result to the exec's waiter if connID is one of the
+// connections the exec was sent to. It reports whether the exec was pending
+// and whether this connection was allowed to answer it; a refused answer
+// leaves the exec pending for its real target.
+func (ps *ProxyServer) deliverExecResult(execID, connID string, result *ExecutionResult) (pending, accepted bool) {
+	v, ok := ps.pendingExecs.Load(execID)
+	if !ok {
+		return false, false
+	}
+	p := v.(*pendingExec)
+	if !p.sentTo(connID) {
+		return true, false
+	}
+	// By identity: exactly one of deliver / cancel / a second target wins.
+	if !ps.pendingExecs.CompareAndDelete(execID, p) {
+		return false, false
+	}
+	select {
+	case p.result <- result:
+	default:
+	}
+	close(p.result)
+	return true, true
 }
