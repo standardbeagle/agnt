@@ -743,14 +743,22 @@ func acquireServeStoreLock(storeDir string) (release func(), err error) {
 //     of the one before it — that would walk back into attacker-chosen entries
 //     — the whole header is ignored and the TCP peer used.
 //
-// UNVERIFIED AGAINST A LIVE TUNNEL: the ngrok/tailscale rule comes from general
-// knowledge of how those agents behave, not from a capture, and nothing in this
-// repo records what they send beyond listing X-Forwarded-For as a header a
-// tunnel adds (proxy/devoidc.go reverseProxyFingerprints). If an agent does not
-// append — sends no header, or passes the visitor's through untouched — the
-// failure modes are: no header → TCP peer (today's shared bucket); visitor's
-// header passed through → a visitor picks their own bucket key, which evades
-// the per-client bucket but not the per-share aggregate one behind it.
+// What has been captured against live tunnels (2026-10-13, a header-echo
+// origin behind each agent):
+//   - cloudflare quick tunnel: loopback peer; CF-Connecting-IP is the true
+//     client; a client-sent X-Forwarded-For is appended to (rightmost is the
+//     true client); a client-sent CF-Connecting-IP is refused at the edge
+//     (HTTP 403) and never reaches the origin.
+//   - tailscale serve: loopback peer; X-Forwarded-For is the true tailnet
+//     client and a client-sent value is OVERWRITTEN, not appended to, so the
+//     rightmost entry is still the true client.
+//
+// NOT CAPTURED: ngrok. Its rule rests on how the agent is generally known to
+// behave. If it does not append — sends no header, or passes the visitor's
+// through untouched — the failure modes are: no header → TCP peer (one shared
+// bucket); visitor's header passed through → a visitor picks their own bucket
+// key, which evades the per-client bucket but not the per-share aggregate one
+// behind it.
 func tunnelClientAddr(provider tunnel.Provider, up *atomic.Bool) func(*http.Request) string {
 	var forwarded func(http.Header) string
 	switch provider {

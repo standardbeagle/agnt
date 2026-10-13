@@ -1,0 +1,36 @@
+name: macOS Tests
+
+# agnt ships for macOS and has darwin-only code paths (process enumeration via
+# sysctl, port-owner lookup via lsof, the Ctrl+Z stop path), but nothing ran
+# them: the Linux and Windows jobs only type-check darwin through the
+# cross-compile check. This job executes the suite on a real Mac.
+#
+# -p 1 for the same reason as the Linux job: parallel `./...` fails on
+# cross-package port and socket contention.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: go vet + go test -p 1 ./... (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test (serial packages)
+        run: go test -p 1 -count=1 ./...

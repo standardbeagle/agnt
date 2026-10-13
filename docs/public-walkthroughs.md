@@ -135,13 +135,18 @@ like a password.
   TCP peer is used; a malformed rightmost entry is not skipped in favour of the
   entry before it.
 
-  **The `ngrok` / `tailscale` row is unverified against a live tunnel.** It
-  rests on how those agents are generally known to behave (local reverse
-  proxies that append `X-Forwarded-For`), not on a capture. If an agent sends
-  no header, viewers fall back to one shared per-client bucket; if it passes a
-  viewer's header through without appending, a viewer could choose their own
-  bucket key. In both cases the per-share aggregate bucket still bounds the
-  share.
+  **What was checked against live tunnels (2026-10-13).** Cloudflare quick
+  tunnel: `CF-Connecting-IP` is the true client, and a viewer-sent
+  `CF-Connecting-IP` is refused at Cloudflare's edge before it reaches the
+  origin. `tailscale serve`: `X-Forwarded-For` is the true tailnet client and a
+  viewer-sent value is overwritten, so the rightmost entry is the true client.
+
+  **`ngrok` was not checked.** Its rule rests on how the agent is generally
+  known to behave (a local reverse proxy that appends `X-Forwarded-For`). If it
+  sends no header, viewers fall back to one shared per-client bucket; if it
+  passes a viewer's header through without appending, a viewer could choose
+  their own bucket key. In both cases the per-share aggregate bucket still
+  bounds the share.
 
   **Stated residual: the daemon's `AGNT_PUBLIC_ADDR` listener always keys on the
   TCP peer.** It starts no tunnel of its own, so it has no hop whose header it
