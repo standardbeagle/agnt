@@ -414,8 +414,14 @@ func TestRun_ShortAndDerivedIDBothResolve(t *testing.T) {
 	}
 
 	// It is a managed script like any other: a registry entry that tracks it.
+	// A background RUN replies as soon as the process has a PID; the start
+	// path registers the entry on its own goroutine, so wait for it.
+	require.Eventually(t, func() bool {
+		_, found := d.scriptRegistry.Get("dev", dir)
+		return found
+	}, 5*time.Second, 20*time.Millisecond, "a RUN-started process has a script-registry entry")
 	entry, ok := d.scriptRegistry.Get("dev", dir)
-	require.True(t, ok, "a RUN-started process has a script-registry entry")
+	require.True(t, ok)
 	assert.Equal(t, derived, entry.ProcessID)
 	require.Eventually(t, func() bool { return entry.State() == script.StateRunning }, 5*time.Second, 20*time.Millisecond)
 

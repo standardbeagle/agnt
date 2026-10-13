@@ -125,9 +125,9 @@ jobs:
             if ($exit -ne 0) {
               $cleanupOnly = $output -match "Access is denied"
               if (-not $cleanupOnly) {
-                throw "$label: go test exited $exit with no FAIL line and no temp-cleanup error to explain it"
+                throw "${label}: go test exited $exit with no FAIL line and no temp-cleanup error to explain it"
               }
-              Write-Host "$label: go test exited $exit after all packages passed (temp directory cleanup: Access is denied); treating as passed"
+              Write-Host "${label}: go test exited $exit after all packages passed (temp directory cleanup: Access is denied); treating as passed"
             }
             Write-Host "$label tests passed"
           }

@@ -723,7 +723,10 @@ func TestConvertStartupLogEntry(t *testing.T) {
 		assert.Equal(t, "error", result.Severity)
 		assert.Equal(t, "START FAILED", result.Category)
 		assert.Contains(t, result.Message, "exit status 1")
-		assert.Equal(t, now.Truncate(time.Second), result.LastSeen.Truncate(time.Second))
+		// Compare instants, not time.Time values: the parsed timestamp carries
+		// time.UTC or a fixed zone while now carries time.Local, and those are
+		// unequal as values wherever the local zone is UTC (CI runners).
+		assert.WithinDuration(t, now, result.LastSeen, time.Second)
 		assert.Equal(t, 1, result.Count)
 	})
 
