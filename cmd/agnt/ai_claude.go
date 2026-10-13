@@ -658,7 +658,15 @@ func runAiClaudeOverlay(ctx context.Context, opts *claude.AgentOptions, daemonHa
 		// handler while it is inactive, cancelling the turn (and the claude
 		// subprocess behind the iterator) without ending the REPL.
 		turnCtx, cancelTurn := context.WithCancel(ctx)
-		lineEditor.SetInterruptHandler(cancelTurn)
+		// The cancel alone kills only the claude process. Capture what it
+		// started while that is still linked to us, then stop it too — the
+		// command the user is interrupting is usually one of those.
+		tree := newTurnTree()
+		lineEditor.SetInterruptHandler(func() {
+			pids := tree.capture()
+			cancelTurn()
+			go tree.stop(pids)
+		})
 
 		// Disable line editor during streaming
 		lineEditor.SetActive(false)
