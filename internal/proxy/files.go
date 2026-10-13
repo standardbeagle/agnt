@@ -88,21 +88,63 @@ func (ps *ProxyServer) saveScreenshot(name string, dataURL string) (string, erro
 	return filePath, nil
 }
 
-// registerCapture stores a named screenshot file path for cross-goroutine lookup.
-// Used only for proxy exec screenshots (__devtool.screenshot('name')).
-// Panel screenshots use the per-connection sessionCaptures map instead.
-func (ps *ProxyServer) registerCapture(name, filePath string) {
-	ps.namedCaptures.Store(name, filePath)
-	debug.Log("proxy", "Registered named capture: name=%s path=%s", name, filePath)
+// ownedCapturePath reports whether p names a capture file this proxy itself
+// wrote, returning the resolved path. It is the test for any file path that
+// arrives from the browser (a panel attachment echoing capture_ack): the path
+// is forwarded to the agent as an attachment, so an unchecked one let any
+// control-socket client point the agent at an arbitrary local file.
+//
+// "Wrote" means both: the file sits directly in one of the directories
+// saveScreenshot/savePNGBytes write to, and it carries the screenshot-<proxy
+// id>- prefix they give every file. Symlinks are resolved first, so a link
+// planted in the screenshot directory does not qualify its target. A path
+// that does not exist is refused.
+func (ps *ProxyServer) ownedCapturePath(p string) (string, bool) {
+	if p == "" {
+		return "", false
+	}
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", false
+	}
+	resolved, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		return "", false
+	}
+	info, err := os.Stat(resolved)
+	if err != nil || !info.Mode().IsRegular() {
+		return "", false
+	}
+	if !strings.HasPrefix(filepath.Base(resolved), "screenshot-"+sanitizeFilename(ps.ID)+"-") {
+		return "", false
+	}
+	parent, err := os.Stat(filepath.Dir(resolved))
+	if err != nil {
+		return "", false
+	}
+	for _, dir := range ps.captureDirs() {
+		if owned, err := os.Stat(dir); err == nil && os.SameFile(parent, owned) {
+			return resolved, true
+		}
+	}
+	return "", false
 }
 
-// LookupCapture returns the file path for a named screenshot, or empty string if not found.
-// Entries are deleted after lookup — consumed once by the MCP tool handler.
-func (ps *ProxyServer) LookupCapture(name string) string {
-	if v, ok := ps.namedCaptures.LoadAndDelete(name); ok {
-		return v.(string)
+// captureDirs lists every directory saveScreenshot and savePNGBytes can write
+// to: the project's audit directory and its screenshots subdirectory, and the
+// same pair under the temp dir (their documented fallback when the project
+// root is unavailable). It creates nothing.
+func (ps *ProxyServer) captureDirs() []string {
+	var roots []string
+	if ps.Path != "" {
+		roots = append(roots, filepath.Join(ps.Path, ".agnt", AuditDirName))
 	}
-	return ""
+	roots = append(roots, os.TempDir())
+	dirs := make([]string, 0, 2*len(roots))
+	for _, root := range roots {
+		dirs = append(dirs, filepath.Join(root, "screenshots"), root)
+	}
+	return dirs
 }
 
 // savePNGBytes writes raw PNG bytes directly to the screenshots directory.
@@ -251,7 +293,9 @@ func (ps *ProxyServer) DescribeExecTarget(target string) string {
 func (ps *ProxyServer) ExecuteJavaScript(code string, frameID ...string) (string, <-chan *ExecutionResult, error) {
 	target := ps.resolveExecTarget(firstFrameID(frameID))
 	debug.Log("proxy", "ExecuteJavaScript: proxy=%s code_len=%d frame=%q", ps.ID, len(code), target)
-	execID := fmt.Sprintf("exec-%d", time.Now().UnixNano())
+	// Counter-suffixed: the clock alone repeats within a timer tick (see
+	// execSeq), and two execs sharing an id would share a result channel.
+	execID := fmt.Sprintf("exec-%d-%d", time.Now().UnixNano(), ps.execSeq.Add(1))
 
 	// Create result channel for this execution
 	resultChan := make(chan *ExecutionResult, 1)
@@ -266,7 +310,7 @@ func (ps *ProxyServer) ExecuteJavaScript(code string, frameID ...string) (string
 
 	messageBytes, err := json.Marshal(message)
 	if err != nil {
-		ps.pendingExecs.Delete(execID)
+		ps.pendingExecs.CompareAndDelete(execID, resultChan)
 		close(resultChan)
 		return "", nil, fmt.Errorf("failed to marshal message: %w", err)
 	}
@@ -276,8 +320,11 @@ func (ps *ProxyServer) ExecuteJavaScript(code string, frameID ...string) (string
 
 	if sentCount == 0 {
 		debug.Log("proxy", "ExecuteJavaScript: no connected clients for proxy %s", ps.ID)
-		ps.pendingExecs.Delete(execID)
-		close(resultChan)
+		// Only if it is still ours: a client that replied in the window has
+		// already taken (and closed) the channel.
+		if ps.pendingExecs.CompareAndDelete(execID, resultChan) {
+			close(resultChan)
+		}
 		return execID, nil, fmt.Errorf("no connected clients")
 	}
 

@@ -175,7 +175,10 @@ func (d *Daemon) hubHandleAutomationStatus(conn *hubpkg.Connection, cmd *hubprot
 // hubHandleAutomationList handles AUTOMATION LIST command.
 
 func (d *Daemon) hubHandleAutomationList(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	dirFilter, _ := unmarshalCommand[protocol.DirectoryFilter](cmd)
+	dirFilter, err := unmarshalCommand[protocol.DirectoryFilter](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid filter JSON: %v", err))
+	}
 
 	// Route through the mandatory session-scope chokepoint (see
 	// resolveProjectScope). A non-global query with no resolvable project

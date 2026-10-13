@@ -121,7 +121,7 @@ func signedSubresourceURL(h *PublicHandler, shareID, rawURL string, depth int) s
 	q := url.Values{}
 	q.Set("u", rawURL)
 	q.Set("d", strconv.Itoa(depth))
-	q.Set("sig", h.signer.Sign(shareID, rawURL, depth))
+	q.Set("sig", h.signer.Sign(shareID, revisionForToken(h, validToken), rawURL, depth))
 	return sharePrefix + validToken + subresourceSubPath + "?" + q.Encode()
 }
 

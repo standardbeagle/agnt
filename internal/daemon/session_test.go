@@ -229,38 +229,6 @@ func TestSessionRegistry_ActiveCount(t *testing.T) {
 	}
 }
 
-func TestGenerateSessionCode(t *testing.T) {
-	t.Parallel()
-	registry := NewSessionRegistry(60 * time.Second)
-
-	// Generate first code
-	code1 := registry.GenerateSessionCode("claude")
-	if code1 != "claude-1" {
-		t.Errorf("GenerateSessionCode() = %v, want claude-1", code1)
-	}
-
-	// Register it
-	session := &Session{
-		Code:      code1,
-		Command:   "claude",
-		StartedAt: time.Now(),
-		Status:    SessionStatusActive,
-	}
-	_ = registry.Register(session)
-
-	// Generate second code
-	code2 := registry.GenerateSessionCode("claude")
-	if code2 != "claude-2" {
-		t.Errorf("GenerateSessionCode() = %v, want claude-2", code2)
-	}
-
-	// Generate code for different command
-	code3 := registry.GenerateSessionCode("copilot")
-	if code3 != "copilot-1" {
-		t.Errorf("GenerateSessionCode() = %v, want copilot-1", code3)
-	}
-}
-
 func TestSessionRegistry_Info(t *testing.T) {
 	t.Parallel()
 	registry := NewSessionRegistry(60 * time.Second)

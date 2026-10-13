@@ -90,6 +90,29 @@ func TestParseVersionOutput(t *testing.T) {
 			wantOutdate: false,
 		},
 		{
+			// The channel suffix used to be read as the version ("beta"),
+			// leaving major 0 and the build never reported as outdated.
+			name:        "beta channel suffix after the version",
+			raw:         "Google Chrome 147.0.7700.3 beta",
+			wantFull:    "147.0.7700.3",
+			wantMajor:   147,
+			wantOutdate: false,
+		},
+		{
+			name:        "outdated build with a channel suffix is still outdated",
+			raw:         "Google Chrome " + strconv.Itoa(MinMajorVersion-1) + ".0.1.2 dev",
+			wantFull:    strconv.Itoa(MinMajorVersion-1) + ".0.1.2",
+			wantMajor:   MinMajorVersion - 1,
+			wantOutdate: true,
+		},
+		{
+			name:        "snap packaging suffix",
+			raw:         "Chromium 120.0.6099.0 snap\n",
+			wantFull:    "120.0.6099.0",
+			wantMajor:   120,
+			wantOutdate: false,
+		},
+		{
 			name:        "single field bare version",
 			raw:         "121.0.0.0",
 			wantFull:    "121.0.0.0",

@@ -186,7 +186,7 @@ func alertPattern(category, desc string, sev overlay.AlertSeverity) *overlay.Ale
 
 func TestFromAlertMatch_BuildCategories(t *testing.T) {
 	t.Parallel()
-	for _, cat := range []string{"webpack", "vite", "nextjs", "rebuild"} {
+	for _, cat := range []string{"webpack", "vite", "nextjs"} {
 		m := &overlay.AlertMatch{
 			Pattern:   alertPattern(cat, "build error", overlay.AlertSeverityError),
 			Line:      "ERROR in ./src/index.js",
@@ -197,6 +197,42 @@ func TestFromAlertMatch_BuildCategories(t *testing.T) {
 		if ev.Source != SourceBuildFail {
 			t.Errorf("category %q: Source=%q, want build_fail", cat, ev.Source)
 		}
+	}
+}
+
+// Rebuild-lifecycle lines ("Build succeeded", "rebuilding", "page reload") are
+// health/retention signals. Recording them made every successful rebuild an
+// `info:build_fail` incident plus a ping.
+func TestAlertMatchIsIncident_RebuildLifecycleIsNot(t *testing.T) {
+	t.Parallel()
+	rebuild := &overlay.AlertMatch{
+		Pattern:  alertPattern("rebuild", "Build succeeded", overlay.AlertSeverityInfo),
+		Line:     "Build succeeded.",
+		ScriptID: "api",
+	}
+	if AlertMatchIsIncident(rebuild) {
+		t.Error("a rebuild-lifecycle match must not become an incident")
+	}
+	// Even if one is converted anyway, it is never labelled a build failure
+	// (its description contains "build", which the description fallback matches).
+	if ev := FromAlertMatch(rebuild, "api"); ev.Source == SourceBuildFail {
+		t.Errorf("rebuild-lifecycle match labelled %q", ev.Source)
+	}
+
+	failure := &overlay.AlertMatch{
+		Pattern: alertPattern("dotnet", ".NET build failure", overlay.AlertSeverityError),
+		Line:    "Build FAILED",
+	}
+	if !AlertMatchIsIncident(failure) {
+		t.Error("a real build failure must still become an incident")
+	}
+	// A user-declared info pattern is not rebuild noise and is still recorded.
+	info := &overlay.AlertMatch{Pattern: alertPattern("generic", "note", overlay.AlertSeverityInfo), Line: "note"}
+	if !AlertMatchIsIncident(info) {
+		t.Error("a non-rebuild info match must still become an incident")
+	}
+	if AlertMatchIsIncident(nil) || AlertMatchIsIncident(&overlay.AlertMatch{}) {
+		t.Error("nil match / nil pattern must not be an incident")
 	}
 }
 
@@ -262,8 +298,9 @@ func TestFromProcessExit_Basic(t *testing.T) {
 	if ev.Source != SourceProcessCrash {
 		t.Errorf("Source: got %q", ev.Source)
 	}
-	if ev.Severity != SeverityError {
-		t.Errorf("Severity: got %q", ev.Severity)
+	// A crash is the one process outcome that is critical; see FromProcessExit.
+	if ev.Severity != SeverityCritical {
+		t.Errorf("Severity: got %q, want critical for a crash", ev.Severity)
 	}
 	if ev.Ctx.ProcessID != "frontend" {
 		t.Errorf("ProcessID: got %q", ev.Ctx.ProcessID)
@@ -279,89 +316,11 @@ func TestFromProcessExit_Basic(t *testing.T) {
 func TestFromProcessExit_EmptyStderr(t *testing.T) {
 	t.Parallel()
 	ev := FromProcessExit("api", "stopped", 0, "")
+	if ev.Severity != SeverityError {
+		t.Errorf("non-crash exit must stay error, got %q", ev.Severity)
+	}
 	if strings.Contains(ev.Summary, "\n") {
 		t.Errorf("no newline expected when stderr empty: %q", ev.Summary)
-	}
-}
-
-// ── port conflict ─────────────────────────────────────────────────────────────
-
-func TestFromPortConflict_WithName(t *testing.T) {
-	t.Parallel()
-	ev := FromPortConflict(3000, 42, "node")
-	if ev.Source != SourcePortConflict {
-		t.Errorf("Source: got %q", ev.Source)
-	}
-	if ev.Severity != SeverityWarning {
-		t.Errorf("Severity: got %q", ev.Severity)
-	}
-	if ev.Ctx.PID != 42 {
-		t.Errorf("PID: got %d", ev.Ctx.PID)
-	}
-	if !strings.Contains(ev.Summary, "3000") {
-		t.Errorf("Summary missing port: %q", ev.Summary)
-	}
-	if !strings.Contains(ev.Summary, "node") {
-		t.Errorf("Summary missing process name: %q", ev.Summary)
-	}
-}
-
-func TestFromPortConflict_NoName(t *testing.T) {
-	t.Parallel()
-	ev := FromPortConflict(8080, 99, "")
-	if !strings.Contains(ev.Summary, "8080") {
-		t.Errorf("Summary missing port: %q", ev.Summary)
-	}
-}
-
-// ── lifecycle ─────────────────────────────────────────────────────────────────
-
-func TestFromShutdown(t *testing.T) {
-	t.Parallel()
-	ev := FromShutdown("user requested shutdown")
-	if ev.Source != SourceShutdown {
-		t.Errorf("Source: got %q", ev.Source)
-	}
-	if ev.Severity != SeverityInfo {
-		t.Errorf("Severity: got %q", ev.Severity)
-	}
-	if !strings.Contains(ev.Summary, "user requested") {
-		t.Errorf("Summary: %q", ev.Summary)
-	}
-}
-
-func TestFromShutdown_EmptyReason(t *testing.T) {
-	t.Parallel()
-	ev := FromShutdown("")
-	if ev.Summary == "" {
-		t.Error("empty reason should use fallback message")
-	}
-}
-
-// ── hook stop failure ─────────────────────────────────────────────────────────
-
-func TestFromHookStopFailure(t *testing.T) {
-	t.Parallel()
-	ev := FromHookStopFailure("sess-abc", "API error", "rate limit exceeded")
-	if ev.Source != SourceHookStopFail {
-		t.Errorf("Source: got %q", ev.Source)
-	}
-	if ev.Severity != SeverityError {
-		t.Errorf("Severity: got %q", ev.Severity)
-	}
-	if ev.Ctx.SessionID != "sess-abc" {
-		t.Errorf("SessionID: got %q", ev.Ctx.SessionID)
-	}
-	if !strings.Contains(ev.Summary, "rate limit") {
-		t.Errorf("Summary missing details: %q", ev.Summary)
-	}
-}
-
-func TestFromHookStopFailure_NoDetails(t *testing.T) {
-	t.Parallel()
-	ev := FromHookStopFailure("s", "timeout", "")
-	if ev.Summary != "timeout" {
-		t.Errorf("Summary: got %q, want timeout", ev.Summary)
 	}
 }
 
@@ -371,7 +330,7 @@ func TestNopBus_Publish(t *testing.T) {
 	t.Parallel()
 	var b Bus = NopBus{}
 	// Must not panic or block.
-	b.Publish(NewIncidentEvent(SourceShutdown, SeverityInfo, "test", "test", Context{}, nil))
+	b.Publish(NewIncidentEvent(SourceProcessAlert, SeverityInfo, "test", "test", Context{}, nil))
 }
 
 // ── browser location + frame identity ────────────────────────────────────────
@@ -475,11 +434,19 @@ func TestFromFrontendError_FrameIdentityIsFingerprinted(t *testing.T) {
 		t.Errorf("frame not carried on context: %q / %q", a.Ctx.FrameID, b.Ctx.FrameID)
 	}
 
-	// A caller with no frame attribution must fingerprint exactly as it did
-	// before frames existed — only frame-attributed sources move.
+	// A caller with no frame attribution adds no frame component: the location
+	// is the page URL scoped by the owning proxy, nothing else.
 	none := FromFrontendError(fe, "dev", "")
-	want := computeFingerprint(string(SourceBrowserJS), none.Category, Canonicalize(fe.Message+"\n"+fe.Stack), fe.URL)
+	want := computeFingerprint(string(SourceBrowserJS), none.Category, Canonicalize(fe.Message+"\n"+fe.Stack),
+		fingerprintLocation(Context{URL: fe.URL, ProxyID: "dev"}))
 	if none.Fingerprint != want {
 		t.Errorf("frameless fingerprint changed: got %s, want %s", none.Fingerprint, want)
+	}
+	if strings.Contains(fingerprintLocation(Context{URL: fe.URL, ProxyID: "dev"}), "#") {
+		t.Error("frameless location must carry no frame component")
+	}
+	// The same error on another proxy is another failing surface.
+	if other := FromFrontendError(fe, "docs", ""); other.Fingerprint == none.Fingerprint {
+		t.Error("same error on two proxies shares a fingerprint")
 	}
 }

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -190,14 +191,114 @@ func managedTreeChecker(pm *goprocess.ProcessManager) func(pid int) bool {
 // the skip loudly (Silent Failure Prohibition). Without it, a proxy listener
 // living inside the daemon process — or a managed dev server sharing the port —
 // gets SIGTERM'd by our own cleanup.
+//
+// Where the vendored lookup behind KillProcessByPort is broader than ours (see
+// vendoredPortLookupIsBroad) the kill does not go through it at all: exactly
+// the listener PIDs this scan returned are signalled.
 func killPortHoldersGuarded(ctx context.Context, pm *goprocess.ProcessManager, port int) (killed, protected []int, err error) {
-	linuxPIDs, windowsPIDs := config.FindPIDsByPortTagged(ctx, port)
-	protected = protectedPortHolders(linuxPIDs, windowsPIDs, os.Getpid(), managedTreeChecker(pm))
+	return killPortHolders(ctx, port, portKillOps{
+		listeners:   config.FindPIDsByPortTagged,
+		self:        os.Getpid(),
+		isProtected: managedTreeChecker(pm),
+		exact:       vendoredPortLookupIsBroad,
+		killByPort:  pm.KillProcessByPort,
+		killPID:     killListenerPID,
+	})
+}
+
+// vendoredPortLookupIsBroad reports whether ProcessManager.KillProcessByPort
+// finds its targets with a lookup that also matches processes merely CONNECTED
+// to the port. The vendored lookup is listener-only on Linux (/proc/net/tcp
+// LISTEN inodes) and on Windows (netstat LISTENING rows), but on every other
+// Unix — macOS in practice — it runs `lsof -ti :PORT`, which selects any
+// process with a socket on that port: the browser with the dev server open is
+// in that set. Our own lookup there is `lsof -a -iTCP:PORT -sTCP:LISTEN`. The
+// guard would approve the kill on the narrow set and the vendored code would
+// then kill the broad one.
+//
+// The vendored module cannot be patched in this repo, so on those hosts the
+// daemon selects and signals the targets itself.
+var vendoredPortLookupIsBroad = runtime.GOOS != "linux" && runtime.GOOS != "windows"
+
+// listenerKillGraceSeconds is how long a listener gets between SIGTERM and
+// SIGKILL on the exact-kill path. Matches the vendored kill's 3s ceiling.
+const listenerKillGraceSeconds = 3
+
+// portKillOps are the host operations killPortHolders needs. Injected so the
+// decision — who is protected, who is selected, which kill path fires — runs
+// the same on any OS under test.
+type portKillOps struct {
+	// listeners returns the PIDs LISTENING on the port, tagged by OS side.
+	listeners portProbe
+	// self is this process's PID.
+	self int
+	// isProtected is true for a PID the ProcessManager owns or a descendant.
+	isProtected func(pid int) bool
+	// exact selects the kill path: true signals the listener PIDs directly,
+	// false delegates to killByPort (which re-discovers holders itself).
+	exact bool
+	// killByPort is ProcessManager.KillProcessByPort.
+	killByPort func(ctx context.Context, port int) ([]int, error)
+	// killPID terminates one listener PID.
+	killPID func(pid int) error
+}
+
+// killPortHolders is killPortHoldersGuarded with its host operations injected.
+// One scan decides both questions: a protected holder refuses the kill, and —
+// on the exact path — the same scan's listener set is the complete target
+// list, so nothing found by a second, different lookup can be killed.
+func killPortHolders(ctx context.Context, port int, ops portKillOps) (killed, protected []int, err error) {
+	linuxPIDs, windowsPIDs := ops.listeners(ctx, port)
+	protected = protectedPortHolders(linuxPIDs, windowsPIDs, ops.self, ops.isProtected)
 	if len(protected) > 0 {
 		return nil, protected, nil
 	}
-	killed, err = pm.KillProcessByPort(ctx, port)
-	return killed, nil, err
+	if !ops.exact {
+		killed, err = ops.killByPort(ctx, port)
+		return killed, nil, err
+	}
+	var errs []error
+	for _, pid := range portKillTargets(linuxPIDs, ops.self) {
+		if killErr := ops.killPID(pid); killErr != nil {
+			errs = append(errs, fmt.Errorf("pid %d: %w", pid, killErr))
+			continue
+		}
+		killed = append(killed, pid)
+	}
+	return killed, nil, errors.Join(errs...)
+}
+
+// portKillTargets returns the PIDs to signal on the exact-kill path: the
+// listener set, de-duplicated, in order, without this process, init, or
+// anything that is not a real PID. It takes only the listener set on purpose —
+// a process that is a client of the port is not an input, so it cannot be an
+// output.
+func portKillTargets(listeners []int, self int) []int {
+	var targets []int
+	seen := make(map[int]bool, len(listeners))
+	for _, pid := range listeners {
+		if pid <= 1 || pid == self || seen[pid] {
+			continue
+		}
+		seen[pid] = true
+		targets = append(targets, pid)
+	}
+	return targets
+}
+
+// killListenerPID terminates one listener: SIGTERM, a grace period, SIGKILL,
+// to the PID and — when it leads one — its process group, with the kernel
+// birth identity re-checked before escalation (platform.KillPID).
+// internal/platform has no descendant-tree kill, so children outside that
+// group are not signalled; the port is released once the listener is gone.
+//
+// A listener that exited on its own between the scan and the signal is not a
+// failure: the port is free, which is what the caller asked for.
+func killListenerPID(pid int) error {
+	if err := platform.KillPID(pid, listenerKillGraceSeconds); err != nil && pidAlive(pid) {
+		return err
+	}
+	return nil
 }
 
 // KillResult reports what happened for each conflict.

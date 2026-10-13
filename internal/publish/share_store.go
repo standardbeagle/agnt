@@ -77,6 +77,15 @@ var (
 	// integrity checksum does not match — the store fails loud rather than
 	// silently dropping the record or serving an empty store.
 	ErrCorrupt = errors.New("publishstore: corrupt record")
+	// ErrUnservable is returned by New/OpenReadOnly when a LIVE stored record is
+	// intact but may not be served under the current rules (today: it carries an
+	// addScript op, INV-14). It is distinct from ErrCorrupt — the bytes are what
+	// was written — but fails the load the same way: loudly, naming the record.
+	ErrUnservable = errors.New("publishstore: stored share may not be served")
+	// ErrReadOnly is returned by every mutating operation on a store opened with
+	// OpenReadOnly (or OpenFeedbackStoreReadOnly). A read-only store never
+	// creates, rewrites, or removes anything on disk.
+	ErrReadOnly = errors.New("publishstore: store is read-only")
 )
 
 // Share is one persisted published-share record. The plaintext token is NEVER a
@@ -154,6 +163,9 @@ type ShareInfo struct {
 type Store struct {
 	dir string
 	now func() time.Time
+	// readOnly makes persist refuse, so no mutating method can reach disk. It
+	// is set only by OpenReadOnly, for a reader of a store another process owns.
+	readOnly bool
 
 	mu     sync.RWMutex
 	byID   map[string]*Share
@@ -192,6 +204,33 @@ func New(dir string, now func() time.Time) (*Store, error) {
 	return s, nil
 }
 
+// OpenReadOnly opens an EXISTING publish store for reading only. Unlike New it
+// creates nothing — a missing directory is an error, not an empty store to be
+// conjured — and every mutating method returns ErrReadOnly. It is what a
+// second process uses to read a store that a running `agnt publish serve`
+// owns: two writers on these authoritative records is the failure the
+// per-store ownership rule exists to prevent.
+func OpenReadOnly(dir string, now func() time.Time) (*Store, error) {
+	if dir == "" {
+		return nil, errors.New("publishstore: empty dir")
+	}
+	if now == nil {
+		now = time.Now
+	}
+	s := &Store{
+		dir:      dir,
+		now:      now,
+		readOnly: true,
+		byID:     make(map[string]*Share),
+		byHash:   make(map[string]string),
+		bySource: make(map[string]string),
+	}
+	if err := s.load(); err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
 // load reads and integrity-checks every record. Fails loud on the first corrupt
 // record.
 func (s *Store) load() error {
@@ -212,6 +251,18 @@ func (s *Store) load() error {
 		sh, err := decodeRecord(data)
 		if err != nil {
 			return fmt.Errorf("%w: %s: %v", ErrCorrupt, name, err)
+		}
+		// INV-14 at LOAD. Publish has refused addScript since 2026-08-18, but a
+		// record written before that gate carries the op and — because load
+		// checked only the checksum — was indexed and served, script and all.
+		// A live share carrying it is therefore refused here, by the same
+		// refusal publish gives, and the store fails loud naming the record:
+		// it is neither served with its script nor quietly served without it.
+		// A REVOKED record is exempt: it is never served, and a tombstone must
+		// not be able to take the store down.
+		if !sh.Revoked && carriesAddScript(sh.Walkthrough) {
+			return fmt.Errorf("%w: %s: share %s (%q): %v — it was stored before that rule and can no longer be served; delete %s (or republish the walkthrough without the op) and restart",
+				ErrUnservable, name, sh.ID, sh.info().Title, errAddScriptRefused(), path)
 		}
 		s.byID[sh.ID] = sh
 		if sh.Revoked {
@@ -404,6 +455,24 @@ func (s *Store) VerifyToken(token string) (rev *PublishedWalkthrough, shareID st
 		return nil, "", false
 	}
 	return sh.Walkthrough, sh.ID, true
+}
+
+// ShareDigest returns the content digest of a live share's CURRENT revision. The
+// public plane binds it into every subresource reference it signs, so a
+// reference minted for one revision stops verifying the moment the share is
+// re-published with different content (publish-security-review-lessons §16).
+// A revoked or unknown share reports ok=false.
+//
+// The digest is used here only as a version key on a record already resolved
+// by share id — never as a lookup key (§2).
+func (s *Store) ShareDigest(id string) (digest string, ok bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	sh := s.byID[id]
+	if sh == nil || sh.Revoked {
+		return "", false
+	}
+	return sh.Digest, true
 }
 
 // PublishFile publishes pw as the current revision of the share that tracks
@@ -599,6 +668,9 @@ func (s *Store) createShareLocked(pw *PublishedWalkthrough, projectPath, sourceF
 // persist writes sh to its record file atomically with 0600 perms. Caller holds
 // the write lock.
 func (s *Store) persist(sh *Share) error {
+	if s.readOnly {
+		return ErrReadOnly
+	}
 	data, err := json.MarshalIndent(sh, "", "  ")
 	if err != nil {
 		return fmt.Errorf("publishstore: marshal: %w", err)
@@ -722,12 +794,6 @@ func mintRevisionID() (RevisionID, error) {
 func hashToken(token string) string {
 	sum := sha256.Sum256([]byte(token))
 	return hex.EncodeToString(sum[:])
-}
-
-// HashPrefix returns hash[:8] of a token — the only token-derived value allowed
-// to appear in a log/event for correlation (INV-9).
-func HashPrefix(token string) string {
-	return hashToken(token)[:8]
 }
 
 // ScrubSharePath redacts a public share URL path for logging. It replaces the

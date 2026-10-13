@@ -103,11 +103,10 @@ func TestRestartIntegration_ProcRestart(t *testing.T) {
 	restartResult := restartProcessWithRetry(t, client, "test-proc")
 	t.Logf("Restart result: %v", restartResult)
 
-	// Check id or process_id
-	if id, ok := restartResult["id"].(string); !ok || id != "test-proc" {
-		if pid, ok := restartResult["process_id"].(string); !ok || pid != "test-proc" {
-			t.Errorf("Expected id or process_id test-proc, got %v", restartResult)
-		}
+	// The restart was addressed by the short id; the reply names the derived
+	// process id.
+	if id, _ := restartResult["process_id"].(string); stripProcessPrefix(id) != "test-proc" {
+		t.Errorf("Expected process_id ending in :test-proc, got %v", restartResult)
 	}
 	if success, ok := restartResult["success"].(bool); !ok || !success {
 		t.Errorf("Expected success true, got %v", restartResult["success"])

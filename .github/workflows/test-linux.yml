@@ -1,0 +1,65 @@
+name: Linux Tests
+
+# The full-suite gate: `go vet ./...` and `go test -p 1 -count=1 ./...` on
+# every push and pull request.
+#
+# -p 1 is the documented gate (AGENTS.md, testing-parallel-package-flakes.md):
+# packages run one at a time because parallel `./...` fails on cross-package
+# port and socket contention, not on product bugs.
+#
+# Default build tags only, so this needs no Chrome, Docker or PID namespace.
+# The separate tiers stay separate: procisolation (make test-isolated), sshe2e
+# (make test-ssh), chromee2e (make test-chrome-e2e).
+#
+# This is the job that makes the repo's "CI enforces" statements true: the
+# apidocs drift test (internal/tools TestAPIDocsNoDrift), the Unscoped call-site
+# audit (internal/scope TestUnscopedCallSites), and the vendor guard below.
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    name: go vet + go test -p 1 ./...
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+
+      - name: Vet
+        run: go vet ./...
+
+      # vendor/ must be exactly what go.mod resolves to. A patch that lives
+      # only in vendor/ is dropped by the next `go mod vendor` and never
+      # reaches `go install` users at all.
+      - name: Vendor guard
+        run: make vendor-check
+
+      - name: Test (serial packages)
+        run: go test -p 1 -count=1 ./...
+
+  test-js:
+    name: Injected-script DOM tests (vitest + jsdom)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: '20'
+
+      - name: Test
+        run: make test-js

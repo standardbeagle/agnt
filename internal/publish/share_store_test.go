@@ -282,7 +282,7 @@ func TestInvalidArtifactRejected(t *testing.T) {
 	}
 }
 
-// TestRedaction pins INV-9: HashPrefix / ScrubSharePath expose only hash[:8],
+// TestRedaction pins INV-9: ScrubSharePath exposes only hash[:8],
 // never the plaintext token. Status likewise returns no token.
 func TestRedaction(t *testing.T) {
 	s, _ := newStore(t)
@@ -290,9 +290,9 @@ func TestRedaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
-	prefix := HashPrefix(token)
+	prefix := hashToken(token)[:8]
 	if len(prefix) != 8 {
-		t.Fatalf("HashPrefix len %d, want 8", len(prefix))
+		t.Fatalf("hash prefix len %d, want 8", len(prefix))
 	}
 	if strings.Contains(prefix, token) {
 		t.Fatalf("hash prefix leaks token")

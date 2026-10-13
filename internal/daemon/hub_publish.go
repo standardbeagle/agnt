@@ -66,9 +66,9 @@ func (d *Daemon) hubHandlePublishCreate(conn *hubpkg.Connection, cmd *hubproto.C
 	if !ok {
 		return nil
 	}
-	projectPath := d.getSessionProjectPath(conn)
-	if projectPath == "" {
-		return conn.WriteErr(hubproto.ErrInvalidState, "no active session with project path")
+	projectPath, ok := d.publishProjectPath(conn)
+	if !ok {
+		return nil
 	}
 	if len(req.Walkthrough) == 0 {
 		return conn.WriteErr(hubproto.ErrMissingParam, "walkthrough is required")
@@ -169,9 +169,9 @@ func (d *Daemon) hubHandlePublishList(conn *hubpkg.Connection, cmd *hubproto.Com
 	if !ok {
 		return nil
 	}
-	projectPath := d.getSessionProjectPath(conn)
-	if projectPath == "" {
-		return conn.WriteErr(hubproto.ErrInvalidState, "no active session with project path")
+	projectPath, ok := d.publishProjectPath(conn)
+	if !ok {
+		return nil
 	}
 	infos := store.List(projectPath)
 	shares := make([]protocol.PublishShareInfo, 0, len(infos))
@@ -182,15 +182,47 @@ func (d *Daemon) hubHandlePublishList(conn *hubpkg.Connection, cmd *hubproto.Com
 	return conn.WriteJSON(data)
 }
 
+// publishProjectPath resolves the project a PUBLISH verb acts for, through the
+// session-scope chokepoint (resolveProjectScope). On failure it writes the
+// error — for a session-less connection, the list of active sessions to attach
+// to (writeScopeErrHint), not a bare "no session" — and returns ok=false.
+//
+// Two deliberate departures from a list/query verb:
+//
+//   - global is forced OFF. A share has exactly one owning project; "every
+//     project" is not an owner, and a scope.default-global config must not turn
+//     publish into a cross-project read of every share's feedback.
+//   - the path returned is the session's ProjectPath AS REGISTERED, not the
+//     normalized form the gate computes. It is the key shares are persisted
+//     under (Share.ProjectPath, compared exactly), so normalizing here would
+//     orphan every share created before this gate existed.
+//
+// The PUBLISH wire requests carry no session_code/directory selector, so the
+// only scope source is the connection's bound session; the hint says how to
+// bind one.
+func (d *Daemon) publishProjectPath(conn *hubpkg.Connection) (string, bool) {
+	filter := protocol.DirectoryFilter{GlobalOverride: protocol.Bool(false)}
+	if _, _, err := d.resolveProjectScope(filter, conn.SessionCode()); err != nil {
+		_ = d.writeScopeErrHint(conn, err,
+			"publish acts for one project: attach this connection to one of these sessions (SESSION ATTACH <directory>; the MCP server attaches by its working directory) and re-issue")
+		return "", false
+	}
+	projectPath := d.getSessionProjectPath(conn)
+	if projectPath == "" {
+		_ = conn.WriteErr(hubproto.ErrInvalidState, "no active session with project path")
+		return "", false
+	}
+	return projectPath, true
+}
+
 // shareOwned enforces control-plane project scoping: a share may only be
 // addressed by id from the session that owns its project. On a scope failure it
 // writes the appropriate error to conn and returns false (a share belonging to
 // another project is reported as not-found — no cross-project leak of existence).
 // It returns false, not an error, because conn.WriteErr itself returns nil.
 func (d *Daemon) shareOwned(conn *hubpkg.Connection, store *publish.Store, id string) bool {
-	projectPath := d.getSessionProjectPath(conn)
-	if projectPath == "" {
-		_ = conn.WriteErr(hubproto.ErrInvalidState, "no active session with project path")
+	projectPath, ok := d.publishProjectPath(conn)
+	if !ok {
 		return false
 	}
 	for _, info := range store.List(projectPath) {
@@ -226,9 +258,10 @@ func (d *Daemon) hubHandlePublishFeedback(conn *hubpkg.Connection, cmd *hubproto
 	if !d.shareOwned(conn, store, req.ID) {
 		return nil
 	}
-	// Preserve the revoked/not-found gate (STATUS errors on a revoked or missing
-	// share). shareOwned already proved the caller owns this share, so this is a
-	// state check, not an ownership check.
+	// Existence check only. Status does NOT error on a revoked share — it
+	// reports it with revoked=true — so a revoked share's feedback stays readable
+	// by its owner, which is the audit trail the tombstone is kept for.
+	// shareOwned already proved the caller owns this share.
 	if _, err := store.Status(req.ID); err != nil {
 		return publishErr(conn, err)
 	}
@@ -240,6 +273,10 @@ func (d *Daemon) hubHandlePublishFeedback(conn *hubpkg.Connection, cmd *hubproto
 		// feedback and leak project A's rows to project B (INV-1 / spec §2a). The
 		// share's feedback lives only in its own ring, so this cannot cross projects.
 		rows, next, rerr := d.feedbackStore.ReadByShare(req.ID, req.Cursor, req.Limit)
+		if errors.Is(rerr, publish.ErrFeedbackCursorUnknown) {
+			// The caller's cursor, not a daemon fault: say so, so it restarts.
+			return conn.WriteErr(hubproto.ErrInvalidArgs, rerr.Error())
+		}
 		if rerr != nil {
 			return conn.WriteErr(hubproto.ErrInternal, rerr.Error())
 		}

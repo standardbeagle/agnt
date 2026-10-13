@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -126,8 +127,11 @@ func TestResilientClient_WrapperMethods(t *testing.T) {
 	// Test Run
 	t.Run("Run", func(t *testing.T) {
 		echoCmd, echoArgs := echoExec("hello")
+		// RUN starts a managed process, which belongs to a project: a path
+		// is required when the connection is bound to no session.
 		result, err := rc.Run(protocol.RunConfig{
 			ID:      "resilient-test-echo",
+			Path:    t.TempDir(),
 			Command: echoCmd,
 			Args:    echoArgs,
 			Raw:     true,
@@ -135,8 +139,11 @@ func TestResilientClient_WrapperMethods(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Run failed: %v", err)
 		}
-		if result["id"] != "resilient-test-echo" {
-			t.Errorf("Expected id=resilient-test-echo, got %v", result["id"])
+		// "id" is the derived, project-scoped process id; the id the caller
+		// asked for comes back as "name" and still resolves (ProcStatus and
+		// ProcOutput below use it).
+		if result["name"] != "resilient-test-echo" {
+			t.Errorf("Expected name=resilient-test-echo, got %v", result["name"])
 		}
 	})
 
@@ -148,8 +155,9 @@ func TestResilientClient_WrapperMethods(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ProcStatus failed: %v", err)
 		}
-		if result["id"] != "resilient-test-echo" {
-			t.Errorf("Expected id=resilient-test-echo, got %v", result["id"])
+		// Addressed by the short id; the status names the derived id.
+		if id, _ := result["id"].(string); !strings.HasSuffix(id, ":resilient-test-echo") {
+			t.Errorf("Expected a derived id ending in :resilient-test-echo, got %v", result["id"])
 		}
 	})
 
@@ -687,6 +695,7 @@ func TestResilientClient_AdditionalMethods(t *testing.T) {
 	sleepCmd, sleepArgs := stayAliveExec()
 	_, err := rc.Run(protocol.RunConfig{
 		ID:      "rc-stop-test",
+		Path:    t.TempDir(), // a managed process belongs to a project
 		Command: sleepCmd,
 		Args:    sleepArgs,
 		Raw:     true,

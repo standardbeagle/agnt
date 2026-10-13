@@ -172,7 +172,7 @@ func runPTYChild(ctx context.Context, args []string, socketPath string, sessionC
 	// SIGCHLD/SIGSTOP/SIGCONT are fundamentally Unix-only.
 	go handleSIGCHLD(ctx, rt.Done(), c, ptmx, oldState, rt, &width, &height)
 
-	<-rt.Done()
+	awaitChildExit(ctx, rt.Done(), c, ptmx, childExitGrace)
 	rt.Stop()
 	waitErr := c.Wait()
 	finishSession(height, waitErr, ctx.Err() != nil, rt)

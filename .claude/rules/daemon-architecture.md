@@ -41,9 +41,15 @@ Script registry is ephemeral: rebuilt from `.agnt.kdl` on connect, emptied by `C
 
 ## Reconciliation Model
 
-1. **Session connect** — full health check before answering the first query.
-2. **Periodic** (30s default) — updates state and emits events; never kills.
-3. **Doctor** — developer-initiated full reconciliation (MCP + overlay), returns a report with offered actions.
+What exists today:
+
+1. **Session connect** — `reconcileScriptStates` (`daemon_reconcile.go`) runs on `SESSION REGISTER`, before autostart: a script entry in Running/Starting whose managed process is missing or whose PID is dead moves to Stopped and emits `ScriptStopped`. Scripts only; proxies and ports are not probed here.
+2. **On exit** — `watchProcessExit` records every managed process death as it happens (exit info, lifecycle alert, incident).
+3. **Heartbeat sweep** — `runHeartbeatSweep` (`daemon.go`) marks a classic session Disconnected once its heartbeats are older than the registry timeout (60s; clients beat every 30s). It only flips status and drops the investigation record; it never tears a session down, and a later heartbeat revives it. Session-host sessions are exempt.
+4. **Doctor** — developer-initiated full reconciliation (MCP + overlay), returns a report with offered actions.
+5. **Config reconcile** — `AUTOSTART RECONCILE` (`reconcile_apply.go`) applies an edited `.agnt.kdl` to running scripts and proxies.
+
+There is no periodic process/proxy/port reconciliation loop. A proxy that dies without its script exiting, or a port that changes hands, is noticed only by doctor or the next session connect. `DuplicateScanner` has a 30s loop that `Start()` deliberately never launches (it raced managed child trees).
 
 ## Control-Plane Responsiveness
 
@@ -67,6 +73,8 @@ WSL wired/deferred status and accepted escape hatches: `.claude/rules/wsl-audit.
 ## Port-Kill Guard
 
 `ProcessManager.KillProcessByPort` (go-cli-server) re-discovers holders at fire time and kills all of them — any earlier self/managed filtering is void. **Every daemon port-kill routes through `killPortHoldersGuarded`** (`port_preflight.go`): re-scan right before the kill, refuse when the daemon, a managed PID, or a descendant of one (`managedTreeChecker` — the listener is usually a child of `cmd /c`, `npm run`, `dotnet watch`) holds the port, return protected PIDs for loud reporting. Callers: `daemon_shutdown.go`, `startup_resilience.go`, `hub_proc.go` (`PROC CLEANUP-PORT`), `killPortBlockers`. Regression: `TestKillPortHoldersGuarded_ProtectsSelf`.
+
+On macOS (any non-Linux Unix) the vendored lookup behind `KillProcessByPort` is `lsof -ti :PORT`, which also matches processes merely connected to the port — a browser with the dev server open. There (`vendoredPortLookupIsBroad`) the guard does not delegate: `killPortHolders` signals exactly the listener PIDs its own scan returned (`portKillTargets`, `platform.KillPID`), under the same refusals. Linux and Windows lookups are listener-only and keep the vendored kill. Regression: `TestKillPortHolders_ExactPathKillsOnlyListeners`. The selection logic is tested on every OS through injected operations; the real darwin kill has only been type-checked (`GOOS=darwin go vet`), not run.
 
 The guard reads both sides of the port probe. On native Windows every holder comes back on the Windows side and those PIDs are our own namespace (`windowsPIDsAreLocal`); under WSL they belong to the Windows kernel and are never compared with ours. Regression: `port_preflight_guard_test.go`.
 
@@ -107,7 +115,7 @@ Given `DirectoryFilter{Global, SessionCode, Directory}` and the connection's ses
 4. else the connection's bound session's project.
 5. else `errNoSessionScope`.
 
-Handlers never write `errNoSessionScope` verbatim: `writeScopeErr` / `writeScopeErrHint` (`hub_scope_candidates.go`) reply with the active sessions to re-issue against (metadata only — code, path, command). A bare error only when no session exists at all. Omitted `global` falls back to `scope.default-global` in `.agnt.kdl` (default false); explicit true/false wins. The MCP connection is not session-bound, so MCP tools name the project via `SessionCode` (preferred) or `Directory`.
+Handlers never write `errNoSessionScope` verbatim: `writeScopeErr` / `writeScopeErrHint` (`hub_scope_candidates.go`) reply with the active sessions to re-issue against (metadata only — code, path, command). A bare error only when no session exists at all. Omitted `global` falls back to `scope.default-global` in `.agnt.kdl` (default false); explicit true/false wins. A connection is session-bound only after `SESSION REGISTER` or `SESSION ATTACH`. The MCP tools attach by cwd on first use when a session exists there; otherwise they name the project via `SessionCode` (preferred) or `Directory`. Only the registering connection is the session's control connection: an attached connection closing does not schedule cleanup (`onSessionConnectionClosed`).
 
 ### Uniform `global` override (C6)
 
@@ -132,7 +140,17 @@ Every gated MCP tool exposes `global *bool` (`json:"global,omitempty"`) — poin
 ### ID-scoped
 
 Take an id, not a filter; lookup goes through `getSessionScoped` so fuzzy matching stays inside the caller's project (exact ids always work). No `global`.
-`PROC STATUS/OUTPUT/STOP/RESTART`, `PROXY STATUS/STOP/RESTART/TOAST`, `PROXYLOG *`, `CURRENTPAGE *`, `TUNNEL STOP/STATUS`.
+`PROXY STATUS/STOP/RESTART/TOAST`, `PROXYLOG *`, `CURRENTPAGE *`, `TUNNEL STOP/STATUS`.
+
+`PROC STATUS/OUTPUT/STOP/RESTART/AUTORESTART/STDIN` use `resolveProc` (`hub_proc.go`). Every managed process — autostart, `PROC RUN`, and the top-level `RUN` verb, which is `PROC RUN`'s inline mode for an ad-hoc command — has a derived id, `makeProcessID(project, name)` (`myapp-1a2b3c4d:dev`). The argument may be that id or the short name (`dev`):
+
+1. the caller's project, by id then by short name — so a short name several projects use is the caller's own process;
+2. the exact id daemon-wide (derived ids are unique);
+3. only for a connection bound to no session: the short name daemon-wide when exactly one process has it.
+
+More than one candidate is reported as ambiguous with the projects that have it, never as "not found". A session-bound caller's short names never reach another project.
+
+`RUN` replies with the derived id in `id`/`process_id` and the short name in `name`. A `RUN` process is marked in `runLaunches`: `AUTOSTART RECONCILE` ignores it (it is not a config script), and the mark carries `enable_stdin` to every launch of it.
 
 ### Debug-exempt
 
@@ -148,22 +166,24 @@ Browser-debug surfaces with an explicit `proxy_id` (`proxy exec`, `responsive_au
 
 ## Incident Pipeline
 
-`internal/incident/` is the always-on agent alert path: `Signal sources → Bus → Dedup/Coalesce/FlowControl → Inbox → Pinger → MCP/channel/PTY`. `alerts.push` picks sinks; `alerts.incident-pipeline` is parse-only.
+`internal/incident/` is the always-on agent alert path: `Signal sources → Bus → Dedup/Coalesce/FlowControl → Inbox → Pinger → digest sink / PTY sink`. `alerts.push` picks sinks (`mcp-notifications`, `pty-injection`); `alerts.incident-pipeline` is parse-only.
+
+The pinger has two wired sinks (`incidentSinkCallbacks`, `incident_digest.go`), both gated per ping on forwarding-pause and `alerts.push`: the PTY sink injects a one-line hint through the session's overlay, and the digest sink broadcasts an `incident_digest` stream entry scoped to the session's project. The MCP process that owns the agent's connection turns that entry into exactly one notification (`tools.ForwardIncidentDigest`, from `StartIncidentDigestSink`): a `notifications/claude/channel` event when channel mode is on — with the top unread incidents listed from the attached `PingPayload` — and an MCP log notification otherwise. There is no daemon-side channel callback (the pinger's `ChannelNotifyFn` slot is nil) and no separate channel bit in `alerts.push`. `ChannelSink` (`internal/tools/channel_sink.go`) is not a pinger sink: it forwards only the proxy events the pipeline does not ingest (user actions, custom logs, info diagnostics, status-less transport failures) and drops the ones it does (`pipelineOwned`).
 
 Source of truth: inbox = cache of the originating subsystem; bus = transient (drop-newest at 4096, no replay); blob store = per-session in-memory LRU, 16MB, never persisted; dedup fingerprints = per-session, cleared on teardown.
 
 ### Numbered Contracts
 
 1. **Cross-session isolation.** Each session has its own `sessionPipeline`; session A's events never reach B's inbox, even same project. Pins live and die with the session inbox (`TestBus_PinDiesWithSession`).
-2. **Drop-newest on bus overflow** (4096 slots). Count via `bus.OverflowCount()`.
-3. **Dedup is per-session**, not per-project.
-4. **Coalesce window fixed at construction** (default 200ms); change needs daemon restart.
-5. **Inbox hard-capped per band** — critical/error/warning/info, 100 each, oldest evicted. Agents drain with the cursor.
+2. **Drop-newest on bus overflow** (4096 slots). Count via `MPSCBus.Dropped()`; every 100th drop synthesises one `meta:bus_overflow` warning.
+3. **Dedup is per-session**, not per-project. In practice it is the inbox's fingerprint merge (`Inbox.Ingest`: same fingerprint → `Count++`, newest sample, re-marked unread, band move on escalation), which has no time window. The 30s `Deduplicator` (`dedup.go`) sits in front of it but only supplies first/last timestamps — the bus hands the inbox one occurrence per event either way. Fingerprint = `sha256(source|category|canonical_msg|location)[:16]`; `fingerprintLocation` (`envelope.go`) folds the URL, content frame, **process id and proxy id** into `location`, so the same line from two processes or proxies is two entries. Storm fingerprints stay URL-independent but per proxy.
+4. **Ping coalescing is per-session backoff, fixed at construction** (`coalesce.go`, `DefaultPingDelays`): first ping after 500ms, doubling per repeat to a 10s ceiling; a pending ping is never pushed back more than `MaxWait` (10s) from when it became pending, so a continuous stream still emits; 30s idle (`ResetAfter`) resets the backoff. A higher severity than the window has pinged about is prompt, and escalation of a pending ping fires at once. `critical` skips the coalescer and the flow buckets. A repeat of an entry already pinged and still unread schedules nothing. Change needs daemon restart.
+5. **Inbox hard-capped per band** — critical/error/warning/info, 100 each, least-recently-updated unpinned entry evicted. `critical` is emitted for a process crash (`FromProcessExit` with reason `crash`, `adapter_proc.go`); a stop or signal exit is `error`. Agents sweep with the cursor: a pull carrying `since`, or the legacy `full` profile, pages oldest-first. A cursor-less pull under a triage profile (`bug`/`changed`/`release`; `bug` is the tool default) is ranked instead (`rankedIncidentPull`, `hub_incidents.go`): secondary filters over the whole inbox, severity order (newest first within a severity), profile projection, then `limit`.
 6. **Blob store per-session, best-effort.** Oversized bytes spill into the destination session's store; `detail:"full"` hydrates only from that store. A `BlobRef` may resolve nil — fall back to `Summary`, never another session's store.
 7. **Pinger never blocks delivery** — non-blocking sends to every sink.
 8. **Push policy is project-isolated and live** — keyed by normalized project path, resolved per ping; one project's update never touches another's sinks or inbox.
 
-Files: `envelope.go`, `adapter_*.go`, `dedup.go`, `inbox.go`, `ping.go`, `remediation.go`, `bus.go` (all `internal/incident/`); `internal/tools/get_incidents.go`; `internal/daemon/hub_incidents.go`.
+Files: `envelope.go`, `fingerprint.go`, `adapter_{alert,browser,diag,http,proc}.go`, `dedup.go`, `inbox.go`, `coalesce.go`, `flow.go`, `ping.go`, `remediation.go`, `bus.go` (all `internal/incident/`); `internal/tools/get_incidents.go`; `internal/daemon/hub_incidents.go`.
 
 ## Session Containment
 
@@ -181,7 +201,7 @@ Caught: `cmd &`, `nohup`, `disown`, managed scripts, grandchildren, pgids leaked
 
 ### Exact-identity retirement & per-code lifecycle gate
 
-Teardown retires an exact `*Session`, under a refcounted per-code gate (`sessionLifecycleGates`, `daemon_session_cleanup.go`) that serializes every register/retire on a code. Reconnect installs a fresh pointer via `ReplaceExact`; a stale deferred cleanup pointer-compares in `doCleanupExact` and no-ops (`UnregisterExact` CAS-guards the delete). Session-host ids and classic codes come from independent counters and can collide (`claude-3`), so `hubHandleSessionRegister` rejects a classic register onto a session-host entry with `invalid_args`.
+Teardown retires an exact `*Session`, under a refcounted per-code gate (`sessionLifecycleGates`, `daemon_session_cleanup.go`) that serializes every register/retire on a code. Reconnect installs a fresh pointer via `ReplaceExact`; a stale deferred cleanup pointer-compares in `doCleanupExact` and no-ops (`UnregisterExact` CAS-guards the delete). Classic codes are `<command>-<8 hex>` from crypto/rand (`daemonclient.Client.SessionGenerateCode`); session-host ids are `<name>-<counter>` over a user-supplied name. The two can still collide, so `hubHandleSessionRegister` rejects a classic register onto a session-host entry with `invalid_args`, and rejects one onto a classic entry whose recorded `OwnerPID` is a different, still-running process with `ErrAlreadyExists` — only the registering wrapper may reconnect.
 
 Accepted: a same-code reconnect during teardown waits up to ~12s on the gate — releasing early would let a fresh autostart race the old teardown.
 

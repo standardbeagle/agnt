@@ -57,20 +57,20 @@ func writeFile(t *testing.T, dir, name string, data []byte) string {
 	return path
 }
 
-// syncBuffer is an io.Writer safe for the serve goroutine to write while the
+// publishSyncBuffer is an io.Writer safe for the serve goroutine to write while the
 // test reads.
-type syncBuffer struct {
+type publishSyncBuffer struct {
 	mu sync.Mutex
 	sb strings.Builder
 }
 
-func (b *syncBuffer) Write(p []byte) (int, error) {
+func (b *publishSyncBuffer) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.sb.Write(p)
 }
 
-func (b *syncBuffer) String() string {
+func (b *publishSyncBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.sb.String()
@@ -81,7 +81,7 @@ func (b *syncBuffer) String() string {
 type serveHarness struct {
 	t       *testing.T
 	dir     string
-	out     *syncBuffer
+	out     *publishSyncBuffer
 	addr    string
 	origin  string
 	cancel  context.CancelFunc
@@ -108,7 +108,7 @@ func startServeConfigured(t *testing.T, dir string, configure func(*publishServe
 	h := &serveHarness{
 		t:       t,
 		dir:     dir,
-		out:     &syncBuffer{},
+		out:     &publishSyncBuffer{},
 		cancel:  cancel,
 		done:    make(chan error, 1),
 		publish: make(chan publishPassResult, 16),
@@ -460,7 +460,7 @@ func TestPublishServeTunnelOriginFoldsIntoURLs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open store: %v", err)
 	}
-	out := &syncBuffer{}
+	out := &publishSyncBuffer{}
 	srv := &publishServer{dir: dir, store: store, out: out, tokens: map[string]string{}, origin: "http://127.0.0.1:8899"}
 	if _, err := srv.publishPass(); err != nil {
 		t.Fatalf("publish: %v", err)
@@ -579,7 +579,7 @@ func TestPublishServeExplicitWideBindStillWarns(t *testing.T) {
 	// never opens a LAN-reachable port or trips the host firewall.
 	dir := t.TempDir()
 	writeFile(t, dir, "demo.json", walkthroughJSON(t, "demo", "Demo", ""))
-	out := &syncBuffer{}
+	out := &publishSyncBuffer{}
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	listening := make(chan string, 1)
@@ -694,7 +694,7 @@ func TestPublishServeResumeMintsFreshTokenLoudly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen store: %v", err)
 	}
-	out := &syncBuffer{}
+	out := &publishSyncBuffer{}
 	second := &publishServer{dir: dir, store: reopened, out: out, tokens: map[string]string{}}
 	if _, err := second.publishPass(); err != nil {
 		t.Fatalf("second run: %v", err)
@@ -1010,7 +1010,7 @@ func TestPublishServeResumeRotatePolicies(t *testing.T) {
 		if err != nil {
 			t.Fatalf("reopen: %v", err)
 		}
-		out := &syncBuffer{}
+		out := &publishSyncBuffer{}
 		srv := &publishServer{dir: dir, store: store, out: out, tokens: map[string]string{}, rotateOnResume: rotateResumeNo}
 		if _, err := srv.publishPass(); err != nil {
 			t.Fatalf("no pass: %v", err)
@@ -1094,7 +1094,7 @@ func TestPublishFeedbackReadsServeStore(t *testing.T) {
 	}
 
 	// Read it back via --store (metadata maps the store to its served folder).
-	out := &syncBuffer{}
+	out := &publishSyncBuffer{}
 	if err := runPublishFeedback(publishFeedbackOptions{StoreDir: storeDir, Out: out}); err != nil {
 		t.Fatalf("read feedback: %v", err)
 	}
@@ -1120,7 +1120,7 @@ func TestPublishFeedbackReadsServeStore(t *testing.T) {
 
 	// The boot path prints both store locations so they are discoverable without
 	// reading source.
-	boot := &syncBuffer{}
+	boot := &publishSyncBuffer{}
 	_ = runPublishServe(context.Background(), publishServeOptions{
 		Dir: t.TempDir(), Addr: "127.0.0.1:0", StoreDir: filepath.Join(t.TempDir(), "empty-store"), Out: boot,
 	})

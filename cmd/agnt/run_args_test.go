@@ -72,6 +72,51 @@ func TestParseRunCommandArgsRemovesMultipleAgntFlagsWithoutDuping(t *testing.T) 
 	}
 }
 
+// TestParseRunCommandArgsStopsAtDoubleDash is the regression for there being
+// no way to hand the wrapped command a flag that agnt also defines: agnt
+// flags are stripped from anywhere on the line, so `agnt run claude --debug`
+// never reached claude. `--` ends agnt's parsing.
+func TestParseRunCommandArgsStopsAtDoubleDash(t *testing.T) {
+	cases := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"after the command", []string{"claude", "--", "--debug", "--session", "abc"}, []string{"claude", "--debug", "--session", "abc"}},
+		{"before the command", []string{"--no-overlay", "--", "claude", "--config", "x"}, []string{"claude", "--config", "x"}},
+		{"agnt flags before it still apply", []string{"--session", "dev", "codex", "--", "--config", "model=o3"}, []string{"codex", "--config", "model=o3"}},
+		{"only the first one is consumed", []string{"claude", "--", "--", "-d"}, []string{"claude", "--", "-d"}},
+		{"trailing", []string{"claude", "--"}, []string{"claude"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resetRunFlagGlobalsForTest()
+			prevConfig := configOverride
+			t.Cleanup(func() { configOverride = prevConfig })
+			configOverride = ""
+
+			got, err := parseRunCommandArgs(tc.in)
+			if err != nil {
+				t.Fatalf("parseRunCommandArgs returned error: %v", err)
+			}
+			if !reflect.DeepEqual(got, tc.want) {
+				t.Fatalf("command args = %v, want %v", got, tc.want)
+			}
+			if configOverride != "" {
+				t.Fatalf("configOverride = %q: a --config after -- was consumed by agnt", configOverride)
+			}
+		})
+	}
+
+	resetRunFlagGlobalsForTest()
+	if _, err := parseRunCommandArgs([]string{"--session", "dev", "codex", "--", "--session", "child"}); err != nil {
+		t.Fatalf("parseRunCommandArgs returned error: %v", err)
+	}
+	if sessionCode != "dev" {
+		t.Fatalf("sessionCode = %q, want dev (the one before --)", sessionCode)
+	}
+}
+
 func TestParseRunCommandArgsRequiresFlagValues(t *testing.T) {
 	resetRunFlagGlobalsForTest()
 

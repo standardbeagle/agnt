@@ -36,7 +36,67 @@ func init() {
 	rootCmd.AddCommand(upgradeCmd)
 
 	upgradeCmd.Flags().Bool("check", false, "Check for updates without installing")
-	upgradeCmd.Flags().Duration("timeout", 60*time.Second, "Maximum time for upgrade")
+	upgradeCmd.Flags().Duration("timeout", defaultUpgradeTimeout, "Maximum time for the install step (it is killed past this)")
+}
+
+// defaultUpgradeTimeout bounds the package-manager / install-script step. It
+// is a backstop against a hung installer, not a performance target: the old
+// 60s default killed a cold-cache `go install` or a slow `npm install -g`
+// partway through, with the daemon already stopped.
+const defaultUpgradeTimeout = 10 * time.Minute
+
+// versionIsNewer reports whether latest is a strictly higher version than
+// current. An unparsable version is an error, never a guess.
+func versionIsNewer(latest, current string) (bool, error) {
+	lMaj, lMin, lPatch, err := updater.ParseVersion(latest)
+	if err != nil {
+		return false, fmt.Errorf("latest version %q: %w", latest, err)
+	}
+	cMaj, cMin, cPatch, err := updater.ParseVersion(current)
+	if err != nil {
+		return false, fmt.Errorf("installed version %q: %w", current, err)
+	}
+	if lMaj != cMaj {
+		return lMaj > cMaj, nil
+	}
+	if lMin != cMin {
+		return lMin > cMin, nil
+	}
+	return lPatch > cPatch, nil
+}
+
+// upgradeTools lists the executables the install step for method needs.
+func upgradeTools(method installMethod, goos string) ([]string, error) {
+	switch method {
+	case installNPM:
+		return []string{"npm"}, nil
+	case installPip:
+		return []string{"pip"}, nil
+	case installGo:
+		return []string{"go"}, nil
+	case installDirect:
+		if goos == "windows" {
+			return []string{"powershell"}, nil
+		}
+		return []string{"bash", "curl"}, nil
+	default:
+		return nil, fmt.Errorf("unknown install method, please upgrade manually")
+	}
+}
+
+// checkUpgradeRunnable verifies every tool the install step will exec is on
+// PATH. lookPath is injected for tests.
+func checkUpgradeRunnable(method installMethod, lookPath func(string) (string, error)) error {
+	tools, err := upgradeTools(method, runtime.GOOS)
+	if err != nil {
+		return err
+	}
+	for _, tool := range tools {
+		if _, err := lookPath(tool); err != nil {
+			return fmt.Errorf("the %s install method needs %q, which was not found on PATH", method, tool)
+		}
+	}
+	return nil
 }
 
 // installMethod represents how agnt was installed
@@ -84,8 +144,20 @@ func runUpgrade(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	if latestVersion == appVersion {
-		fmt.Printf("Already at latest version (%s)\n", appVersion)
+	// Compare semantically. String inequality used to be enough to "upgrade",
+	// which reinstalled the published release over a newer local build.
+	newer, err := versionIsNewer(latestVersion, appVersion)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Cannot compare the installed version (%s) with the latest release (%s): %v\n", appVersion, latestVersion, err)
+		fmt.Fprintf(os.Stderr, "Not upgrading, since that could replace a newer build with an older one. Reinstall manually via %s if you want the published release.\n", method)
+		os.Exit(1)
+	}
+	if !newer {
+		if latestVersion == appVersion {
+			fmt.Printf("Already at latest version (%s)\n", appVersion)
+		} else {
+			fmt.Printf("Installed version %s is newer than the latest release (%s); nothing to do.\n", appVersion, latestVersion)
+		}
 		return
 	}
 
@@ -94,6 +166,15 @@ func runUpgrade(cmd *cobra.Command, args []string) {
 	if checkOnly {
 		fmt.Println("\nRun 'agnt upgrade' to install the update.")
 		return
+	}
+
+	// Confirm the install step can run at all before touching the daemon.
+	// Stopping it first and then discovering there is no npm/pip/go on PATH
+	// left the user with their processes and proxies down and nothing upgraded.
+	if err := checkUpgradeRunnable(method, exec.LookPath); err != nil {
+		fmt.Fprintf(os.Stderr, "Cannot upgrade: %v\n", err)
+		fmt.Fprintf(os.Stderr, "The daemon was left running; nothing was changed.\n")
+		os.Exit(1)
 	}
 
 	// Stop the daemon first - critical on Windows to avoid EBUSY errors

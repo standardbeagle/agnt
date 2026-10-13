@@ -3,6 +3,7 @@ package browser
 import (
 	"os"
 	"os/exec"
+	"path/filepath"
 	"testing"
 )
 
@@ -104,5 +105,87 @@ func TestDiscovererIntegration(t *testing.T) {
 		t.Logf("Warning: could not get Chrome version")
 	} else {
 		t.Logf("Chrome version: %s", info.FullVersion)
+	}
+}
+
+// playwrightTree lays out fake Playwright browser installs under a temp cache
+// root and returns the root. Each entry is "<revision dir>/<platform dir>".
+func playwrightTree(t *testing.T, binary string, installs ...string) string {
+	t.Helper()
+	root := t.TempDir()
+	for _, in := range installs {
+		dir := filepath.Join(root, filepath.FromSlash(in))
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, binary), []byte("x"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return root
+}
+
+// TestNewestPlaywrightChromium_ComparesRevisionsNumerically: "chromium-999"
+// sorts after "chromium-1208" as a string, so the string sort this replaced
+// picked the oldest install once revisions crossed a digit boundary.
+func TestNewestPlaywrightChromium_ComparesRevisionsNumerically(t *testing.T) {
+	root := playwrightTree(t, "chrome.exe",
+		"chromium-999/chrome-win",
+		"chromium-1208/chrome-win64",
+		"chromium-1179/chrome-win",
+	)
+	got := newestPlaywrightChromium(filepath.Join(root, "chromium-*", "chrome-win*", "chrome.exe"))
+	want := filepath.Join(root, "chromium-1208", "chrome-win64", "chrome.exe")
+	if got != want {
+		t.Errorf("newestPlaywrightChromium = %q, want %q", got, want)
+	}
+}
+
+// TestNewestPlaywrightChromium_MatchesRenamedPlatformDirs: Playwright renamed
+// its platform directories (chrome-win → chrome-win64, chrome-linux →
+// chrome-linux64, chrome-mac → chrome-mac-arm64). A pattern that names one
+// spelling finds nothing after an upgrade; the wildcard finds each.
+func TestNewestPlaywrightChromium_MatchesRenamedPlatformDirs(t *testing.T) {
+	for _, tc := range []struct{ platformGlob, dir string }{
+		{"chrome-win*", "chrome-win"},
+		{"chrome-win*", "chrome-win64"},
+		{"chrome-linux*", "chrome-linux"},
+		{"chrome-linux*", "chrome-linux64"},
+		{"chrome-mac*", "chrome-mac"},
+		{"chrome-mac*", "chrome-mac-arm64"},
+	} {
+		root := playwrightTree(t, "chrome", "chromium-1208/"+tc.dir)
+		got := newestPlaywrightChromium(filepath.Join(root, "chromium-*", tc.platformGlob, "chrome"))
+		want := filepath.Join(root, "chromium-1208", tc.dir, "chrome")
+		if got != want {
+			t.Errorf("%s under %s: got %q, want %q", tc.dir, tc.platformGlob, got, want)
+		}
+	}
+}
+
+// TestNewestPlaywrightChromium_IgnoresOtherBrowsersAndMisses: the headless
+// shell lives beside chromium-N and must not be picked; no install is "".
+func TestNewestPlaywrightChromium_IgnoresOtherBrowsersAndMisses(t *testing.T) {
+	root := playwrightTree(t, "chrome.exe",
+		"chromium_headless_shell-1300/chrome-win64",
+		"chromium-1100/chrome-win64",
+	)
+	got := newestPlaywrightChromium(filepath.Join(root, "chromium-*", "chrome-win*", "chrome.exe"))
+	want := filepath.Join(root, "chromium-1100", "chrome-win64", "chrome.exe")
+	if got != want {
+		t.Errorf("got %q, want %q", got, want)
+	}
+
+	empty := t.TempDir()
+	if got := newestPlaywrightChromium(filepath.Join(empty, "chromium-*", "chrome-win*", "chrome.exe")); got != "" {
+		t.Errorf("no installs: got %q, want empty", got)
+	}
+	// Several patterns: the best across all of them wins.
+	multi := newestPlaywrightChromium(
+		filepath.Join(empty, "chromium-*", "chrome-win*", "chrome.exe"),
+		filepath.Join(root, "chromium-*", "chrome-win*", "chrome.exe"),
+	)
+	if multi != want {
+		t.Errorf("multi-pattern: got %q, want %q", multi, want)
 	}
 }

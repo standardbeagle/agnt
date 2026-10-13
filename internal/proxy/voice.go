@@ -107,6 +107,9 @@ func NewVoiceSession(id string, browserConn wsJSONWriter, config DeepgramConfig)
 	// Connect to Deepgram with token authentication
 	dialer := websocket.Dialer{
 		Subprotocols: []string{"token", apiKey},
+		// The zero value waits as long as the OS does; a black-holed Deepgram
+		// must fail the start, not hold a handler slot.
+		HandshakeTimeout: deepgramHandshakeTimeout,
 	}
 
 	deepgramConn, _, err := dialer.Dial(wsURL, nil)
@@ -136,6 +139,9 @@ func NewVoiceSession(id string, browserConn wsJSONWriter, config DeepgramConfig)
 // holds the lock forever. Close() takes the same lock, so the voice session
 // could never be torn down and its browser connection slot never released.
 const deepgramWriteTimeout = 10 * time.Second
+
+// deepgramHandshakeTimeout bounds the connect + WebSocket handshake to Deepgram.
+const deepgramHandshakeTimeout = 15 * time.Second
 
 // SendAudio forwards audio data to Deepgram.
 func (vs *VoiceSession) SendAudio(data []byte) error {
@@ -246,11 +252,17 @@ func (vs *VoiceSession) readDeepgramResponses() {
 }
 
 // sendToBrowser sends a message to the browser WebSocket.
+//
+// vs.mu is NOT held across the write. It guards deepgramConn writes and the
+// closed flag; the browser writer serialises itself, and this is its only
+// caller here (the single readDeepgramResponses goroutine). Holding the lock
+// across a browser write that is waiting on a slow peer blocked Close — and so
+// the WebSocket handler's teardown — for as long as the write did.
 func (vs *VoiceSession) sendToBrowser(msg interface{}) {
 	vs.mu.Lock()
-	defer vs.mu.Unlock()
-
-	if vs.closed {
+	closed := vs.closed
+	vs.mu.Unlock()
+	if closed {
 		return
 	}
 

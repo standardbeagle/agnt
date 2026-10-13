@@ -2,6 +2,7 @@ package browser
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -42,32 +43,42 @@ func CheckVersionAt(path string) *VersionInfo {
 	return info
 }
 
+// versionNumber matches a dotted version standing as its own
+// whitespace-delimited field: at least "major.minor", usually the four-part
+// "146.0.7680.164". Requiring a whole field keeps a number embedded in some
+// other token ("vX.0.1.2") from being read as a version.
+var versionNumber = regexp.MustCompile(`(?:^|\s)(\d+(?:\.\d+)+)(?:\s|$)`)
+
 // parseVersionOutput parses the raw output of `chrome --version` into a
-// VersionInfo. It accepts "Google Chrome 146.0.7680.164", "Chromium
-// 120.0.6099.0", or a bare "146.0.7680.164": the version number is taken from
-// the last whitespace-separated field, the major version is the integer before
-// the first dot, and IsOutdated is set when the major is below MinMajorVersion.
-// Empty or garbage input yields a zero-value VersionInfo (no panic).
+// VersionInfo. The version is the first dotted-number field in the output,
+// wherever it sits: "Google Chrome 146.0.7680.164", "Chromium 120.0.6099.0", a bare
+// "146.0.7680.164", and the channel- or packaging-suffixed forms "Google
+// Chrome 147.0.7700.3 beta" and "Chromium 120.0.6099.0 snap" all parse.
+// (Taking the last whitespace-separated field instead read "beta" or "snap" as
+// the version, so an outdated beta or snap build was never reported.) The
+// major version is the integer before the first dot, and IsOutdated is set
+// when it is below MinMajorVersion. Output with no dotted number keeps its
+// last field as FullVersion with a zero major; empty input yields a zero-value
+// VersionInfo. Never panics.
 func parseVersionOutput(raw string) *VersionInfo {
 	info := &VersionInfo{}
 
-	// Parse "Google Chrome 146.0.7680.164" or "Chromium 120.0.6099.0" or just "146.0.7680.164"
-	version := strings.TrimSpace(raw)
-	parts := strings.Fields(version)
+	parts := strings.Fields(raw)
 	if len(parts) == 0 {
 		return info
 	}
 
-	// Version number is the last field
-	verStr := parts[len(parts)-1]
+	match := versionNumber.FindStringSubmatch(raw)
+	if match == nil {
+		info.FullVersion = parts[len(parts)-1]
+		return info
+	}
+	verStr := match[1]
 	info.FullVersion = verStr
 
-	// Extract major version
-	if dot := strings.Index(verStr, "."); dot > 0 {
-		if major, err := strconv.Atoi(verStr[:dot]); err == nil {
-			info.MajorVersion = major
-			info.IsOutdated = major < MinMajorVersion
-		}
+	if major, err := strconv.Atoi(verStr[:strings.Index(verStr, ".")]); err == nil {
+		info.MajorVersion = major
+		info.IsOutdated = major < MinMajorVersion
 	}
 
 	return info

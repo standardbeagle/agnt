@@ -57,10 +57,11 @@ func killPID(pid int, _ int) error {
 	}
 	defer syscall.CloseHandle(handle)
 
-	_, _, err = syscall.NewLazyDLL("kernel32.dll").NewProc("TerminateProcess").Call(
-		uintptr(handle), 1,
-	)
-	if err != nil && err != syscall.Errno(0) {
+	// syscall.TerminateProcess reports failure from the call's own return
+	// value. The previous LazyProc.Call form judged it by GetLastError, which
+	// a successful call does not reset, so a kill that worked could be
+	// reported as failed.
+	if err := syscall.TerminateProcess(handle, 1); err != nil {
 		return fmt.Errorf("terminate: %w", err)
 	}
 	return nil

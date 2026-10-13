@@ -112,8 +112,12 @@ func DefaultLineRules() []LineRule {
 
 		// Vite
 		{
-			ID:          "vite-hmr-fail",
-			Pattern:     regexp.MustCompile(`(?i)hmr.*(fail|error)`),
+			ID: "vite-hmr-fail",
+			// The failure word must be a whole word and must come before any
+			// path: `hmr.*(fail|error)` also matched a SUCCESSFUL
+			// "[vite] hmr update /src/components/ErrorBoundary.tsx" (or Next's
+			// error.tsx) and raised a build failure for it.
+			Pattern:     regexp.MustCompile(`(?i)\bhmr\b[^/\\]*\b(fail(ed|ure|s)?|errors?)\b`),
 			Severity:    SeverityError,
 			Category:    "vite",
 			Description: "Vite HMR failure",
@@ -438,8 +442,11 @@ func DefaultLineRules() []LineRule {
 			Description: "Generic rebuild/recompile signal",
 		},
 		{
-			ID:          "rebuild-vite",
-			Pattern:     regexp.MustCompile(`vite:(reload|hmr update)|page reload`),
+			ID: "rebuild-vite",
+			// Vite's real log line is "[vite] hmr update /src/App.tsx" (newer
+			// versions: "[vite] (client) hmr update …"); the vite: forms are the
+			// debug-namespace spelling.
+			Pattern:     regexp.MustCompile(`\[vite\](?: \(\w+\))? hmr update|vite:(reload|hmr update)|page reload`),
 			Severity:    SeverityInfo,
 			Category:    "rebuild",
 			Description: "Vite reload or HMR update",

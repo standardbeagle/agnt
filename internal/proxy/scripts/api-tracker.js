@@ -43,7 +43,9 @@
    */
   function sanitizeUrl(url) {
     try {
-      var urlObj = new URL(url, window.location.origin);
+      // Resolve against the document URL, not the origin: a relative "items"
+      // requested from /app/list/ is /app/list/items, not /items.
+      var urlObj = new URL(String(url), window.location.href);
       var params = urlObj.searchParams;
 
       // Truncate sensitive parameters
@@ -56,106 +58,148 @@
 
       return urlObj.toString();
     } catch (e) {
-      return url;
+      return String(url);
+    }
+  }
+
+  // The interceptors below observe; they must never change what the page's
+  // own call does. Every piece of bookkeeping is wrapped so a surprise input
+  // (a URL object, a Request, a non-string method, no argument at all) costs
+  // at most a missing or partial record — the native call always runs with
+  // the page's original arguments and its result is returned untouched.
+
+  // fetchTarget reads the URL a fetch() input names: a string, a URL (or any
+  // object whose string form is the URL), or a Request (.url).
+  function fetchTarget(resource) {
+    if (typeof resource === 'string') { return resource; }
+    if (resource && typeof resource.url === 'string') { return resource.url; }
+    return String(resource);
+  }
+
+  function recordCall(call) {
+    try {
+      if (!frameContext.isChrome()) { addCall(call); }
+    } catch (e) { /* recording is best-effort */ }
+  }
+
+  function describeFetch(resource, options, startTime) {
+    try {
+      // Request objects carry their own method; explicit options still win.
+      var method = (options && options.method) || (resource && resource.method) || 'GET';
+      return {
+        timestamp: startTime,
+        url: sanitizeUrl(fetchTarget(resource)),
+        method: String(method).toUpperCase(),
+        status: null,
+        duration: null,
+        ok: null,
+        error: null
+      };
+    } catch (e) {
+      return null;
     }
   }
 
   /**
    * Intercept fetch API
    */
-  window.fetch = function(resource, options) {
-    var url = typeof resource === 'string' ? resource : resource.url;
-    // Request objects carry their own method; explicit options still win.
-    var method = (options && options.method) || (resource && resource.method) || 'GET';
-    var startTime = Date.now();
+  if (typeof originalFetch === 'function') {
+    window.fetch = function(resource, options) {
+      var startTime = Date.now();
+      var call = describeFetch(resource, options, startTime);
 
-    var call = {
-      timestamp: startTime,
-      url: sanitizeUrl(url),
-      method: method.toUpperCase(),
-      status: null,
-      duration: null,
-      ok: null,
-      error: null
-    };
+      // The native call decides how a bad input fails (it rejects; it does
+      // not throw), so it runs outside every try block of ours.
+      var result = originalFetch.apply(this, arguments);
+      if (!call || !result || typeof result.then !== 'function') { return result; }
 
-    return originalFetch.apply(this, arguments)
-      .then(function(response) {
-        call.status = response.status;
-        call.ok = response.ok;
-        call.duration = Date.now() - startTime;
-        call.statusText = response.statusText;
-        // Capture error response body (first 1KB) for 4xx/5xx
-        if (!response.ok && response.status >= 400) {
-          response.clone().text().then(function(body) {
-            call.responseBody = body.substring(0, 1024);
-            // Try to extract error message from JSON
-            try {
-              var json = JSON.parse(body);
-              call.errorMessage = json.error || json.message || json.detail || json.title || null;
-            } catch (e) {}
-          }).catch(function() {});
-        }
-        if (!frameContext.isChrome()) { addCall(call); }
-        return response;
-      })
-      .catch(function(error) {
-        call.status = 0;
-        call.ok = false;
-        call.duration = Date.now() - startTime;
-        call.error = error.message || 'Network error';
-        if (!frameContext.isChrome()) { addCall(call); }
-        throw error;
+      // Observe on a side branch and return the ORIGINAL promise: the page
+      // sees the native resolution/rejection, never one routed through us.
+      result.then(function(response) {
+        try {
+          call.status = response.status;
+          call.ok = response.ok;
+          call.duration = Date.now() - startTime;
+          call.statusText = response.statusText;
+          // Capture error response body (first 1KB) for 4xx/5xx
+          if (!response.ok && response.status >= 400) {
+            response.clone().text().then(function(body) {
+              call.responseBody = body.substring(0, 1024);
+              // Try to extract error message from JSON
+              try {
+                var json = JSON.parse(body);
+                call.errorMessage = json.error || json.message || json.detail || json.title || null;
+              } catch (e) {}
+            }).catch(function() {});
+          }
+        } catch (e) { /* partial record is still worth keeping */ }
+        recordCall(call);
+      }, function(error) {
+        try {
+          call.status = 0;
+          call.ok = false;
+          call.duration = Date.now() - startTime;
+          call.error = (error && error.message) || 'Network error';
+        } catch (e) { /* partial record is still worth keeping */ }
+        recordCall(call);
       });
-  };
+
+      return result;
+    };
+  }
 
   /**
    * Intercept XMLHttpRequest
    */
   XMLHttpRequest.prototype.open = function(method, url) {
-    this.__devtool_api = {
-      method: method.toUpperCase(),
-      url: sanitizeUrl(url),
-      startTime: null
-    };
+    try {
+      this.__devtool_api = {
+        method: String(method).toUpperCase(),
+        url: sanitizeUrl(url),
+        startTime: null
+      };
+    } catch (e) {
+      this.__devtool_api = null;
+    }
     return originalXHROpen.apply(this, arguments);
   };
 
   XMLHttpRequest.prototype.send = function() {
     var xhr = this;
 
-    if (!xhr.__devtool_api) {
-      return originalXHRSend.apply(this, arguments);
-    }
+    try {
+      if (xhr.__devtool_api) {
+        var meta = xhr.__devtool_api;
+        meta.startTime = Date.now();
 
-    xhr.__devtool_api.startTime = Date.now();
-
-    var onLoadEnd = function() {
-      var call = {
-        timestamp: xhr.__devtool_api.startTime,
-        url: xhr.__devtool_api.url,
-        method: xhr.__devtool_api.method,
-        status: xhr.status,
-        statusText: xhr.statusText,
-        duration: Date.now() - xhr.__devtool_api.startTime,
-        ok: xhr.status >= 200 && xhr.status < 300,
-        error: xhr.status === 0 ? 'Network error' : null
-      };
-      // Capture error response body (first 1KB) for 4xx/5xx
-      if (xhr.status >= 400) {
-        try {
-          var body = xhr.responseText || '';
-          call.responseBody = body.substring(0, 1024);
+        xhr.addEventListener('loadend', function() {
           try {
-            var json = JSON.parse(body);
-            call.errorMessage = json.error || json.message || json.detail || json.title || null;
-          } catch (e) {}
-        } catch (e) {}
+            var call = {
+              timestamp: meta.startTime,
+              url: meta.url,
+              method: meta.method,
+              status: xhr.status,
+              statusText: xhr.statusText,
+              duration: Date.now() - meta.startTime,
+              ok: xhr.status >= 200 && xhr.status < 300,
+              error: xhr.status === 0 ? 'Network error' : null
+            };
+            // Capture error response body (first 1KB) for 4xx/5xx
+            if (xhr.status >= 400) {
+              try {
+                var body = xhr.responseText || '';
+                call.responseBody = body.substring(0, 1024);
+                try {
+                  var json = JSON.parse(body);
+                  call.errorMessage = json.error || json.message || json.detail || json.title || null;
+                } catch (e) {}
+              } catch (e) {}
+            }
+            recordCall(call);
+          } catch (e) { /* recording is best-effort */ }
+        });
       }
-      if (!frameContext.isChrome()) { addCall(call); }
-    };
-
-    xhr.addEventListener('loadend', onLoadEnd);
+    } catch (e) { /* never let bookkeeping stop the request */ }
 
     return originalXHRSend.apply(this, arguments);
   };

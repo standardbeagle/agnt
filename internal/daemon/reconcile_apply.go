@@ -52,6 +52,12 @@ func (d *Daemon) ReconcileProjectConfig(ctx context.Context, projectPath string)
 		default:
 			continue
 		}
+		// A process started by the top-level RUN verb is an ad-hoc command,
+		// not something .agnt.kdl declares. It is never "running, no longer
+		// declared": config reconcile leaves it alone.
+		if _, adHoc := d.runLaunches.Load(entry.ProcessID); adHoc {
+			continue
+		}
 		if sc, ok := d.scriptConfigs.Load(entry.ProcessID); ok {
 			running[entry.Name] = scriptSignature(sc.(*config.ScriptConfig))
 		} else {
@@ -208,6 +214,7 @@ func (d *Daemon) stopReconcileScript(ctx context.Context, name, projectPath stri
 		d.scriptRegistry.Remove(name, projectPath)
 		d.scriptConfigs.Delete(processID)
 		d.portKillDeclined.Delete(processID)
+		d.runLaunches.Delete(processID)
 		return
 	}
 	if entry, ok := d.scriptRegistry.Get(name, projectPath); ok {

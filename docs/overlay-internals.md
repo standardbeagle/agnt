@@ -110,4 +110,21 @@ reaches the terminal.
 
 **OutputGate** (`internal/overlay/gate.go`):
 - Freeze/unfreeze for menu display
-- Discards output when frozen (not buffered)
+- Buffers output while frozen in a 64KB ring (oldest bytes dropped on overflow) and flushes it on unfreeze
+
+## Stdin Ownership
+
+One goroutine in the process reads `os.Stdin`: the pump in `cmd/agnt/stdin_pump.go` (`processStdin`). A session takes a **lease** on it and gives that to its single stdin owner — the `InputRouter` (`SetInput`) with the overlay on, `rawStdinRelay` under `--no-overlay`. `pipelineRuntime.Stop` closes the lease, which ends the owner's blocked `Read`; a `Read` on `os.Stdin` itself cannot be ended.
+
+- Never add a second reader of `os.Stdin` in a session. A prompt that needs a keystroke borrows input through the owner's modal capture (`stdinModal`: `BeginModalCapture` / `EndModalCapture`), as the port-conflict prompt does. No answer within the window means decline.
+- Bytes typed while no lease is open (between the first-run setup phase and the relaunch) are held and delivered to the next lease.
+- The AI REPLs (`agnt ai claude`, `agnt acp`) run one router per process and read stdin through it; a mid-turn question goes through `LineEditor.Ask`, and Ctrl+C during a turn reaches `LineEditor.SetInterruptHandler` (raw mode delivers it as byte `0x03`, never as SIGINT).
+
+## Overlay Socket
+
+The browser → agent channel is a per-session Unix-domain socket, on every platform — there is no TCP listener. `listenOverlaySocket` (`cmd/agnt/overlay.go`) is the only place either overlay server (`Overlay`, `AIOverlay`) gets its listener:
+
+- Sockets live in a per-user directory (`/tmp/agnt-overlay-<uid>/`, `%TEMP%\agnt-overlay-<user>\`), created `0700` and refused if it is a symlink or owned by someone else. Session codes repeat across users, so the directory is what keeps two users' `claude-1` apart.
+- The socket is `chmod 0600`: anything that can connect can type into the agent (`/type`, `/key`).
+- An existing socket is unlinked only when nothing answers on it. A live one (a second run with the same `--session`) is an error.
+- A session whose overlay failed to start registers an empty endpoint with the daemon (`Overlay.Endpoint`).

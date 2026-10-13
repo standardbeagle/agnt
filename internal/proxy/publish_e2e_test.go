@@ -26,14 +26,13 @@ package proxy
 // token is an indistinguishable 404, and a crash mid-write makes the store reload
 // FAIL LOUD rather than silently serve an empty store.
 //
-// One deliberate exception to "inert" post-S3/S4: a publisher-authored
-// addScript{code} body DOES run, because serving pins its exact sha256 into
-// script-src (authoredScriptCSPHashes). That widening is hash-only — never
-// 'unsafe-inline', never 'self' — so publisher script executes while upstream
-// and viewer script still cannot. The revisions exercised in this file carry no
-// addScript op, so the CSPs asserted below are the un-widened shape (bundle hash
-// alone); the widened shape and its EXECUTION consequences are Tier B's
-// TestE2E_PublicPlane_RealBrowser_AuthoredScriptExecutionCSP.
+// Authored script is not an exception to "inert": since the INV-14 operator
+// decision a published walkthrough cannot carry an addScript op at all
+// (PublishedWalkthrough.Validate refuses it), so no served revision pins an
+// authored hash and the CSPs asserted below — bundle hash alone, never
+// 'unsafe-inline', never 'self' — are the only shape a share is served with.
+// The refusal and its real-browser consequence are Tier B's
+// TestE2E_PublicPlane_RealBrowser_AuthoredScriptRefused.
 
 import (
 	"fmt"

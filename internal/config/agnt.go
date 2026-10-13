@@ -360,14 +360,6 @@ func (c *ChannelConfig) GetSeverity() string {
 	return c.Severity
 }
 
-// GetDedupeWindow returns the deduplication window in milliseconds (defaults to 2000).
-func (c *ChannelConfig) GetDedupeWindow() int {
-	if c == nil || c.DedupeWindow == 0 {
-		return 2000
-	}
-	return c.DedupeWindow
-}
-
 // GetEvents returns the event type allowlist (defaults to empty = all types).
 func (c *ChannelConfig) GetEvents() []string {
 	if c == nil {
@@ -1201,6 +1193,19 @@ func ParseAgntConfig(data string) (*AgntConfig, error) {
 		return nil, fmt.Errorf("failed to parse KDL config: %w", err)
 	}
 
+	// Closed sets and number shape the unmarshaller cannot check; see
+	// agnt_validate.go. The document walk also yields the "this key does
+	// nothing" warnings, surfaced through cfg.Warnings like the dependency
+	// ones below.
+	if err := validateAgntEnums(cfg); err != nil {
+		return nil, err
+	}
+	docWarnings, err := inspectAgntDocument(data)
+	if err != nil {
+		return nil, err
+	}
+	cfg.Warnings = append(cfg.Warnings, docWarnings...)
+
 	// Validate dependencies if any scripts have them
 	if len(cfg.Scripts) > 0 {
 		warnings, err := ValidateDependencies(cfg.Scripts)
@@ -1472,60 +1477,6 @@ Pattern: ` + "`proc run`" + ` to start, ` + "`proc output`" + ` to inspect, ` + 
 	return sb.String()
 }
 
-// HealthPatterns holds compiled error and healthy regex patterns for a script.
-type HealthPatterns struct {
-	Error   string // Regex that indicates an error
-	Healthy string // Regex that clears the error state
-}
-
-// DefaultHealthPatterns returns the default error/healthy patterns.
-// These cover common dev server frameworks so most users get good behavior
-// without explicit configuration.
-//
-// Covered frameworks (healthy): Vite, Next.js, Webpack, Go stdlib, dotnet run,
-// dotnet watch, Flask, uvicorn, gunicorn, Django, Spring Boot, Gradle, Maven,
-// Rails, PHP artisan/built-in, Vapor (Swift), Phoenix (Elixir).
-//
-// Covered frameworks (error): Go panics, Node.js module/syntax errors,
-// TypeScript compiler, Rust compiler, Python tracebacks, .NET exceptions,
-// EADDRINUSE, segfaults, OOM, fatal errors.
-func DefaultHealthPatterns() HealthPatterns {
-	return HealthPatterns{
-		Error: `(?i)(` +
-			`\bERROR\b|` +
-			`\bFAIL\b|` +
-			`Cannot find module|` +
-			`Build FAILED|` +
-			`EADDRINUSE|` +
-			`SyntaxError:|` +
-			`Segmentation fault|` +
-			`Traceback \(most recent call last\)|` +
-			`error TS\d|` +
-			`error\[E\d|` +
-			`out of memory|` +
-			`panic:|` +
-			`unhandled exception|` +
-			`\bFATAL\b` +
-			`)`,
-		Healthy: `(?i)(` +
-			`ready in|` +
-			`compiled successfully|` +
-			`listening (on|at):?|` +
-			`started server|` +
-			`build (succeeded|success(?:ful)?)\b|` +
-			`compiled\b|` +
-			`server running|` +
-			`serving!|` +
-			`running on|` +
-			`start(?:ing|ed) .*(?:development|laravel|php) server|` +
-			`started \S+ in \d|` +
-			`watch.*started|` +
-			`server starting|` +
-			`running .+endpoint` +
-			`)`,
-	}
-}
-
 // validateChannelConfig checks that the channel block's severity and event
 // type fields contain only accepted values. Returns nil when cfg is nil or
 // when all fields are valid.
@@ -1546,12 +1497,14 @@ func validateChannelConfig(cfg *ChannelConfig) error {
 	return nil
 }
 
-// WriteDefaultAgntConfig writes a default configuration file with documentation.
-func WriteDefaultAgntConfig(path string) error {
-	return os.WriteFile(path, []byte(DefaultAgntConfigKDL()), 0644)
-}
-
-// DefaultAgntConfigKDL returns the documented default config as text. Exposed
+// DefaultAgntConfigKDL returns the documented default config as text.
+//
+// Template convention, enforced by TestDefaultAgntConfigKDL_ExamplesParse: a
+// comment line whose text starts with a lowercase letter, a quote or a brace
+// is example KDL and must parse once uncommented; prose comments start with a
+// capital letter. Example node names are unique within their block.
+//
+// Exposed
 // so the overlay's editor can open a project that has no .agnt.kdl yet on the
 // same commented template `agnt init` would have written, rather than on an
 // empty buffer that tells the developer nothing about the available keys.
@@ -1582,7 +1535,7 @@ scripts {
     // }
 
     // Example: custom shell (e.g., Git Bash on Windows)
-    // dev {
+    // dev-bash {
     //     run "npm run dev"
     //     shell "C:\\Program Files\\Git\\bin\\bash.exe"
     //     autostart true
@@ -1628,28 +1581,19 @@ proxies {
     //     autostart true
     // }
 
-    // Example: accessible from mobile/Tailscale
-    // mobile {
-    //     target "http://localhost:3000"
-    //     bind "0.0.0.0"
-    //     autostart true
+    // Example: reachable from this tailnet only (no allow-external needed)
+    // tailnet {
+    //     url "http://localhost:3000"
+    //     bind "tailscale"
     // }
-}
 
-// Hook configuration for notifications
-hooks {
-    on-response {
-        toast true
-        indicator true
-        sound false
-    }
-}
-
-// Toast notification settings
-toast {
-    duration 4000
-    position "bottom-right"
-    max-visible 3
+    // Example: reachable from every network this machine is on
+    // (allow-external is the required explicit opt-in)
+    // lan {
+    //     url "http://localhost:3000"
+    //     bind "0.0.0.0"
+    //     allow-external true
+    // }
 }
 
 // Process output alert monitoring
@@ -1678,21 +1622,16 @@ toast {
 //     // disable "connection-refused"
 // }
 
-// AI configuration for agnt run and agnt ai commands
+// AI configuration for agnt run
 // ai {
-//     // Skill/persona to use (e.g., "code-review", "debugging")
-//     // skill "debugging"
-//
-//     // Environment variables for AI commands
-//     // env {
-//     //     ANTHROPIC_API_KEY "sk-..."
-//     // }
-//
-//     // Full system prompt (replaces the default agnt prompt)
-//     // system-prompt "You are a helpful assistant..."
+//     // Short project description placed at the top of the system prompt
+//     // context "React + FastAPI app. Dev server: port 3000, API: port 8080."
 //
 //     // Append to the default system prompt (recommended)
 //     // append-system-prompt "Additional context for this project..."
+//
+//     // Full system prompt (replaces the default agnt prompt)
+//     // system-prompt "You are a helpful assistant..."
 // }
 `
 	return defaultKDL

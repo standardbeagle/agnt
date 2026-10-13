@@ -5,17 +5,15 @@ import (
 	"math"
 	"os"
 	"path/filepath"
-	"strings"
 	"time"
 
 	kdl "github.com/sblinch/kdl-go"
 )
 
-// KDL configuration file names
-const (
-	GlobalConfigFile  = "config.kdl"
-	ProjectConfigFile = ".agnt.kdl"
-)
+// GlobalConfigFile is the name of the per-user config file, read from
+// $XDG_CONFIG_HOME/agnt (default ~/.config/agnt). The per-project file is
+// AgntConfigFileName.
+const GlobalConfigFile = "config.kdl"
 
 // KDLConfig represents the KDL configuration structure.
 // Uses kdl struct tags for unmarshaling.
@@ -111,13 +109,6 @@ func validateKDLCommands(commands map[string]*KDLCommand) error {
 	return nil
 }
 
-// KDLProjectConfig holds per-project configuration.
-type KDLProjectConfig struct {
-	Language       string                 `kdl:"language"`
-	PackageManager string                 `kdl:"package-manager"`
-	Commands       map[string]*KDLCommand `kdl:"commands"`
-}
-
 // LoadGlobalConfig loads the global configuration from the default location.
 func LoadGlobalConfig() (*Config, error) {
 	// Try XDG config dir first
@@ -168,7 +159,17 @@ func ParseKDLConfig(data string) (*Config, error) {
 		}
 	}
 
-	return kdlConfigToConfig(&kdlCfg), nil
+	cfg := kdlConfigToConfig(&kdlCfg)
+	// `version` and `languages` are parsed for compatibility with config files
+	// written from the old default template, but nothing reads them. They keep
+	// loading; they are reported rather than silently doing nothing.
+	if kdlCfg.Version != "" {
+		cfg.Warnings = append(cfg.Warnings, "version has no effect: nothing reads it")
+	}
+	if kdlCfg.Languages.Go != nil || kdlCfg.Languages.Node != nil || kdlCfg.Languages.Python != nil {
+		cfg.Warnings = append(cfg.Warnings, "languages has no effect: project commands come from project detection, not this block")
+	}
+	return cfg, nil
 }
 
 // kdlConfigToConfig converts KDL config to our Config type.
@@ -247,129 +248,4 @@ func mergeLanguageConfig(cfg *Config, name string, kdlLang *KDLLanguage) {
 	}
 
 	cfg.Languages[name] = langCfg
-}
-
-// LoadProjectConfig loads per-project configuration from .agnt.kdl.
-func LoadProjectConfig(projectPath string) (*ProjectConfig, error) {
-	configPath := filepath.Join(projectPath, ProjectConfigFile)
-
-	// If file doesn't exist, return nil (no project config)
-	if _, err := os.Stat(configPath); os.IsNotExist(err) {
-		return nil, nil
-	}
-
-	data, err := os.ReadFile(configPath)
-	if err != nil {
-		return nil, err
-	}
-
-	return ParseProjectConfig(string(data))
-}
-
-// ParseProjectConfig parses per-project KDL configuration.
-func ParseProjectConfig(data string) (*ProjectConfig, error) {
-	var kdlCfg KDLProjectConfig
-	if err := kdl.Unmarshal([]byte(data), &kdlCfg); err != nil {
-		return nil, err
-	}
-	if err := validateKDLCommands(kdlCfg.Commands); err != nil {
-		return nil, err
-	}
-
-	return kdlProjectConfigToProjectConfig(&kdlCfg), nil
-}
-
-// kdlProjectConfigToProjectConfig converts KDL project config to ProjectConfig.
-func kdlProjectConfigToProjectConfig(kdlCfg *KDLProjectConfig) *ProjectConfig {
-	cfg := &ProjectConfig{
-		Language:       kdlCfg.Language,
-		PackageManager: kdlCfg.PackageManager,
-		Commands:       make(map[string]CommandConfig),
-	}
-
-	for name, kdlCmd := range kdlCfg.Commands {
-		if kdlCmd == nil {
-			continue
-		}
-		cfg.Commands[name] = CommandConfig{
-			Command: kdlCmd.Command,
-			Args:    kdlCmd.Args,
-			// Validated whole seconds (validateKDLCommands), so the int cast is lossless.
-			Timeout:    int(kdlCmd.Timeout),
-			Persistent: kdlCmd.Persistent,
-			Env:        kdlCmd.Env,
-		}
-	}
-
-	return cfg
-}
-
-// GlobalConfigPath returns the path to the global config file.
-func GlobalConfigPath() string {
-	configDir := os.Getenv("XDG_CONFIG_HOME")
-	if configDir == "" {
-		home, err := os.UserHomeDir()
-		if err != nil {
-			return ""
-		}
-		configDir = filepath.Join(home, ".config")
-	}
-	return filepath.Join(configDir, "agnt", GlobalConfigFile)
-}
-
-// WriteDefaultConfig writes a default config file with documentation.
-func WriteDefaultConfig(path string) error {
-	defaultKDL := `// agnt Configuration
-// See documentation for full options
-
-version "1.0"
-
-settings {
-    // Default process timeout, whole seconds (0 = no timeout; sub-second not supported)
-    default-timeout 0
-    // Output buffer size in bytes (256KB default)
-    max-output-buffer 262144
-    // Graceful shutdown timeout, whole seconds (sub-second not supported)
-    graceful-timeout 5
-}
-
-languages {
-    go {
-        markers "go.mod"
-        priority 100
-        commands {
-            test { cmd "go" "test" "-v" "./..." }
-            build { cmd "go" "build" "-v" "./..." }
-            lint { cmd "golangci-lint" "run" }
-        }
-    }
-
-    node {
-        markers "package.json"
-        package-manager-detect true
-        priority 90
-        commands {
-            test { cmd "npm" "test" }
-            build { cmd "npm" "run" "build" }
-            dev { cmd "npm" "run" "dev"; persistent true }
-        }
-    }
-
-    python {
-        markers "pyproject.toml" "setup.py" "requirements.txt"
-        priority 80
-        commands {
-            test { cmd "pytest" "-v" }
-            lint { cmd "ruff" "check" "." }
-        }
-    }
-}
-`
-	// Create directory if needed
-	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
-	}
-
-	return os.WriteFile(path, []byte(strings.TrimSpace(defaultKDL)+"\n"), 0644)
 }

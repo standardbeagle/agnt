@@ -90,6 +90,27 @@
     delete state.activeModes[mode];
   }
 
+  // escapeHtml makes a page-derived string safe to interpolate into the panel
+  // markup below, in text AND in a double- or single-quoted attribute. Every
+  // value the panels show comes from the inspected page (computed styles,
+  // element ids, attribute names, DOM-diff text). An element id can carry
+  // markup outright, and so can a quoted font-family name, which reaches the
+  // typography panel with its quotes stripped and its angle brackets intact.
+  function escapeHtml(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
+  }
+
+  function escapeHtmlList(values) {
+    var out = [];
+    for (var i = 0; i < (values ? values.length : 0); i++) { out.push(escapeHtml(values[i])); }
+    return out;
+  }
+
   function createPanel(title, content, options) {
     options = options || {};
     var id = '__devtool-panel-' + state.nextPanelId++;
@@ -407,11 +428,11 @@
 
       html += '<div style="margin-bottom: 16px; padding: 12px; border: 1px solid #e5e7eb; border-radius: 4px;">';
       html += '<div style="display: flex; justify-content: space-between; margin-bottom: 8px;">';
-      html += '<span style="font-weight: bold;">' + style.fontSize + ' / ' + style.fontFamily + ' / ' + style.fontWeight + '</span>';
+      html += '<span style="font-weight: bold;">' + escapeHtml(style.fontSize) + ' / ' + escapeHtml(style.fontFamily) + ' / ' + escapeHtml(style.fontWeight) + '</span>';
       html += '<span style="color: ' + statusColor + ';">' + status + ' ' + style.count + '×</span>';
       html += '</div>';
-      html += '<div style="font-size: ' + style.fontSize + '; font-family: ' + style.fontFamily + '; font-weight: ' + style.fontWeight + '; line-height: ' + style.lineHeight + '; color: ' + style.color + '; margin-bottom: 8px;">The quick brown fox jumps over the lazy dog</div>';
-      html += '<div style="font-size: 10px; color: #666;">line-height: ' + style.lineHeight + ' | color: ' + style.color + '</div>';
+      html += '<div style="font-size: ' + escapeHtml(style.fontSize) + '; font-family: ' + escapeHtml(style.fontFamily) + '; font-weight: ' + escapeHtml(style.fontWeight) + '; line-height: ' + escapeHtml(style.lineHeight) + '; color: ' + escapeHtml(style.color) + '; margin-bottom: 8px;">The quick brown fox jumps over the lazy dog</div>';
+      html += '<div style="font-size: 10px; color: #666;">line-height: ' + escapeHtml(style.lineHeight) + ' | color: ' + escapeHtml(style.color) + '</div>';
       html += '</div>';
     }
 
@@ -699,8 +720,8 @@
     for (var j = 0; j < Math.min(colorArray.length, 30); j++) {
       var item = colorArray[j];
       html += '<div style="display: flex; align-items: center; margin-bottom: 8px;">';
-      html += '<div style="width: 40px; height: 24px; background: ' + item.color + '; border: 1px solid #ccc; margin-right: 8px;"></div>';
-      html += '<div style="flex: 1;">' + item.color + '</div>';
+      html += '<div style="width: 40px; height: 24px; background: ' + escapeHtml(item.color) + '; border: 1px solid #ccc; margin-right: 8px;"></div>';
+      html += '<div style="flex: 1;">' + escapeHtml(item.color) + '</div>';
       html += '<div style="color: #666;">' + item.count + '×</div>';
       html += '</div>';
     }
@@ -758,7 +779,7 @@
 
       html += '<div style="display: flex; justify-content: space-between; margin-bottom: 4px; padding: 4px; border-bottom: 1px solid #eee;">';
       html += '<div style="display: flex; gap: 12px;">';
-      html += '<span style="width: 60px; font-weight: bold;">' + item.value + '</span>';
+      html += '<span style="width: 60px; font-weight: bold;">' + escapeHtml(item.value) + '</span>';
       html += '<span style="width: 60px; color: #666;">' + rem + 'rem</span>';
       html += '</div>';
       html += '<span style="color: #666;">' + item.count + '×</span>';
@@ -1424,7 +1445,7 @@
       for (var i = 0; i < Math.min(diff.added.length, 20); i++) {
         var item = diff.added[i];
         html += '<div style="padding: 4px 8px; background: rgba(34, 197, 94, 0.1); margin-bottom: 4px; border-left: 3px solid #22c55e;">';
-        html += '<code>' + item.path.join(' &gt; ') + '</code>';
+        html += '<code>' + escapeHtmlList(item.path).join(' &gt; ') + '</code>';
         html += '</div>';
       }
       if (diff.added.length > 20) {
@@ -1440,7 +1461,7 @@
       for (var j = 0; j < Math.min(diff.removed.length, 20); j++) {
         var rItem = diff.removed[j];
         html += '<div style="padding: 4px 8px; background: rgba(239, 68, 68, 0.1); margin-bottom: 4px; border-left: 3px solid #ef4444;">';
-        html += '<code>' + rItem.path.join(' &gt; ') + '</code>';
+        html += '<code>' + escapeHtmlList(rItem.path).join(' &gt; ') + '</code>';
         html += '</div>';
       }
       if (diff.removed.length > 20) {
@@ -1456,8 +1477,8 @@
       for (var k = 0; k < Math.min(diff.modified.length, 20); k++) {
         var mItem = diff.modified[k];
         html += '<div style="padding: 4px 8px; background: rgba(245, 158, 11, 0.1); margin-bottom: 4px; border-left: 3px solid #f59e0b;">';
-        html += '<code>' + mItem.path.join(' &gt; ') + '</code><br>';
-        html += '<div style="font-size: 10px; color: #666; margin-top: 4px;">' + mItem.changes.join(', ') + '</div>';
+        html += '<code>' + escapeHtmlList(mItem.path).join(' &gt; ') + '</code><br>';
+        html += '<div style="font-size: 10px; color: #666; margin-top: 4px;">' + escapeHtmlList(mItem.changes).join(', ') + '</div>';
         html += '</div>';
       }
       if (diff.modified.length > 20) {

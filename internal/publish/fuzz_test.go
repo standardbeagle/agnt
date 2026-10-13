@@ -14,14 +14,13 @@ func FuzzValidate(f *testing.F) {
 		`{}`, `[]`, `null`, `"x"`, `{"version":"v9"}`,
 		`{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"color":"url(x)"}}]}]}`,
 		`{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"setImageSrc","selector":"img","url":"javascript:1"}]}]}`,
-		// §6a raw-content ops widened the accepted input space: the setHTML,
-		// addStyle, and addScript{code} bodies below are ACCEPTED (INV-6 retired),
-		// so the fuzzer exercises the re-validation / canonical / digest path on
-		// them, not just the reject path. The addScript{src} seed is the exception:
-		// src is now REFUSED at publish because publish-time fetching is
-		// unimplemented (op.go OpAddScript), so it exercises the reject path — it
-		// stays as a no-panic boundary seed. The mixed and malformed shapes below
-		// are the boundaries between accept and reject.
+		// §6a raw-content ops widened the accepted input space: the setHTML and
+		// addStyle bodies below are ACCEPTED (INV-6 retired), so the fuzzer
+		// exercises the re-validation / canonical / digest path on them, not
+		// just the reject path. Every addScript seed is REFUSED (INV-14, op.go
+		// errAddScriptRefused) whatever it carries; they stay as no-panic
+		// boundary seeds on the reject path, alongside the mixed and malformed
+		// shapes.
 		`{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"setHTML","selector":".x","html":"<script>alert(1)</script>"}]}]}`,
 		`{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"addStyle","css":"@import url(https://x/y); .a{position:fixed}"}]}]}`,
 		`{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"addScript","code":"alert(1)"}]}]}`,
@@ -37,7 +36,7 @@ func FuzzValidate(f *testing.F) {
 		f.Add([]byte(s))
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
-		if vs, err := DecodeVariantSet(data); err == nil {
+		if vs, err := decodeVariantSet(data); err == nil {
 			// A returned set must survive re-validation deterministically.
 			if err2 := vs.Validate(); err2 != nil {
 				t.Fatalf("accepted set failed re-validation: %v", err2)
@@ -75,7 +74,7 @@ func FuzzSelector(f *testing.F) {
 func FuzzCanonicalDeterministic(f *testing.F) {
 	f.Add([]byte(happyVariantSet()))
 	f.Fuzz(func(t *testing.T, data []byte) {
-		vs, err := DecodeVariantSet(data)
+		vs, err := decodeVariantSet(data)
 		if err != nil {
 			return
 		}

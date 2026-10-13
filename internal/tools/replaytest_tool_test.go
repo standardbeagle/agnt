@@ -116,8 +116,9 @@ func TestReplaytestExploreSeedPartition(t *testing.T) {
 	assert.Equal(t, 2, out.Seeds[2].Index)
 }
 
-// TestReplaytestRefineNoKeyGuidance verifies refine returns honest guidance (not
-// an error) when no LLM API key is configured.
+// TestReplaytestRefineNoKeyGuidance verifies refine fails loud (IsError, per the
+// handler contract) with guidance that names the right process when no LLM API
+// key is configured.
 func TestReplaytestRefineNoKeyGuidance(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("CLAUDE_KEY", "")
@@ -128,9 +129,63 @@ func TestReplaytestRefineNoKeyGuidance(t *testing.T) {
 	h := newReplaytestHandler(grantingManager(t), nil)
 	res, out, err := h.handle(context.Background(), ReplaytestInput{Action: "refine", Name: "r", Directory: dir})
 	require.NoError(t, err)
-	assert.False(t, res.IsError)
+	assert.True(t, res.IsError)
 	assert.False(t, out.Success)
-	assert.Contains(t, out.Message, "API key")
+	assert.Contains(t, resultText(res), "API key")
+	assert.Contains(t, resultText(res), "MCP server", "the key is read by the MCP process, not the daemon")
+	assert.NotContains(t, resultText(res), "daemon's environment")
+}
+
+// A missing required parameter is a failure on every action, not a successful
+// result that happens to carry success:false.
+func TestReplaytestMissingParamsAreErrors(t *testing.T) {
+	fake := &fakeLogClient{target: "http://localhost:3000"}
+	h := newReplaytestHandler(grantingManager(t), func() (replaytestLogClient, error) { return fake, nil })
+	dir := t.TempDir()
+	for _, in := range []ReplaytestInput{
+		{Action: "record", Directory: dir},
+		{Action: "record", Name: "x", Directory: dir},
+		{Action: "stop", Directory: dir},
+		{Action: "cancel", Directory: dir},
+		{Action: "show", Directory: dir},
+		{Action: "replay", Directory: dir},
+		{Action: "refine", Directory: dir},
+		{Action: "explore", Directory: dir},
+	} {
+		res, _, err := h.handle(context.Background(), in)
+		require.NoError(t, err)
+		assert.True(t, res.IsError, "%+v must be IsError", in)
+	}
+}
+
+// An unstopped recording must not reserve its name forever: cancel releases it
+// at once, and one abandoned past recordingMaxAge is replaced by a new record.
+func TestReplaytestRecordingCancelAndExpiry(t *testing.T) {
+	fake := &fakeLogClient{target: "http://localhost:3000"}
+	h := newReplaytestHandler(grantingManager(t), func() (replaytestLogClient, error) { return fake, nil })
+	now := time.Now()
+	h.now = func() time.Time { return now }
+	rec := ReplaytestInput{Action: "record", Name: "checkout", ProxyID: "px", Directory: t.TempDir()}
+	call := func(in ReplaytestInput) *mcp.CallToolResult {
+		t.Helper()
+		res, _, err := h.handle(context.Background(), in)
+		require.NoError(t, err)
+		return res
+	}
+
+	require.False(t, call(rec).IsError)
+	dup := call(rec)
+	require.True(t, dup.IsError)
+	assert.Contains(t, resultText(dup), "cancel", "the rejection names the way out")
+
+	require.False(t, call(ReplaytestInput{Action: "cancel", Name: "checkout"}).IsError)
+	assert.True(t, call(ReplaytestInput{Action: "cancel", Name: "checkout"}).IsError, "nothing left to cancel")
+	require.False(t, call(rec).IsError, "cancel released the name")
+
+	now = now.Add(recordingMaxAge - time.Second)
+	assert.True(t, call(rec).IsError, "still reserved just inside the max age")
+	now = now.Add(2 * time.Second)
+	assert.False(t, call(rec).IsError, "an abandoned recording past the max age is replaced")
 }
 
 // TestComputeExploreSeedsFallback verifies the BaseURL fallback when a scenario

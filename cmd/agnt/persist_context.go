@@ -1,10 +1,12 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/standardbeagle/agnt/internal/agentadapter"
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 )
@@ -46,6 +48,44 @@ func upsertManagedBlock(existing, body string) string {
 	return strings.TrimRight(existing, "\n") + "\n\n" + block + "\n"
 }
 
+// unsteeredAgentNotice returns the one-line message for a coding session whose
+// agent receives no agnt guidance by any channel, or "" when guidance was
+// delivered or the user switched it off. Delivery in a coding session is
+// either a launch flag (Claude) or the persisted context file; a registered
+// agent with neither — aider, whose CONVENTIONS.md is read only with `--read`
+// — would otherwise run with no agnt context and nothing saying so.
+//
+// An unrecognized command (no support-matrix row) is not reported: `agnt run
+// bash` is not an agent missing its instructions.
+func unsteeredAgentNotice(adapter agentadapter.Adapter, persisted bool, baseArgs []string, prompt string) string {
+	if adapter == nil || persisted || prompt == "" || agentadapter.InjectionDisabled(adapter) {
+		return ""
+	}
+	support, known := supportMatrix[adapter.Name()]
+	if !known || support.ContextFile != "" {
+		// Unknown command, or a context-file agent whose write was skipped
+		// (persist-context false) or failed (already logged).
+		return ""
+	}
+	if len(adapter.BuildArgs(baseArgs, prompt)) > len(baseArgs) {
+		return "" // flag-delivered
+	}
+	name := adapter.Name()
+	return fmt.Sprintf("%s loads no project context file on its own, so agnt's tool guidance is not delivered to it in this session. Give it the guidance through its own mechanism (aider: `--read <file>`), or set `ai { adapters { %s { disabled true } } }` to silence this notice.",
+		name, name)
+}
+
+// persistAdapterContext is writePersistentContext for a resolved adapter. It
+// is the call site's entry point because it can see what the adapter's name
+// alone cannot: a `disabled true` override, which must switch off every
+// delivery channel, this file write included.
+func persistAdapterContext(adapter agentadapter.Adapter, projectDir, prompt string) bool {
+	if adapter == nil || agentadapter.InjectionDisabled(adapter) {
+		return false
+	}
+	return writePersistentContext(adapter.Name(), projectDir, prompt)
+}
+
 // writePersistentContext writes the agnt steering block into adapterName's
 // always-loaded context file under projectDir, so non-Claude agents keep the
 // guidance in context every turn without a visible startup stdin message.
@@ -55,22 +95,30 @@ func upsertManagedBlock(existing, body string) string {
 // The write is skipped when the file already contains an identical block, so
 // re-running `agnt run` does not churn the file or its mtime. Failures are
 // logged and swallowed: a missing AGENTS.md write must never break launch.
+//
+// It also declines for an adapter name with no support-matrix row. That is the
+// Universal fallback adapter — `agnt run <any command>` — and writing the
+// generic AGENTS.md there dropped a file into the repo for `agnt run bash`.
+// Only an agent agnt knows loads a given file gets that file.
+//
+// The config is resolved through loadResolvedConfig so a --config override is
+// honoured: `persist-context false` in the file the user pointed at must win.
 func writePersistentContext(adapterName, projectDir, prompt string) bool {
 	if adapterName == "claude" || projectDir == "" || prompt == "" {
 		return false
 	}
-	cfg, err := config.LoadAgntConfig(projectDir)
+	support, known := supportMatrix[adapterName]
+	if !known || support.ContextFile == "" {
+		return false
+	}
+	cfg, err := loadResolvedConfig(projectDir)
 	if err != nil {
 		cfg = config.DefaultAgntConfig()
 	}
 	if !cfg.AI.PersistContextEnabled() {
 		return false
 	}
-
-	file := lookupAgentSupport(adapterName).ContextFile
-	if file == "" {
-		return false
-	}
+	file := support.ContextFile
 	path := filepath.Join(projectDir, file)
 
 	existing := ""

@@ -270,6 +270,32 @@ func (r *ProcessAutoRestarter) GetConfig(processID string) (AutoRestartConfig, b
 	return state.config, true
 }
 
+// autoRestartRegistration is what a process was registered with. A caller that
+// unregisters to restart the process by hand reads it first, so it can register
+// again with the same launch settings instead of defaults.
+type autoRestartRegistration struct {
+	Config        AutoRestartConfig
+	Env           []string
+	ExpectedPorts []int
+	WorkingDir    string
+}
+
+// Registration returns the current registration for a process, if any.
+func (r *ProcessAutoRestarter) Registration(processID string) (autoRestartRegistration, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	state, exists := r.processes[processID]
+	if !exists {
+		return autoRestartRegistration{}, false
+	}
+	return autoRestartRegistration{
+		Config:        state.config,
+		Env:           state.env,
+		ExpectedPorts: state.expectedPorts,
+		WorkingDir:    state.workingDir,
+	}, true
+}
+
 // GetRestartEvents returns restart event history for a process.
 // Returns nil if the process is not registered or has no restart events.
 func (r *ProcessAutoRestarter) GetRestartEvents(processID string) []RestartEvent {

@@ -3,7 +3,6 @@ package config
 import (
 	"os"
 	"path/filepath"
-	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -1379,150 +1378,6 @@ func TestAlertsConfigIsEnabled(t *testing.T) {
 	assert.False(t, cfg.IsEnabled())
 }
 
-func TestDefaultHealthPatterns(t *testing.T) {
-	patterns := DefaultHealthPatterns()
-	assert.NotEmpty(t, patterns.Error, "error pattern should not be empty")
-	assert.NotEmpty(t, patterns.Healthy, "healthy pattern should not be empty")
-
-	// Verify both patterns compile as valid regex
-	_, err := regexp.Compile(patterns.Error)
-	require.NoError(t, err, "error pattern must compile as valid regex")
-	_, err = regexp.Compile(patterns.Healthy)
-	require.NoError(t, err, "healthy pattern must compile as valid regex")
-}
-
-func TestDefaultHealthPatterns_ErrorMatches(t *testing.T) {
-	patterns := DefaultHealthPatterns()
-
-	tests := []struct {
-		name    string
-		message string
-	}{
-		// Go
-		{"go panic", "panic: runtime error: index out of range"},
-		// Node.js
-		{"node module not found", "Error: Cannot find module 'express'"},
-		{"node EADDRINUSE", "Error: listen EADDRINUSE: address already in use :::3000"},
-		{"node syntax error", "/app/src/index.js: SyntaxError: Unexpected token"},
-		// TypeScript
-		{"typescript error", "src/app.ts(10,5): error TS2322: Type 'string' is not assignable"},
-		// Rust
-		{"rust compiler error", "error[E0277]: the trait bound `String: Copy` is not satisfied"},
-		// Python
-		{"python traceback", "Traceback (most recent call last):\n  File \"app.py\", line 10"},
-		// .NET
-		{"dotnet build failed", "Build FAILED."},
-		{"dotnet unhandled exception", "Unhandled exception. System.InvalidOperationException"},
-		// General
-		{"ERROR keyword", "ERROR in src/main.ts"},
-		{"FAIL keyword", "FAIL  test_foo.py::test_bar"},
-		{"FATAL keyword", "FATAL: database connection failed"},
-		{"segfault", "Segmentation fault (core dumped)"},
-		{"out of memory", "Fatal error: out of memory"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Regexp(t, patterns.Error, tt.message, "should match error: %s", tt.message)
-		})
-	}
-}
-
-func TestDefaultHealthPatterns_ErrorNoFalsePositive(t *testing.T) {
-	patterns := DefaultHealthPatterns()
-
-	tests := []struct {
-		name    string
-		message string
-	}{
-		{"error count zero", "0 errors found"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.NotRegexp(t, patterns.Error, tt.message,
-				"should NOT match as error: %s", tt.message)
-		})
-	}
-}
-
-func TestDefaultHealthPatterns_HealthyMatches(t *testing.T) {
-	patterns := DefaultHealthPatterns()
-
-	tests := []struct {
-		name    string
-		message string
-	}{
-		// Go
-		{"go stdlib", "2024/01/15 10:00:00 listening on :8080"},
-		// Node.js - Vite
-		{"vite ready", "  VITE v5.0.0  ready in 300ms"},
-		// Node.js - Next.js
-		{"next ready", "  ready in 2.3s"},
-		// Node.js - Webpack
-		{"webpack compiled", "webpack compiled successfully"},
-		{"webpack Compiled", "Compiled successfully!"},
-		// .NET
-		{"dotnet run", "Now listening on: https://localhost:5001"},
-		{"dotnet watch", "watch : Started"},
-		// Python - Flask
-		{"flask", " * Running on http://127.0.0.1:5000"},
-		// Python - uvicorn
-		{"uvicorn", "INFO:     Uvicorn running on http://127.0.0.1:8000 (Press CTRL+C to quit)"},
-		// Python - gunicorn
-		{"gunicorn", "[2024-01-15 10:00:00] [INFO] Listening at: http://127.0.0.1:8000"},
-		// Python - Django
-		{"django", "Starting development server at http://127.0.0.1:8000/"},
-		// Rust - cargo
-		// (cargo outputs "Finished" which is too broad; relies on user app output)
-		// Java - Spring Boot
-		{"spring boot", "Started MyApp in 2.345 seconds (process running for 3.1)"},
-		// Java - Gradle
-		{"gradle", "BUILD SUCCESSFUL in 5s"},
-		// Java - Maven
-		{"maven", "BUILD SUCCESS"},
-		// Ruby - Rails
-		{"rails", "* Listening on http://127.0.0.1:3000"},
-		// PHP - artisan
-		{"php artisan", "Starting Laravel development server: http://127.0.0.1:8000"},
-		// PHP - built-in
-		{"php built-in", "Started PHP development server on http://localhost:8000"},
-		// Swift - Vapor
-		{"vapor", "Server starting on http://127.0.0.1:8080"},
-		// Elixir - Phoenix
-		{"phoenix", "[info] Running MyAppWeb.Endpoint with cowboy http://127.0.0.1:4000"},
-		// Generic
-		{"server running", "Server running at http://localhost:3000/"},
-		{"build succeeded", "build succeeded"},
-		{"serving", "Serving!"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.Regexp(t, patterns.Healthy, tt.message, "should match healthy: %s", tt.message)
-		})
-	}
-}
-
-func TestDefaultHealthPatterns_HealthyNoFalsePositive(t *testing.T) {
-	patterns := DefaultHealthPatterns()
-
-	tests := []struct {
-		name    string
-		message string
-	}{
-		{"build failure", "BUILD FAILURE in 10s"},
-		{"compilation failed", "compilation failed with 3 errors"},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			assert.NotRegexp(t, patterns.Healthy, tt.message,
-				"should NOT match as healthy: %s", tt.message)
-		})
-	}
-}
-
 // ── AutoForwardConfig ────────────────────────────────────────────────────────
 
 func TestAutoForwardConfig_IsEnabled_Nil(t *testing.T) {
@@ -1904,7 +1759,6 @@ func TestParseChannelConfig_Defaults(t *testing.T) {
 	assert.False(t, cfg.Channel.IsEnabled(), "channel should default to disabled")
 	assert.True(t, cfg.Channel.ReplyToolEnabled(), "reply-tool should default to true")
 	assert.Equal(t, "warning", cfg.Channel.GetSeverity(), "severity should default to warning")
-	assert.Equal(t, 2000, cfg.Channel.GetDedupeWindow(), "dedupe-window should default to 2000ms")
 	assert.Empty(t, cfg.Channel.Events, "events should default to empty (all types)")
 }
 
@@ -1913,7 +1767,6 @@ func TestParseChannelConfig_NilDefaults(t *testing.T) {
 	assert.False(t, cc.IsEnabled(), "nil ChannelConfig should default to disabled")
 	assert.True(t, cc.ReplyToolEnabled(), "nil ChannelConfig reply-tool should default to true")
 	assert.Equal(t, "warning", cc.GetSeverity(), "nil ChannelConfig severity should default to warning")
-	assert.Equal(t, 2000, cc.GetDedupeWindow(), "nil ChannelConfig dedupe-window should default to 2000")
 	assert.Empty(t, cc.GetEvents(), "nil ChannelConfig events should default to empty")
 }
 
@@ -1947,7 +1800,6 @@ func TestParseChannelConfig_PartialFields(t *testing.T) {
 
 	assert.True(t, cfg.Channel.IsEnabled())
 	assert.Equal(t, "info", cfg.Channel.Severity)
-	assert.Equal(t, 2000, cfg.Channel.GetDedupeWindow(), "unset dedupe-window should use default")
 	assert.True(t, cfg.Channel.ReplyToolEnabled(), "unset reply-tool should use default")
 	assert.Empty(t, cfg.Channel.Events, "unset events should be empty")
 }
@@ -1989,7 +1841,6 @@ func TestParseChannelConfig_EmptyBlock(t *testing.T) {
 	assert.False(t, cfg.Channel.IsEnabled(), "empty channel block should default to disabled")
 	assert.True(t, cfg.Channel.ReplyToolEnabled())
 	assert.Equal(t, "warning", cfg.Channel.GetSeverity())
-	assert.Equal(t, 2000, cfg.Channel.GetDedupeWindow())
 }
 
 func TestAlertsConfig_GetPushConfig(t *testing.T) {
@@ -2165,7 +2016,7 @@ func TestSystemPrompt_DebuggingFlowOrder(t *testing.T) {
 
 	iRelease := strings.Index(prompt, "release_qa")
 	if assert.NotEqual(t, -1, iRelease, "prompt must mention release_qa") {
-		releaseLine := prompt[strings.LastIndex(prompt[:iRelease], "\n"):strings.Index(prompt[iRelease:], "\n")+iRelease]
+		releaseLine := prompt[strings.LastIndex(prompt[:iRelease], "\n") : strings.Index(prompt[iRelease:], "\n")+iRelease]
 		assert.Contains(t, releaseLine, "only when", "release_qa line must say 'only when' (explicit release QA)")
 	}
 }

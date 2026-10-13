@@ -42,11 +42,22 @@ func unmarshalCommand[T any](cmd *hubproto.Command) (T, error) {
 	return v, nil
 }
 
-// writeStructuredErr writes a structured error response and logs it for debugging.
-
+// writeStructuredErr writes a structured error as an ERR frame whose message is
+// the error's JSON, and logs it for debugging.
+//
+// It must be an ERR frame, not the hub's conn.WriteStructuredErr: that one
+// sends the error as an ordinary JSON response, which the client returns as a
+// result map with a nil error, so every caller that checks only err reads an
+// "unknown sub-command" or "missing parameter" as success. As an ERR frame the
+// client surfaces "[code] {json}", the form formatDaemonError
+// (internal/tools/toolhelpers.go) parses back into valid actions and params.
 func writeStructuredErr(conn *hubpkg.Connection, component string, err *hubproto.StructuredError) error {
 	debug.Log(component, "error: %s - %s (code=%v)", err.Command, err.Message, err.Code)
-	return conn.WriteStructuredErr(err)
+	data, marshalErr := json.Marshal(err)
+	if marshalErr != nil {
+		return conn.WriteErr(err.Code, err.Message)
+	}
+	return conn.WriteErr(err.Code, string(data))
 }
 
 // normalizePath normalizes a path for consistent comparison. The form is
@@ -333,10 +344,12 @@ func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
 	// Every daemon proxy-creation path funnels through here, so this is the
 	// single chokepoint applying project-level .agnt.kdl settings that live
 	// outside the per-proxy block (currently: auth-breakout, dev-oidc,
-	// secret sink).
+	// secret sink), and the project-bound backend of the browser
+	// session/store API.
 	d.applyAuthBreakout(server)
 	d.applyDevOIDC(server)
 	d.wireSecretSink(server)
+	d.wireSessionClient(server)
 	if d.eventHub == nil {
 		return
 	}

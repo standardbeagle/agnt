@@ -53,8 +53,18 @@
     var WS_URL = protocol + '//' + window.location.host + '/__devtool_metrics';
     var ws = null;
     var reconnectAttempts = 0;
-    var MAX_RECONNECT_ATTEMPTS = 5;
     var reconnectTimer = null;
+    // Reconnect never gives up: a proxy or daemon restart that outlasts a
+    // fixed attempt budget would otherwise leave an open page with no
+    // telemetry and no exec channel until someone reloads it. The delay
+    // doubles from RECONNECT_BASE_MS and is capped at RECONNECT_MAX_MS, so a
+    // long outage costs one attempt every RECONNECT_MAX_MS.
+    var RECONNECT_BASE_MS = 1000;
+    var RECONNECT_MAX_MS = 30000;
+    // Set once init decides this frame owns a control transport; the re-arm
+    // hooks (online / visibilitychange) do nothing in frames that never
+    // connect.
+    var transportWanted = false;
 
     // Session ID - unique per browser tab/window, persists across page navigations
     var COOKIE_NAME = '__devtool_sid';
@@ -154,6 +164,7 @@
     // error buffers, and be re-sent to the server — noise amplification of our
     // own diagnostics.
     var nativeConsoleError = console.error.bind(console);
+    var nativeConsoleLog = console.log.bind(console);
 
     // Error reporting to server. Deliberately does NOT go through the console
     // override or the consolidated error buffer — internal instrumentation
@@ -244,95 +255,8 @@
       }
     }
 
-    // WebSocket connection
-    function connect() {
-      if (!hasWebSocket) {
-        console.warn('[DevTool] WebSocket not available - skipping connection');
-        return;
-      }
-
-      try {
-        // Clear any existing reconnect timer
-        if (reconnectTimer) {
-          clearTimeout(reconnectTimer);
-          reconnectTimer = null;
-        }
-
-        // Close existing connection if any
-        if (ws) {
-          try {
-            ws.close();
-          } catch (e) {
-            // Ignore close errors
-          }
-        }
-
-        ws = new WebSocket(WS_URL);
-
-        ws.onopen = function() {
-          try {
-            console.log('[DevTool] Metrics connection established');
-            reconnectAttempts = 0;
-            sendPageLoad();
-            notifyConnectionState();
-          } catch (e) {
-            reportInternalError('onopen_handler_failed', e);
-          }
-        };
-
-        ws.onmessage = function(event) {
-          try {
-            if (!event || !event.data) return;
-
-            var message = null;
-            try {
-              message = JSON.parse(event.data);
-            } catch (e) {
-              reportInternalError('message_parse_failed', e);
-              return;
-            }
-
-            if (message) {
-              handleServerMessage(message);
-            }
-          } catch (e) {
-            reportInternalError('onmessage_handler_failed', e);
-          }
-        };
-
-        ws.onclose = function() {
-          try {
-            console.log('[DevTool] Metrics connection closed');
-
-            if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-              reconnectAttempts++;
-              var delay = 1000 * reconnectAttempts;
-              console.log('[DevTool] Reconnecting in ' + delay + 'ms (attempt ' + reconnectAttempts + ')');
-              reconnectTimer = setTimeout(connect, delay);
-            } else {
-              console.warn('[DevTool] Max reconnection attempts reached');
-            }
-            // After the retry timer is armed, so listeners see "connecting"
-            // rather than a spurious "disconnected" flicker.
-            notifyConnectionState();
-          } catch (e) {
-            reportInternalError('onclose_handler_failed', e);
-          }
-        };
-
-        ws.onerror = function(err) {
-          try {
-            console.error('[DevTool] Metrics connection error:', err);
-            notifyConnectionState();
-          } catch (e) {
-            // Ignore - error handler itself failed
-          }
-        };
-
-      } catch (e) {
-        reportInternalError('websocket_creation_failed', e);
-      }
-    }
+    // The WebSocket wiring lives in connect() further down, next to the
+    // transport diagnostics it records.
 
     // Message handlers for other modules
     var messageHandlers = [];
@@ -365,7 +289,7 @@
         // Handle proxy diagnostics from server
         if (message.type === 'proxy_diagnostic' && message.payload) {
           var diag = message.payload;
-          // Add to diagnostics buffer so it appears in __devtool_diagnostics
+          // Add to diagnostics buffer so it appears in __devtool_transport_diag
           addDiagnostic('proxy', diag.event || 'unknown', {
             level: diag.level,
             category: diag.category,
@@ -748,6 +672,81 @@
     // (internal/tools/currentpage_diagnostics.go).
     var FRAMEWORK_WARN_RE = /\[vue warn\]|avoid mutating a prop|target is readonly|hydrat|\[svelte\]|unknown prop|createroot|non-reactive|reactiv/i;
 
+    // Most characters kept from one console argument, and most object nodes
+    // serialised for one argument. console.error(hugeStateObject) must cost a
+    // bounded amount of work and a bounded WebSocket frame.
+    var MAX_CONSOLE_ARG_CHARS = 2000;
+    var MAX_CONSOLE_ARG_NODES = 500;
+
+    function isErrorLike(v) {
+      return !!v && typeof v === 'object' &&
+        (v instanceof Error || (typeof v.message === 'string' && typeof v.stack === 'string'));
+    }
+
+    // describeError renders an Error as "Name: message" followed by its stack.
+    // JSON.stringify(new Error('boom')) is "{}" — name, message and stack are
+    // not enumerable — so an Error must never go through JSON.
+    function describeError(err) {
+      var head = '';
+      try { head = String(err); } catch (e) { head = 'Error'; }
+      var stack = '';
+      try { stack = typeof err.stack === 'string' ? err.stack : ''; } catch (e) { stack = ''; }
+      if (!stack) return head;
+      // V8 stacks already start with "Name: message"; others do not.
+      return stack.indexOf(head) === 0 ? stack : head + '\n' + stack;
+    }
+
+    function truncateConsoleArg(s) {
+      if (s.length <= MAX_CONSOLE_ARG_CHARS) return s;
+      return s.substring(0, MAX_CONSOLE_ARG_CHARS) +
+        '... [truncated ' + (s.length - MAX_CONSOLE_ARG_CHARS) + ' chars]';
+    }
+
+    function formatConsoleArg(arg) {
+      var out;
+      try {
+        if (isErrorLike(arg)) {
+          out = describeError(arg);
+        } else if (typeof arg === 'object' && arg !== null) {
+          var budget = MAX_CONSOLE_ARG_NODES;
+          try {
+            out = JSON.stringify(arg, function(key, value) {
+              if (isErrorLike(value)) return describeError(value);
+              if (typeof value === 'object' && value !== null) {
+                // Past the budget, stop descending: the rest of a large graph
+                // is summarised instead of walked.
+                if (budget-- <= 0) return '[...]';
+              }
+              return value;
+            });
+          } catch (e) {
+            out = String(arg);
+          }
+          if (out === undefined) out = String(arg);
+        } else {
+          out = String(arg);
+        }
+      } catch (e) {
+        out = '[unprintable]';
+      }
+      return truncateConsoleArg(out);
+    }
+
+    // formatConsoleArgs joins the arguments of one console call and returns
+    // the stack of the first Error among them, so the captured entry keeps it
+    // as a field rather than only inside the message text.
+    function formatConsoleArgs(args) {
+      var parts = [];
+      var stack = '';
+      for (var i = 0; i < args.length; i++) {
+        parts.push(formatConsoleArg(args[i]));
+        if (!stack && isErrorLike(args[i])) {
+          try { stack = truncateConsoleArg(String(args[i].stack || '')); } catch (e) { stack = ''; }
+        }
+      }
+      return { message: parts.join(' '), stack: stack };
+    }
+
     // Override console.error to capture console errors
     function setupConsoleOverride() {
       try {
@@ -760,16 +759,8 @@
 
           // Capture error
           try {
-            var message = Array.prototype.slice.call(arguments).map(function(arg) {
-              if (typeof arg === 'object') {
-                try {
-                  return JSON.stringify(arg);
-                } catch (e) {
-                  return String(arg);
-                }
-              }
-              return String(arg);
-            }).join(' ');
+            var formatted = formatConsoleArgs(arguments);
+            var message = formatted.message;
 
             var entry = {
               message: message,
@@ -777,7 +768,7 @@
               source: 'console.error',
               lineno: 0,
               colno: 0,
-              stack: ''
+              stack: formatted.stack
             };
 
             addToBuffer(consoleErrorBuffer, entry);
@@ -799,7 +790,7 @@
               lineno: 0,
               colno: 0,
               error: message,
-              stack: '',
+              stack: formatted.stack,
               timestamp: Date.now()
             });
           } catch (e) {
@@ -813,16 +804,8 @@
 
           // Capture warning
           try {
-            var message = Array.prototype.slice.call(arguments).map(function(arg) {
-              if (typeof arg === 'object') {
-                try {
-                  return JSON.stringify(arg);
-                } catch (e) {
-                  return String(arg);
-                }
-              }
-              return String(arg);
-            }).join(' ');
+            var formatted = formatConsoleArgs(arguments);
+            var message = formatted.message;
 
             var entry = {
               message: message,
@@ -830,7 +813,7 @@
               source: 'console.warn',
               lineno: 0,
               colno: 0,
-              stack: ''
+              stack: formatted.stack
             };
 
             addToBuffer(consoleWarningBuffer, entry);
@@ -858,7 +841,7 @@
                 lineno: 0,
                 colno: 0,
                 error: message,
-                stack: '',
+                stack: formatted.stack,
                 timestamp: Date.now()
               });
             }
@@ -1136,8 +1119,53 @@
       }
     }
 
-    // Wrap WebSocket connection with diagnostics
-    function connectWithDiagnostics() {
+    // reconnectDelay is the wait before reconnect attempt n (1-based):
+    // 1s, 2s, 4s, ... capped at RECONNECT_MAX_MS.
+    function reconnectDelay(attempt) {
+      var exp = Math.min(Math.max(attempt, 1) - 1, 16);
+      return Math.min(RECONNECT_BASE_MS * Math.pow(2, exp), RECONNECT_MAX_MS);
+    }
+
+    // scheduleReconnect arms exactly one retry timer. There is no attempt
+    // limit; see RECONNECT_MAX_MS.
+    function scheduleReconnect() {
+      if (reconnectTimer) return;
+      reconnectAttempts++;
+      var delay = reconnectDelay(reconnectAttempts);
+      addDiagnostic('websocket', 'reconnect_scheduled', { delay: delay, attempt: reconnectAttempts });
+      // Say it once per outage. Retries continue for as long as the outage
+      // does, and a line per attempt would bury the page's own console.
+      if (reconnectAttempts === 1) {
+        nativeConsoleLog('[DevTool] Metrics connection lost - retrying (backoff up to ' + (RECONNECT_MAX_MS / 1000) + 's)');
+      }
+      reconnectTimer = setTimeout(function() {
+        reconnectTimer = null;
+        connect();
+      }, delay);
+    }
+
+    // rearmTransport reconnects immediately when the page has a reason to
+    // believe the network is back (it came online, or its tab became visible
+    // again after timers were throttled). No-op while a socket is open or
+    // already connecting.
+    function rearmTransport(reason) {
+      try {
+        if (!transportWanted || !hasWebSocket) return;
+        if (ws && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING)) return;
+        addDiagnostic('websocket', 'rearm', { reason: reason });
+        reconnectAttempts = 0;
+        connect();
+      } catch (e) {
+        reportInternalError('rearm_failed', e);
+      }
+    }
+
+    // WebSocket connection. Every handler is bound to the socket it was
+    // installed on and ignores events from a socket that is no longer the
+    // current one: closing an old socket delivers its close event later, and
+    // acting on it would schedule a reconnect that tears down the healthy
+    // replacement — once a second, forever.
+    function connect() {
       if (!hasWebSocket) {
         addDiagnostic('websocket', 'unavailable', { reason: 'WebSocket not supported' });
         return;
@@ -1150,8 +1178,12 @@
         }
 
         if (ws) {
+          var old = ws;
+          ws = null;
           try {
-            ws.close();
+            // Detach before closing so the retired socket cannot call back.
+            old.onopen = old.onmessage = old.onclose = old.onerror = null;
+            old.close();
           } catch (e) {
             // Ignore close errors
           }
@@ -1159,24 +1191,24 @@
 
         addDiagnostic('websocket', 'connecting', { url: WS_URL, attempt: reconnectAttempts + 1 });
 
-        ws = new WebSocket(WS_URL);
+        var sock = new WebSocket(WS_URL);
+        ws = sock;
 
-        ws.onopen = function() {
+        sock.onopen = function() {
+          if (sock !== ws) return;
           try {
-            addDiagnostic('websocket', 'connected', { url: WS_URL, readyState: ws.readyState });
-            console.log('[DevTool] Metrics connection established');
+            addDiagnostic('websocket', 'connected', { url: WS_URL, readyState: sock.readyState });
+            nativeConsoleLog('[DevTool] Metrics connection established');
             reconnectAttempts = 0;
             sendPageLoad();
-            // `connect` is replaced by this function below, so this is the
-            // handler that actually runs in production — it must fan out the
-            // connected edge exactly like the plain implementation does.
             notifyConnectionState();
           } catch (e) {
             reportInternalError('onopen_handler_failed', e);
           }
         };
 
-        ws.onmessage = function(event) {
+        sock.onmessage = function(event) {
+          if (sock !== ws) return;
           try {
             if (!event || !event.data) return;
 
@@ -1202,26 +1234,16 @@
           }
         };
 
-        ws.onclose = function(event) {
+        sock.onclose = function(event) {
+          if (sock !== ws) return;
           try {
             addDiagnostic('websocket', 'closed', {
-              code: event.code,
-              reason: event.reason,
-              wasClean: event.wasClean,
+              code: event && event.code,
+              reason: event && event.reason,
+              wasClean: event && event.wasClean,
               reconnectAttempts: reconnectAttempts
             });
-            console.log('[DevTool] Metrics connection closed');
-
-            if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-              reconnectAttempts++;
-              var delay = 1000 * reconnectAttempts;
-              addDiagnostic('websocket', 'reconnect_scheduled', { delay: delay, attempt: reconnectAttempts });
-              console.log('[DevTool] Reconnecting in ' + delay + 'ms (attempt ' + reconnectAttempts + ')');
-              reconnectTimer = setTimeout(connectWithDiagnostics, delay);
-            } else {
-              addDiagnostic('websocket', 'reconnect_exhausted', { maxAttempts: MAX_RECONNECT_ATTEMPTS });
-              console.warn('[DevTool] Max reconnection attempts reached');
-            }
+            scheduleReconnect();
             // After the retry timer is armed, so listeners see "connecting"
             // rather than a spurious "disconnected" flicker.
             notifyConnectionState();
@@ -1230,14 +1252,20 @@
           }
         };
 
-        ws.onerror = function(err) {
+        sock.onerror = function(err) {
+          if (sock !== ws) return;
           try {
             addDiagnostic('websocket', 'error', {
-              type: err.type,
-              message: err.message || 'WebSocket error',
-              readyState: ws ? ws.readyState : -1
+              type: err && err.type,
+              message: (err && err.message) || 'WebSocket error',
+              readyState: sock.readyState
             });
-            console.error('[DevTool] Metrics connection error:', err);
+            // Native ref and once per outage: routed through the overridden
+            // console.error this would land in the PAGE's error buffers, once
+            // per retry, for as long as the proxy is down.
+            if (reconnectAttempts === 0) {
+              nativeConsoleError('[DevTool] Metrics connection error:', err);
+            }
             notifyConnectionState();
           } catch (e) {
             // Ignore - error handler itself failed
@@ -1247,6 +1275,8 @@
       } catch (e) {
         addDiagnostic('websocket', 'creation_failed', { error: e.toString() });
         reportInternalError('websocket_creation_failed', e);
+        // A constructor that throws must not end the retry loop either.
+        scheduleReconnect();
       }
     }
 
@@ -1263,9 +1293,6 @@
 
       return result;
     };
-
-    // Replace connect with diagnostics version
-    connect = connectWithDiagnostics;
 
     // Initialize. Two concerns gate separately under the always-wrap model
     // (docs/responsive-canonical-target.md §5):
@@ -1299,7 +1326,22 @@
       }
       if (__wantsTransport) {
         addDiagnostic('core', 'initializing', { version: window.__devtool_version || 'unknown', role: __frameRole || 'standalone' });
+        transportWanted = true;
         connect();
+        // Re-arm hooks: reconnect at once when the network returns or the tab
+        // is shown again, instead of waiting out the current backoff delay.
+        try {
+          if (typeof window.addEventListener === 'function') {
+            window.addEventListener('online', function() { rearmTransport('online'); });
+          }
+          if (typeof document.addEventListener === 'function') {
+            document.addEventListener('visibilitychange', function() {
+              if (document.visibilityState === 'visible') { rearmTransport('visible'); }
+            });
+          }
+        } catch (e) {
+          reportInternalError('rearm_hooks_failed', e);
+        }
       } else {
         addDiagnostic('core', 'telemetry_suppressed', { role: __frameRole });
       }
@@ -1362,6 +1404,12 @@
           // 'connected' | 'connecting' | 'disconnected' — three-way state for
           // UI that must distinguish "retrying" from "given up".
           connectionState: connectionState,
+          // Drop the current socket and connect again now.
+          reconnect: function() {
+            reconnectAttempts = 0;
+            addDiagnostic('websocket', 'manual_reconnect', {});
+            connect();
+          },
           getSessionId: getOrCreateSessionId,
           reportError: reportInternalError
         };
@@ -1370,10 +1418,13 @@
       console.error('[DevTool] Failed to export core API:', e);
     }
 
-    // Export diagnostics API
+    // Export the TRANSPORT diagnostics API (WebSocket connect/send/receive
+    // history). It has its own global: window.__devtool_diagnostics belongs to
+    // diagnostics.js (the CSS visual-debugging overlays), which is a different
+    // API and used to overwrite this one wherever both modules loaded.
     try {
-      if (!window.__devtool_diagnostics) {
-        window.__devtool_diagnostics = {
+      if (!window.__devtool_transport_diag) {
+        window.__devtool_transport_diag = {
           // Get all diagnostic events
           getHistory: function() {
             return diagnosticsBuffer.slice();
@@ -1410,7 +1461,10 @@
               readyState: ws ? ws.readyState : -1,
               readyStateLabel: ws ? states[ws.readyState] || 'UNKNOWN' : 'NO_SOCKET',
               reconnectAttempts: reconnectAttempts,
-              maxReconnectAttempts: MAX_RECONNECT_ATTEMPTS,
+              // null: there is no attempt limit (see RECONNECT_MAX_MS).
+              maxReconnectAttempts: null,
+              reconnectPending: !!reconnectTimer,
+              reconnectMaxDelayMs: RECONNECT_MAX_MS,
               wsUrl: WS_URL
             };
           },
@@ -1450,7 +1504,7 @@
         };
       }
     } catch (e) {
-      console.error('[DevTool] Failed to export diagnostics API:', e);
+      console.error('[DevTool] Failed to export transport diagnostics API:', e);
     }
 
     // Export error tracking API for diagnostics panel

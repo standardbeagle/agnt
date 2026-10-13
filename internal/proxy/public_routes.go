@@ -82,6 +82,38 @@ const (
 
 	// upstreamDialTimeout bounds one TCP connect within that budget.
 	upstreamDialTimeout = 5 * time.Second
+
+	// maxUpstreamAddrAttempts caps how many of a host's guard-validated addresses
+	// one hop will try. A dual-stack origin on a single-stack host fails on the
+	// first family; trying the next VALIDATED address is not a re-resolution, so
+	// the pin holds. The cap keeps a host with many records from multiplying the
+	// dial count of one hop.
+	maxUpstreamAddrAttempts = 3
+
+	// maxConcurrentOutbound is the plane-wide ceiling on guarded upstream fetches
+	// in flight. The per-origin rate cap bounds how OFTEN one origin is fetched;
+	// nothing else bounded how many fetches — each buffering up to
+	// maxPublicUpstreamBytes — run at once across all origins and shares.
+	maxConcurrentOutbound = 32
+
+	// outboundSlotWait is how long a request waits for one of those slots before
+	// it is refused (503). Waiting, rather than refusing at once, is what lets a
+	// single page load's burst of subresources queue behind itself.
+	outboundSlotWait = 5 * time.Second
+
+	// PublicShareAggregateFactor sizes the per-SHARE aggregate artifact bucket as
+	// a multiple of the per-(share, client) one. The per-client bucket is charged
+	// first, so one client can draw at most its own rate from the aggregate and
+	// cannot exhaust a share alone; a flood spread across many addresses is
+	// bounded per share instead of per address.
+	PublicShareAggregateFactor = 8
+
+	// preAuthRatePerMinute / preAuthBurst bound requests per client BEFORE the
+	// token is verified: the 404/403 paths, the bundle asset, and token guessing
+	// itself. Deliberately far above the per-share budgets — every viewer behind
+	// one tunnel or NAT shares this bucket — so it only ever bites a flood.
+	preAuthRatePerMinute = 2400
+	preAuthBurst         = 4096
 )
 
 // PublicTokenVerifier is the constant-time token gate the public plane depends
@@ -105,9 +137,11 @@ type PublicTokenVerifier interface {
 // daemon: shareID + revisionID come from the already-verified share the handler
 // holds (revoked/unknown tokens 404 in serveShare before Accept is ever called,
 // so the sink only ever sees writes for a live share — INV-4). remoteAddr is the
-// real connection peer (r.RemoteAddr) the sink keys its per-IP limiter on; the
-// handler deliberately does NOT pass any client X-Forwarded-For value.
-// *publish.FeedbackStore satisfies this interface.
+// client address the handler resolved ONCE through clientAddr: the connection
+// peer (r.RemoteAddr) unless the wiring layer installed a resolver that trusts a
+// tunnel's own header (WithClientAddr). The handler never passes a raw
+// client-supplied X-Forwarded-For value. *publish.FeedbackStore satisfies this
+// interface.
 type FeedbackSink interface {
 	// Accept is handed the share id, the immutable revision CONTENT digest, the
 	// real remote address, and the raw (already size-capped) feedback body. The
@@ -118,6 +152,27 @@ type FeedbackSink interface {
 	// (mapped to 429); an oversize/invalid body returns the publish feedback error
 	// family (mapped to 413/422).
 	Accept(shareID string, revisionDigest publish.RevisionDigest, remoteAddr string, body []byte) error
+}
+
+// feedbackPreAdmitter is the optional two-step form of FeedbackSink. A sink
+// that implements it has its rate limit charged BEFORE the request body is
+// read, so a throttled client costs neither a body read nor a parse.
+// *publish.FeedbackStore and the daemon's arrival sink both implement it; a
+// sink that does not is driven through Accept, which rate-limits after the read.
+type feedbackPreAdmitter interface {
+	// Admit charges the limiter and returns publish.ErrFeedbackRateLimited when
+	// the submission must be refused.
+	Admit(shareID, remoteAddr string) error
+	// AcceptAdmitted validates and stores a body whose submission Admit already
+	// charged. It does not rate-limit again.
+	AcceptAdmitted(shareID string, revisionDigest publish.RevisionDigest, body []byte) error
+}
+
+// shareDigester is the optional verifier capability that names a live share's
+// current revision cheaply. *publish.Store implements it from the digest it
+// already persists; without it the handler digests the revision itself.
+type shareDigester interface {
+	ShareDigest(shareID string) (digest string, ok bool)
 }
 
 // upstreamDocFetcher fetches the live upstream document a published share is a
@@ -174,7 +229,24 @@ type PublicHandler struct {
 	// nil in production.
 	outboundLimiter *publish.RateLimiter
 
-	// signer binds every subresource reference to (share, url, depth) so the
+	// shareLimiter is the per-share AGGREGATE artifact bucket, charged after the
+	// per-client one (see PublicShareAggregateFactor). Never nil.
+	shareLimiter *publish.RateLimiter
+
+	// preAuthLimiter bounds requests per client before the token is verified. It
+	// is the only cap on the routes that hold no token: 404/403, the bundle
+	// asset, and token guessing. Never nil.
+	preAuthLimiter *publish.RateLimiter
+
+	// outboundSlots is the plane-wide concurrency ceiling on guarded upstream
+	// fetches (maxConcurrentOutbound). Never nil.
+	outboundSlots chan struct{}
+
+	// clientAddr resolves the address a request is rate-limited as. Nil means
+	// r.RemoteAddr. See WithClientAddr.
+	clientAddr func(*http.Request) string
+
+	// signer binds every subresource reference to (share, revision, url, depth) so the
 	// subresource route serves only references THIS daemon minted from a guarded
 	// fetch of that share's publisher-named upstream (INV-16). A nil signer fails
 	// closed in both directions: no reference is rewritten and the route refuses
@@ -214,7 +286,12 @@ func NewPublicHandler(verifier PublicTokenVerifier, feedback FeedbackSink, maxBo
 		assetPath:       PublicInstrumentationAssetPath(),
 		cspHash:         PublicInstrumentationAssetCSPHash(),
 		artifactLimiter: publish.NewRateLimiter(ppc.ArtifactRatePerMinute, ppc.ArtifactBurst, nil),
+		shareLimiter: publish.NewRateLimiter(
+			ppc.ArtifactRatePerMinute*PublicShareAggregateFactor,
+			ppc.ArtifactBurst*PublicShareAggregateFactor, nil),
 		outboundLimiter: publish.NewRateLimiter(ppc.OutboundRatePerMinute, ppc.OutboundBurst, nil),
+		preAuthLimiter:  publish.NewRateLimiter(preAuthRatePerMinute, preAuthBurst, nil),
+		outboundSlots:   make(chan struct{}, maxConcurrentOutbound),
 		signer:          signer,
 	}
 	// The fetcher charges the outbound budget for every redirect hop through
@@ -241,13 +318,94 @@ func (h *PublicHandler) admitOutbound(rawURL string) bool {
 // the caller does not already hold (INV-9 / Secret Hygiene): the message is a
 // constant "rate limited", carries artifact-kind headers, and never names the
 // share or an internal id — the same shape as the feedback route's 429.
+//
+// Two buckets, per-client first: a single flooding client is refused by its own
+// bucket and so never reaches — and cannot drain — the share's aggregate budget.
 func (h *PublicHandler) admitArtifact(w http.ResponseWriter, r *http.Request, shareID string) bool {
-	if h.artifactLimiter == nil || h.artifactLimiter.Allow(publish.ShareIPKey(shareID, r.RemoteAddr)) {
+	perClient := h.artifactLimiter == nil || h.artifactLimiter.Allow(publish.ShareIPKey(shareID, h.remoteAddr(r)))
+	if perClient && (h.shareLimiter == nil || h.shareLimiter.Allow(shareID)) {
 		return true
 	}
 	h.writeHeaders(w.Header(), kindArtifact, "")
 	http.Error(w, "rate limited", http.StatusTooManyRequests)
 	return false
+}
+
+// remoteAddr is the ONE place a request's rate-limit identity is decided. Every
+// limiter on this handler, and the feedback sink, takes its address from here.
+func (h *PublicHandler) remoteAddr(r *http.Request) string {
+	if h.clientAddr != nil {
+		if addr := h.clientAddr(r); addr != "" {
+			return addr
+		}
+	}
+	return r.RemoteAddr
+}
+
+// WithClientAddr installs the resolver for the address a request is
+// rate-limited as. It exists for exactly one situation: the listener is reached
+// only through a tunnel this process runs, so every viewer's TCP peer is the
+// tunnel agent on loopback and r.RemoteAddr collapses all of them into one
+// bucket. The resolver — not this handler — owns the trust decision (peer is
+// loopback AND the tunnel is up AND the header is the one that provider sets);
+// returning "" falls back to r.RemoteAddr. A nil resolver is r.RemoteAddr.
+// Returns h so it can be chained.
+func (h *PublicHandler) WithClientAddr(resolve func(*http.Request) string) *PublicHandler {
+	h.clientAddr = resolve
+	return h
+}
+
+// WithShareAggregateLimiter overrides the per-share aggregate artifact bucket,
+// so an operator-configured artifact rate scales the aggregate with it instead
+// of leaving it on the house default. Nil leaves the default. Returns h.
+func (h *PublicHandler) WithShareAggregateLimiter(l *publish.RateLimiter) *PublicHandler {
+	if l != nil {
+		h.shareLimiter = l
+	}
+	return h
+}
+
+// acquireOutbound takes one plane-wide outbound slot, waiting up to
+// outboundSlotWait. ok=false means the plane is saturated (or the request went
+// away) and the caller must refuse without fetching. release is always safe to
+// call exactly once when ok.
+func (h *PublicHandler) acquireOutbound(ctx context.Context) (release func(), ok bool) {
+	if h.outboundSlots == nil {
+		return func() {}, true
+	}
+	timer := time.NewTimer(outboundSlotWait)
+	defer timer.Stop()
+	select {
+	case h.outboundSlots <- struct{}{}:
+		return func() { <-h.outboundSlots }, true
+	case <-ctx.Done():
+		return nil, false
+	case <-timer.C:
+		return nil, false
+	}
+}
+
+// refuseUpstreamBusy emits the 503 for a saturated outbound plane. Same generic
+// viewer-facing message as every other upstream refusal.
+func (h *PublicHandler) refuseUpstreamBusy(w http.ResponseWriter) {
+	debug.Log("publish", "public plane: %d guarded upstream fetches already in flight — refused another (no fetch was made)", maxConcurrentOutbound)
+	h.writeHeaders(w.Header(), kindArtifact, "")
+	http.Error(w, "upstream unavailable", http.StatusServiceUnavailable)
+}
+
+// revisionOf names the share's current revision for the subresource MAC. A
+// verifier that persists the digest answers from it; otherwise the revision is
+// digested here. "" means no revision can be named, and the caller then neither
+// signs nor verifies anything (fail closed).
+func (h *PublicHandler) revisionOf(rev *publish.PublishedWalkthrough, shareID string) string {
+	if d, ok := h.verifier.(shareDigester); ok {
+		digest, live := d.ShareDigest(shareID)
+		if !live {
+			return ""
+		}
+		return digest
+	}
+	return string(revisionDigest(rev))
 }
 
 // WithRateLimits overrides the artifact and outbound rate limiters. It is the
@@ -320,6 +478,16 @@ func (h *PublicHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// slashes that could confuse downstream matching.
 	if p == "" || strings.Contains(p, "..") || p != path.Clean(p) {
 		http.NotFound(w, r)
+		return
+	}
+
+	// Per-client cap ahead of everything that holds no token: the 403/404
+	// paths, the bundle asset, and VerifyToken itself. Without it those routes
+	// were bounded only by the connection cap. The 429 is constant and carries
+	// no route detail, so it is not an oracle for anything.
+	if h.preAuthLimiter != nil && !h.preAuthLimiter.Allow(publish.ShareIPKey("", h.remoteAddr(r))) {
+		h.writeHeaders(w.Header(), kindFeedback, "")
+		http.Error(w, "rate limited", http.StatusTooManyRequests)
 		return
 	}
 
@@ -459,11 +627,28 @@ func (h *PublicHandler) serveProxiedArtifact(w http.ResponseWriter, r *http.Requ
 	// name the same origin cannot amplify into unbounded outbound traffic at a
 	// third party. Refused with a generic 503 that does not distinguish a rate
 	// refusal from any other upstream failure (no oracle for the viewer).
+	// HEAD makes NO outbound request. It used to run the full guarded GET and
+	// throw the body away, which made HEAD a way to pull up to
+	// maxPublicUpstreamBytes through the daemon per request for nothing. The
+	// headers a HEAD is good for here — the policy set and the content type —
+	// are ours to compose without the upstream; Content-Length is omitted
+	// because it is only knowable by fetching.
+	if r.Method == http.MethodHead {
+		h.writeHeadersStyle(w.Header(), kindArtifact, proxiedUpstreamStyleSrc)
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		return
+	}
 	if !h.admitOutbound(rev.Upstream.URL) {
 		h.refuseUpstreamRate(w, rev.Upstream.URL)
 		return
 	}
+	release, ok := h.acquireOutbound(r.Context())
+	if !ok {
+		h.refuseUpstreamBusy(w)
+		return
+	}
 	body, finalURL, err := h.upstream.fetchDocument(r.Context(), rev.Upstream.URL)
+	release()
 	if err != nil {
 		h.refuseUpstreamFetch(w, err)
 		return
@@ -475,7 +660,7 @@ func (h *PublicHandler) serveProxiedArtifact(w http.ResponseWriter, r *http.Requ
 	// because the upstream's own <style> blocks carry no nonce attribute and we
 	// do not rewrite them (spec §3.2/§3.3 reject both hashing and rewriting).
 	// This is the only call site of writeHeadersStyle (INV-18).
-	h.writeHeadersStyle(w.Header(), kindArtifact, proxiedUpstreamStyleSrc, authoredScriptCSPHashes(rev)...)
+	h.writeHeadersStyle(w.Header(), kindArtifact, proxiedUpstreamStyleSrc)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	// Bind every admitted subresource reference to this share before the bundle
@@ -488,13 +673,16 @@ func (h *PublicHandler) serveProxiedArtifact(w http.ResponseWriter, r *http.Requ
 	// redirects /app to /app/index.html means its "theme.css" at
 	// /app/theme.css; resolving against the published URL would mint a signed
 	// reference to /theme.css instead.
-	body = rewriteUpstreamDocumentRefs(body, finalURL, token, shareID, h.signer)
+	//
+	// Each reference is also bound to the share's CURRENT revision, so a
+	// reference minted before the publisher edited the share (above all, before
+	// they pointed it at a different upstream) stops verifying (§16).
+	body = rewriteUpstreamDocumentRefs(body, finalURL, token, shareID, h.revisionOf(rev, shareID), h.signer)
 
-	doc := injectPublicBundle(body, h.assetPath, h.cspHash)
+	// First in the head, with any upstream meta CSP removed — see
+	// injectPublicBundleFirst for why the dev insertion point is not used here.
+	doc := injectPublicBundleFirst(body, h.assetPath, h.cspHash)
 	w.Header().Set("Content-Length", strconv.Itoa(len(doc)))
-	if r.Method == http.MethodHead {
-		return
-	}
 	w.Write(doc)
 }
 
@@ -504,9 +692,10 @@ func (h *PublicHandler) serveProxiedArtifact(w http.ResponseWriter, r *http.Requ
 //
 // It is not an open relay, and every clause below is what makes that true:
 //
-//   - The reference must carry a MAC this daemon minted for THIS share at THIS
-//     depth. A viewer-composed URL — forged MAC, another share's reference, an
-//     altered target, a depth downgrade — is refused BEFORE any socket opens.
+//   - The reference must carry a MAC this daemon minted for THIS share, at its
+//     CURRENT revision, at THIS depth. A viewer-composed URL — forged MAC,
+//     another share's reference, a reference from before the share was edited,
+//     an altered target, a depth downgrade — is refused BEFORE any socket opens.
 //   - The fetch runs the same guardedUpstreamFetcher obligations as the
 //     document: CheckUpstreamOrigin on the origin and every redirect hop,
 //     fail-closed redirect cap, pin-and-dial, no viewer header forwarded.
@@ -538,12 +727,13 @@ func (h *PublicHandler) serveSubresource(w http.ResponseWriter, r *http.Request,
 	q := r.URL.Query()
 	rawURL := q.Get("u")
 	depth, derr := strconv.Atoi(q.Get("d"))
+	revision := h.revisionOf(rev, shareID)
 	// Deny-by-default on the reference itself. 404 (not 403) so the route is no
 	// oracle: an unbound reference is indistinguishable from a route that does
 	// not exist. No fetch, no dial, no log of the viewer's chosen URL beyond the
 	// operator-facing debug line.
 	if derr != nil || depth < 1 || depth > maxSubresourceDepth ||
-		h.signer == nil || !h.signer.Verify(shareID, rawURL, depth, q.Get("sig")) {
+		h.signer == nil || !h.signer.Verify(shareID, revision, rawURL, depth, q.Get("sig")) {
 		debug.Log("publish", "public plane: refused an unbound subresource reference (depth %q) — no fetch was made", q.Get("d"))
 		http.NotFound(w, r)
 		return
@@ -551,12 +741,25 @@ func (h *PublicHandler) serveSubresource(w http.ResponseWriter, r *http.Request,
 
 	// Per-origin outbound cap, shared with the document fetch: one origin, one
 	// budget, so a subresource flood cannot exceed what INV-13 permits per origin.
+	// HEAD makes no outbound request (see serveProxiedArtifact): the reference
+	// verified, which is all a HEAD can learn without a fetch. No Content-Type or
+	// Content-Length — both are only knowable from the upstream response.
+	if r.Method == http.MethodHead {
+		h.writeHeaders(w.Header(), kindArtifact, "")
+		return
+	}
+
 	if !h.admitOutbound(rawURL) {
 		h.refuseUpstreamRate(w, rawURL)
 		return
 	}
-
+	release, ok := h.acquireOutbound(r.Context())
+	if !ok {
+		h.refuseUpstreamBusy(w)
+		return
+	}
 	body, mediaType, finalURL, err := h.upstreamFetcher().fetchSubresource(r.Context(), rawURL)
+	release()
 	if err != nil {
 		h.refuseUpstreamFetch(w, err)
 		return
@@ -567,15 +770,12 @@ func (h *PublicHandler) serveSubresource(w http.ResponseWriter, r *http.Request,
 	// base is where the stylesheet was actually served from, so a redirected
 	// stylesheet's relative references resolve as the browser would resolve them.
 	if mediaType == "text/css" {
-		body = rewriteUpstreamCSSRefs(body, finalURL, shareTokenFromPath(r.URL.Path), shareID, h.signer, depth)
+		body = rewriteUpstreamCSSRefs(body, finalURL, shareTokenFromPath(r.URL.Path), shareID, revision, h.signer, depth)
 	}
 
 	h.writeHeaders(w.Header(), kindArtifact, "")
 	w.Header().Set("Content-Type", subresourceContentType(mediaType))
 	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
-	if r.Method == http.MethodHead {
-		return
-	}
 	w.Write(body)
 }
 
@@ -679,12 +879,35 @@ func (h *PublicHandler) refuseUpstreamRate(w http.ResponseWriter, upstreamURL st
 // bucket. A URL that will not parse degrades to itself as the key rather than
 // collapsing all unparseable URLs into one bucket (CheckUpstreamOrigin rejects
 // such a URL at fetch time anyway).
+//
+// The key is NORMALIZED, because the budget protects a server and one server
+// has several spellings: "example.com", "EXAMPLE.com", "example.com." (the
+// fully-qualified form) and "example.com:443" are the same origin, and keying
+// them apart handed a redirecting or reference-minting upstream a fresh budget
+// per spelling. So: scheme and host lower-cased, one trailing dot dropped, and
+// the scheme's default port dropped. A non-default port stays — it is a
+// different origin.
 func upstreamOriginKey(rawURL string) string {
 	u, err := url.Parse(rawURL)
 	if err != nil || u.Host == "" {
 		return rawURL
 	}
-	return u.Scheme + "://" + strings.ToLower(u.Host)
+	scheme := strings.ToLower(u.Scheme)
+	host := strings.TrimSuffix(strings.ToLower(u.Hostname()), ".")
+	if host == "" {
+		return rawURL
+	}
+	if strings.Contains(host, ":") {
+		host = "[" + host + "]" // IPv6 literal
+	}
+	port := u.Port()
+	if (scheme == "https" && port == "443") || (scheme == "http" && port == "80") {
+		port = ""
+	}
+	if port != "" {
+		host += ":" + port
+	}
+	return scheme + "://" + host
 }
 
 // serveSelfContainedArtifact serves the artifact HTML shell that loads ONLY the
@@ -696,10 +919,10 @@ func upstreamOriginKey(rawURL string) string {
 // shell.
 func (h *PublicHandler) serveSelfContainedArtifact(w http.ResponseWriter, r *http.Request, rev *publish.PublishedWalkthrough) {
 	nonce := newNonce()
-	// The artifact document is where the renderer appends authored script, so
-	// this is the only response whose script-src is widened — by exactly the
-	// hashes of THIS revision's authored bodies (INV-12).
-	h.writeHeaders(w.Header(), kindArtifact, nonce, authoredScriptCSPHashes(rev)...)
+	// script-src is the bundle hash and nothing else, on this response as on
+	// every other: no revision can carry authored script (INV-14), so there is
+	// no per-revision hash to widen it by.
+	h.writeHeaders(w.Header(), kindArtifact, nonce)
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 
 	title := "Walkthrough"
@@ -783,7 +1006,30 @@ func (h *PublicHandler) serveFeedback(w http.ResponseWriter, r *http.Request, re
 		http.Error(w, "unsupported media type", http.StatusUnsupportedMediaType)
 		return
 	}
-	// Body cap: MaxBytesReader rejects an over-cap body instead of buffering it.
+	// Everything that can refuse WITHOUT the body runs before the body is read:
+	// no sink, a declared length over the cap, and the rate limit. A refused
+	// submission then costs the daemon no read at all.
+	if h.feedback == nil {
+		h.writeHeaders(w.Header(), kindFeedback, "")
+		http.Error(w, "feedback unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if r.ContentLength > h.maxFeedbackBody {
+		h.writeHeaders(w.Header(), kindFeedback, "")
+		http.Error(w, "feedback too large", http.StatusRequestEntityTooLarge)
+		return
+	}
+	remoteAddr := h.remoteAddr(r)
+	pre, twoStep := h.feedback.(feedbackPreAdmitter)
+	if twoStep {
+		if err := pre.Admit(shareID, remoteAddr); err != nil {
+			h.writeHeaders(w.Header(), kindFeedback, "")
+			http.Error(w, feedbackErrorMessage(err), feedbackErrorStatus(err))
+			return
+		}
+	}
+	// Body cap: MaxBytesReader rejects an over-cap body instead of buffering it
+	// (this is the bound for a chunked body, which declares no length).
 	r.Body = http.MaxBytesReader(w, r.Body, h.maxFeedbackBody)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
@@ -791,14 +1037,15 @@ func (h *PublicHandler) serveFeedback(w http.ResponseWriter, r *http.Request, re
 		http.Error(w, "feedback too large", http.StatusRequestEntityTooLarge)
 		return
 	}
-	if h.feedback == nil {
-		h.writeHeaders(w.Header(), kindFeedback, "")
-		http.Error(w, "feedback unavailable", http.StatusServiceUnavailable)
-		return
-	}
-	// The verified revision and connection peer identify the submission.
+	// The verified revision and the resolved client address identify the
+	// submission.
 	revDigest := revisionDigest(rev)
-	if err := h.feedback.Accept(shareID, revDigest, r.RemoteAddr, body); err != nil {
+	if twoStep {
+		err = pre.AcceptAdmitted(shareID, revDigest, body)
+	} else {
+		err = h.feedback.Accept(shareID, revDigest, remoteAddr, body)
+	}
+	if err != nil {
 		h.writeHeaders(w.Header(), kindFeedback, "")
 		http.Error(w, feedbackErrorMessage(err), feedbackErrorStatus(err))
 		return
@@ -873,40 +1120,6 @@ func (h *PublicHandler) writeJSON(w http.ResponseWriter, r *http.Request, v any)
 // unconditionally as defence in depth: if any future upstream-copy path ever
 // seeds a hostile CSP into this header set, it dies here. nonce, when non-empty,
 // authorises the shell's single inline <style>.
-// authoredScriptCSPHashes enumerates one CSP sha256 source per authored script
-// body carried by this revision's variant set (§6a addScript) — the exact set
-// INV-12 widens script-src by. It is derived from the immutable published
-// revision rather than recomputed from any live input, so the "pinned at publish
-// time" property holds: the revision's bytes are what a token resolves to, and
-// re-publishing an edited revision yields a different set for free.
-//
-// A body is hashed exactly as the renderer will assign it (script.textContent =
-// op.code, variant-engine.js), deduped so a repeated body costs one source, and
-// order-stable so the served header is deterministic. An op still carrying Src
-// at serve time contributes NO hash: src is a publish-time fetch input, so an
-// unresolved one means the pipeline did not run, and the renderer refuses it —
-// pinning a hash for a body that was never inlined would authorise nothing.
-func authoredScriptCSPHashes(rev *publish.PublishedWalkthrough) []string {
-	if rev == nil || rev.VariantSet == nil {
-		return nil
-	}
-	var hashes []string
-	seen := make(map[string]bool)
-	for _, v := range rev.VariantSet.Variants {
-		for _, op := range v.Ops {
-			if op.Op != publish.OpAddScript || op.Code == "" {
-				continue
-			}
-			hash := cspSHA256([]byte(op.Code))
-			if seen[hash] {
-				continue
-			}
-			seen[hash] = true
-			hashes = append(hashes, hash)
-		}
-	}
-	return hashes
-}
 
 // proxiedUpstreamStyleSrc is the style-src of the ONE response shape that
 // carries 'unsafe-inline': the proxied live-upstream artifact document (INV-18,
@@ -933,18 +1146,18 @@ const proxiedUpstreamStyleSrc = "'self' 'unsafe-inline'"
 // writeHeaders applies the policy with the DEFAULT style-src: bare 'self', plus
 // the shell's nonce when one is supplied. Every response shape except the
 // proxied artifact goes through here, so 'unsafe-inline' is unreachable from it.
-func (h *PublicHandler) writeHeaders(hdr http.Header, kind responseKind, nonce string, scriptHashes ...string) {
+func (h *PublicHandler) writeHeaders(hdr http.Header, kind responseKind, nonce string) {
 	styleSrc := "'self'"
 	if nonce != "" {
 		styleSrc = "'self' 'nonce-" + nonce + "'"
 	}
-	h.writeHeadersStyle(hdr, kind, styleSrc, scriptHashes...)
+	h.writeHeadersStyle(hdr, kind, styleSrc)
 }
 
 // writeHeadersStyle is writeHeaders with an explicit style-src. It exists so the
 // widening lives at exactly one call site (serveProxiedArtifact) instead of
 // being reachable by passing a magic value through the common path.
-func (h *PublicHandler) writeHeadersStyle(hdr http.Header, kind responseKind, styleSrc string, scriptHashes ...string) {
+func (h *PublicHandler) writeHeadersStyle(hdr http.Header, kind responseKind, styleSrc string) {
 	// INV-12: wholesale delete of any upstream CSP, then set agnt's. NEVER the
 	// stripFrameDenyHeaders strip-merge path (which preserves upstream script-src).
 	hdr.Del("Content-Security-Policy")
@@ -958,13 +1171,12 @@ func (h *PublicHandler) writeHeadersStyle(hdr http.Header, kind responseKind, st
 		// carries a matching SRI integrity attribute (see the <script> tag in
 		// servePublicArtifact), so the hash source authorises exactly it.
 		//
-		// scriptHashes widens this by exactly one 'sha256-…' per authored script
-		// body in the served revision (INV-12) — the whole containment story now
-		// that INV-6 is retired: publisher script runs because its hash is
-		// pinned here, while upstream and viewer script do not, because theirs is
-		// not. Only hash sources are ever added; 'unsafe-inline', 'unsafe-eval',
-		// and host sources remain unreachable from this composition.
-		scriptSrc(h.cspHash, scriptHashes),
+		// The directive is that ONE hash source on every response. No caller
+		// can add to it: there is no parameter that reaches it, because no
+		// revision carries authored script (INV-14) and so nothing else is
+		// ever entitled to run. 'unsafe-inline', 'unsafe-eval', host sources
+		// and further hashes are all unreachable from this composition.
+		"script-src '" + h.cspHash + "'",
 		"style-src " + styleSrc,
 		"img-src 'self' data:",
 		"connect-src 'self'",
@@ -993,19 +1205,6 @@ func (h *PublicHandler) writeHeadersStyle(hdr http.Header, kind responseKind, st
 		// Revoke must take effect immediately — no stale artifact past revoke.
 		hdr.Set("Cache-Control", "public, max-age=0, must-revalidate")
 	}
-}
-
-// scriptSrc composes the script-src directive from the bundle hash plus the
-// authored-revision hashes. Every element is quoted as a hash source; there is
-// no branch that can emit a keyword or host source, so the directive cannot be
-// widened past "these exact script bodies" by any caller input.
-func scriptSrc(bundleHash string, scriptHashes []string) string {
-	var b strings.Builder
-	b.WriteString("script-src '" + bundleHash + "'")
-	for _, hash := range scriptHashes {
-		b.WriteString(" '" + hash + "'")
-	}
-	return b.String()
 }
 
 // methodNotAllowed writes a 405 with an Allow header for a known route hit with
@@ -1123,7 +1322,19 @@ func (f *guardedUpstreamFetcher) walk(ctx context.Context, rawURL, accept string
 		if err != nil {
 			return nil, "", "", fmt.Errorf("upstream refused: %w", err)
 		}
-		resp, err := f.get(ctx, current, addrs[0], accept)
+		// Try the validated addresses in order until one answers. Every address
+		// in addrs passed the guard above, and each attempt dials exactly the one
+		// it names, so falling back is still pin-and-dial — never a re-resolution.
+		var resp *http.Response
+		for i, addr := range addrs {
+			if i >= maxUpstreamAddrAttempts {
+				break
+			}
+			resp, err = f.get(ctx, current, addr, accept)
+			if err == nil || ctx.Err() != nil {
+				break
+			}
+		}
 		if err != nil {
 			return nil, "", "", fmt.Errorf("upstream fetch failed: %w", err)
 		}

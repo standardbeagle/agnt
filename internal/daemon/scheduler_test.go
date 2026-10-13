@@ -228,24 +228,6 @@ func TestScheduler_ListTasksByProject(t *testing.T) {
 	}
 }
 
-func TestScheduler_ListPendingTasks(t *testing.T) {
-	t.Parallel()
-	scheduler, _, cleanup := setupSchedulerTest(t)
-	defer cleanup()
-
-	// Add tasks
-	task1, _ := scheduler.Schedule("test-session", 5*time.Minute, "Message 1", "/project")
-	scheduler.Schedule("test-session", 10*time.Minute, "Message 2", "/project")
-
-	// Cancel one
-	scheduler.Cancel(task1.ID)
-
-	pending := scheduler.ListPendingTasks("", true)
-	if len(pending) != 1 {
-		t.Errorf("ListPendingTasks() returned %d tasks, want 1", len(pending))
-	}
-}
-
 func TestScheduler_Info(t *testing.T) {
 	t.Parallel()
 	scheduler, _, cleanup := setupSchedulerTest(t)

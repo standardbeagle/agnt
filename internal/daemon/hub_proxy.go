@@ -266,7 +266,10 @@ func formatProxyUptime(d time.Duration) string {
 
 func (d *Daemon) hubHandleProxyList(conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	// Parse filter from command data
-	dirFilter, _ := unmarshalCommand[protocol.DirectoryFilter](cmd)
+	dirFilter, err := unmarshalCommand[protocol.DirectoryFilter](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid filter JSON: %v", err))
+	}
 
 	// Route through the mandatory session-scope chokepoint (see
 	// resolveProjectScope). A non-global query with no resolvable project
@@ -481,12 +484,40 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
 
-	// From here on the proxy's own id is the only one that may be used. The
-	// argument accepts a single component of a compound id -- "dev" for
+	newProxy, err := d.restartProxy(ctx, p, conn.SessionCode())
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart proxy: %v", err))
+	}
+
+	resp := map[string]interface{}{
+		"id":          newProxy.ID,
+		"target_url":  newProxy.TargetURL.String(),
+		"listen_addr": newProxy.ListenAddr,
+		"url":         newProxy.URL(),
+		"restarted":   true,
+		"success":     true,
+		"message":     fmt.Sprintf("Proxy %q restarted successfully", newProxy.ID),
+	}
+
+	data, _ := json.Marshal(resp)
+	return conn.WriteJSON(data)
+}
+
+// restartProxy stops p and recreates it with everything it was running with:
+// target, bound port, bind address, public URL, TLS verification, named
+// tunnel, pending readiness dependencies, config snapshot, admin entry, overlay
+// binding, incident owner and persisted state. PROXY RESTART and RESTART-ALL
+// both go through it so the two cannot drift.
+//
+// callerSession becomes the new server's incident owner; when the caller has
+// none, the previous owner is kept.
+func (d *Daemon) restartProxy(ctx context.Context, p *proxy.ProxyServer, callerSession string) (*proxy.ProxyServer, error) {
+	// The proxy's own id is the only one that may be used. A caller's argument
+	// may be a single component of a compound id -- "dev" for
 	// "myapp-abc1:dev:localhost-3000" -- and carrying that through would
 	// recreate the proxy under the short name, dropping the project hash its
 	// scoping depends on and leaving persisted state under the wrong key.
-	proxyID = p.ID
+	proxyID := p.ID
 
 	// Capture config before stopping. The bound port is preserved across the
 	// restart: clients (browsers, stored URLs, CORS origins) expect the proxy
@@ -508,12 +539,23 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 	// is correct; a still-gated proxy keeps waiting on the same deps.
 	pendingDeps := p.PendingDependencies()
 	configSnapshot, configured := d.proxyConfigs.Load(p.ID)
+	ownerSession := callerSession
+	if ownerSession == "" {
+		if prev, ok := d.incidentProxyOwner.Load(p.ID); ok {
+			if owner := ownerAsIncidentResource(prev); owner != nil {
+				ownerSession = owner.SessionCode
+			}
+		}
+	}
+	// A script-linked proxy stays linked: retireIncidentProxyOwner drops the
+	// script↔proxy index along with the rest of the per-proxy tracking.
+	linkedScript := d.linkedScriptForProxy(p.ID)
 
 	// Stop the proxy
 	if err := d.proxym.Stop(ctx, proxyID); err != nil {
 		debug.Warn("daemon", "error stopping proxy %s: %v", proxyID, err)
 		d.recordStartupEntry(proxyID, "", "warning", "proxy_stop_failed",
-			fmt.Sprintf("PROXY RESTART: failed to stop proxy: %v", err), 0)
+			fmt.Sprintf("proxy restart: failed to stop proxy: %v", err), 0)
 	} else {
 		d.retireIncidentProxyOwner(proxyID)
 	}
@@ -523,11 +565,6 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 	// need not come back on the same port: the entry would otherwise keep
 	// pointing the overlay and SCRIPT LIST at the old address.
 	d.retireExplicitProxyEntry(projectPath, proxyID)
-
-	// The admin entry belongs to the server that is going away. It is retired
-	// here and registered again below against the new one, because a restart
-	// need not come back on the same port: the entry would otherwise keep
-	// pointing the overlay and SCRIPT LIST at the old address.
 
 	// Remove from persisted state
 	if d.stateMgr != nil {
@@ -560,10 +597,16 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 		NamedTunnel:   namedTunnel,
 	})
 	if err != nil {
-		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart proxy: %v", err))
+		return nil, err
 	}
 
-	d.registerIncidentProxyOwner(newProxy.ID, conn.SessionCode())
+	d.registerIncidentProxyOwner(newProxy.ID, ownerSession)
+	if linkedScript != "" {
+		// Untrack first: a failed Stop above leaves the old link in place,
+		// and trackScriptProxy appends.
+		d.untrackScriptProxy(newProxy.ID)
+		d.trackScriptProxy(linkedScript, newProxy.ID)
+	}
 	d.registerExplicitProxyEntry(projectPath, newProxy.ID, newProxy.ListenAddr)
 	newProxy.CopyPublicURLFrom(p)
 	if configured {
@@ -606,18 +649,7 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 		})
 	}
 
-	resp := map[string]interface{}{
-		"id":          proxyID,
-		"target_url":  targetURL,
-		"listen_addr": newProxy.ListenAddr,
-		"url":         newProxy.URL(),
-		"restarted":   true,
-		"success":     true,
-		"message":     fmt.Sprintf("Proxy %q restarted successfully", proxyID),
-	}
-
-	data, _ := json.Marshal(resp)
-	return conn.WriteJSON(data)
+	return newProxy, nil
 }
 
 // ============================================================================

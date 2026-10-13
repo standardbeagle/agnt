@@ -309,6 +309,9 @@ func (d *Daemon) watchProcessExit(proc *goprocess.ManagedProcess) {
 		// recorded in processExitInfo so proc status can show them.
 		if d.alertStore != nil && info.Reason != "stopped" {
 			if alert := buildLifecycleAlert(info); alert != nil {
+				// Project-scoped ALERTS QUERY filters on ProjectPath; an
+				// unstamped death was visible to global queries only.
+				alert.ProjectPath = normalizePath(proc.ProjectPath)
 				d.alertStore.Add(alert)
 			}
 		}

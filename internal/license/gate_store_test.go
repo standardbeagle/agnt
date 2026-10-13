@@ -138,4 +138,41 @@ func TestManagerCheck(t *testing.T) {
 			t.Errorf("after reload: %v", err)
 		}
 	})
+
+	// `agnt activate` and `agnt license deactivate` run in another process,
+	// so nothing calls Reload on the long-lived Manager inside the MCP
+	// server. It has to notice the file changing by itself.
+	t.Run("follows activate and deactivate without Reload", func(t *testing.T) {
+		_ = Remove()
+		m := NewManager()
+		var ge *GateError
+		if _, err := m.Check(CapWholeSite); !errors.As(err, &ge) || ge.State != StateMissing {
+			t.Fatalf("before install: want GateError/Missing, got %v", err)
+		}
+		install(t, fixed.Add(30*24*time.Hour), []string{string(CapWholeSite)})
+		if _, err := m.Check(CapWholeSite); err != nil {
+			t.Fatalf("after activate, same Manager: %v", err)
+		}
+		if err := Remove(); err != nil {
+			t.Fatalf("Remove: %v", err)
+		}
+		if _, err := m.Check(CapWholeSite); !errors.As(err, &ge) || ge.State != StateMissing {
+			t.Errorf("after deactivate, same Manager: want GateError/Missing, got %v", err)
+		}
+	})
+
+	t.Run("expiry is re-evaluated while loaded", func(t *testing.T) {
+		install(t, fixed.Add(24*time.Hour), []string{string(CapWholeSite)})
+		m := NewManager()
+		if _, err := m.Check(CapWholeSite); err != nil {
+			t.Fatalf("within term: %v", err)
+		}
+		// Same file, later clock: past expiry plus the grace period.
+		now = func() time.Time { return fixed.Add(24*time.Hour + GracePeriod + time.Hour) }
+		defer func() { now = func() time.Time { return fixed } }()
+		var ge *GateError
+		if _, err := m.Check(CapWholeSite); !errors.As(err, &ge) || ge.State != StateExpired {
+			t.Errorf("after the term ran out: want GateError/Expired, got %v", err)
+		}
+	})
 }

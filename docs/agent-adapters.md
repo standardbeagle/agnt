@@ -38,7 +38,7 @@ Two injection strategies are supported:
 | `claude` | flag | `--append-system-prompt <prompt>` |
 | `gemini` | context file + setup stdin fallback | 500ms fallback delay |
 | `copilot` | context file + setup stdin fallback | 500ms fallback delay |
-| `aider` | setup stdin | 500ms setup delay |
+| `aider` | setup stdin only | 500ms setup delay. No context file: aider reads `CONVENTIONS.md` only with `--read`, and agnt does not add that flag, so a coding session gets no agnt guidance and says so in a one-line notice |
 | `cursor` | context file + setup stdin fallback | 500ms fallback delay |
 | `cursor-agent` | context file + setup stdin fallback | 500ms fallback delay (checked before `cursor` for specificity) |
 | `opencode` | context file + setup stdin fallback | 500ms fallback delay |
@@ -47,6 +47,8 @@ Two injection strategies are supported:
 | `qwen` | context file + setup stdin fallback | `QWEN.md` |
 | `crush` | context file + setup stdin fallback | `AGENTS.md` |
 | `kimi-cli` (`kimi`, `kimi-cli`) | context file + setup stdin fallback | `AGENTS.md`; never adds an unverified CLI flag |
+
+A command that matches no adapter (`agnt run bash`) gets the universal stdin adapter: the setup prompt can be typed into it, but no context file is written for it — only an agent in the support matrix (`cmd/agnt/support_matrix.go`) gets the file agnt knows it loads.
 
 All adapters match by **base name** of the command, case-insensitive, with `.exe` stripped on Windows. That covers bare invocations (`claude`), absolute paths (`/usr/bin/claude`, `C:\bin\claude.exe`), and relative paths (`./aider`). When the command is a shell alias or wrapper, the adapter also tries `exec.LookPath` and matches on the resolved path's base name.
 
@@ -96,7 +98,7 @@ Fields:
 
 | KDL key | Type | Applies to | Purpose |
 |---------|------|-----------|---------|
-| `disabled` | bool | all | Skip prompt injection for this agent. `BuildArgs` returns `baseArgs` unchanged and `InitialStdin` returns nil. |
+| `disabled` | bool | all | Skip prompt injection for this agent on every channel. `BuildArgs` returns `baseArgs` unchanged, `InitialStdin` returns nil, and the persistent context file (`AGENTS.md`, `GEMINI.md`, …) is not written. Code that delivers the prompt some other way must check `agentadapter.InjectionDisabled`. |
 | `flag-name` | string | flag-based | Replace the injection flag. Ignored by stdin adapters. |
 | `stdin-delay-ms` | int | stdin-capable | Delay in milliseconds before writing setup-mode stdin. Ignored by flag adapters and normal coding sessions. A value of 0 inherits the adapter default (500ms). |
 

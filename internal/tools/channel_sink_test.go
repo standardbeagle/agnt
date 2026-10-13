@@ -45,7 +45,8 @@ func enabledChannelConfig() *config.ChannelConfig {
 }
 
 // TestChannelSink_EmitsNotification verifies that feeding a LogEntry into the sink
-// produces the expected Notify call with correct method + content + meta.
+// produces the expected Notify call with correct method + content + meta. The
+// vehicle is a custom log: it has no incident adapter, so the channel carries it.
 func TestChannelSink_EmitsNotification(t *testing.T) {
 	var calls []capturedNotification
 	notify, mu := fakeNotify(&calls)
@@ -53,14 +54,8 @@ func TestChannelSink_EmitsNotification(t *testing.T) {
 	sink := NewChannelSink(enabledChannelConfig(), notify)
 
 	entry := proxy.LogEntry{
-		Type: proxy.LogTypeError,
-		Error: &proxy.FrontendError{
-			Message: "Cannot read property 'map' of undefined",
-			Source:  "src/components/List.tsx",
-			LineNo:  42,
-			ColNo:   15,
-			URL:     "http://localhost:3000/dashboard",
-		},
+		Type:   proxy.LogTypeCustom,
+		Custom: &proxy.CustomLog{Level: "error", Message: "checkout step 3 reached with an empty cart"},
 	}
 
 	sink.HandleEntry(context.Background(), entry)
@@ -75,18 +70,14 @@ func TestChannelSink_EmitsNotification(t *testing.T) {
 	if got.method != ChannelNotificationMethod {
 		t.Errorf("method = %q, want %q", got.method, ChannelNotificationMethod)
 	}
-	if got.params.Content != "Cannot read property 'map' of undefined" {
-		t.Errorf("content = %q, want %q", got.params.Content, "Cannot read property 'map' of undefined")
+	if got.params.Content != "checkout step 3 reached with an empty cart" {
+		t.Errorf("content = %q", got.params.Content)
 	}
-	if got.params.Meta["type"] != "error" {
-		t.Errorf("meta[type] = %q, want %q", got.params.Meta["type"], "error")
+	if got.params.Meta["type"] != "custom" {
+		t.Errorf("meta[type] = %q, want %q", got.params.Meta["type"], "custom")
 	}
 	if got.params.Meta["severity"] != "error" {
 		t.Errorf("meta[severity] = %q, want %q", got.params.Meta["severity"], "error")
-	}
-	wantLoc := "src/components/List.tsx:42:15"
-	if got.params.Meta["location"] != wantLoc {
-		t.Errorf("meta[location] = %q, want %q", got.params.Meta["location"], wantLoc)
 	}
 }
 
@@ -173,12 +164,8 @@ func TestChannelSink_DedupeWindow(t *testing.T) {
 	sink.SetNowFunc(func() time.Time { return now })
 
 	entry := proxy.LogEntry{
-		Type: proxy.LogTypeError,
-		Error: &proxy.FrontendError{
-			Message: "TypeError: x is not a function",
-			Source:  "app.js",
-			LineNo:  10,
-		},
+		Type:   proxy.LogTypeCustom,
+		Custom: &proxy.CustomLog{Level: "error", Message: "TypeError: x is not a function"},
 	}
 
 	// First entry: should emit.
@@ -189,12 +176,8 @@ func TestChannelSink_DedupeWindow(t *testing.T) {
 
 	// Third entry with different content: should emit.
 	entry2 := proxy.LogEntry{
-		Type: proxy.LogTypeError,
-		Error: &proxy.FrontendError{
-			Message: "TypeError: y is not a function",
-			Source:  "app.js",
-			LineNo:  20,
-		},
+		Type:   proxy.LogTypeCustom,
+		Custom: &proxy.CustomLog{Level: "error", Message: "TypeError: y is not a function"},
 	}
 	sink.HandleEntry(context.Background(), entry2)
 
@@ -228,10 +211,8 @@ func TestChannelSink_DedupeExpired(t *testing.T) {
 	sink.SetNowFunc(func() time.Time { return now })
 
 	entry := proxy.LogEntry{
-		Type: proxy.LogTypeError,
-		Error: &proxy.FrontendError{
-			Message: "TypeError: x is not a function",
-		},
+		Type:   proxy.LogTypeCustom,
+		Custom: &proxy.CustomLog{Level: "error", Message: "TypeError: x is not a function"},
 	}
 
 	// First entry.
@@ -273,30 +254,22 @@ func TestChannelSink_SeverityFilter(t *testing.T) {
 		},
 	})
 
-	// Warning-level diagnostic: should be dropped.
+	// Info-level custom log: should be dropped.
 	sink.HandleEntry(context.Background(), proxy.LogEntry{
-		Type: proxy.LogTypeDiagnostic,
-		Diagnostic: &proxy.ProxyDiagnostic{
-			Level:   proxy.DiagnosticWarning,
-			Message: "slow response",
-		},
+		Type:   proxy.LogTypeCustom,
+		Custom: &proxy.CustomLog{Level: "info", Message: "render pass"},
 	})
 
-	// Error-level: should pass.
+	// Error-level custom log: should pass.
 	sink.HandleEntry(context.Background(), proxy.LogEntry{
-		Type: proxy.LogTypeDiagnostic,
-		Diagnostic: &proxy.ProxyDiagnostic{
-			Level:   proxy.DiagnosticError,
-			Message: "connection refused",
-		},
+		Type:   proxy.LogTypeCustom,
+		Custom: &proxy.CustomLog{Level: "error", Message: "cart invariant broken"},
 	})
 
-	// JS error: always severity "error", should pass.
+	// Transport failure with no HTTP status: severity "error", should pass.
 	sink.HandleEntry(context.Background(), proxy.LogEntry{
-		Type: proxy.LogTypeError,
-		Error: &proxy.FrontendError{
-			Message: "Uncaught TypeError",
-		},
+		Type: proxy.LogTypeHTTP,
+		HTTP: &proxy.HTTPLogEntry{Method: "GET", URL: "/api/x", Error: "dial tcp: connection refused"},
 	})
 
 	mu.Lock()
@@ -304,11 +277,11 @@ func TestChannelSink_SeverityFilter(t *testing.T) {
 	if len(calls) != 2 {
 		t.Fatalf("expected 2 notifications (error severity only), got %d", len(calls))
 	}
-	if calls[0].params.Content != "connection refused" {
-		t.Errorf("first content = %q, want %q", calls[0].params.Content, "connection refused")
+	if calls[0].params.Content != "cart invariant broken" {
+		t.Errorf("first content = %q", calls[0].params.Content)
 	}
-	if calls[1].params.Content != "Uncaught TypeError" {
-		t.Errorf("second content = %q, want %q", calls[1].params.Content, "Uncaught TypeError")
+	if calls[1].params.Content != "GET /api/x: dial tcp: connection refused" {
+		t.Errorf("second content = %q", calls[1].params.Content)
 	}
 }
 
@@ -322,14 +295,14 @@ func TestChannelSink_EventTypeFilter(t *testing.T) {
 		Enabled:      &enabled,
 		Severity:     "info",
 		DedupeWindow: 0,
-		Events:       []string{"error", "diagnostic"},
+		Events:       []string{"custom", "diagnostic"},
 	}
 	sink := NewChannelSink(cfg, notify)
 
-	// Error type: should pass.
+	// Custom type: should pass.
 	sink.HandleEntry(context.Background(), proxy.LogEntry{
-		Type:  proxy.LogTypeError,
-		Error: &proxy.FrontendError{Message: "JS error"},
+		Type:   proxy.LogTypeCustom,
+		Custom: &proxy.CustomLog{Level: "error", Message: "custom log"},
 	})
 
 	// Diagnostic type: should pass.
@@ -351,7 +324,9 @@ func TestChannelSink_EventTypeFilter(t *testing.T) {
 	}
 }
 
-// TestChannelSink_HTTPError verifies HTTP entry extraction.
+// TestChannelSink_HTTPError verifies HTTP entry extraction for the one HTTP
+// shape the channel still carries: a request that failed with no status at all
+// (the incident HTTP adapter only ingests 4xx/5xx responses).
 func TestChannelSink_HTTPError(t *testing.T) {
 	var calls []capturedNotification
 	notify, mu := fakeNotify(&calls)
@@ -361,9 +336,9 @@ func TestChannelSink_HTTPError(t *testing.T) {
 	sink.HandleEntry(context.Background(), proxy.LogEntry{
 		Type: proxy.LogTypeHTTP,
 		HTTP: &proxy.HTTPLogEntry{
-			Method:     "POST",
-			URL:        "/api/users",
-			StatusCode: 500,
+			Method: "POST",
+			URL:    "/api/users",
+			Error:  "upstream closed the connection",
 		},
 	})
 
@@ -379,7 +354,7 @@ func TestChannelSink_HTTPError(t *testing.T) {
 	if got.Meta["type"] != "http" {
 		t.Errorf("type = %q, want %q", got.Meta["type"], "http")
 	}
-	want := "POST /api/users → 500"
+	want := "POST /api/users: upstream closed the connection"
 	if got.Content != want {
 		t.Errorf("content = %q, want %q", got.Content, want)
 	}
@@ -446,8 +421,8 @@ func TestChannelSink_DedupeDisabled(t *testing.T) {
 	sink := NewChannelSink(cfg, notify)
 
 	entry := proxy.LogEntry{
-		Type:  proxy.LogTypeError,
-		Error: &proxy.FrontendError{Message: "same error"},
+		Type:   proxy.LogTypeCustom,
+		Custom: &proxy.CustomLog{Level: "error", Message: "same error"},
 	}
 
 	sink.HandleEntry(context.Background(), entry)
@@ -543,13 +518,8 @@ func TestChannelSink_Integration_InMemory(t *testing.T) {
 
 	// Feed a LogEntry through the channel sink.
 	sink.HandleEntry(ctx, proxy.LogEntry{
-		Type: proxy.LogTypeError,
-		Error: &proxy.FrontendError{
-			Message: "integration test error",
-			Source:  "test.js",
-			LineNo:  1,
-			ColNo:   1,
-		},
+		Type:   proxy.LogTypeCustom,
+		Custom: &proxy.CustomLog{Level: "error", Message: "integration test error"},
 	})
 
 	// Read the notification from the client.
@@ -577,8 +547,8 @@ func TestChannelSink_Integration_InMemory(t *testing.T) {
 	if result.Content != "integration test error" {
 		t.Errorf("content = %q, want %q", result.Content, "integration test error")
 	}
-	if result.Meta["type"] != "error" {
-		t.Errorf("meta[type] = %q, want %q", result.Meta["type"], "error")
+	if result.Meta["type"] != "custom" {
+		t.Errorf("meta[type] = %q, want %q", result.Meta["type"], "custom")
 	}
 	if result.Meta["severity"] != "error" {
 		t.Errorf("meta[severity] = %q, want %q", result.Meta["severity"], "error")

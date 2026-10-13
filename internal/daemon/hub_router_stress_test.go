@@ -47,7 +47,6 @@ package daemon
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -499,19 +498,12 @@ func TestRouter_UnknownVerb(t *testing.T) {
 
 	t.Logf("unknown-verb response: %q", response)
 
-	// Response is a JSON frame carrying the StructuredError. Find and parse.
-	// Format: `JSON -- <len>\n<base64>;;` per protocol.responses — but for the
-	// purposes of this test the substring match on the error code + sorted
-	// valid actions is what we care about. The protocol parser test coverage
-	// in go-cli-server pins the frame shape.
-	assert.Contains(t, response, "JSON", "response was not a JSON frame")
-	// Cheap JSON extraction: find the first '{' and last '}' of the decoded
-	// payload. If it's base64, decode first. Or just check substrings on the
-	// base64 — but that is brittle. Fallback to structural assertion: the
-	// response must carry ErrInvalidArgs as a string somewhere, once decoded.
-	// The Writer writes StructuredError as base64'd JSON; to keep the test
-	// simple we parse the frame header and decode the body.
-	payload := decodeJSONFrame(t, response)
+	// Response is an ERR frame whose message is the StructuredError's JSON:
+	// `ERR <code> <json>;;`. It must not be a JSON (success) frame — a client
+	// returns that as a result with a nil error.
+	require.True(t, strings.HasPrefix(response, "ERR "+string(hubproto.ErrInvalidArgs)+" "),
+		"an unknown sub-command must be an ERR frame, got %q", response)
+	payload := decodeErrFrameJSON(t, response)
 	var se hubproto.StructuredError
 	require.NoError(t, json.Unmarshal(payload, &se))
 
@@ -522,28 +514,15 @@ func TestRouter_UnknownVerb(t *testing.T) {
 	assert.Equal(t, []string{"ALSO-KNOWN", "KNOWN"}, se.ValidActions)
 }
 
-// decodeJSONFrame parses a `JSON -- <len>\n<base64>;;` frame and returns
-// the decoded payload. Helper kept local to the stress test because the
-// protocol parser is not exported in a test-friendly shape.
-func decodeJSONFrame(t *testing.T, frame string) []byte {
+// decodeErrFrameJSON returns the JSON message of an `ERR <code> <json>;;`
+// frame. Helper kept local to the stress test because the protocol parser is
+// not exported in a test-friendly shape.
+func decodeErrFrameJSON(t *testing.T, frame string) []byte {
 	t.Helper()
-	// Strip the trailing ;; terminator if present.
 	frame = strings.TrimSuffix(frame, ";;")
-	// Locate the first newline — everything after it is the base64 body.
-	nl := strings.Index(frame, "\n")
-	require.Greater(t, nl, 0, "no newline in JSON frame: %q", frame)
-	body := frame[nl+1:]
-	// Base64 decode.
-	decoded, err := base64StdDecode(body)
-	require.NoError(t, err, "base64 decode failed for body %q", body)
-	return decoded
-}
-
-// base64StdDecode wraps encoding/base64.StdEncoding.DecodeString so the
-// only caller (decodeJSONFrame) stays readable. The JSON frame body is
-// always padded standard base64, matching protocol.FormatJSON.
-func base64StdDecode(s string) ([]byte, error) {
-	return base64.StdEncoding.DecodeString(s)
+	brace := strings.Index(frame, "{")
+	require.GreaterOrEqual(t, brace, 0, "no JSON object in ERR frame: %q", frame)
+	return []byte(frame[brace:])
 }
 
 // =====================================================================

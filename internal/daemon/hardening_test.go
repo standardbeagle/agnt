@@ -240,33 +240,10 @@ func TestSessionRegistry_ConcurrentFindByDirectory(t *testing.T) {
 		go func(id int) {
 			defer wg.Done()
 			_, _ = reg.FindByDirectory(fmt.Sprintf("/test/project/sub%d/deeper", id%5))
-			_ = reg.GenerateSessionCode("test")
 		}(i)
 	}
 
 	wg.Wait()
-}
-
-func TestSessionRegistry_ConcurrentGenerateSessionCode(t *testing.T) {
-	t.Parallel()
-	reg := NewSessionRegistry(60 * time.Second)
-	var wg sync.WaitGroup
-	codes := make([]string, 20)
-
-	for i := 0; i < 20; i++ {
-		wg.Add(1)
-		go func(idx int) {
-			defer wg.Done()
-			codes[idx] = reg.GenerateSessionCode("claude")
-		}(i)
-	}
-
-	wg.Wait()
-
-	// All codes should be non-empty
-	for i, code := range codes {
-		assert.NotEmpty(t, code, "code %d should not be empty", i)
-	}
 }
 
 func TestStateManager_ConcurrentReadWrite(t *testing.T) {

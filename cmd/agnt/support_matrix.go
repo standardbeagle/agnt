@@ -30,8 +30,9 @@ type agentSupport struct {
 
 // supportMatrix maps an adapter name (agentadapter.Adapter.Name()) to its
 // install guidance. Sourced from docs/agent-support-matrix.md — keep the two in
-// sync. codex/qwen/crush are included for forward-compatibility even though
-// they are not yet registered adapters (see the matrix doc's Slice C notes).
+// sync. Every key here is a registered adapter (agentadapter.DefaultRegistry);
+// a name with no row is the Universal fallback for an unrecognized command,
+// which gets the generic install text and no context-file write.
 var supportMatrix = map[string]agentSupport{
 	"claude": {
 		Mechanism:   mechMarketplace,
@@ -91,7 +92,14 @@ var supportMatrix = map[string]agentSupport{
 	"aider": {
 		Mechanism:   mechNone,
 		InstallText: "Aider has no installable skill — agnt drives setup via an inline prompt this session. Optionally persist guidance as `CONVENTIONS.md` and load it with `aider --read CONVENTIONS.md`.",
-		ContextFile: "CONVENTIONS.md",
+		// No ContextFile: aider loads no file on its own. CONVENTIONS.md is
+		// only read when the user passes `--read` (or sets `read:` in
+		// .aider.conf.yml), so writing it here left a stray file in the repo
+		// that the agent never saw. agnt does not add `--read` itself — that
+		// would be an unverified flag claim on another project's CLI (see
+		// docs/agent-adapters.md, the kimi `--agent-file` incident). The
+		// coding phase says so instead; see unsteeredAgentNotice.
+		ContextFile: "",
 	},
 }
 
@@ -101,7 +109,9 @@ var supportMatrix = map[string]agentSupport{
 var genericAgentSupport = agentSupport{
 	Mechanism:   mechSkillFile,
 	InstallText: "Check whether your agent supports a skills/commands directory or a plugin marketplace; if so, install the `agnt:setup-project` skill there. Otherwise, follow the setup instructions in this prompt directly.",
-	ContextFile: "AGENTS.md", // broadly-read default for unknown agents.
+	// Informational only: writePersistentContext never writes for an agent
+	// outside the matrix, since nothing says an unknown command reads it.
+	ContextFile: "AGENTS.md",
 }
 
 // lookupAgentSupport returns the install guidance for adapterName, falling back

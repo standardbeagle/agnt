@@ -145,6 +145,11 @@ func (r *Reconnector) Run(ctx context.Context) (*Client, *PTYSession, error) {
 
 		client, err := r.Dial(ctx)
 		if err != nil {
+			// A dial cut short by cancellation is the stop request itself,
+			// not a failed attempt to report and retry.
+			if ctx.Err() != nil {
+				return nil, nil, ctx.Err()
+			}
 			r.status(fmt.Sprintf("agnt ssh: reconnect attempt %d: dial failed: %v", attempt, err))
 			continue
 		}

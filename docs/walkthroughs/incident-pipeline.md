@@ -120,7 +120,7 @@ get_incidents {sources: ["http_5xx","process_crash"]}
 
 Valid source tokens (from `GetIncidentsInput`): `browser_js`, `http_5xx`,
 `http_4xx`, `transport_err`, `proxy_diag`, `process_alert`, `process_crash`,
-`build_fail`, `port_conflict`, `shutdown`, `hook_stop_failure`.
+`build_fail`, `chaos_swallowed_error`, `external`.
 
 ### 4. Hydrate the full payload for the crash
 

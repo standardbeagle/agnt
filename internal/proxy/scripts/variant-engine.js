@@ -10,14 +10,20 @@
 // vocabulary does not define.
 //
 // INV-6 RETIRED 2026-07-27 (§6a): the vocabulary now carries publisher-authored
-// CSS, HTML, and script. That author is the publisher holding the dev session —
-// a trusted actor — so the old "no author string reaches a markup/code sink"
-// rule guarded the wrong boundary. Containment moved to CSP: authored script
-// runs only because its sha256 is pinned in the served revision's script-src
-// (INV-11/INV-12), so upstream- and viewer-injected script still cannot execute.
-// What this engine therefore still refuses is DYNAMIC CODE COMPILATION
-// (the dynamic-code sinks) — the served CSP carries no 'unsafe-eval', and a compile
-// path would be an attempt to run a body no pinned hash covers.
+// CSS and HTML. That author is the publisher holding the dev session — a
+// trusted actor — so the old "no author string reaches a markup sink" rule
+// guarded the wrong boundary. Containment is CSP: the served script-src names
+// the public bundle's hash and nothing else (INV-11/INV-12), so no markup a
+// variant writes — inline handlers and script tags included — can execute.
+//
+// AUTHORED SCRIPT IS NOT IN THE VOCABULARY (INV-14). The engine once had an
+// addScript op that appended a script element for a CSP-pinned body. A
+// published walkthrough always carries the mandatory disclosure indicator, and
+// script in the indicator's own realm can remove it, so the op is refused at
+// publish, refused at load, and this renderer has NO handler for it: no script
+// element is ever created here, and there is no dynamic-code sink. validateOp
+// refuses the op by name (ADD_SCRIPT_REFUSED) so a tampered snapshot carrying
+// it gets a reason that says why, not a generic "unknown op".
 //
 // MIRROR SCOPE — what this file does and does not reproduce from the P2 Go
 // validators (op.go, selector.go, style.go, url.go, limits.go, validate.go).
@@ -26,15 +32,15 @@
 //
 //   MIRRORED: the closed op vocabulary and its stray-field rule; the §5a
 //     restricted selector grammar; the setAttribute name allowlist; https-only
-//     URLs; every §5 size limit — per-op AND the two aggregates (style per
-//     variant, raw script per revision). Every one of those size limits is
+//     URLs; every §5 size limit — per-op AND the aggregate (style per
+//     variant). Every one of those size limits is
 //     compared in UTF-8 BYTES via utf8Len(), matching Go's len() on a string;
 //     comparing JS `.length` (UTF-16 code units) would accept payloads the Go
 //     validator rejects — 3x over for CJK, 4x for astral-plane characters.
 //   NOT MIRRORED, deliberately: publish-time-only concerns the browser cannot
 //     evaluate — id/version/duplicate-op/duplicate-variant-id validation, the
-//     §4a resolved-address checks, and the addScript src fetch-and-inline step
-//     (an op still carrying src at render time is refused outright).
+//     §4a resolved-address checks, and the whole-artifact caps (ops per
+//     variant, total artifact bytes).
 //   NOT ENFORCED BY EITHER SIDE: the retired §5b property allowlist and the §5
 //     forbidden-CSS-token scan. See the style-guard block below; §6a forbids
 //     reintroducing them here as defense-in-depth.
@@ -74,14 +80,20 @@
     // parse-cost/abuse bounds, not injection controls — §6a is explicit that the
     // payloads are NOT scanned for code-shape.
     var MAX_RAW_HTML_BYTES = 8192;
-    var MAX_RAW_SCRIPT_BYTES = 16384;
+
+    // The one answer to an addScript op (mirror internal/publish/op.go
+    // errAddScriptRefused). It is refused before any of its fields is read.
+    var ADD_SCRIPT_REFUSED = 'addScript is not permitted on a published walkthrough: authored script can defeat the mandatory disclosure indicator (INV-14); the renderer has no script op';
 
     var LOG = '[VariantEngine]';
 
-    // The variant root: the single container the variant-root ops (addStyle,
-    // addScript) append to. Created lazily on first use, removed wholesale on
-    // revert, so a variant's stylesheet and script leave no residue behind.
+    // The variant root: the single container the variant-root op (addStyle)
+    // appends to. Created lazily on first use, removed wholesale on revert, so
+    // a variant's stylesheet leaves no residue behind.
     var VARIANT_ROOT_ID = '__variant-engine-root';
+
+    // Undo records kept before records for disconnected elements are pruned.
+    var UNDO_PRUNE_THRESHOLD = 256;
 
     // ---- Restricted selector grammar (mirror selector.go §5a) ------------
     // ident := [A-Za-z_][A-Za-z0-9_-]*  — anchored full-string variant.
@@ -315,10 +327,12 @@
     // rejection, never a passthrough — but since INV-6's retirement it includes
     // the raw-content ops (§6a), whose payloads are bounded by size and
     // contained by CSP rather than scanned for code-shape.
-    function isRootOp(op) { return op && (op.op === 'addStyle' || op.op === 'addScript'); }
+    function isRootOp(op) { return op && op.op === 'addStyle'; }
 
     function validateOp(op) {
       if (!op || typeof op !== 'object') { return { ok: false, reason: 'op: not an object' }; }
+      // INV-14: refused by name, first, whatever else the op carries.
+      if (op.op === 'addScript') { return { ok: false, reason: ADD_SCRIPT_REFUSED }; }
       if (isRootOp(op)) {
         // Variant-root ops append to the variant root rather than mutating a
         // matched element, so a selector is meaningless — and accepting one
@@ -402,21 +416,6 @@
             return { ok: false, reason: 'addStyle: css exceeds max ' + MAX_STYLE_PATCH_BYTES };
           }
           return { ok: true, reason: null };
-        case 'addScript':
-          stray = forbidExcept(['code', 'src']);
-          if (stray) { return { ok: false, reason: 'addScript: ' + stray }; }
-          // src is a PUBLISH-TIME fetch input (§6a): the daemon fetches it once
-          // under §4a and inlines the bytes so the hash can be pinned. An op
-          // that still carries src by the time it reaches a browser means that
-          // resolution did not happen — fail closed rather than invent a
-          // runtime fetch, which would emit the <script src> §6a forbids and
-          // load a body no pinned hash covers.
-          if (op.src) { return { ok: false, reason: 'addScript: src must be inlined at publish time; the renderer emits no <script src>' }; }
-          if (typeof op.code !== 'string' || op.code === '') { return { ok: false, reason: 'addScript: code is required' }; }
-          if (utf8Len(op.code) > MAX_RAW_SCRIPT_BYTES) {
-            return { ok: false, reason: 'addScript: code exceeds max ' + MAX_RAW_SCRIPT_BYTES };
-          }
-          return { ok: true, reason: null };
         default:
           return { ok: false, reason: 'unknown op type ' + JSON.stringify(op.op) };
       }
@@ -440,8 +439,8 @@
     // ---- Op apply / undo -------------------------------------------------
     // captureUndo snapshots the exact prior state so revert restores it byte-
     // for-byte, then applyOp performs the mutation. Raw-content ops (§6a) write
-    // authored markup/CSS/script verbatim; the variant-root ops need no prior-
-    // state snapshot because applyOp returns the node it created and the caller
+    // authored markup/CSS verbatim; the variant-root op needs no prior-state
+    // snapshot because applyOp returns the node it created and the caller
     // builds a remove-the-node undo from it.
     function captureUndo(el, op) {
       switch (op.op) {
@@ -529,19 +528,6 @@
           el.appendChild(styleEl);
           return styleEl;
         }
-        case 'addScript': {
-          // The authored script is emitted as a SCRIPT ELEMENT whose body is the
-          // authored text — never handed to a dynamic-code sink, which the
-          // served CSP forbids outright ('unsafe-eval' absent, INV-12). Whether
-          // this body executes is decided entirely by CSP: it runs iff its
-          // sha256 is in the revision's pinned script-src hash set. Until that
-          // pinning lands the browser refuses it, which is the correct
-          // fail-closed state — a body no hash covers must not run.
-          var scriptEl = document.createElement('script');
-          scriptEl.textContent = op.code;
-          el.appendChild(scriptEl);
-          return scriptEl;
-        }
         case 'setAttribute': el.setAttribute(op.name, op.value); break;
         case 'setImageSrc': el.setAttribute('src', op.url); break;
         case 'addClass': el.classList.add(op.value); break;
@@ -592,10 +578,19 @@
 
     // ---- Missing-target surfacing (spec §4 silent-failure prohibition) ---
     var MISSING_MARKER_ID = '__variant-engine-missing';
-    function surfaceMissing(selectors) {
+    //
+    // `changed` is false when the caller reports the same missing set as on
+    // its previous pass. The warning is then not repeated: a reconcile runs on
+    // every page mutation, so an unchanged miss on an animating page would
+    // otherwise log once per frame. The visible marker is still (re)asserted —
+    // the page may have removed it — but only written when its text differs,
+    // so asserting it is not itself a mutation.
+    function surfaceMissing(selectors, changed) {
       if (!selectors || selectors.length === 0) { clearMissingMarker(); return; }
       // Structured console warning — never silent.
-      try { console.warn(LOG + ' variant targets not found: ' + selectors.join(', ')); } catch (e) { /* ignore */ }
+      if (changed !== false) {
+        try { console.warn(LOG + ' variant targets not found: ' + selectors.join(', ')); } catch (e) { /* ignore */ }
+      }
       // Visible marker element, built with textContent only (no markup).
       try {
         if (!document.body) { return; }
@@ -614,7 +609,8 @@
           marker.style.setProperty('padding', '4px 8px');
           document.body.appendChild(marker);
         }
-        marker.textContent = LOG + ' missing targets: ' + selectors.join(', ');
+        var markerText = LOG + ' missing targets: ' + selectors.join(', ');
+        if (marker.textContent !== markerText) { marker.textContent = markerText; }
       } catch (e) { /* marker is best-effort; the console.warn already fired */ }
     }
     function clearMissingMarker() {
@@ -647,12 +643,9 @@
       var order = [];
       // §5's real bounds are AGGREGATES, not per-op caps (mirror
       // internal/publish/validate.go): the style patch is budgeted per VARIANT
-      // with applyStyle and addStyle spending from one pot, and the raw script is
-      // budgeted per authored REVISION — summed across every variant in the set,
-      // which is also what keeps INV-12's pinned script-src hash set bounded.
-      // Mirroring only the per-op caps let a tampered snapshot dodge both by
-      // splitting one oversize payload across several legal-sized ops.
-      var scriptBudget = 0; // per-revision: spans the whole variant set
+      // with applyStyle and addStyle spending from one pot. Mirroring only the
+      // per-op caps let a tampered snapshot dodge it by splitting one oversize
+      // payload across several legal-sized ops.
       function refuse(op, reason) {
         refused.push({ op: op, reason: reason });
         try { console.warn(LOG + ' refused op (' + reason + '): ' + JSON.stringify(op)); } catch (e) { /* ignore */ }
@@ -672,13 +665,7 @@
             refuse(op, op.op + ': variant style budget exceeded (' + (styleBudget + sb) + ' > ' + MAX_STYLE_PATCH_BYTES + ' bytes per variant)');
             return;
           }
-          var cb = op.op === 'addScript' ? utf8Len(op.code || '') : 0;
-          if (cb > 0 && scriptBudget + cb > MAX_RAW_SCRIPT_BYTES) {
-            refuse(op, 'addScript: revision script budget exceeded (' + (scriptBudget + cb) + ' > ' + MAX_RAW_SCRIPT_BYTES + ' bytes per revision)');
-            return;
-          }
           styleBudget += sb;
-          scriptBudget += cb;
           op._sig = opSignature(op);
           ops.push(op);
         });
@@ -691,6 +678,7 @@
       var undos = [];       // {el, undo} applied-op records, unwound on revert
       var marks = new WeakMap(); // el -> Set(opSig) already applied (idempotency)
       var lastMissing = [];
+      var lastMissingKey = ''; // the missing set last reported, for change detection
       var rootEl = null;    // the variant root, created on first variant-root op
       var applying = false; // true while WE mutate — makes the observer ignore self-mutations
       var scheduled = false;
@@ -721,11 +709,11 @@
         else { setTimeout(run, 0); }
       }
 
-      // variantRoot returns the container the variant-root ops append to,
+      // variantRoot returns the container the variant-root op appends to,
       // creating it on first use. It is inert layout-wise (a hidden div): a
-      // style element inside it still applies document-wide, and a script element
-      // still runs — subject to CSP — while keeping every authored node under
-      // one parent that revert can drop in a single removal.
+      // style element inside it still applies document-wide, while every
+      // authored node stays under one parent that revert can drop in a single
+      // removal.
       function variantRoot() {
         if (rootEl && rootEl.parentNode) { return rootEl; }
         var host = document.body || document.documentElement;
@@ -737,11 +725,35 @@
         return rootEl;
       }
 
+      // pruneUndos drops undo records whose element has left the document. A
+      // page that re-renders keeps handing the engine fresh nodes, and each one
+      // adds a record that pins its element; without this an hour on a
+      // re-rendering page retains every node the page ever discarded. It runs
+      // only past UNDO_PRUNE_THRESHOLD so an ordinary page keeps every record
+      // and its exact-revert guarantee. Variant-root records are kept: their
+      // element is the engine's own container.
+      function pruneUndos() {
+        if (undos.length <= UNDO_PRUNE_THRESHOLD) { return; }
+        var kept = [];
+        for (var i = 0; i < undos.length; i++) {
+          var rec = undos[i];
+          if (rec.el === rootEl || rec.el.isConnected !== false) {
+            kept.push(rec);
+          } else {
+            // Forget the applied-mark too: if the node ever returns, the op is
+            // applied (and recorded) afresh rather than left without an undo.
+            marks['delete'](rec.el);
+          }
+        }
+        undos = kept;
+      }
+
       function applyOps(id) {
         var v = variants[id];
         if (!v) { return; }
         beginMutate();
         try {
+          pruneUndos();
           var missing = [];
           for (var i = 0; i < v.ops.length; i++) {
             var op = v.ops[i];
@@ -774,7 +786,9 @@
           appliedId = id;
           stats.applyCount++;
           lastMissing = missing;
-          surfaceMissing(missing);
+          var missingKey = missing.join('\n');
+          surfaceMissing(missing, missingKey !== lastMissingKey);
+          lastMissingKey = missingKey;
         } finally {
           endMutate();
         }
@@ -796,6 +810,7 @@
           rootEl = null;
           appliedId = null;
           lastMissing = [];
+          lastMissingKey = '';
           stats.revertCount++;
           clearMissingMarker();
         } finally {
@@ -846,7 +861,7 @@
         missingTargets: function () { return lastMissing.slice(); },
         refusedOps: function () { return refused.slice(); },
         routeMatches: function () { return routeMatches(routeBinding); },
-        stats: function () { return { applyCount: stats.applyCount, writeCount: stats.writeCount, revertCount: stats.revertCount }; },
+        stats: function () { return { applyCount: stats.applyCount, writeCount: stats.writeCount, revertCount: stats.revertCount, undoCount: undos.length }; },
         destroy: function () {
           if (destroyed) { return; }
           removeOverlay();

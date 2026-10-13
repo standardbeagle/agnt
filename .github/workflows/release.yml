@@ -42,7 +42,10 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          make vendor
+          # Build from the committed vendor/ tree, and refuse to release if it
+          # is not exactly what go.mod resolves to (no patch lives only in
+          # vendor/; see .claude/rules/platform-build-and-flake-lessons.md §2).
+          make vendor-check
           VERSION=${GITHUB_REF#refs/tags/v}
           LDFLAGS="-s -w -X main.appVersion=${VERSION}"
           EXT=""

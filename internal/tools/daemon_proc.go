@@ -179,6 +179,7 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 
 		output := RunOutput{
 			ProcessID: processID,
+			Name:      getString(result, "name"),
 			PID:       getInt(result, "pid"),
 			Command:   getString(result, "command"),
 			ExitCode:  getInt(result, "exit_code"),

@@ -31,7 +31,9 @@ A `pass_with_changes` verdict's `new_acceptance_criteria` are follow-up debt for
 
 ## 6. Verify before rename-to-activate
 
-The integrity check gates the rename. Verifying after activation is too late. `cmd/agnt/upgrade.go` follows the same order; keep them consistent.
+The integrity check gates the rename. Verifying after activation is too late. `UploadFile` (§5) is the reference.
+
+`cmd/agnt/upgrade.go` does **not** follow this order and must not be cited as an example: for a direct install it pipes `install.sh` from the `main` branch into `bash` with no integrity check, and its only "verify" step reads the new binary's version after it is already active. That gap is open.
 
 ## 7. Non-interactive install needs explicit consent
 

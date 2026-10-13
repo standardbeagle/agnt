@@ -373,26 +373,18 @@ func (d *Daemon) killSessionPGID(session *Session, expected *sessionPGIDIdentity
 	}
 }
 
-// killSessionJobObject is the Windows equivalent of killSessionPGID: it
-// terminates every process assigned to the PTY child's Job Object and
-// closes the handle. No-op on Unix (SessionJobHandle is always 0 — the
-// stub in platform/sessionjob_other.go returns nil) or when the client
-// didn't report a handle.
+// killSessionJobObject never acts on the job handle a client reported.
 //
-// This coexists with killSessionPGID at the dispatch level: on Unix
-// only pgid is active, on Windows only the job handle is active. Both
-// are called unconditionally from doCleanupExact because each no-ops on the
-// wrong platform.
+// A Windows handle value is an index into the handle table of the process
+// that owns it. The number `agnt run` sent is that process's index; in the
+// daemon it names whatever the daemon holds in the same slot — a pipe, a
+// log file, or the Job Object of an unrelated managed process. Terminating
+// or closing it here took that object down instead of the session's job.
 //
-// Handle lifetime caveat: Windows job handles are per-process. The
-// handle reported by `agnt run` is only valid in the daemon process if
-// the daemon and `agnt run` are the same process (unusual) or if the
-// handle has been duplicated explicitly across processes. In the
-// common case an explicit TerminateJobObject from the daemon will
-// fail with ERROR_INVALID_HANDLE — we log that as a warning but do
-// NOT treat it as fatal because the owning `agnt run` process still
-// has JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE as a backstop when its
-// handle is finally closed.
+// Windows session containment is owned by `agnt run`: its job object carries
+// JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, so the tree dies when that process
+// releases the handle or exits. Current clients report 0. A non-zero value
+// can only come from an older client, and is reported and ignored.
 func (d *Daemon) killSessionJobObject(session *Session) {
 	session.mu.RLock()
 	handle := session.SessionJobHandle
@@ -403,13 +395,9 @@ func (d *Daemon) killSessionJobObject(session *Session) {
 		return
 	}
 
-	debug.Log("daemon", "session %s: terminating job object 0x%x", code, handle)
-
-	if err := platform.KillSessionJobObject(uintptr(handle)); err != nil {
-		debug.Warn("daemon", "session %s: TerminateJobObject(0x%x) failed: %v", code, handle, err)
-		d.daemonStartupLog("warning", "session_job_kill_failed",
-			fmt.Sprintf("session %s: failed to terminate job 0x%x: %v", code, handle, err))
-	}
+	debug.Warn("daemon", "session %s: ignoring job handle 0x%x reported by the client (not valid in this process)", code, handle)
+	d.daemonStartupLog("warning", "session_job_handle_ignored",
+		fmt.Sprintf("session %s: job handle 0x%x belongs to the client process and was not acted on; upgrade the agnt client", code, handle))
 }
 
 func (d *Daemon) cleanupGracePeriod() time.Duration {
@@ -433,7 +421,12 @@ func ownerConfirmedGone(session *Session) bool {
 // deferAgainWhileOwnerMayLive reschedules the ownership check and reports
 // whether cleanup must stop. Polling is intentionally bounded to one timer per
 // session; CleanupSessionResourcesDeferred replaces any prior timer.
-func (d *Daemon) deferAgainWhileOwnerMayLive(sessionCode string, session *Session) bool {
+//
+// identity is the PGID identity captured when the connection first dropped. It
+// is carried into the next round rather than captured again: a fresh capture
+// after the PTY child exited and its pgid was recycled would fingerprint the
+// unrelated group, and the identity check would then approve killing it.
+func (d *Daemon) deferAgainWhileOwnerMayLive(sessionCode string, session *Session, identity *sessionPGIDIdentity) bool {
 	if ownerConfirmedGone(session) {
 		return false
 	}
@@ -441,7 +434,7 @@ func (d *Daemon) deferAgainWhileOwnerMayLive(sessionCode string, session *Sessio
 	ownerPID := session.OwnerPID
 	session.mu.RUnlock()
 	debug.Log("daemon", "session %s: control connection absent but owner pid %d is alive or unknown; deferring cleanup", sessionCode, ownerPID)
-	d.CleanupSessionResourcesDeferred(sessionCode)
+	d.cleanupSessionResourcesDeferred(sessionCode, identity)
 	return true
 }
 
@@ -495,6 +488,13 @@ func (d *Daemon) CleanupSessionResources(sessionCode string) {
 // killing processes during that window. If the session is re-registered before
 // the timer fires, the cleanup is cancelled entirely.
 func (d *Daemon) CleanupSessionResourcesDeferred(sessionCode string) {
+	d.cleanupSessionResourcesDeferred(sessionCode, nil)
+}
+
+// cleanupSessionResourcesDeferred schedules the cleanup. carried is the PGID
+// identity an earlier round already captured for this same dropped connection
+// (see deferAgainWhileOwnerMayLive); nil captures it now.
+func (d *Daemon) cleanupSessionResourcesDeferred(sessionCode string, carried *sessionPGIDIdentity) {
 	// Get session to find project path
 	session, ok := d.sessionRegistry.Get(sessionCode)
 	if !ok {
@@ -517,9 +517,12 @@ func (d *Daemon) CleanupSessionResourcesDeferred(sessionCode string) {
 	// Capture the PTY leader identity before the grace window. PID and PGID
 	// numbers are recyclable; the timer must not signal an unrelated process
 	// that acquired the same numeric identity after this session exited.
-	expectedPGIDIdentity := &sessionPGIDIdentity{}
-	if identity, ok := inspectSessionPGIDIdentity(session.SessionPGID); ok {
-		expectedPGIDIdentity = &identity
+	expectedPGIDIdentity := carried
+	if expectedPGIDIdentity == nil {
+		expectedPGIDIdentity = &sessionPGIDIdentity{}
+		if identity, ok := inspectSessionPGIDIdentity(session.SessionPGID); ok {
+			expectedPGIDIdentity = &identity
+		}
 	}
 
 	if projectPath == "" {
@@ -557,7 +560,7 @@ func (d *Daemon) CleanupSessionResourcesDeferred(sessionCode string) {
 				debug.Log("daemon", "skipping deferred cleanup for session %s — re-registered during grace period", sessionCode)
 				return
 			}
-			if d.deferAgainWhileOwnerMayLive(sessionCode, s) {
+			if d.deferAgainWhileOwnerMayLive(sessionCode, s, expectedPGIDIdentity) {
 				return
 			}
 			d.doCleanupExact(sessionCode, session, expectedPGIDIdentity)
@@ -603,7 +606,7 @@ func (d *Daemon) CleanupSessionResourcesDeferred(sessionCode string) {
 				debug.Log("daemon", "skipping deferred cleanup for session %s — re-registered during grace period", sessionCode)
 				return
 			}
-			if d.deferAgainWhileOwnerMayLive(sessionCode, s) {
+			if d.deferAgainWhileOwnerMayLive(sessionCode, s, expectedPGIDIdentity) {
 				return
 			}
 		}
@@ -642,9 +645,10 @@ func (d *Daemon) doCleanupExact(sessionCode string, expected *Session, expectedP
 	projectPath := session.ProjectPath
 	if projectPath == "" {
 		debug.Log("daemon", "session %s has no project path, skipping resource cleanup", sessionCode)
-		// Still try to reap descendants on both platforms — the pgid
-		// path no-ops on Windows and the job path no-ops on Unix, so
-		// invoking both is always safe.
+		// Still reap the PTY child's process group. killSessionPGID no-ops
+		// on Windows (SessionPGID is 0 there; `agnt run`'s own Job Object
+		// contains the tree). killSessionJobObject kills nothing on any
+		// platform — it only reports a legacy client's non-zero handle.
 		d.killSessionPGID(session, expectedPGIDIdentity)
 		d.killSessionJobObject(session)
 		d.finalizeSessionRetirement(sessionCode, session)
@@ -653,19 +657,20 @@ func (d *Daemon) doCleanupExact(sessionCode string, expected *Session, expectedP
 
 	debug.Log("daemon", "cleaning up resources for session %s (project: %s)", sessionCode, projectPath)
 
-	// Reap every process in the PTY child's session pgid / Job Object
-	// BEFORE we touch managed processes or proxies. This catches
-	// background jobs the coding agent spawned through non-interactive
-	// bash (e.g. `npm run dev &`) that the daemon has no explicit
-	// handle on. Managed `proc run` children live in their own pgids
-	// and are stopped separately below via ProcessManager — losing
-	// these calls would leak anything the agent started outside the
-	// daemon's view.
+	// Reap every process in the PTY child's session pgid BEFORE we touch
+	// managed processes or proxies. This catches background jobs the
+	// coding agent spawned through non-interactive bash (e.g.
+	// `npm run dev &`) that the daemon has no explicit handle on. Managed
+	// `proc run` children live in their own pgids and are stopped
+	// separately below via ProcessManager — losing this call would leak
+	// anything the agent started outside the daemon's view.
 	//
-	// Both calls are issued unconditionally: pgid cleanup no-ops on
-	// Windows (SessionPGID is always 0 there) and job-object cleanup
-	// no-ops on Unix (SessionJobHandle is always 0 there). The platform
-	// package's build-tagged stubs guarantee cross-platform safety.
+	// pgid cleanup no-ops on Windows (SessionPGID is always 0 there):
+	// that tree is contained by the Job Object `agnt run` owns, which
+	// kills it when `agnt run` releases the handle or exits. The daemon
+	// never terminates a job object. killSessionJobObject only reports a
+	// non-zero SessionJobHandle — a legacy wire field current clients
+	// send as 0 — and ignores it.
 	d.killSessionPGID(session, expectedPGIDIdentity)
 	d.killSessionJobObject(session)
 
@@ -810,6 +815,7 @@ func (d *Daemon) doCleanupExact(sessionCode string, expected *Session, expectedP
 			d.scriptRegistry.Remove(entry.Name, projectPath)
 			d.scriptConfigs.Delete(entry.ProcessID)
 			d.portKillDeclined.Delete(entry.ProcessID)
+			d.runLaunches.Delete(entry.ProcessID)
 		}
 
 		// Cancel any PROC RUN launches still waiting on dependencies for
@@ -878,6 +884,7 @@ func (d *Daemon) doCleanupExact(sessionCode string, expected *Session, expectedP
 				d.scriptRegistry.Remove(entry.Name, entry.ProjectPath)
 				d.scriptConfigs.Delete(pid)
 				d.portKillDeclined.Delete(pid)
+				d.runLaunches.Delete(pid)
 			}
 		}
 	}
@@ -903,4 +910,10 @@ func (d *Daemon) finalizeSessionState(sessionCode string) {
 	}
 	d.forwardMappings.Delete(sessionCode)
 	d.forwardingPaused.Delete(sessionCode)
+	d.sessionControlConns.Delete(sessionCode)
+	// A scheduled message is addressed to this session. Left pending it would
+	// be typed into whichever later session registered under the same code.
+	if d.scheduler != nil {
+		d.scheduler.CancelSession(sessionCode)
+	}
 }

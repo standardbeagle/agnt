@@ -18,7 +18,6 @@
 //   - report:        scenario run report model (<name>.report.json)
 //   - driver:        headless-chrome replay driver with in-page network mock
 //   - refine:        LLM-assisted scenario cleanup (needs an API key)
-//   - explore:       seed partitioning for subagent breadth exploration
 //   - store:         scenario/report persistence
 //
 // All record/refine/replay/explore actions are license-gated behind

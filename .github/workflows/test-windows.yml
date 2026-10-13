@@ -98,22 +98,36 @@ jobs:
       - name: Run unit tests
         shell: pwsh
         run: |
-          # go test on Windows may exit non-zero due to temp file cleanup
-          # errors ("Access is denied") even when all tests pass. Capture
-          # output and check for the PASS/FAIL verdict lines instead.
+          # The verdict is go test's exit code, plus the output: any package
+          # line starting with FAIL (which is how a build failure or a
+          # timeout in one sub-package is reported, with no "--- FAIL:" line
+          # at all), any failed test, panic or data race fails the job.
+          #
+          # One narrow exception. On Windows go test can exit non-zero after
+          # every test passed, because removing its temp directory fails with
+          # "Access is denied". A non-zero exit is forgiven only when the
+          # output carries that cleanup error, at least one package reported
+          # ok, and nothing in the output says FAIL.
           function Run-GoTest($label, $pkg) {
             Write-Host "Running $label tests..."
             $output = go test -v -race $pkg 2>&1 | Out-String
+            $exit = $LASTEXITCODE
             Write-Host $output
-            $lines = $output -split "`n" | Where-Object { $_.Trim() -ne "" }
-            $hasFail = ($lines | Where-Object { $_ -match "--- FAIL:" -or $_ -match "^panic:" -or $_ -match "DATA RACE" }).Count -gt 0
-            $hasOk = ($lines | Where-Object { $_ -match "^ok\s" }).Count -gt 0
-            $hasPass = ($lines | Where-Object { $_ -match "^--- PASS:" }).Count -gt 0
-            if ($hasFail) {
-              throw "$label tests failed"
+            $lines = $output -split "`r?`n" | Where-Object { $_.Trim() -ne "" }
+            $failLines = @($lines | Where-Object { $_ -match "^FAIL(\s|$)" -or $_ -match "^\s*--- FAIL:" -or $_ -match "^panic:" -or $_ -match "DATA RACE" })
+            $hasOk = @($lines | Where-Object { $_ -match "^ok\s" }).Count -gt 0
+            if ($failLines.Count -gt 0) {
+              throw "$label tests failed: $($failLines[0])"
             }
-            if (-not $hasOk -and -not $hasPass) {
-              throw "$label tests produced no verdict (exit code $LASTEXITCODE)"
+            if (-not $hasOk) {
+              throw "$label tests produced no ok verdict (exit code $exit)"
+            }
+            if ($exit -ne 0) {
+              $cleanupOnly = $output -match "Access is denied"
+              if (-not $cleanupOnly) {
+                throw "$label: go test exited $exit with no FAIL line and no temp-cleanup error to explain it"
+              }
+              Write-Host "$label: go test exited $exit after all packages passed (temp directory cleanup: Access is denied); treating as passed"
             }
             Write-Host "$label tests passed"
           }

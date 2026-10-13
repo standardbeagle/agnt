@@ -29,8 +29,12 @@ func (ps *ProxyServer) runHealthCheck(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			// Not serving right now (crashed, or in the auto-restart backoff):
+			// skip this probe but keep the loop. Returning here ended health
+			// checks for good when a tick landed in the backoff window. The
+			// loop ends with the context, which Stop always cancels.
 			if !ps.running.Load() {
-				return
+				continue
 			}
 			ps.probeBackend()
 		}

@@ -1,6 +1,7 @@
 package sshclient
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -169,3 +170,76 @@ func dirOf(path string) string {
 	}
 	return path[:idx]
 }
+
+// knownHostKeyAlgorithms returns the host-key algorithms to request from
+// hostPort ("host:port"), derived from the key types known_hosts records for
+// it. Nil means "no opinion": the caller leaves the library default in place.
+//
+// Without this the client negotiates by its own preference order, which puts
+// ECDSA and RSA ahead of ed25519. A server that offers both, recorded in
+// known_hosts under its ed25519 key only (what OpenSSH writes on first
+// contact), then presents its ECDSA key; known_hosts has entries for the host
+// but none of that type, and HostKeyCallback reports a key MISMATCH: a
+// man-in-the-middle warning for a host that has not changed. Asking for the
+// recorded types first makes the server present a key that can be compared.
+//
+// The answer is nil for an unknown host (the TOFU prompt takes whatever the
+// server prefers) and whenever the file uses @cert-authority, because a CA
+// line names the CA's key type, not the host certificate's.
+func knownHostKeyAlgorithms(knownHostsPath, hostPort string) []string {
+	data, err := os.ReadFile(knownHostsPath)
+	if err != nil || bytes.Contains(data, []byte("@cert-authority")) {
+		return nil
+	}
+	check, err := knownhosts.New(knownHostsPath)
+	if err != nil {
+		return nil
+	}
+	// A key of a type no file can contain: the lookup always misses, and the
+	// miss lists every key recorded for the host.
+	var keyErr *knownhosts.KeyError
+	if !errors.As(check(hostPort, probeAddr{hostPort}, probeKey{}), &keyErr) {
+		return nil
+	}
+	known := make(map[string]bool, len(keyErr.Want))
+	for _, w := range keyErr.Want {
+		known[w.Key.Type()] = true
+	}
+	var algos []string
+	for _, cand := range hostKeyAlgoPreference {
+		if known[cand.keyType] {
+			algos = append(algos, cand.algos...)
+		}
+	}
+	return algos
+}
+
+// hostKeyAlgoPreference maps a known_hosts key type to the signature
+// algorithms that present it, strongest first. An ssh-rsa key is offered under
+// the SHA-2 signature names before the legacy SHA-1 one.
+var hostKeyAlgoPreference = []struct {
+	keyType string
+	algos   []string
+}{
+	{ssh.KeyAlgoED25519, []string{ssh.KeyAlgoED25519}},
+	{ssh.KeyAlgoECDSA256, []string{ssh.KeyAlgoECDSA256}},
+	{ssh.KeyAlgoECDSA384, []string{ssh.KeyAlgoECDSA384}},
+	{ssh.KeyAlgoECDSA521, []string{ssh.KeyAlgoECDSA521}},
+	{ssh.KeyAlgoRSA, []string{ssh.KeyAlgoRSASHA512, ssh.KeyAlgoRSASHA256, ssh.KeyAlgoRSA}},
+}
+
+// probeKey is a public key of a type that cannot appear in known_hosts.
+type probeKey struct{}
+
+func (probeKey) Type() string    { return "agnt-known-hosts-probe" }
+func (probeKey) Marshal() []byte { return []byte("agnt-known-hosts-probe") }
+func (probeKey) Verify([]byte, *ssh.Signature) error {
+	return errors.New("probe key cannot verify")
+}
+
+// probeAddr satisfies the net.Addr the knownhosts callback wants; the lookup
+// itself goes by the hostname argument.
+type probeAddr struct{ hostPort string }
+
+func (probeAddr) Network() string  { return "tcp" }
+func (a probeAddr) String() string { return a.hostPort }

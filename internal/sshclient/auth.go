@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync"
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
@@ -50,24 +51,50 @@ func agentAuthMethod() ssh.AuthMethod {
 	return ssh.PublicKeysCallback(ag.Signers)
 }
 
-// identityFileAuthMethod parses each identity file as a PEM-encoded private
-// key. Unencrypted keys parse directly; encrypted keys prompt interactively
-// via prompter for the passphrase (never silently skipped). Returns nil if
-// no identity files were provided or none could be parsed.
+// identityFileAuthMethod offers the keys in identityFiles, loading them only
+// when the SSH library asks for them.
+//
+// The library tries auth methods in order and stops at the first that works,
+// so with an agent holding the right key this callback never runs and an
+// encrypted key file never prompts. (It used to be parsed up front, on every
+// dial and every ProxyJump hop: a passphrase prompt before the agent had been
+// tried at all.) Encrypted keys still prompt via prompter when they are
+// needed, never silently skipped. Returns nil if no identity files were given.
 func identityFileAuthMethod(identityFiles []string, prompter Prompter) ssh.AuthMethod {
-	var signers []ssh.Signer
-	for _, path := range identityFiles {
-		signer, err := loadIdentityFile(path, prompter)
-		if err != nil {
-			fmt.Fprintf(prompter.Out, "sshclient: skipping identity file %s: %v\n", path, err)
-			continue
-		}
-		signers = append(signers, signer)
-	}
-	if len(signers) == 0 {
+	if len(identityFiles) == 0 {
 		return nil
 	}
-	return ssh.PublicKeys(signers...)
+	return ssh.PublicKeysCallback(func() ([]ssh.Signer, error) {
+		var signers []ssh.Signer
+		for _, path := range identityFiles {
+			signer, err := cachedIdentity(path, prompter)
+			if err != nil {
+				fmt.Fprintf(prompter.Out, "sshclient: skipping identity file %s: %v\n", path, err)
+				continue
+			}
+			signers = append(signers, signer)
+		}
+		return signers, nil
+	})
+}
+
+// identityCache holds the signers already loaded in this process, by path.
+// A reconnect dials again with the same identity files; without the cache it
+// would ask for the passphrase again on every attempt, from a goroutine
+// competing with the session's input pump for stdin. Failed loads are not
+// cached, so a mistyped passphrase can be retried.
+var identityCache sync.Map // path -> ssh.Signer
+
+func cachedIdentity(path string, prompter Prompter) (ssh.Signer, error) {
+	if v, ok := identityCache.Load(path); ok {
+		return v.(ssh.Signer), nil
+	}
+	signer, err := loadIdentityFile(path, prompter)
+	if err != nil {
+		return nil, err
+	}
+	identityCache.Store(path, signer)
+	return signer, nil
 }
 
 func loadIdentityFile(path string, prompter Prompter) (ssh.Signer, error) {

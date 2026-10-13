@@ -38,7 +38,7 @@ func (d *Daemon) hubHandleShimRegister(ctx context.Context, conn *hubpkg.Connect
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "SHIM REGISTER requires project_path and bin_dir")
 	}
 	if err := shims.RecordInstall(req.ProjectPath, req.BinDir, req.SessionCode); err != nil {
-		return conn.WriteInternalErr(err.Error())
+		return conn.WriteErr(hubproto.ErrInternal, err.Error())
 	}
 	d.ensureShimWatcher()
 	return conn.WriteOK("shim install recorded")

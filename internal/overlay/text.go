@@ -2,6 +2,17 @@ package overlay
 
 import "unicode/utf8"
 
+// RuneCells returns the number of terminal cells r occupies: two for wide
+// (East Asian Wide/Fullwidth, emoji) runes, one otherwise. Exposed for
+// cmd/agnt's line editor so cursor motion uses the same width table the
+// renderer pads with.
+func RuneCells(r rune) int {
+	if isWideChar(r) {
+		return 2
+	}
+	return 1
+}
+
 // TruncateRunes shortens s to at most maxRunes runes, appending suffix only when
 // it actually truncates. It counts and cuts on rune boundaries, so unlike a
 // byte-offset cut (s[:n]) it can never split a multibyte UTF-8 sequence — a

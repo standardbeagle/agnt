@@ -1,6 +1,7 @@
 package publish
 
 import (
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -28,14 +29,71 @@ func allowedAttrName(name string) bool {
 		return true
 	}
 	if strings.HasPrefix(lower, "aria-") || strings.HasPrefix(lower, "data-") {
-		// aria-/data- suffix must be a well-formed ident tail.
-		return true
+		// The name is handed to Element.setAttribute verbatim, which throws on
+		// anything that is not a valid attribute name. Validate the ORIGINAL
+		// spelling (not the trimmed one) so a name the browser would refuse is
+		// refused at publish instead of failing silently at render time, and cap
+		// its length so the field is not unbounded.
+		// lower was trimmed for the deny checks above; the prefix must also hold
+		// on the untrimmed name, or " data-x" would be sliced mid-prefix.
+		raw := strings.ToLower(name)
+		if !strings.HasPrefix(raw, "aria-") && !strings.HasPrefix(raw, "data-") {
+			return false
+		}
+		return len(name) <= MaxAttrNameLength && attrTailRe.MatchString(name[len("aria-"):])
 	}
 	return false
 }
 
+// attrTailRe is the tail of an aria-*/data-* attribute name: one or more
+// name characters, nothing a DOM setAttribute would reject. Both prefixes are
+// five bytes long, so one slice offset serves both.
+var attrTailRe = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+
 // isClassIdent reports whether s is a single valid ident usable as a class name.
 func isClassIdent(s string) bool { return fullIdRe.MatchString(s) }
+
+// errAddScriptRefused is THE addScript refusal — the only one, and the same
+// text on every path that can meet the op: publish (Op.Validate, reached from
+// Store.Create and Store.PublishFile through PublishedWalkthrough.Validate) and
+// load (Store.load, for a record stored before the gate).
+//
+// INV-14 / operator decision 2026-08-18 (task 01M09KYHZ0CFAX2NVGMAQJ1WFW,
+// option (a)): a published walkthrough is served on the public plane AS the
+// artifact document, always carrying the mandatory agnt disclosure indicator
+// (the RolePublic demo-indicator module, §9b). An authored script runs in the
+// same realm as that indicator and — proven in real Chrome (task 01KYQFAZRH: id
+// squatting, re-assert-budget exhaustion, a Node.prototype.appendChild
+// monkeypatch) — can defeat the disclosure from first paint. Same-realm script
+// beats same-realm script; the module cannot be hardened against it. So "no
+// publisher-reachable input can remove, hide, or blank the indicator" is kept
+// by not admitting authored script at all.
+//
+// The refusal is total, so the machinery that once served an admitted body is
+// gone: there is no per-revision script budget, no per-revision script-src
+// hash, and the public bundle's renderer has no addScript handler. The op TYPE
+// and its two fields (Op.Code, Op.Src) remain for one reason — so an artifact
+// carrying the op is refused by THIS message rather than by a JSON "unknown
+// field" error that says nothing about why.
+func errAddScriptRefused() error {
+	return errf("addScript is not permitted on a published walkthrough: every share is served with the mandatory agnt disclosure indicator, and an authored script can defeat that disclosure (INV-14) — remove the addScript op (both an inline `code` body and a `src` URL are refused)")
+}
+
+// carriesAddScript reports whether a walkthrough's variant set holds an
+// addScript op in any variant. Nil-safe.
+func carriesAddScript(pw *PublishedWalkthrough) bool {
+	if pw == nil || pw.VariantSet == nil {
+		return false
+	}
+	for i := range pw.VariantSet.Variants {
+		for j := range pw.VariantSet.Variants[i].Ops {
+			if pw.VariantSet.Variants[i].Ops[j].Op == OpAddScript {
+				return true
+			}
+		}
+	}
+	return false
+}
 
 // noControlChars reports whether s is free of ASCII control chars.
 func noControlChars(s string) bool {
@@ -52,16 +110,23 @@ func noControlChars(s string) bool {
 // and absent for variant-root ops, only the fields legal for the op type are
 // populated, and each is within its surviving limit.
 //
-// The raw-content ops (setHTML/addStyle/addScript) are deliberately NOT
-// inspected for "script-ness": INV-6 is retired and §6a forbids reintroducing
-// the string scan as defense-in-depth, because it produces false rejections of
-// legitimate publisher variants while adding nothing the wholesale-replaced CSP
+// The raw-content ops (setHTML/addStyle) are deliberately NOT inspected for
+// "script-ness": INV-6 is retired and §6a forbids reintroducing the string scan
+// as defense-in-depth, because it produces false rejections of legitimate
+// publisher variants while adding nothing the wholesale-replaced CSP
 // (INV-11/INV-12) does not already guarantee. What survives is size caps (§5),
 // the selector grammar (§5a), and https-only URLs (§5, now justified by
 // INV-13).
+//
+// addScript is the one op that is NAMED and always refused — see
+// errAddScriptRefused. It is checked first, before any field of the op is
+// looked at, so the refusal reads the same whatever the op carries.
 func (o *Op) Validate() error {
+	if o.Op == OpAddScript {
+		return errAddScriptRefused()
+	}
 	switch o.Op {
-	case OpAddStyle, OpAddScript:
+	case OpAddStyle:
 		// Variant-root ops (§6a): they append to the variant root rather than
 		// mutating a matched element, so a selector is meaningless.
 		if o.Selector != "" {
@@ -152,37 +217,6 @@ func (o *Op) Validate() error {
 			return errf("addStyle: css %d bytes exceeds max %d", len(o.CSS), MaxStylePatchBytes)
 		}
 		return nil
-	case OpAddScript:
-		if err := o.forbidExcept("code", "src"); err != nil {
-			return err
-		}
-		switch {
-		case o.Src != "" && o.Code != "":
-			// §6a: src and code are alternative sources for ONE body.
-			return errf("addScript: src and code are alternatives; supply exactly one")
-		case o.Src != "":
-			// §6a records publish-time fetch-and-inline as the plan for src, and
-			// that decision stands — but its fetch half does not exist. Nothing
-			// reads Op.Src: no pipeline fetches it, authoredScriptCSPHashes
-			// contributes no 'sha256-' source for an op still carrying it, and
-			// variant-engine.js refuses it at render time. Accepting it here
-			// therefore reported publish success for a script that could never
-			// run, with no signal to the author — a validated input with no
-			// consumer (publish-security-review-lessons.md §5). Refuse it at its
-			// source so the unimplemented state is loud. The renderer's refusal
-			// stays as defence in depth, and it still covers revisions published
-			// before this gate existed.
-			return errf("addScript: src is not supported: publish-time fetching of src is not implemented, so the script would never run — inline the script body in 'code' instead")
-		case o.Code != "":
-			// The per-revision script budget (§5) is enforced by
-			// VariantSet.Validate across every variant.
-			if len(o.Code) > MaxRawScriptBytes {
-				return errf("addScript: code %d bytes exceeds max %d", len(o.Code), MaxRawScriptBytes)
-			}
-			return nil
-		default:
-			return errf("addScript: one of src or code is required")
-		}
 	default:
 		// Unreachable: the selector switch above already rejected unknown types.
 		return errf("unknown op type %q", o.Op)
@@ -251,46 +285,39 @@ func (o *Op) forbidExcept(allowed ...string) error {
 // signature is a stable key for duplicate-op detection within a variant. It
 // covers every data field, Props included: two applyStyle ops on one selector
 // that set different properties are distinct ops, not duplicates.
+//
+// Every field is length-prefixed. A bare separator is not enough: a value may
+// contain the separator, so {name:"data-a|b", value:"c"} and {name:"data-a",
+// value:"b|c"} would otherwise share a key and the second be refused as a
+// duplicate of the first.
 func (o *Op) signature() string {
 	var b strings.Builder
-	b.WriteString(string(o.Op))
-	b.WriteByte('|')
-	b.WriteString(o.Selector)
-	b.WriteByte('|')
-	b.WriteString(o.Name)
-	b.WriteByte('|')
-	b.WriteString(o.Value)
-	b.WriteByte('|')
-	b.WriteString(o.From)
-	b.WriteByte('|')
-	b.WriteString(o.To)
-	b.WriteByte('|')
-	b.WriteString(o.URL)
-	b.WriteByte('|')
-	b.WriteString(o.HTML)
-	b.WriteByte('|')
-	b.WriteString(o.CSS)
-	b.WriteByte('|')
-	b.WriteString(o.Code)
-	b.WriteByte('|')
-	b.WriteString(o.Src)
-	// Props is a map, so its keys are sorted for a stable key. Each entry is
-	// length-prefixed so no property/value pair can be spelled to collide with
-	// a different one.
+	field := func(s string) {
+		b.WriteString(strconv.Itoa(len(s)))
+		b.WriteByte(':')
+		b.WriteString(s)
+		b.WriteByte('|')
+	}
+	field(string(o.Op))
+	field(o.Selector)
+	field(o.Name)
+	field(o.Value)
+	field(o.From)
+	field(o.To)
+	field(o.URL)
+	field(o.HTML)
+	field(o.CSS)
+	field(o.Code)
+	field(o.Src)
+	// Props is a map, so its keys are sorted for a stable key.
 	props := make([]string, 0, len(o.Props))
 	for prop := range o.Props {
 		props = append(props, prop)
 	}
 	sort.Strings(props)
 	for _, prop := range props {
-		val := o.Props[prop]
-		b.WriteByte('|')
-		b.WriteString(strconv.Itoa(len(prop)))
-		b.WriteByte(':')
-		b.WriteString(prop)
-		b.WriteString(strconv.Itoa(len(val)))
-		b.WriteByte(':')
-		b.WriteString(val)
+		field(prop)
+		field(o.Props[prop])
 	}
 	return b.String()
 }

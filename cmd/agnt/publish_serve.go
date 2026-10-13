@@ -25,6 +25,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/fsnotify/fsnotify"
@@ -98,9 +99,17 @@ immediately and irreversibly.
 The full public URL is printed for every share on boot, and printed again with
 the tunnel origin once a tunnel comes up.
 
+The listener binds loopback (127.0.0.1:8899) by default. To let someone else
+reach it, add --tunnel. An --addr without a host (":9000") or with 0.0.0.0
+binds every interface and is reachable from the LAN with no tunnel; serve
+prints a warning when it does.
+
+Only one serve may run per folder: a second one on the same --dir (or --store)
+refuses to start.
+
 Examples:
   agnt publish serve --dir ./walkthroughs
-  agnt publish serve --dir ./walkthroughs --addr :9000
+  agnt publish serve --dir ./walkthroughs --addr 127.0.0.1:9000
   agnt publish serve --dir ./walkthroughs --tunnel cloudflare`,
 	RunE: runPublishServeCmd,
 }
@@ -116,7 +125,7 @@ var publishServeFlags struct {
 func init() {
 	f := publishServeCmd.Flags()
 	f.StringVar(&publishServeFlags.dir, "dir", "", "directory of *.json walkthroughs to publish (required)")
-	f.StringVar(&publishServeFlags.addr, "addr", defaultPublishServeAddr, "local listen address for the public plane")
+	f.StringVar(&publishServeFlags.addr, "addr", defaultPublishServeAddr, "local listen address for the public plane (a bare :port binds every interface)")
 	f.StringVar(&publishServeFlags.tunnel, "tunnel", "", "expose the public plane through a tunnel: cloudflare | ngrok | tailscale")
 	f.StringVar(&publishServeFlags.storeDir, "store", "", "share store directory (default: per-folder dir under the user cache)")
 	f.StringVar(&publishServeFlags.rotateOnResume, "rotate-on-resume", rotateResumeYes,
@@ -509,6 +518,15 @@ func runPublishServe(ctx context.Context, opts publishServeOptions) error {
 			return fmt.Errorf("publish serve: %w", err)
 		}
 	}
+	// One serve per store. The store's records are authoritative and each serve
+	// holds its own in-memory copy, so two of them on one store overwrite each
+	// other's ring files and rotate tokens out from under each other. The lock is
+	// taken before either store is opened and held until this function returns.
+	releaseLock, err := acquireServeStoreLock(storeDir)
+	if err != nil {
+		return fmt.Errorf("publish serve: %w", err)
+	}
+	defer releaseLock()
 	store, err := publish.New(filepath.Join(storeDir, "shares"), nil)
 	if err != nil {
 		return fmt.Errorf("publish serve: open share store: %w", err)
@@ -600,8 +618,13 @@ func runPublishServe(ctx context.Context, opts publishServeOptions) error {
 
 	// Same public-plane{} request-rate limits the daemon applies, so the two
 	// serving paths throttle identically.
+	// tunnelUp is set once the tunnel this run started reports its URL. Until
+	// then (and always, without --tunnel) the client address is the TCP peer.
+	var tunnelUp atomic.Bool
 	handler := proxy.NewPublicHandler(store, feedback, limits.MaxBodyBytes).
-		WithRateLimits(daemon.PublicRateLimitersFromConfig(appCfg.PublicPlane))
+		WithRateLimits(daemon.PublicRateLimitersFromConfig(appCfg.PublicPlane)).
+		WithShareAggregateLimiter(daemon.PublicShareAggregateLimiterFromConfig(appCfg.PublicPlane)).
+		WithClientAddr(tunnelClientAddr(provider, &tunnelUp))
 	// Test-only: drive the guarded proxied-document route against a fake upstream.
 	// Nil in production, so the default guarded fetcher stands unchanged.
 	if opts.UpstreamSeam != nil {
@@ -638,7 +661,10 @@ func runPublishServe(ctx context.Context, opts publishServeOptions) error {
 			Path:      dir,
 		})
 		// Fold the tunnel origin into every share URL the moment it is known.
-		tun.OnURL(func(url string) { srv.setOrigin(url) })
+		tun.OnURL(func(url string) {
+			tunnelUp.Store(true)
+			srv.setOrigin(url)
+		})
 		if err := tun.Start(ctx); err != nil {
 			return fmt.Errorf("publish serve: start %s tunnel: %w", provider, err)
 		}
@@ -660,6 +686,116 @@ func runPublishServe(ctx context.Context, opts publishServeOptions) error {
 	case err := <-watchErr:
 		return err
 	}
+}
+
+// serveStoreLockFile is the per-store lock a running serve holds.
+const serveStoreLockFile = "serve.lock"
+
+// acquireServeStoreLock takes the exclusive lock on storeDir, or fails naming
+// the store when another process holds it. It is an OS file lock, released by
+// the kernel when the holder exits, so a crashed serve never leaves the store
+// locked. release is idempotent-safe to defer.
+func acquireServeStoreLock(storeDir string) (release func(), err error) {
+	if err := os.MkdirAll(storeDir, 0o700); err != nil {
+		return nil, fmt.Errorf("create store dir %s: %w", storeDir, err)
+	}
+	path := filepath.Join(storeDir, serveStoreLockFile)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open store lock %s: %w", path, err)
+	}
+	if err := tryLockFile(f); err != nil {
+		f.Close()
+		return nil, fmt.Errorf("another 'agnt publish serve' is already using the store %s (one serve per folder: stop it first, or give this run its own --store): %v", storeDir, err)
+	}
+	return func() {
+		_ = unlockFile(f)
+		_ = f.Close()
+	}, nil
+}
+
+// tunnelClientAddr returns the resolver for the address a viewer is
+// rate-limited as when this run fronts its listener with a tunnel.
+//
+// Behind a tunnel every viewer's TCP peer is the tunnel agent on loopback, so
+// keying on r.RemoteAddr puts all of them in ONE (share, IP) bucket: one viewer
+// reloading can 429 the whole audience. The tunnel's own client-address header
+// is the only thing that tells viewers apart — but that header is attacker-
+// controlled on any path that does not go through the tunnel. So it is trusted
+// only when ALL of these hold, and "" (use the TCP peer) is returned otherwise:
+//
+//   - the provider has a forwarded-client rule below;
+//   - the tunnel this run started is up;
+//   - the TCP peer is loopback, i.e. the request came from the local tunnel
+//     agent and not directly over a wide --addr bind;
+//   - the provider's rule yields a value that parses as an IP address.
+//
+// The per-provider rules:
+//
+//   - cloudflare: CF-Connecting-IP. Cloudflare's edge sets it to the client it
+//     accepted the connection from and replaces any value the client sent.
+//   - ngrok, tailscale: the RIGHTMOST entry of X-Forwarded-For. The ngrok agent
+//     and `tailscale serve` are local reverse proxies that APPEND the address
+//     they received the request from; a visitor can send their own
+//     X-Forwarded-For, and whatever they send ends up to the LEFT of the entry
+//     the trusted hop added. So the leftmost entry is attacker-chosen and is
+//     never read. A rightmost entry that is not an IP is not skipped in favour
+//     of the one before it — that would walk back into attacker-chosen entries
+//     — the whole header is ignored and the TCP peer used.
+//
+// UNVERIFIED AGAINST A LIVE TUNNEL: the ngrok/tailscale rule comes from general
+// knowledge of how those agents behave, not from a capture, and nothing in this
+// repo records what they send beyond listing X-Forwarded-For as a header a
+// tunnel adds (proxy/devoidc.go reverseProxyFingerprints). If an agent does not
+// append — sends no header, or passes the visitor's through untouched — the
+// failure modes are: no header → TCP peer (today's shared bucket); visitor's
+// header passed through → a visitor picks their own bucket key, which evades
+// the per-client bucket but not the per-share aggregate one behind it.
+func tunnelClientAddr(provider tunnel.Provider, up *atomic.Bool) func(*http.Request) string {
+	var forwarded func(http.Header) string
+	switch provider {
+	case tunnel.ProviderCloudflare:
+		forwarded = func(h http.Header) string { return h.Get("CF-Connecting-IP") }
+	case tunnel.ProviderNgrok, tunnel.ProviderTailscale:
+		forwarded = rightmostForwardedFor
+	default:
+		return nil
+	}
+	return func(r *http.Request) string {
+		if !up.Load() {
+			return ""
+		}
+		host, _, err := net.SplitHostPort(r.RemoteAddr)
+		if err != nil {
+			return ""
+		}
+		if peer := net.ParseIP(host); peer == nil || !peer.IsLoopback() {
+			return ""
+		}
+		client := net.ParseIP(strings.TrimSpace(forwarded(r.Header)))
+		if client == nil {
+			return ""
+		}
+		return client.String()
+	}
+}
+
+// rightmostForwardedFor returns the last entry of X-Forwarded-For — the one the
+// nearest hop appended — or "" when the header is absent. Repeated header lines
+// are one list in order of appearance (RFC 9110 §5.3), so the last entry of the
+// LAST line is the rightmost. An entry of the form ip:port (or [v6]:port) is
+// reduced to its address.
+func rightmostForwardedFor(h http.Header) string {
+	lines := h.Values("X-Forwarded-For")
+	if len(lines) == 0 {
+		return ""
+	}
+	entries := strings.Split(lines[len(lines)-1], ",")
+	last := strings.TrimSpace(entries[len(entries)-1])
+	if host, _, err := net.SplitHostPort(last); err == nil {
+		return host
+	}
+	return strings.Trim(last, "[]")
 }
 
 // watch re-publishes the folder whenever it changes. It runs fsnotify AND a
@@ -959,8 +1095,13 @@ type publishFeedbackOptions struct {
 }
 
 // runPublishFeedback reads a serve store's feedback and prints it. It opens both
-// stores READ-ONLY (it accepts nothing), so it never writes into a store serve
-// owns — read-side integration only.
+// stores through the read-only constructors (OpenReadOnly /
+// OpenFeedbackStoreReadOnly), which create nothing and write nothing: retention
+// is applied to what is printed, never written back. That matters because the
+// store usually belongs to a serve that is running right now — the ordinary
+// constructors prune on load and on read, which would make this reader a second
+// writer on the same ring files — and because a mistyped --dir must report "no
+// such store" rather than create an empty one for `publish list` to find.
 func runPublishFeedback(opts publishFeedbackOptions) error {
 	if opts.Out == nil {
 		opts.Out = os.Stdout
@@ -969,7 +1110,10 @@ func runPublishFeedback(opts publishFeedbackOptions) error {
 	if err != nil {
 		return fmt.Errorf("publish feedback: %w", err)
 	}
-	shareStore, err := publish.New(filepath.Join(storeDir, "shares"), nil)
+	if _, statErr := os.Stat(filepath.Join(storeDir, "shares")); statErr != nil {
+		return fmt.Errorf("publish feedback: no serve store at %s for %s (has 'agnt publish serve' been run for that folder?): %w", storeDir, servedDir, statErr)
+	}
+	shareStore, err := publish.OpenReadOnly(filepath.Join(storeDir, "shares"), nil)
 	if err != nil {
 		return fmt.Errorf("publish feedback: open share store: %w", err)
 	}
@@ -978,7 +1122,7 @@ func runPublishFeedback(opts publishFeedbackOptions) error {
 		return fmt.Errorf("publish feedback: load config: %w", err)
 	}
 	limits := daemon.FeedbackLimitsFromConfig(appCfg.Feedback)
-	fb, err := publish.NewFeedbackStore(filepath.Join(storeDir, "feedback"), limits, nil)
+	fb, err := publish.OpenFeedbackStoreReadOnly(filepath.Join(storeDir, "feedback"), limits, nil)
 	if err != nil {
 		return fmt.Errorf("publish feedback: open feedback store: %w", err)
 	}

@@ -29,9 +29,9 @@ type RunInput struct {
 	Raw           bool     `json:"raw,omitempty" jsonschema:"Raw mode: use command and args directly"`
 	Command       string   `json:"command,omitempty" jsonschema:"Raw mode: executable to run"`
 	Args          []string `json:"args,omitempty" jsonschema:"Extra args (appended in script mode, used directly in raw mode)"`
-	ID            string   `json:"id,omitempty" jsonschema:"Process ID (auto-generated if empty)"`
+	ID            string   `json:"id,omitempty" jsonschema:"Short name for the process (auto-generated if empty). The returned process_id is project-scoped; proc accepts either from this project"`
 	Mode          RunMode  `json:"mode,omitempty" jsonschema:"Execution mode: background (default), foreground, foreground-raw"`
-	NoAutoRestart bool     `json:"no_auto_restart,omitempty" jsonschema:"Disable automatic restart (auto-restart is enabled by default for background processes)"`
+	NoAutoRestart bool     `json:"no_auto_restart,omitempty" jsonschema:"Turn off a .agnt.kdl script's configured auto-restart for this launch (run never auto-restarts otherwise, so this is a no-op for raw commands and undeclared scripts)"`
 	// Dependency-ordered start: hold the process in pending state until
 	// each named dependency reaches a ready signal (URL detected or port
 	// bound). On dependency timeout the process transitions to failed
@@ -64,9 +64,14 @@ type GroupProcessResult struct {
 
 // RunOutput defines output for run.
 type RunOutput struct {
+	// ProcessID is the daemon's project-scoped id ("myapp-1a2b3c4d:dev"). It
+	// works verbatim in every proc action.
 	ProcessID string `json:"process_id"`
-	PID       int    `json:"pid"`
-	Command   string `json:"command"`
+	// Name is the short name the process runs under ("dev"): the script name
+	// or the id the caller passed. proc accepts it too, from this project.
+	Name    string `json:"name,omitempty"`
+	PID     int    `json:"pid"`
+	Command string `json:"command"`
 	// Foreground mode fields
 	ExitCode int    `json:"exit_code,omitempty"`
 	State    string `json:"state,omitempty"`

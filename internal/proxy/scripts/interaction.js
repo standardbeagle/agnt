@@ -69,6 +69,8 @@
     var interactions = [];
     var interactionIndex = 0;
     var pendingBatch = [];
+    var MAX_PENDING_BATCH = 300; // hard cap; oldest entries dropped on overflow
+    var batchDropped = 0;        // total records dropped from pendingBatch
     var lastScroll = 0;
     var inputDebounce = {};
     var batchTimer = null;
@@ -106,18 +108,83 @@
       return null;
     }
 
-    // Generate target info with comprehensive error handling
-    function getTargetInfo(el) {
-      if (!el || !(el instanceof HTMLElement)) return null;
+    // Bounded enqueue for the send batch (same contract as mutation.js):
+    // drop-oldest at MAX_PENDING_BATCH so a burst of events, or a transport
+    // that drains slower than the page produces, cannot grow the queue
+    // without bound.
+    function queueBatchRecord(record) {
+      pendingBatch.push(record);
+      if (pendingBatch.length > MAX_PENDING_BATCH) {
+        var overflow = pendingBatch.length - MAX_PENDING_BATCH;
+        pendingBatch.splice(0, overflow);
+        batchDropped += overflow;
+      }
+    }
+
+    // Most text nodes boundedText will visit for one element.
+    var MAX_TEXT_NODES = 200;
+
+    // boundedText returns up to max characters of el's text by walking text
+    // nodes and stopping as soon as it has enough. It never reads innerText:
+    // that forces layout and serialises the whole subtree, which for a click
+    // on <body> is the entire page.
+    function boundedText(el, max) {
+      try {
+        if (!el || typeof document.createTreeWalker !== 'function') return '';
+        var walker = document.createTreeWalker(el, 4 /* NodeFilter.SHOW_TEXT */, null);
+        var out = '';
+        var visited = 0;
+        var node;
+        while (out.length < max && visited < MAX_TEXT_NODES && (node = walker.nextNode())) {
+          visited++;
+          var parentTag = node.parentNode && node.parentNode.nodeName;
+          if (parentTag === 'SCRIPT' || parentTag === 'STYLE' || parentTag === 'NOSCRIPT') continue;
+          var piece = String(node.nodeValue || '').replace(/\s+/g, ' ');
+          if (piece === ' ' && (out === '' || out.charAt(out.length - 1) === ' ')) continue;
+          out += piece;
+        }
+        return out.replace(/^\s+|\s+$/g, '').substring(0, max);
+      } catch (e) {
+        return '';
+      }
+    }
+
+    // resolveTarget maps an event target to the element worth recording.
+    // Anything that is not an Element (document, window, text node) yields
+    // null. An element outside the HTML namespace — the <svg>/<path> an icon
+    // button hands back as event.target — resolves to its nearest HTML
+    // ancestor, which is the control the user meant to press; a standalone
+    // SVG document keeps the element itself.
+    function resolveTarget(el) {
+      try {
+        if (!el || el.nodeType !== 1) return null;
+        if (el instanceof HTMLElement) return { el: el, via: undefined };
+        var cur = el.parentNode;
+        var hops = 0;
+        while (cur && hops++ < 50) {
+          if (cur.nodeType === 1 && cur instanceof HTMLElement) {
+            return { el: cur, via: el.tagName ? String(el.tagName).toLowerCase() : 'unknown' };
+          }
+          cur = cur.parentNode;
+        }
+        return { el: el, via: undefined };
+      } catch (e) {
+        return null;
+      }
+    }
+
+    // Generate target info with comprehensive error handling. opts.skipText
+    // leaves the text out entirely — scroll and mousemove sample many times a
+    // second and their target is often the document root.
+    function getTargetInfo(rawEl, opts) {
+      var resolved = resolveTarget(rawEl);
+      if (!resolved) return null;
+      var el = resolved.el;
 
       try {
         var text = '';
-        try {
-          if (el.innerText && typeof el.innerText === 'string') {
-            text = el.innerText.substring(0, config.truncateText);
-          }
-        } catch (e) {
-          // innerText access failed
+        if (!(opts && opts.skipText)) {
+          text = boundedText(el, config.truncateText);
         }
 
         var attrs = {};
@@ -149,7 +216,10 @@
           id: el.id || undefined,
           classes: classListToArray(el.classList),
           text: text || undefined,
-          attributes: Object.keys(attrs).length > 0 ? attrs : undefined
+          attributes: Object.keys(attrs).length > 0 ? attrs : undefined,
+          // Set when the event landed on a non-HTML descendant (e.g. "svg",
+          // "path") and was resolved up to this element.
+          resolved_from: resolved.via
         };
 
       } catch (e) {
@@ -158,8 +228,71 @@
       }
     }
 
-    // Safe interaction recording
-    function recordInteraction(eventType, event, extra) {
+    // Input types that take no typed text; a keydown on them is not typing.
+    var NON_TEXT_INPUT_TYPES = {
+      button: 1, submit: 1, reset: 1, checkbox: 1, radio: 1, range: 1,
+      color: 1, file: 1, image: 1
+    };
+
+    // keyTargetKind classifies a keydown target for keystroke privacy:
+    //   'password' — a password field: nothing about the key is recorded.
+    //   'editable' — any other place the user types (inputs, textareas,
+    //                selects, contenteditable): typed characters are masked.
+    //   'none'     — everything else: the key is a shortcut, recorded as is.
+    function keyTargetKind(el) {
+      try {
+        if (!el || el.nodeType !== 1) return 'none';
+        var tag = el.tagName ? String(el.tagName).toLowerCase() : '';
+        if (tag === 'input') {
+          var type = String(el.type || el.getAttribute('type') || 'text').toLowerCase();
+          if (type === 'password') return 'password';
+          return NON_TEXT_INPUT_TYPES[type] ? 'none' : 'editable';
+        }
+        if (tag === 'textarea' || tag === 'select') return 'editable';
+        if (el.isContentEditable === true) return 'editable';
+        // isContentEditable is layout-free but not implemented everywhere;
+        // the attribute walk is the fallback.
+        if (typeof el.closest === 'function' &&
+            el.closest('[contenteditable=""], [contenteditable="true"], [contenteditable="plaintext-only"]')) {
+          return 'editable';
+        }
+        return 'none';
+      } catch (e) {
+        // Unknown target: mask rather than risk recording typed text.
+        return 'editable';
+      }
+    }
+
+    // keyInfoFor builds the recorded key record. What shortcut debugging needs
+    // survives — modifier combos and non-printing keys (Enter, Escape, Tab,
+    // arrows). What a keylogger needs does not: a character typed into an
+    // editable target is replaced by a masked marker, and a password field
+    // records neither the key nor its modifiers.
+    function keyInfoFor(event, target) {
+      var kind = keyTargetKind(target);
+      if (kind === 'password') {
+        return { key: '', code: '', masked: true };
+      }
+      var key = event.key || '';
+      var isCombo = !!(event.ctrlKey || event.metaKey || event.altKey);
+      // A single code point is a typed character; named keys are longer.
+      var isPrintable = key.length === 1 || (key.length === 2 && key.charCodeAt(0) >= 0xD800 && key.charCodeAt(0) <= 0xDBFF);
+      if (kind === 'editable' && isPrintable && !isCombo) {
+        return { key: '', code: '', masked: true };
+      }
+      return {
+        key: key,
+        code: event.code || '',
+        ctrl: event.ctrlKey || undefined,
+        alt: event.altKey || undefined,
+        shift: event.shiftKey || undefined,
+        meta: event.metaKey || undefined
+      };
+    }
+
+    // Safe interaction recording. opts.skipText is passed through to
+    // getTargetInfo for high-frequency events.
+    function recordInteraction(eventType, event, extra, opts) {
       if (!event || typeof eventType !== 'string') return;
 
       try {
@@ -168,7 +301,7 @@
         // Skip agnt/devtool UI elements
         if (utils.isDevtoolElement && utils.isDevtoolElement(target)) return;
 
-        var targetInfo = getTargetInfo(target);
+        var targetInfo = getTargetInfo(target, opts);
         if (!targetInfo) return;
 
         var interaction = {
@@ -194,14 +327,7 @@
         // Add key info for keyboard events
         try {
           if (event.key !== undefined) {
-            interaction.key = {
-              key: event.key || '',
-              code: event.code || '',
-              ctrl: event.ctrlKey || undefined,
-              alt: event.altKey || undefined,
-              shift: event.shiftKey || undefined,
-              meta: event.metaKey || undefined
-            };
+            interaction.key = keyInfoFor(event, target);
           }
         } catch (e) {
           // Key info extraction failed
@@ -234,7 +360,7 @@
 
         // Queue for server
         try {
-          pendingBatch.push(interaction);
+          queueBatchRecord(interaction);
         } catch (e) {
           reportError('batch_queue_failed', e);
         }
@@ -394,7 +520,7 @@
             x: scrollX,
             y: scrollY
           }
-        });
+        }, { skipText: true });
 
       } catch (err) {
         reportError('handleScroll_failed', err);
@@ -454,7 +580,7 @@
           if (hasElementFromPoint && typeof e.clientX === 'number' && typeof e.clientY === 'number') {
             var target = document.elementFromPoint(e.clientX, e.clientY);
             if (target) {
-              sample.target = getTargetInfo(target);
+              sample.target = getTargetInfo(target, { skipText: true });
             }
           }
         } catch (err) {
@@ -678,6 +804,12 @@
             } catch (e) {
               reportError('clear_failed', e);
             }
+          },
+
+          // Queue health: how many events are waiting for the next send and
+          // how many were dropped because the queue hit its cap.
+          getQueueStats: function() {
+            return { pending: pendingBatch.length, dropped: batchDropped, max: MAX_PENDING_BATCH };
           },
 
           config: config

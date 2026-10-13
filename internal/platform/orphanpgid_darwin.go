@@ -76,9 +76,20 @@ func darwinSysctlSource() ([]darwinProcRow, error) {
 			PPID: int(kp.Eproc.Ppid),
 			PGID: int(kp.Eproc.Pgid),
 			UID:  int(kp.Eproc.Ucred.Uid),
+			Comm: darwinComm(kp.Proc.P_comm[:]),
 		})
 	}
 	return out, nil
+}
+
+// darwinComm converts the NUL-padded p_comm array to a string.
+func darwinComm(raw []byte) string {
+	for i, c := range raw {
+		if c == 0 {
+			return string(raw[:i])
+		}
+	}
+	return string(raw)
 }
 
 // ReadProcCmdline returns the cmdline of pid via sysctl KERN_PROCARGS2.

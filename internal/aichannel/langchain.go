@@ -25,7 +25,6 @@ const (
 	ProviderOpenRouter LLMProvider = "openrouter"
 	ProviderTogether   LLMProvider = "together"
 	ProviderHyperbolic LLMProvider = "hyperbolic"
-	ProviderReplicate  LLMProvider = "replicate"
 	ProviderSambaNova  LLMProvider = "sambanova"
 	ProviderGLM        LLMProvider = "glm"
 )

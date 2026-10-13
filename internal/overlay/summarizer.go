@@ -59,6 +59,13 @@ type SummarizerConfig struct {
 	Model string
 }
 
+// summaryMaxTokens is the API-mode response cap for status summaries and audit
+// reports. Set explicitly so the cap is the same on every provider: before
+// this, nothing set aichannel.Config.MaxTokens, so the limit was whatever each
+// provider library defaulted to (2048 on Anthropic, unbounded elsewhere). 2048
+// keeps a full audit report from being cut off at aichannel's 1024 default.
+const summaryMaxTokens = 2048
+
 // NewSummarizer creates a new Summarizer using a shared connection.
 // For Claude agent, uses CLI mode (required for Claude Code Max plan).
 // For all other agents, automatically uses Anthropic API mode as a fallback
@@ -90,6 +97,7 @@ func NewSummarizer(conn DaemonClient, config SummarizerConfig) *Summarizer {
 		channelConfig.LLMProvider = config.LLMProvider
 		channelConfig.APIKey = config.APIKey
 		channelConfig.Model = config.Model
+		channelConfig.MaxTokens = summaryMaxTokens
 	}
 
 	return &Summarizer{

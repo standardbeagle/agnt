@@ -87,6 +87,19 @@ type AutomationSession struct {
 
 	// Timestamps
 	startedAt atomic.Pointer[time.Time]
+
+	// startCancel cancels the startup navigation while Start is still running
+	// it. Stop reads it from another goroutine (a session in Starting has no
+	// other handle Stop may touch), hence the atomic pointer. Nil outside the
+	// navigation.
+	startCancel atomic.Pointer[context.CancelFunc]
+
+	// launch and navigate are the two browser-touching steps of Start. They
+	// default to the chromedp calls and are replaceable in tests so the
+	// startup timeout and the Stop-during-Starting handoff can be exercised
+	// without spawning Chrome.
+	launch   func(ctx context.Context) error
+	navigate func(ctx context.Context, url string) error
 }
 
 // NewSession creates a new automation session with the given configuration.
@@ -102,6 +115,12 @@ func NewSession(config SessionConfig) *AutomationSession {
 	return &AutomationSession{
 		config: config,
 		done:   make(chan struct{}),
+		launch: func(ctx context.Context) error {
+			return chromedp.Run(ctx)
+		},
+		navigate: func(ctx context.Context, url string) error {
+			return chromedp.Run(ctx, chromedp.Navigate(url))
+		},
 	}
 }
 
@@ -135,8 +154,12 @@ func (s *AutomationSession) Start(ctx context.Context) error {
 		}),
 	)
 
-	// Start the browser by running a minimal task
-	if err := chromedp.Run(s.taskCtx); err != nil {
+	// Start the browser by running a minimal task. This step runs on taskCtx
+	// itself, never a derived deadline context: chromedp ties the browser
+	// process to the context of the Run that allocates it, so a timeout
+	// context here would kill the browser the moment it was released. The
+	// launch is bounded by chromedp's own websocket-URL read timeout.
+	if err := s.launch(s.taskCtx); err != nil {
 		s.setState(StateFailed)
 		s.setError(fmt.Errorf("failed to start chromedp session: %w", err))
 		s.cleanup()
@@ -144,15 +167,37 @@ func (s *AutomationSession) Start(ctx context.Context) error {
 		return s.Error()
 	}
 
-	// Navigate to initial URL if specified
-	if s.config.URL != "" {
-		if err := chromedp.Run(s.taskCtx, chromedp.Navigate(s.config.URL)); err != nil {
+	// Navigate to initial URL if specified. Bounded by the session's action
+	// timeout and cancellable by Stop: navigation waits for the page's load
+	// event, and a page that never finishes loading would otherwise hold
+	// Start — and the session's slot, in a state Stop could not end — forever.
+	if s.config.URL != "" && s.State() == StateStarting {
+		navCtx, navCancel := context.WithTimeout(s.taskCtx, s.config.Timeout)
+		s.startCancel.Store(&navCancel)
+		// Stop may have claimed Starting→Stopping before the cancel was
+		// published; it found nothing to cancel, so honour it here.
+		if s.State() != StateStarting {
+			navCancel()
+		}
+		err := s.navigate(navCtx, s.config.URL)
+		timedOut := navCtx.Err() == context.DeadlineExceeded
+		s.startCancel.Store(nil)
+		navCancel()
+
+		if err != nil && s.State() == StateStarting {
 			s.setState(StateFailed)
-			s.setError(fmt.Errorf("failed to navigate to %s: %w", s.config.URL, err))
+			if timedOut {
+				s.setError(fmt.Errorf("failed to navigate to %s: page did not finish loading within %s: %w",
+					s.config.URL, s.config.Timeout, err))
+			} else {
+				s.setError(fmt.Errorf("failed to navigate to %s: %w", s.config.URL, err))
+			}
 			s.cleanup()
 			close(s.done)
 			return s.Error()
 		}
+		// err != nil with the state no longer Starting means Stop cancelled
+		// the navigation; the CAS below takes the stopped-during-startup path.
 	}
 
 	// Publish Running with a CAS, not a store: Stop may have claimed
@@ -198,7 +243,13 @@ func (s *AutomationSession) Stop(ctx context.Context) error {
 		s.cleanup()
 	} else if s.compareAndSwapState(StateStarting, StateStopping) {
 		// Start is still launching the browser and owns its cancel fields;
-		// it will observe Stopping, clean up, and close done itself.
+		// it will observe Stopping, clean up, and close done itself. The one
+		// thing Stop does reach for is the startup navigation's cancel, so a
+		// page that never finishes loading cannot make the session
+		// unstoppable.
+		if cancel := s.startCancel.Load(); cancel != nil {
+			(*cancel)()
+		}
 	} else {
 		return nil // Already stopping or stopped
 	}

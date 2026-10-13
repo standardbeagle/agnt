@@ -129,61 +129,72 @@ func GetViewport(name string) *ViewportPreset {
 	return nil
 }
 
-// GetViewportByDimensions finds a preset closest to the given dimensions.
-// Returns nil if no reasonably close preset is found.
-func GetViewportByDimensions(width, height int64) *ViewportPreset {
-	var best *ViewportPreset
-	bestDiff := int64(^uint64(0) >> 1) // Max int64
-
-	for i := range DefaultViewports {
-		v := &DefaultViewports[i]
-		diff := abs(v.Width-width) + abs(v.Height-height)
-		if diff < bestDiff {
-			bestDiff = diff
-			best = v
-		}
-	}
-
-	// Only return if within reasonable tolerance (200px total)
-	if bestDiff <= 200 {
-		return best
-	}
-	return nil
+// emulationStep is one CDP emulation command a preset issues, in a form a test
+// can inspect without a browser. Exactly one of the two shapes is used:
+// metrics != nil sets (or, with clear, removes) the device-metrics override;
+// touch != nil sets touch emulation to that value.
+type emulationStep struct {
+	metrics *ViewportPreset
+	clear   bool
+	touch   *bool
 }
 
-// ListViewportNames returns the names of all available viewport presets.
-func ListViewportNames() []string {
-	names := make([]string, len(DefaultViewports))
-	for i, v := range DefaultViewports {
-		names[i] = v.Name
+// emulateSteps is what applying the preset sends. Touch emulation is set
+// EXPLICITLY from the preset every time, in both directions: it is browser
+// state that persists across commands, so a preset that only ever turned it
+// on left every later desktop capture in the session running with a coarse
+// pointer and touch events.
+func (v *ViewportPreset) emulateSteps() []emulationStep {
+	touch := v.Touch
+	return []emulationStep{
+		{metrics: v},
+		{touch: &touch},
 	}
-	return names
+}
+
+// resetEmulationSteps is what returning the session to its un-emulated state
+// sends: no device-metrics override (the window's own size applies again) and
+// touch off. Nothing in this package installs a persistent override, so "the
+// state before a capture" is always this one.
+func resetEmulationSteps() []emulationStep {
+	off := false
+	return []emulationStep{
+		{clear: true},
+		{touch: &off},
+	}
+}
+
+func (s emulationStep) action() chromedp.Action {
+	return chromedp.ActionFunc(func(ctx context.Context) error {
+		switch {
+		case s.clear:
+			return emulation.ClearDeviceMetricsOverride().Do(ctx)
+		case s.metrics != nil:
+			m := s.metrics
+			return emulation.SetDeviceMetricsOverride(m.Width, m.Height, m.Scale, m.Mobile).Do(ctx)
+		case s.touch != nil:
+			return emulation.SetTouchEmulationEnabled(*s.touch).Do(ctx)
+		}
+		return nil
+	})
+}
+
+func stepsToTasks(steps []emulationStep) chromedp.Tasks {
+	tasks := make(chromedp.Tasks, 0, len(steps))
+	for _, s := range steps {
+		tasks = append(tasks, s.action())
+	}
+	return tasks
 }
 
 // ToEmulateActions converts a ViewportPreset to chromedp emulation actions.
 // It uses CDP commands directly to properly set mobile and touch emulation.
+// The emulation persists until ResetEmulationActions runs.
 func (v *ViewportPreset) ToEmulateActions() chromedp.Tasks {
-	tasks := chromedp.Tasks{
-		// Set device metrics with mobile flag
-		chromedp.ActionFunc(func(ctx context.Context) error {
-			return emulation.SetDeviceMetricsOverride(v.Width, v.Height, v.Scale, v.Mobile).Do(ctx)
-		}),
-	}
-
-	// Enable touch emulation if needed
-	if v.Touch {
-		tasks = append(tasks, chromedp.ActionFunc(func(ctx context.Context) error {
-			return emulation.SetTouchEmulationEnabled(true).Do(ctx)
-		}))
-	}
-
-	return tasks
+	return stepsToTasks(v.emulateSteps())
 }
 
-// abs returns the absolute value of an int64.
-func abs(n int64) int64 {
-	if n < 0 {
-		return -n
-	}
-	return n
+// ResetEmulationActions returns the actions that undo ToEmulateActions.
+func ResetEmulationActions() chromedp.Tasks {
+	return stepsToTasks(resetEmulationSteps())
 }

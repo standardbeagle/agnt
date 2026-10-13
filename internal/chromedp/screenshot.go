@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/pathutil"
@@ -30,9 +31,8 @@ type ScreenshotResult struct {
 // ScreenshotOptions configures screenshot capture behavior.
 type ScreenshotOptions struct {
 	Label    string          // Optional label for the filename
-	Viewport *ViewportPreset // Viewport preset to use (applies emulation)
-	Quality  int             // JPEG quality (0-100, 0 = PNG)
-	Scale    float64         // Scale factor for capture (default 1.0)
+	Viewport *ViewportPreset // Viewport preset to use (emulation applied for this capture only)
+	Scale    float64         // Scale factor for CaptureWithClip (default 1.0); other captures ignore it
 }
 
 // GetScreenshotDir returns the screenshots directory path within
@@ -84,8 +84,84 @@ func generateScreenshotPath(session *AutomationSession, prefix, label, viewport 
 	}
 	parts = append(parts, timestamp)
 
-	filename := strings.Join(parts, "-") + ".png"
-	return filepath.Join(dir, filename), nil
+	return reserveScreenshotPath(dir, strings.Join(parts, "-")), nil
+}
+
+// issuedPaths remembers the screenshot paths handed out during the current
+// clock second. The timestamp in a filename has one-second resolution, so two
+// captures with the same prefix, label and viewport inside one second used to
+// get the same path and the second silently overwrote the first. Only the
+// current second needs remembering: an older stem can never be generated
+// again.
+var issuedPaths = struct {
+	sync.Mutex
+	second string
+	paths  map[string]struct{}
+}{paths: map[string]struct{}{}}
+
+// reserveScreenshotPath returns dir/stem.png, or dir/stem-2.png, -3, ... when
+// that name was already issued this second or exists on disk. The reservation
+// is in-process (the daemon is the only writer of this directory); the disk
+// check covers a restart inside the same second.
+func reserveScreenshotPath(dir, stem string) string {
+	issuedPaths.Lock()
+	defer issuedPaths.Unlock()
+
+	second := time.Now().Format("20060102-150405")
+	if issuedPaths.second != second {
+		issuedPaths.second = second
+		issuedPaths.paths = map[string]struct{}{}
+	}
+
+	for n := 1; ; n++ {
+		name := stem
+		if n > 1 {
+			name = fmt.Sprintf("%s-%d", stem, n)
+		}
+		path := filepath.Join(dir, name+".png")
+		if _, taken := issuedPaths.paths[path]; taken {
+			continue
+		}
+		if _, err := os.Lstat(path); err == nil {
+			continue
+		}
+		issuedPaths.paths[path] = struct{}{}
+		return path
+	}
+}
+
+// applyViewport applies vp's emulation for one capture and returns the
+// function that removes it again. A nil vp applies nothing and restores
+// nothing. Device metrics and touch emulation are browser state that outlives
+// the command that set them, so a capture that did not put them back left the
+// whole session — every later navigate, evaluate and screenshot — emulating
+// the last preset used.
+func applyViewport(session *AutomationSession, vp *ViewportPreset) (restore func() error, err error) {
+	if vp == nil {
+		return func() error { return nil }, nil
+	}
+	restore = func() error {
+		if err := session.Run(ResetEmulationActions()...); err != nil {
+			return fmt.Errorf("failed to restore viewport after capture: %w", err)
+		}
+		return nil
+	}
+	if err := session.Run(vp.ToEmulateActions()...); err != nil {
+		// A partial apply (metrics set, touch failed) must not linger either.
+		_ = restore()
+		return nil, fmt.Errorf("failed to set viewport: %w", err)
+	}
+	return restore, nil
+}
+
+// finishCapture runs restore and folds its failure into the capture's result:
+// a screenshot that was taken but left the session emulated is reported as an
+// error, because every later command on that session would be affected.
+func finishCapture(restore func() error, result **ScreenshotResult, err *error) {
+	if rerr := restore(); rerr != nil && *err == nil {
+		*result = nil
+		*err = rerr
+	}
 }
 
 // sanitizeFilename replaces characters that are not safe for filenames.
@@ -95,7 +171,7 @@ func sanitizeFilename(name string) string {
 
 // CaptureViewport captures a screenshot of the current viewport.
 // If opts.Viewport is set, it first applies the viewport emulation.
-func CaptureViewport(session *AutomationSession, opts ScreenshotOptions) (*ScreenshotResult, error) {
+func CaptureViewport(session *AutomationSession, opts ScreenshotOptions) (result *ScreenshotResult, err error) {
 	if session == nil {
 		return nil, fmt.Errorf("session is nil")
 	}
@@ -106,16 +182,17 @@ func CaptureViewport(session *AutomationSession, opts ScreenshotOptions) (*Scree
 	var viewportName string
 	var width, height int64
 
-	// Apply viewport emulation if specified
+	// Apply viewport emulation if specified, for this capture only.
 	if opts.Viewport != nil {
 		viewportName = opts.Viewport.Name
 		width = opts.Viewport.Width
 		height = opts.Viewport.Height
-
-		if err := session.Run(opts.Viewport.ToEmulateActions()...); err != nil {
-			return nil, fmt.Errorf("failed to set viewport: %w", err)
-		}
 	}
+	restore, err := applyViewport(session, opts.Viewport)
+	if err != nil {
+		return nil, err
+	}
+	defer finishCapture(restore, &result, &err)
 
 	// Generate file path
 	filePath, err := generateScreenshotPath(session, "viewport", opts.Label, viewportName)
@@ -146,7 +223,7 @@ func CaptureViewport(session *AutomationSession, opts ScreenshotOptions) (*Scree
 
 // CaptureFullPage captures a full-page screenshot (scrolls to capture entire page).
 // If opts.Viewport is set, it first applies the viewport emulation.
-func CaptureFullPage(session *AutomationSession, opts ScreenshotOptions) (*ScreenshotResult, error) {
+func CaptureFullPage(session *AutomationSession, opts ScreenshotOptions) (result *ScreenshotResult, err error) {
 	if session == nil {
 		return nil, fmt.Errorf("session is nil")
 	}
@@ -157,16 +234,17 @@ func CaptureFullPage(session *AutomationSession, opts ScreenshotOptions) (*Scree
 	var viewportName string
 	var width, height int64
 
-	// Apply viewport emulation if specified
+	// Apply viewport emulation if specified, for this capture only.
 	if opts.Viewport != nil {
 		viewportName = opts.Viewport.Name
 		width = opts.Viewport.Width
 		height = opts.Viewport.Height
-
-		if err := session.Run(opts.Viewport.ToEmulateActions()...); err != nil {
-			return nil, fmt.Errorf("failed to set viewport: %w", err)
-		}
 	}
+	restore, err := applyViewport(session, opts.Viewport)
+	if err != nil {
+		return nil, err
+	}
+	defer finishCapture(restore, &result, &err)
 
 	// Generate file path
 	filePath, err := generateScreenshotPath(session, "fullpage", opts.Label, viewportName)
@@ -196,7 +274,7 @@ func CaptureFullPage(session *AutomationSession, opts ScreenshotOptions) (*Scree
 }
 
 // CaptureElement captures a screenshot of a specific element by CSS selector.
-func CaptureElement(session *AutomationSession, selector string, opts ScreenshotOptions) (*ScreenshotResult, error) {
+func CaptureElement(session *AutomationSession, selector string, opts ScreenshotOptions) (result *ScreenshotResult, err error) {
 	if session == nil {
 		return nil, fmt.Errorf("session is nil")
 	}
@@ -209,14 +287,15 @@ func CaptureElement(session *AutomationSession, selector string, opts Screenshot
 
 	var viewportName string
 
-	// Apply viewport emulation if specified
+	// Apply viewport emulation if specified, for this capture only.
 	if opts.Viewport != nil {
 		viewportName = opts.Viewport.Name
-
-		if err := session.Run(opts.Viewport.ToEmulateActions()...); err != nil {
-			return nil, fmt.Errorf("failed to set viewport: %w", err)
-		}
 	}
+	restore, err := applyViewport(session, opts.Viewport)
+	if err != nil {
+		return nil, err
+	}
+	defer finishCapture(restore, &result, &err)
 
 	// Generate file path - include sanitized selector in label
 	label := opts.Label
@@ -248,7 +327,7 @@ func CaptureElement(session *AutomationSession, selector string, opts Screenshot
 }
 
 // CaptureWithClip captures a screenshot of a specific region defined by clip bounds.
-func CaptureWithClip(session *AutomationSession, x, y, width, height float64, opts ScreenshotOptions) (*ScreenshotResult, error) {
+func CaptureWithClip(session *AutomationSession, x, y, width, height float64, opts ScreenshotOptions) (result *ScreenshotResult, err error) {
 	if session == nil {
 		return nil, fmt.Errorf("session is nil")
 	}
@@ -258,14 +337,15 @@ func CaptureWithClip(session *AutomationSession, x, y, width, height float64, op
 
 	var viewportName string
 
-	// Apply viewport emulation if specified
+	// Apply viewport emulation if specified, for this capture only.
 	if opts.Viewport != nil {
 		viewportName = opts.Viewport.Name
-
-		if err := session.Run(opts.Viewport.ToEmulateActions()...); err != nil {
-			return nil, fmt.Errorf("failed to set viewport: %w", err)
-		}
 	}
+	restore, err := applyViewport(session, opts.Viewport)
+	if err != nil {
+		return nil, err
+	}
+	defer finishCapture(restore, &result, &err)
 
 	// Generate file path
 	filePath, err := generateScreenshotPath(session, "clip", opts.Label, viewportName)

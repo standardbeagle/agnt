@@ -2,6 +2,7 @@ package license
 
 import (
 	"fmt"
+	"os"
 	"sync"
 	"time"
 )
@@ -28,13 +29,40 @@ const (
 var now = time.Now
 
 // Manager loads and caches the installed license, and is the single chokepoint
-// Pro features consult via Check. Validation (ECDSA verify) happens once at
-// load, never on the hot path.
+// Pro features consult via Check. Validation (ECDSA verify) happens once per
+// version of the license file, never on the hot path.
+//
+// The cache follows the file. A Manager lives as long as the MCP server that
+// owns it, and `agnt activate` / `agnt license deactivate` run in a different
+// process: a cache loaded once kept answering "no license installed. Run
+// `agnt activate`" after the user had done exactly that, and kept serving a
+// deactivated or expired license until the server restarted. Each read now
+// compares the file's stamp (one stat) with the one it loaded, reloads on a
+// difference, and re-evaluates expiry against the clock.
 type Manager struct {
 	mu      sync.RWMutex
 	loaded  bool
 	status  Status
 	loadErr error // unexpected I/O error from the last Load; nil on success
+	stamp   fileStamp
+	// pinned marks a Manager built by NewManagerForTest: its status was
+	// supplied, not read, so it never consults the disk or the clock.
+	pinned bool
+}
+
+// fileStamp identifies one version of the license file.
+type fileStamp struct {
+	exists  bool
+	modTime time.Time
+	size    int64
+}
+
+func currentStamp() fileStamp {
+	info, err := os.Stat(statePath())
+	if err != nil {
+		return fileStamp{}
+	}
+	return fileStamp{exists: true, modTime: info.ModTime(), size: info.Size()}
 }
 
 // NewManager returns an unloaded Manager. Call Load (or let Check lazy-load)
@@ -46,7 +74,7 @@ func NewManager() *Manager { return &Manager{} }
 // build a Manager that grants (or denies) a capability deterministically. For
 // tests only — production code must use NewManager + Load.
 func NewManagerForTest(s Status) *Manager {
-	m := &Manager{}
+	m := &Manager{pinned: true}
 	m.set(s, nil)
 	return m
 }
@@ -56,6 +84,13 @@ func NewManagerForTest(s Status) *Manager {
 // unverifiable blob yields StateInvalid (also not an error: the agent should
 // see the state, not a failure). Returns an error only for unexpected I/O.
 func (m *Manager) Load() error {
+	// Stamp before reading: a write that lands in between leaves a stale
+	// stamp, so the next read reloads rather than trusting what was read.
+	stamp := currentStamp()
+	m.mu.Lock()
+	m.stamp = stamp
+	m.mu.Unlock()
+
 	blob, err := Load()
 	if err == ErrNoLicense {
 		m.set(Status{State: StateMissing}, nil)
@@ -93,16 +128,32 @@ func (m *Manager) Reload() error {
 	return m.Load()
 }
 
-// Status returns the cached license status, lazy-loading on first use.
-func (m *Manager) Status() Status {
+// ensureCurrent brings the cache up to date: a first load, a reload when the
+// license file changed since the last one, and otherwise a re-evaluation of
+// the cached payload against the clock so a term that ran out while the
+// process was up stops serving.
+func (m *Manager) ensureCurrent() {
 	m.mu.RLock()
-	if m.loaded {
-		s := m.status
-		m.mu.RUnlock()
-		return s
-	}
+	loaded, pinned, stamp := m.loaded, m.pinned, m.stamp
 	m.mu.RUnlock()
-	_ = m.Load()
+	if pinned {
+		return
+	}
+	if !loaded || stamp != currentStamp() {
+		_ = m.Load()
+		return
+	}
+	m.mu.Lock()
+	if m.status.Payload != nil {
+		m.status = Evaluate(m.status.Payload, now())
+	}
+	m.mu.Unlock()
+}
+
+// Status returns the current license status, loading or reloading as needed
+// (see ensureCurrent).
+func (m *Manager) Status() Status {
+	m.ensureCurrent()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.status
@@ -112,14 +163,7 @@ func (m *Manager) Status() Status {
 // A non-nil LoadError means the cached status is a placeholder — callers
 // must surface the error rather than the (misleading) missing-license state.
 func (m *Manager) LoadError() error {
-	m.mu.RLock()
-	if m.loaded {
-		err := m.loadErr
-		m.mu.RUnlock()
-		return err
-	}
-	m.mu.RUnlock()
-	_ = m.Load()
+	m.ensureCurrent()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.loadErr

@@ -28,7 +28,7 @@ import (
 // correctness gain.
 
 // SubresourceSigner mints and verifies the MAC that binds a subresource URL to
-// one share and one nesting depth. The zero value is unusable; construct with
+// one share, one published revision of it, and one nesting depth. The zero value is unusable; construct with
 // NewSubresourceSigner. Safe for concurrent use — the key is immutable.
 type SubresourceSigner struct {
 	key []byte
@@ -56,12 +56,21 @@ func NewSubresourceSigner() (*SubresourceSigner, error) {
 // bound, not a hint — an unbound depth would let a viewer replay a document-level
 // reference as if it had come from a CSS file and walk the chain deeper than
 // §4d permits.
-func (s *SubresourceSigner) Sign(shareID, absURL string, depth int) string {
-	if s == nil {
+//
+// revision is in the MAC because a reference is a statement about ONE published
+// revision: it was read out of a guarded fetch of that revision's upstream. A
+// publisher who edits the share — above all, one who points it at a different
+// upstream — must not leave the old revision's references fetchable under the
+// same token. It is the share's current content digest, used as a version key
+// on a share already resolved by id (never as a lookup key, §2). An empty
+// revision is refused: an unbound field would sign for every revision at once.
+func (s *SubresourceSigner) Sign(shareID, revision, absURL string, depth int) string {
+	if s == nil || revision == "" {
 		return ""
 	}
 	mac := hmac.New(sha256.New, s.key)
 	writeMACField(mac, shareID)
+	writeMACField(mac, revision)
 	writeMACField(mac, absURL)
 	writeMACField(mac, strconv.Itoa(depth))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
@@ -70,11 +79,11 @@ func (s *SubresourceSigner) Sign(shareID, absURL string, depth int) string {
 // Verify constant-time checks a MAC against the tuple it must be bound to. A nil
 // signer, an empty signature, or any mismatch returns false — there is no branch
 // that admits an unverified reference.
-func (s *SubresourceSigner) Verify(shareID, absURL string, depth int, sig string) bool {
-	if s == nil || sig == "" {
+func (s *SubresourceSigner) Verify(shareID, revision, absURL string, depth int, sig string) bool {
+	if s == nil || sig == "" || revision == "" {
 		return false
 	}
-	want := s.Sign(shareID, absURL, depth)
+	want := s.Sign(shareID, revision, absURL, depth)
 	// hmac.Equal is constant time for equal-length inputs and leaks only length,
 	// which is fixed here (both sides are a base64url SHA-256 digest).
 	return hmac.Equal([]byte(want), []byte(sig))

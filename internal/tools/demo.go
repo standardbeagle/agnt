@@ -21,7 +21,7 @@ import (
 type DemoInput struct {
 	Action string `json:"action" jsonschema:"Action to run: list (enumerate demos with segment/narration summary), record (start a recording, optionally scoped with only), assemble (re-mux from existing segment captures), inspect (render cut-point contact sheets from the recorded takes), publish (promote the rendered demo into docs-site/static)"`
 	Name   string `json:"name,omitempty" jsonschema:"Demo directory name under docs-site/screenshots/demos (required for record/assemble/inspect/publish)"`
-	Only   string `json:"only,omitempty" jsonschema:"For record: comma-separated segment ids to record instead of the whole demo (engine --only). For inspect: a single segment id to render instead of every take (engine --inspect=<id>)"`
+	Only   string `json:"only,omitempty" jsonschema:"For record: comma-separated segment ids to record instead of the whole demo (engine --only). For inspect: a single segment id to render instead of every take (engine --inspect=<id>). Rejected for list, assemble and publish, which have no use for it"`
 	Path   string `json:"path,omitempty" jsonschema:"Project directory whose docs-site/screenshots engine to use (defaults to the session project)"`
 }
 
@@ -32,8 +32,15 @@ type DemoSegmentSummary struct {
 }
 
 // DemoSummary summarizes a single demo directory for the list action.
+//
+// Name is ALWAYS the directory name — the value every other action takes as
+// `name`. demo.json's own `name` field (what assembly names its output after)
+// is reported separately as DisplayName, and only when it differs: the two are
+// normally identical, and when they are not, handing back the spec name as
+// Name would list a demo that record/assemble/inspect/publish then cannot find.
 type DemoSummary struct {
 	Name              string               `json:"name"`
+	DisplayName       string               `json:"display_name,omitempty"`
 	Segments          []DemoSegmentSummary `json:"segments,omitempty"`
 	SegmentCount      int                  `json:"segment_count"`
 	HasNarration      bool                 `json:"has_narration"`
@@ -125,8 +132,8 @@ func listDemos(demosDir string) ([]DemoSummary, error) {
 		var spec demoSpec
 		summary := DemoSummary{Name: e.Name()}
 		if jerr := json.Unmarshal(raw, &spec); jerr == nil {
-			if spec.Name != "" {
-				summary.Name = spec.Name
+			if spec.Name != "" && spec.Name != e.Name() {
+				summary.DisplayName = spec.Name
 			}
 			for _, s := range spec.Segments {
 				summary.Segments = append(summary.Segments, DemoSegmentSummary{ID: s.ID, Type: s.Type})
@@ -154,6 +161,42 @@ var demoNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 func validDemoName(name string) bool {
 	return demoNameRe.MatchString(name) && !strings.Contains(name, "..")
+}
+
+// demoSegmentIDRe is the shape of one segment id as it may appear in `only`.
+// The value is concatenated into a single engine argument (--only=<ids> or
+// --inspect=<id>), so it is held to plain ids: nothing that could read as
+// another flag, a path, or — on a platform that launches through a shell —
+// shell syntax.
+var demoSegmentIDRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+// validateDemoOnly checks `only` for an action. Only record (a comma-separated
+// list) and inspect (exactly one id) consume it; every other action refuses a
+// non-empty value rather than accepting and ignoring it
+// (publish-security-review-lessons §5: every validated input needs a consumer).
+func validateDemoOnly(action, only string) error {
+	if only == "" {
+		return nil
+	}
+	switch action {
+	case "record":
+		for _, id := range strings.Split(only, ",") {
+			if !demoSegmentIDRe.MatchString(id) {
+				return fmt.Errorf("demo record: only must be a comma-separated list of segment ids (letters, digits, '.', '_' and '-'), got %q", only)
+			}
+		}
+		return nil
+	case "inspect":
+		if strings.Contains(only, ",") {
+			return fmt.Errorf("demo inspect: only takes a single segment id, got %q. Omit only to render every recorded take.", only)
+		}
+		if !demoSegmentIDRe.MatchString(only) {
+			return fmt.Errorf("demo inspect: only must be a segment id (letters, digits, '.', '_' and '-'), got %q", only)
+		}
+		return nil
+	default:
+		return fmt.Errorf("demo %s: only is not supported for this action (it applies to record and inspect); remove it", action)
+	}
 }
 
 // buildDemoEngineArgs builds the argv (after "node") for a demo engine run:
@@ -208,6 +251,13 @@ func (dt *DaemonTools) makeDemoHandler() func(context.Context, *mcp.CallToolRequ
 		}
 
 		switch input.Action {
+		case "list", "record", "assemble", "inspect", "publish":
+			if oerr := validateDemoOnly(input.Action, input.Only); oerr != nil {
+				return fail[DemoOutput](oerr.Error())
+			}
+		}
+
+		switch input.Action {
 		case "list":
 			demos, lerr := listDemos(eng.DemosDir)
 			if lerr != nil {
@@ -220,20 +270,10 @@ func (dt *DaemonTools) makeDemoHandler() func(context.Context, *mcp.CallToolRequ
 				Count:      len(demos),
 			}, nil
 
-		case "record", "assemble", "publish":
-			only := ""
-			if input.Action == "record" {
-				only = input.Only
-			}
-			return dt.runDemoEngine(input, eng, absPath, input.Action, buildDemoEngineArgs(eng.Entry, input.Name, input.Action, only))
-
-		case "inspect":
-			// The engine's --inspect takes one segment id, not a list.
-			if strings.Contains(input.Only, ",") {
-				return fail[DemoOutput](fmt.Sprintf(
-					"demo inspect: only takes a single segment id, got %q. Omit only to render every recorded take.", input.Only))
-			}
-			return dt.runDemoEngine(input, eng, absPath, "inspect", buildDemoEngineArgs(eng.Entry, input.Name, "inspect", input.Only))
+		case "record", "assemble", "publish", "inspect":
+			// validateDemoOnly already refused `only` for assemble and publish
+			// and checked its shape for record and inspect.
+			return dt.runDemoEngine(input, eng, absPath, input.Action, buildDemoEngineArgs(eng.Entry, input.Name, input.Action, input.Only))
 
 		default:
 			return fail[DemoOutput](fmt.Sprintf(

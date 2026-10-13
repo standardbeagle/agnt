@@ -249,6 +249,10 @@ type InteractionTarget struct {
 	Classes    []string          `json:"classes,omitempty"`
 	Text       string            `json:"text,omitempty"`       // Truncated innerText
 	Attributes map[string]string `json:"attributes,omitempty"` // Relevant attrs only (href, src, type, etc.)
+	// ResolvedFrom is set when the event target was not an HTML element (an
+	// SVG shape inside an icon button) and the browser recorded the nearest
+	// HTML ancestor instead.
+	ResolvedFrom string `json:"resolved_from,omitempty"`
 }
 
 // InteractionPosition describes the mouse position during an interaction.
@@ -267,6 +271,9 @@ type KeyboardInfo struct {
 	Alt   bool   `json:"alt,omitempty"`
 	Shift bool   `json:"shift,omitempty"`
 	Meta  bool   `json:"meta,omitempty"`
+	// Masked is true when the browser withheld Key and Code because the
+	// target was editable (typed characters are never recorded).
+	Masked bool `json:"masked,omitempty"`
 }
 
 // MutationEvent represents a DOM mutation.

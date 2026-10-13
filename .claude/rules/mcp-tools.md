@@ -19,4 +19,8 @@ Per-tool parameters and output formats: `docs/mcp-tools.md`. Session scoping of 
 
 ## Tool inventory
 
-`detect`, `run`, `proc`, `proxy`, `proxylog`, `tunnel`, `currentpage`, `get_incidents` (the only incident pull surface; `get_errors` is gone), `responsive_audit`, `api_audit`, `loading_audit`, `snapshot`, `replaytest` (Pro), `daemon`, `session`, `watch`, `channel_reply`, `automation`, `browser`, `error_queue`, `store`, `walkthrough`, `publish`, `devauth`, `demo`.
+`detect`, `run`, `proc`, `proxy`, `proxylog`, `tunnel`, `currentpage`, `get_incidents` (the only incident pull surface; `get_errors` is gone), `diagnose`, `verify_change`, `release_qa`, `responsive_audit`, `api_audit`, `loading_audit`, `snapshot`, `replaytest` (Pro), `daemon`, `session`, `watch`, `channel_reply` (only when channel mode and its reply tool are enabled), `automation`, `browser`, `error_queue`, `store`, `walkthrough`, `publish`, `devauth`, `demo`.
+
+Registration lives in `cmd/agnt/serve.go` (`runDaemonClient`) and `RegisterDaemonTools`. Adding a tool means updating this list, the catalog in `docs/mcp-tools.md`, and the `Instructions` string in `serve.go` by hand.
+
+`replaytest replay` is the one handler that does work in-process (it drives headless Chrome from the MCP server) rather than over daemon IPC.

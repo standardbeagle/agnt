@@ -145,8 +145,14 @@ func runAttachTerminalUnix(client *daemonclient.Client, sessionID string, detach
 		stdinDoneCh <- relayAttachInput(os.Stdin, client, sessionID, info.id, info.primary, detachChord)
 	})
 
+	// Every exit that leaves the frame pump running joins it before
+	// returning: the deferred restore() runs on return, and a pump still
+	// relaying would write remote terminal bytes onto a tty that has already
+	// been handed back to the shell in cooked mode. Cancelling the context
+	// closes the attach connection, so the join is prompt.
 	select {
 	case <-attachCtx.Done():
+		<-frameErrCh
 		return nil
 	case err := <-frameErrCh:
 		cancel()
@@ -155,6 +161,7 @@ func runAttachTerminalUnix(client *daemonclient.Client, sessionID string, detach
 		// Either the detach chord fired (clean detach) or stdin hit
 		// EOF/closed — both are a normal exit; the session keeps running.
 		cancel()
+		<-frameErrCh
 		return nil
 	}
 }

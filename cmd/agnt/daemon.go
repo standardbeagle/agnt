@@ -176,6 +176,12 @@ func runDaemonStart(cmd *cobra.Command, args []string) {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
+	// Keys the global config accepts but nothing consumes: say so rather than
+	// dropping them silently.
+	for _, w := range appCfg.Warnings {
+		log.Printf("config warning: %s", w)
+	}
+
 	daemonCfg := newDaemonConfig(appCfg, socketPath, os.Getenv("AGNT_PUBLIC_ADDR"))
 
 	d := daemon.New(daemonCfg)

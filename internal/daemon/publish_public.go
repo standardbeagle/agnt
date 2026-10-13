@@ -37,10 +37,26 @@ type feedbackArrivalSink struct {
 // Accept persists the feedback (P8 semantics: rate-limit, validate, append) and,
 // only on success, emits the scoped arrival event. A rate-limited/invalid write
 // returns the store error unchanged (the public handler maps it to 429/413/422)
-// and emits NOTHING — but the drop is still counted in store.Dropped(), so the
-// NEXT successful arrival's event carries the updated dropped total.
+// and emits NOTHING — but the drop is still counted in the store's per-share
+// dropped total, so the NEXT successful arrival's event carries it.
 func (s *feedbackArrivalSink) Accept(shareID string, revisionDigest publish.RevisionDigest, remoteAddr string, body []byte) error {
-	if err := s.store.Accept(shareID, revisionDigest, remoteAddr, body); err != nil {
+	if err := s.Admit(shareID, remoteAddr); err != nil {
+		return err
+	}
+	return s.AcceptAdmitted(shareID, revisionDigest, body)
+}
+
+// Admit charges the store's rate limiter for one submission. The public handler
+// calls it BEFORE reading the request body, so a throttled client costs no body
+// read. A refusal emits nothing (the drop is counted by the store).
+func (s *feedbackArrivalSink) Admit(shareID, remoteAddr string) error {
+	return s.store.Admit(shareID, remoteAddr)
+}
+
+// AcceptAdmitted persists a body whose submission Admit already charged and, on
+// success, emits the scoped arrival event. It does not rate-limit again.
+func (s *feedbackArrivalSink) AcceptAdmitted(shareID string, revisionDigest publish.RevisionDigest, body []byte) error {
+	if err := s.store.AcceptAdmitted(shareID, revisionDigest, body); err != nil {
 		return err
 	}
 	// Success: re-scope to the owning project and fan out a counts-only event.
@@ -106,8 +122,27 @@ func (d *Daemon) buildPublicPlane() {
 	// Install operator-configured request-rate limiters so the public-plane
 	// config actually drives behaviour (Config Authority / §5), not merely
 	// parses. Normalize fills any unset field with its house default.
+	//
+	// No WithClientAddr here: the daemon's public listener does not know what
+	// (if anything) the operator put in front of it, so it cannot tell a tunnel's
+	// client-address header from one a viewer typed. It rate-limits on the TCP
+	// peer. Behind an operator-run tunnel that peer is the tunnel agent for every
+	// viewer, so the per-client buckets act as per-share ones — the per-share
+	// aggregate bucket is then the effective bound.
 	d.publicHandler = proxy.NewPublicHandler(d.publishStore, sink, limits.MaxBodyBytes).
-		WithRateLimits(PublicRateLimitersFromConfig(d.config.PublicPlaneLimits))
+		WithRateLimits(PublicRateLimitersFromConfig(d.config.PublicPlaneLimits)).
+		WithShareAggregateLimiter(PublicShareAggregateLimiterFromConfig(d.config.PublicPlaneLimits))
+}
+
+// PublicShareAggregateLimiterFromConfig builds the per-share aggregate artifact
+// bucket from the same public-plane{} block: the operator's per-client artifact
+// rate and burst, scaled by proxy.PublicShareAggregateFactor, so tuning the
+// per-client budget moves the aggregate with it. Exported for `publish serve`.
+func PublicShareAggregateLimiterFromConfig(c config.PublicPlaneConfig) *publish.RateLimiter {
+	n := c.Normalize()
+	return publish.NewRateLimiter(
+		n.ArtifactRatePerMinute*proxy.PublicShareAggregateFactor,
+		n.ArtifactBurst*proxy.PublicShareAggregateFactor, nil)
 }
 
 // PublicRateLimitersFromConfig builds the public plane's artifact and outbound

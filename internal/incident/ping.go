@@ -115,12 +115,6 @@ func NewPingEmitter(
 	return pe
 }
 
-// ForceFlushCoalesce immediately emits any pending coalesced ping.
-// Intended for activity-idle callbacks wired by L8.
-func (pe *PingEmitter) ForceFlushCoalesce() {
-	pe.coalesce.ForceFlush(sessionPingFP)
-}
-
 // Stop unsubscribes from the inbox and cancels all pending pings.
 func (pe *PingEmitter) Stop() {
 	pe.cancel()
@@ -136,6 +130,17 @@ func (pe *PingEmitter) run(ch <-chan InboxDelta) {
 func (pe *PingEmitter) handleDelta(delta InboxDelta) {
 	sev := delta.Entry.Severity
 
+	// A repeat of an incident the agent has already been pinged about and has
+	// not read yet changes nothing a ping reports (band counts and `new` are
+	// unread-entry counts, not occurrence counts). Scheduling on it re-sent the
+	// identical digest for as long as the error kept recurring — the "identical
+	// events re-fire each window" spam. The occurrence is still merged into the
+	// inbox; a recurrence after the agent reads the entry flips it unread again
+	// and does ping. Checked before TryPing so it does not burn a flow token.
+	if !delta.IsNew && !delta.Escalated && delta.WasUnread {
+		return
+	}
+
 	if !pe.flow.TryPing(sev) {
 		return // over rate limit; event is still inboxed
 	}
@@ -143,8 +148,7 @@ func (pe *PingEmitter) handleDelta(delta InboxDelta) {
 	if sev == SeverityCritical {
 		// Cancel any pending coalesced ping and emit now. Stop() clears the
 		// slot map but leaves the Coalescer reusable, so we do NOT reassign
-		// pe.coalesce — reassigning it raced Stop()/ForceFlushCoalesce on the
-		// teardown and activity-idle goroutines.
+		// pe.coalesce — reassigning it raced Stop() on the teardown goroutine.
 		pe.coalesce.Stop()
 		pe.emit()
 		return
@@ -163,8 +167,9 @@ func (pe *PingEmitter) handleDelta(delta InboxDelta) {
 		return
 	}
 
-	// Non-critical: schedule via coalescer. If agent is active, the ping waits;
-	// the caller (L8) wires ActivityDetector.onIdle → ForceFlushCoalesce().
+	// Non-critical: schedule via coalescer (backoff + MaxWait ceiling). There is
+	// no daemon-side activity gate here: PTY activity-deferral is applied by the
+	// overlay's own queue on the receiving side.
 	ev := IncidentEvent{Fingerprint: sessionPingFP, Severity: sev}
 	pe.coalesce.Schedule(ev)
 }
@@ -262,6 +267,12 @@ func highestLevel(s PingStats) string {
 	}
 }
 
+// DigestPayloadKey is the key under which the daemon attaches the structured
+// PingPayload to the incident_digest stream entry's data, next to the one-line
+// text. A consumer that can show more than one line (the channel transport)
+// renders the top incidents from it; one that cannot ignores it.
+const DigestPayloadKey = "payload"
+
 // CompactDigestText renders the one-line digest summary for cross-process
 // transport (daemon → STREAM-EVENTS → consumer). Exported wrapper over the
 // internal compact formatter.
@@ -275,7 +286,9 @@ func compactText(p PingPayload) string {
 }
 
 func ptyLine(p PingPayload) string {
-	return fmt.Sprintf("[agnt] incidents: crit=%d err=%d warn=%d (new=%d). pull: get_incidents severity=critical,error since=cursor\n",
+	// The hint must be a call the tool accepts verbatim: mark_read is how a
+	// pull advances the cursor (a literal `since=cursor` is rejected).
+	return fmt.Sprintf("[agnt] incidents: crit=%d err=%d warn=%d (new=%d). pull: get_incidents {severity: [\"critical\",\"error\"], mark_read: true}\n",
 		p.Summary.Critical, p.Summary.Error, p.Summary.Warning, p.Summary.New)
 }
 

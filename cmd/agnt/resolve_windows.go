@@ -61,12 +61,15 @@ func enterConsoleRawMode() (*consoleRestore, error) {
 
 // setupSessionJob creates a Windows Job Object and assigns the PTY child
 // PID to it so all descendant processes (dev servers, npm, etc.) are
-// killed when agnt exits. Returns the handle (zero on any failure) and
-// a closer the caller MUST defer if non-nil. The handle is also intended
-// to be published to the daemon as SessionJobHandle so explicit
-// `SESSION UNREGISTER` cleanup can call TerminateJobObject immediately
-// rather than waiting for agnt's process-exit to fire
-// JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE.
+// killed when agnt exits. Returns a closer the caller MUST defer if
+// non-nil.
+//
+// The returned handle is always zero: nothing is published to the daemon
+// as SessionJobHandle. A handle value means something only inside the
+// process that owns it; in the daemon the same number names an unrelated
+// object, and acting on it there closed or terminated that object. The
+// job is torn down from this process alone, by the closer and by
+// JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE when agnt exits or is killed.
 //
 // Surfaces failure to BOTH the debug log AND stderr — silent-failure
 // prohibition (.claude/rules/daemon-architecture.md). Without the job
@@ -79,16 +82,13 @@ func setupSessionJob(pid int) (handle uint64, closer func()) {
 		fmt.Fprintf(os.Stderr, "warning: failed to create session job object: %v (child processes may survive agnt exit)\n", err)
 		return 0, nil
 	}
-	closer = func() { _ = windows.CloseHandle(jobHandle) }
+	closer = func() { _ = platform.ReleaseSessionJobObject(jobHandle) }
 	if err := platform.AssignPIDToSessionJob(jobHandle, pid); err != nil {
 		debug.Warn("job", "failed to assign PTY child to session job: %v", err)
 		fmt.Fprintf(os.Stderr, "warning: failed to assign PTY child to session job: %v\n", err)
-		// Closer still returned so the empty job's handle is released —
-		// but don't publish it: an empty job has no containment value
-		// and would make TerminateJobObject succeed misleadingly.
-		return 0, closer
+		// Closer still returned so the empty job's handle is released.
 	}
-	return uint64(jobHandle), closer
+	return 0, closer
 }
 
 // getTerminalSize tries multiple methods to get terminal size.

@@ -9,11 +9,11 @@ func TestSubresourceSignerRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSubresourceSigner: %v", err)
 	}
-	sig := s.Sign("share-1", "https://demo.example.com/a.css", 1)
+	sig := s.Sign("share-1", "rev-1", "https://demo.example.com/a.css", 1)
 	if sig == "" {
 		t.Fatal("Sign returned an empty signature")
 	}
-	if !s.Verify("share-1", "https://demo.example.com/a.css", 1, sig) {
+	if !s.Verify("share-1", "rev-1", "https://demo.example.com/a.css", 1, sig) {
 		t.Fatal("a freshly minted signature failed to verify")
 	}
 }
@@ -29,30 +29,41 @@ func TestSubresourceSignerRejectsEveryAlteredField(t *testing.T) {
 		t.Fatalf("NewSubresourceSigner: %v", err)
 	}
 	const (
-		shareID = "share-1"
-		absURL  = "https://demo.example.com/a.css"
-		depth   = 1
+		shareID  = "share-1"
+		revision = "rev-1"
+		absURL   = "https://demo.example.com/a.css"
+		depth    = 1
 	)
-	sig := s.Sign(shareID, absURL, depth)
+	sig := s.Sign(shareID, revision, absURL, depth)
+	// Premise: the unaltered tuple verifies, so every refusal below is the
+	// altered field's doing and not a signature that never verified at all.
+	if !s.Verify(shareID, revision, absURL, depth, sig) {
+		t.Fatal("premise broken: the unaltered reference does not verify")
+	}
 
 	cases := []struct {
-		name    string
-		shareID string
-		absURL  string
-		depth   int
-		sig     string
+		name     string
+		shareID  string
+		revision string
+		absURL   string
+		depth    int
+		sig      string
 	}{
-		{"foreign share", "share-2", absURL, depth, sig},
-		{"viewer-chosen url", shareID, "https://evil.example.com/x.css", depth, sig},
-		{"metadata url", shareID, "https://169.254.169.254/latest/meta-data/", depth, sig},
-		{"depth downgrade", shareID, absURL, 2, sig},
-		{"empty signature", shareID, absURL, depth, ""},
-		{"forged signature", shareID, absURL, depth, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"},
-		{"truncated signature", shareID, absURL, depth, sig[:len(sig)-1]},
+		{"foreign share", "share-2", revision, absURL, depth, sig},
+		// The share was re-published: a reference minted for the old revision
+		// must die with it (lessons §16 — every bound field is in the tuple).
+		{"stale revision", shareID, "rev-2", absURL, depth, sig},
+		{"empty revision", shareID, "", absURL, depth, sig},
+		{"viewer-chosen url", shareID, revision, "https://evil.example.com/x.css", depth, sig},
+		{"metadata url", shareID, revision, "https://169.254.169.254/latest/meta-data/", depth, sig},
+		{"depth downgrade", shareID, revision, absURL, 2, sig},
+		{"empty signature", shareID, revision, absURL, depth, ""},
+		{"forged signature", shareID, revision, absURL, depth, "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"},
+		{"truncated signature", shareID, revision, absURL, depth, sig[:len(sig)-1]},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if s.Verify(c.shareID, c.absURL, c.depth, c.sig) {
+			if s.Verify(c.shareID, c.revision, c.absURL, c.depth, c.sig) {
 				t.Fatalf("Verify accepted an altered reference (%s)", c.name)
 			}
 		})
@@ -67,10 +78,15 @@ func TestSubresourceSignerFieldsAreLengthPrefixed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSubresourceSigner: %v", err)
 	}
-	a := s.Sign("ab", "chttps://x/", 1)
-	b := s.Sign("a", "bchttps://x/", 1)
+	a := s.Sign("ab", "c", "https://x/", 1)
+	b := s.Sign("a", "bc", "https://x/", 1)
 	if a == b {
-		t.Fatal("shifting a byte between the share id and the URL produced the same MAC (fields are not length-prefixed)")
+		t.Fatal("shifting a byte between the share id and the revision produced the same MAC (fields are not length-prefixed)")
+	}
+	c := s.Sign("s", "ab", "chttps://x/", 1)
+	d := s.Sign("s", "a", "bchttps://x/", 1)
+	if c == d {
+		t.Fatal("shifting a byte between the revision and the URL produced the same MAC (fields are not length-prefixed)")
 	}
 }
 
@@ -86,8 +102,8 @@ func TestSubresourceSignerKeysAreDistinct(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewSubresourceSigner: %v", err)
 	}
-	sig := a.Sign("share-1", "https://demo.example.com/a.css", 1)
-	if b.Verify("share-1", "https://demo.example.com/a.css", 1, sig) {
+	sig := a.Sign("share-1", "rev-1", "https://demo.example.com/a.css", 1)
+	if b.Verify("share-1", "rev-1", "https://demo.example.com/a.css", 1, sig) {
 		t.Fatal("a second signer verified the first signer's MAC — the key is not per-instance")
 	}
 }
@@ -96,13 +112,13 @@ func TestSubresourceSignerKeysAreDistinct(t *testing.T) {
 // must refuse everything rather than degrade into an unbound route.
 func TestNilSubresourceSignerFailsClosed(t *testing.T) {
 	var s *SubresourceSigner
-	if got := s.Sign("share-1", "https://demo.example.com/a.css", 1); got != "" {
+	if got := s.Sign("share-1", "rev-1", "https://demo.example.com/a.css", 1); got != "" {
 		t.Fatalf("nil signer minted %q", got)
 	}
-	if s.Verify("share-1", "https://demo.example.com/a.css", 1, "") {
+	if s.Verify("share-1", "rev-1", "https://demo.example.com/a.css", 1, "") {
 		t.Fatal("nil signer verified an empty signature")
 	}
-	if s.Verify("share-1", "https://demo.example.com/a.css", 1, "anything") {
+	if s.Verify("share-1", "rev-1", "https://demo.example.com/a.css", 1, "anything") {
 		t.Fatal("nil signer verified a signature")
 	}
 }

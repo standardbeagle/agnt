@@ -72,6 +72,11 @@ type InboxDelta struct {
 	Entry     *InboxEntry
 	IsNew     bool // false = fingerprint-merge
 	Escalated bool // severity moved entry to a higher band
+	// WasUnread reports, for a merge, that the entry was already unread before
+	// this occurrence. Such a merge leaves the unread stats a ping reports
+	// byte-identical (only Count moves), so re-pinging about it tells the agent
+	// nothing it has not already been told.
+	WasUnread bool
 }
 
 // Stats is a point-in-time snapshot of inbox health. The per-band counts and
@@ -241,6 +246,7 @@ func (inbox *Inbox) Ingest(entry *InboxEntry) InboxDelta {
 		}
 
 		existing := slot.entry
+		wasUnread := !existing.Read
 		existing.Count += entry.Count
 		// A duplicate is a new unread occurrence even when earlier occurrences of
 		// this fingerprint were acknowledged.
@@ -268,7 +274,7 @@ func (inbox *Inbox) Ingest(entry *InboxEntry) InboxDelta {
 			b.mu.Unlock()
 		}
 
-		delta := InboxDelta{Entry: snapshot, IsNew: false, Escalated: escalated}
+		delta := InboxDelta{Entry: snapshot, IsNew: false, Escalated: escalated, WasUnread: wasUnread}
 		inbox.broadcast(delta)
 		return delta
 	}

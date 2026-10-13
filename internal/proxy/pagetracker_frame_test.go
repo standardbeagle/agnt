@@ -104,3 +104,75 @@ func TestStripFrameMarker(t *testing.T) {
 		t.Errorf("frameIDFromURL = %q, want fZ", got)
 	}
 }
+
+// TestPageTracker_TelemetryKeepsOriginFormSessionURL pins the production
+// shape the promotion above has to live with: the proxy creates a session from
+// the document request, whose URL is origin-form ("/"), and the browser then
+// reports telemetry with location.href, which is absolute. Telemetry for the
+// SAME page must leave the session URL alone; it used to rewrite "/" to
+// "http://host/" on the first event of every page (and re-key urlToSession to
+// a key no later document request produces). The real-Chrome proof is
+// TestE2E_CurrentPage_RealBrowserHappyPath (chromee2e tier).
+func TestPageTracker_TelemetryKeepsOriginFormSessionURL(t *testing.T) {
+	pt := newTestPageTracker(t)
+	pt.TrackHTTPRequest(docEntry("/?" + frameMarkerParam + "=f1"))
+
+	pt.TrackInteraction(InteractionEvent{
+		URL:       "http://127.0.0.1:12345/?" + frameMarkerParam + "=f1",
+		Timestamp: time.Now(),
+	}, "", "f1")
+
+	sessions := pt.GetActiveSessions()
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	if got := sessions[0].URL; got != "/" {
+		t.Errorf("same-page telemetry changed the session URL form: got %q, want %q", got, "/")
+	}
+	if sessions[0].InteractionCount != 1 {
+		t.Errorf("interaction not recorded on the session")
+	}
+
+	// A later document request for the same page still coalesces into this
+	// session: the URL index was not moved to an absolute key.
+	pt.TrackHTTPRequest(docEntry("/"))
+	if n := len(pt.GetActiveSessions()); n != 1 {
+		t.Errorf("document request after telemetry created a duplicate session: %d sessions", n)
+	}
+}
+
+// TestPageTracker_TelemetryPromotesSPANavigationInOriginForm: a client-side
+// navigation is still promoted, in the session's own (origin) form, keeping
+// query and hash route and dropping the frame marker.
+func TestPageTracker_TelemetryPromotesSPANavigationInOriginForm(t *testing.T) {
+	pt := newTestPageTracker(t)
+	pt.TrackHTTPRequest(docEntry("/?" + frameMarkerParam + "=f1"))
+
+	pt.TrackInteraction(InteractionEvent{
+		URL:       "http://127.0.0.1:12345/pages/orbitals?tab=2&" + frameMarkerParam + "=f1#section",
+		Timestamp: time.Now(),
+	}, "", "f1")
+
+	sessions := pt.GetActiveSessions()
+	if len(sessions) != 1 {
+		t.Fatalf("expected 1 session, got %d", len(sessions))
+	}
+	if got := sessions[0].URL; got != "/pages/orbitals?tab=2#section" {
+		t.Errorf("SPA navigation promoted as %q, want %q", got, "/pages/orbitals?tab=2#section")
+	}
+}
+
+func TestInSessionURLForm(t *testing.T) {
+	for _, tc := range []struct{ session, telemetry, want string }{
+		{"/", "http://h:1/", "/"},
+		{"/a", "http://h:1/b?x=1", "/b?x=1"},
+		{"/a", "https://h/b#frag", "/b#frag"},
+		{"/a", "/b", "/b"},                                    // already origin-form
+		{"http://x/", "http://x/pages/y", "http://x/pages/y"}, // absolute session keeps absolute
+		{"", "http://h/b", "/b"},                              // empty session URL is origin-form
+	} {
+		if got := inSessionURLForm(tc.session, tc.telemetry); got != tc.want {
+			t.Errorf("inSessionURLForm(%q, %q) = %q, want %q", tc.session, tc.telemetry, got, tc.want)
+		}
+	}
+}

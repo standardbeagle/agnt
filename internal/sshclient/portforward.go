@@ -6,8 +6,8 @@ import (
 	"io"
 	"net"
 	"strconv"
-	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"context"
@@ -76,8 +76,15 @@ func (m *PortForwardManager) emitChange() {
 
 // portForward is one remote-proxy-ID's local listener.
 type portForward struct {
-	proxyID           string
-	remotePort        int
+	proxyID string
+	// remoteHost is the address the remote proxy listens on, as the relay
+	// must dial it from the remote side (see forwardTarget).
+	remoteHost string
+	remotePort int
+	// notify reports relay failures; dialFailing collapses a run of
+	// identical failures into one line.
+	notify            func(string)
+	dialFailing       atomic.Bool
 	localPort         int
 	listener          net.Listener
 	connMu            sync.Mutex
@@ -358,24 +365,24 @@ func (m *PortForwardManager) reconcileOnce() {
 	var toStop []*portForward
 	stopping := make(map[string]bool)
 	for id, f := range m.forwards {
-		port, ok := desired[id]
-		if !ok || port != f.remotePort {
+		target, ok := desired[id]
+		if !ok || target != f.target() {
 			toStop = append(toStop, f)
 			stopping[id] = true
 		}
 	}
 	var toStart []struct {
-		id   string
-		port int
+		id     string
+		target forwardTarget
 	}
-	for id, port := range desired {
+	for id, target := range desired {
 		// A forward on its way out counts as absent: a proxy whose remote
 		// port changed is stopped and started again in this same pass.
 		if _, ok := m.forwards[id]; !ok || stopping[id] {
 			toStart = append(toStart, struct {
-				id   string
-				port int
-			}{id, port})
+				id     string
+				target forwardTarget
+			}{id, target})
 		}
 	}
 	m.mu.Unlock()
@@ -387,15 +394,15 @@ func (m *PortForwardManager) reconcileOnce() {
 		}
 	}
 	for _, s := range toStart {
-		m.startForward(s.id, s.port)
+		m.startForward(s.id, s.target)
 	}
 	m.emitChange()
 }
 
 // fetchDesired calls PROXY LIST (global — this manager forwards every proxy
 // the remote daemon knows about, not just one project's) and extracts
-// proxy id -> remote listen port from each entry's listen_addr.
-func (m *PortForwardManager) fetchDesired() (map[string]int, error) {
+// proxy id -> remote listen address from each entry's listen_addr.
+func (m *PortForwardManager) fetchDesired() (map[string]forwardTarget, error) {
 	result, err := m.dclient.ProxyList(protocol.DirectoryFilter{Global: true})
 	if err != nil {
 		return nil, err
@@ -415,25 +422,45 @@ func (m *PortForwardManager) fetchDesired() (map[string]int, error) {
 		return nil, fmt.Errorf("decoding PROXY LIST result: %w", err)
 	}
 
-	desired := make(map[string]int, len(parsed.Proxies))
+	desired := make(map[string]forwardTarget, len(parsed.Proxies))
 	for _, p := range parsed.Proxies {
-		port, err := listenAddrPort(p.ListenAddr)
+		target, err := listenAddrTarget(p.ListenAddr)
 		if err != nil || p.ID == "" {
 			continue
 		}
-		desired[p.ID] = port
+		desired[p.ID] = target
 	}
 	return desired, nil
 }
 
-// listenAddrPort extracts the numeric port from a "host:port" listen_addr
-// (proxy.ProxyServer.ListenAddr, e.g. "0.0.0.0:5173" or "127.0.0.1:5173").
-func listenAddrPort(addr string) (int, error) {
-	idx := strings.LastIndexByte(addr, ':')
-	if idx < 0 {
-		return 0, fmt.Errorf("no port in listen_addr %q", addr)
+// forwardTarget is where the relay dials on the remote side to reach a proxy.
+type forwardTarget struct {
+	Host string
+	Port int
+}
+
+// listenAddrTarget turns a proxy's listen_addr into the address to dial from
+// the remote host itself.
+//
+// The host matters: a proxy bound with `bind "tailscale"` (or any specific
+// address) does not answer on loopback, so dialing 127.0.0.1 regardless of
+// listen_addr gave such a proxy a local forward that accepted connections and
+// dropped every one. A wildcard or empty host is reachable on loopback, and
+// loopback is what it is dialed as.
+func listenAddrTarget(addr string) (forwardTarget, error) {
+	host, portStr, err := net.SplitHostPort(addr)
+	if err != nil {
+		return forwardTarget{}, fmt.Errorf("listen_addr %q: %w", addr, err)
 	}
-	return strconv.Atoi(addr[idx+1:])
+	port, err := strconv.Atoi(portStr)
+	if err != nil || port < 1 || port > 65535 {
+		return forwardTarget{}, fmt.Errorf("listen_addr %q: bad port", addr)
+	}
+	switch host {
+	case "", "0.0.0.0", "::", "localhost":
+		host = "127.0.0.1"
+	}
+	return forwardTarget{Host: host, Port: port}, nil
 }
 
 // startForward binds a local listener for remotePort, preferring the same
@@ -441,7 +468,8 @@ func listenAddrPort(addr string) (int, error) {
 // injected by the proxy stay valid unmodified), falling back to an
 // OS-assigned port on collision with a mandatory visible notice (#27 — a
 // silent remap would leave stale absolute URLs pointing at the wrong port).
-func (m *PortForwardManager) startForward(proxyID string, remotePort int) {
+func (m *PortForwardManager) startForward(proxyID string, target forwardTarget) {
+	remotePort := target.Port
 	localAddr := fmt.Sprintf("127.0.0.1:%d", remotePort)
 	listener, err := net.Listen("tcp", localAddr)
 	remapped := false
@@ -459,7 +487,9 @@ func (m *PortForwardManager) startForward(proxyID string, remotePort int) {
 	localPort := listener.Addr().(*net.TCPAddr).Port
 	f := &portForward{
 		proxyID:    proxyID,
+		remoteHost: target.Host,
 		remotePort: remotePort,
+		notify:     m.notify,
 		localPort:  localPort,
 		listener:   listener,
 		conns:      make(map[net.Conn]struct{}),
@@ -542,6 +572,11 @@ func (f *portForward) serve(sshClient func() *Client) {
 	}
 }
 
+// target is the remote address this forward relays to.
+func (f *portForward) target() forwardTarget {
+	return forwardTarget{Host: f.remoteHost, Port: f.remotePort}
+}
+
 func (f *portForward) pause() {
 	f.connMu.Lock()
 	f.paused = true
@@ -561,10 +596,17 @@ func (f *portForward) resume() {
 func (f *portForward) relay(sshClient *Client, conn net.Conn) {
 	defer conn.Close()
 
-	remote, err := sshClient.SSH.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", f.remotePort))
+	remoteAddr := net.JoinHostPort(f.remoteHost, strconv.Itoa(f.remotePort))
+	remote, err := sshClient.SSH.Dial("tcp", remoteAddr)
 	if err != nil {
+		// The browser only sees a dropped connection, so say why. One line
+		// per run of failures: a page load opens many connections at once.
+		if f.notify != nil && f.dialFailing.CompareAndSwap(false, true) {
+			f.notify(fmt.Sprintf("agnt ssh: proxy %s: local :%d cannot reach remote %s: %v", f.proxyID, f.localPort, remoteAddr, err))
+		}
 		return
 	}
+	f.dialFailing.Store(false)
 	defer remote.Close()
 	f.connMu.Lock()
 	beforeRemoteTrack := f.beforeRemoteTrack

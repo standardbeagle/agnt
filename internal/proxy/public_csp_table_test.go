@@ -183,18 +183,19 @@ func TestProxiedArtifactCSPExact(t *testing.T) {
 	}
 }
 
-// TestAuthoredScriptHashesStillWidenOnlyScriptSrc: the authored-script hashes
-// (INV-12) compose with the style widening without either leaking into the
-// other.
-func TestAuthoredScriptHashesStillWidenOnlyScriptSrc(t *testing.T) {
+// TestAddScriptRevisionWidensNoDirective: a revision carrying addScript — which
+// no publish path produces and the store refuses to load (INV-14) — still gets
+// exactly the proxied shape: script-src is the one bundle hash, and the style
+// widening is untouched. Neither directive has a per-revision term.
+func TestAddScriptRevisionWidensNoDirective(t *testing.T) {
 	rev := authoredScriptRevision("window.__demo_variant=1;")
 	rev.Upstream = &publish.UpstreamConfig{URL: "https://demo.example.com/app"}
 	h := upstreamHandler(t, rev, &countingFetcher{body: []byte(upstreamDoc)})
 	csp := do(h, http.MethodGet, sharePrefix+validToken, "", nil).Header().Get("Content-Security-Policy")
 
 	scriptSrcValue, _ := cspDirective(csp, "script-src")
-	if len(strings.Fields(scriptSrcValue)) != 2 {
-		t.Fatalf("script-src should carry the bundle hash plus one authored hash: %q", scriptSrcValue)
+	if scriptSrcValue != "'"+h.cspHash+"'" {
+		t.Fatalf("script-src = %q, want the bundle hash alone", scriptSrcValue)
 	}
 	styleSrc, _ := cspDirective(csp, "style-src")
 	if styleSrc != "'self' 'unsafe-inline'" {

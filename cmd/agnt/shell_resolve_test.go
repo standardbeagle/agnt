@@ -264,7 +264,10 @@ func TestRunBinary_WritesAgentContextUnderCmdDir(t *testing.T) {
 	agntPath := findAgntBinary(t)
 
 	binDir := t.TempDir()
-	createTestScript(t, binDir, "test-e2e-cmd", "E2E_BINARY_MARKER")
+	// The fake agent is named after a registered adapter: only a known agent
+	// with a context file gets one written. An unknown command falls back to
+	// the Universal adapter, which deliberately persists nothing.
+	createTestScript(t, binDir, "codex", "E2E_BINARY_MARKER")
 
 	// HOME points at a temp dir so the spawned binary cannot write config into
 	// the developer's real HOME during the run.
@@ -277,7 +280,7 @@ func TestRunBinary_WritesAgentContextUnderCmdDir(t *testing.T) {
 		t.Skip("bash not available")
 	}
 
-	cmd := exec.Command(agntPath, "run", "--no-overlay", "test-e2e-cmd")
+	cmd := exec.Command(agntPath, "run", "--no-overlay", "codex")
 	isolateFromTTY(cmd)
 	// The child is a real `agnt run`, and it resolves its own project path from
 	// ITS cwd (run.go's os.Getwd) to write the agent-context file. t.TempDir()

@@ -40,7 +40,7 @@ type recordingSession struct {
 // ReplaytestInput drives the replaytest MCP tool. Action selects the operation;
 // the remaining fields supply per-action parameters.
 type ReplaytestInput struct {
-	Action        string `json:"action" jsonschema:"Operation to perform: record, stop, refine, replay, explore, list, or show."`
+	Action        string `json:"action" jsonschema:"Operation to perform: record, stop, cancel, refine, replay, explore, list, or show."`
 	Name          string `json:"name,omitempty" jsonschema:"Scenario name to record, show, refine, or replay."`
 	ProxyID       string `json:"proxy_id,omitempty" jsonschema:"Proxy id the scenario records or replays against."`
 	Preset        string `json:"preset,omitempty" jsonschema:"Optional fuzz preset to run alongside the baseline on replay (e.g. latency, error5xx). When empty, replay runs the baseline only."`
@@ -76,19 +76,30 @@ type replaytestHandler struct {
 
 	mu       sync.Mutex
 	sessions map[string]recordingSession
+	// now is the clock seam for recording expiry.
+	now func() time.Time
 }
+
+// recordingMaxAge is how long an unstopped recording keeps its name reserved.
+// Recording state lives only in this MCP process, so a `record` whose `stop`
+// never came (the agent moved on, the turn was interrupted) would otherwise
+// block that scenario name until the process restarts. Past this age a new
+// `record` on the same name replaces it; `cancel` releases it immediately.
+const recordingMaxAge = 2 * time.Hour
 
 func newReplaytestHandler(lic *license.Manager, clientFn func() (replaytestLogClient, error)) *replaytestHandler {
 	return &replaytestHandler{
 		lic:      lic,
 		clientFn: clientFn,
 		sessions: make(map[string]recordingSession),
+		now:      time.Now,
 	}
 }
 
 var replaytestGatedActions = map[string]bool{
 	"record":  true,
 	"stop":    true,
+	"cancel":  true,
 	"refine":  true,
 	"replay":  true,
 	"explore": true,
@@ -169,6 +180,8 @@ func (h *replaytestHandler) handle(ctx context.Context, in ReplaytestInput) (*mc
 			return h.handleRecord(in)
 		case "stop":
 			return h.handleStop(in)
+		case "cancel":
+			return h.handleCancel(in)
 		}
 	}
 
@@ -363,11 +376,9 @@ func (h *replaytestHandler) handleRefine(ctx context.Context, in ReplaytestInput
 // provider so unit tests can inject a stub.
 func (h *replaytestHandler) refineWith(ctx context.Context, in ReplaytestInput, refiner *anthropicRefiner) (*mcp.CallToolResult, ReplaytestOutput, error) {
 	if !refiner.p.IsConfigured() {
-		out := ReplaytestOutput{
-			Message: "refine needs an LLM API key — set ANTHROPIC_API_KEY or CLAUDE_KEY in the daemon's environment, then re-run. The refinement adapter (replaytest.Refine over the Anthropic provider) is wired and runs as soon as a key is present.",
-			Success: false,
-		}
-		return replaytestOK(out.Message), out, nil
+		// The provider is built in THIS process — the agnt MCP server the agent
+		// launched — not in the daemon, so that is the environment to set.
+		return fail[ReplaytestOutput]("refine needs an LLM API key — set ANTHROPIC_API_KEY or CLAUDE_KEY in the environment of the agnt MCP server process (the `agnt mcp` your agent launches, not the daemon), restart it, then re-run")
 	}
 
 	store := replaytest.NewStore(in.Directory)
@@ -441,12 +452,10 @@ func extractJSONArray(s string) string {
 // moment. Recording state lives in-process and survives until stop.
 func (h *replaytestHandler) handleRecord(in ReplaytestInput) (*mcp.CallToolResult, ReplaytestOutput, error) {
 	if in.Name == "" {
-		out := ReplaytestOutput{Message: "provide a scenario name to record", Success: false}
-		return replaytestOK(out.Message), out, nil
+		return fail[ReplaytestOutput]("provide a scenario name to record")
 	}
 	if in.ProxyID == "" {
-		out := ReplaytestOutput{Message: "provide a proxy_id to record traffic from", Success: false}
-		return replaytestOK(out.Message), out, nil
+		return fail[ReplaytestOutput]("provide a proxy_id to record traffic from")
 	}
 	// Refuse a name the store cannot save now, not after the recording.
 	if err := replaytest.ValidateName(in.Name); err != nil {
@@ -468,16 +477,20 @@ func (h *replaytestHandler) handleRecord(in ReplaytestInput) (*mcp.CallToolResul
 		return fail[ReplaytestOutput]("proxy " + in.ProxyID + " has no target_url")
 	}
 
+	now := h.now()
 	h.mu.Lock()
-	if _, exists := h.sessions[in.Name]; exists {
+	if prev, exists := h.sessions[in.Name]; exists && now.Sub(prev.Start) < recordingMaxAge {
 		h.mu.Unlock()
-		return fail[ReplaytestOutput]("recording already active for " + in.Name)
+		return fail[ReplaytestOutput](fmt.Sprintf(
+			"recording already active for %s (started %s ago against proxy %s) — `stop` it to save, or `cancel` it to discard",
+			in.Name, now.Sub(prev.Start).Round(time.Second), prev.ProxyID))
 	}
+	// Either no recording, or an abandoned one past recordingMaxAge: replace it.
 	h.sessions[in.Name] = recordingSession{
 		ProxyID:   in.ProxyID,
 		Directory: in.Directory,
 		BaseURL:   baseURL,
-		Start:     time.Now().UTC(),
+		Start:     now.UTC(),
 	}
 	h.mu.Unlock()
 
@@ -493,8 +506,7 @@ func (h *replaytestHandler) handleRecord(in ReplaytestInput) (*mcp.CallToolResul
 // recordings with response bodies preserved), and persists it.
 func (h *replaytestHandler) handleStop(in ReplaytestInput) (*mcp.CallToolResult, ReplaytestOutput, error) {
 	if in.Name == "" {
-		out := ReplaytestOutput{Message: "provide a scenario name to stop", Success: false}
-		return replaytestOK(out.Message), out, nil
+		return fail[ReplaytestOutput]("provide a scenario name to stop")
 	}
 
 	h.mu.Lock()
@@ -535,6 +547,23 @@ func (h *replaytestHandler) handleStop(in ReplaytestInput) (*mcp.CallToolResult,
 	return replaytestOK(out.Message), out, nil
 }
 
+// handleCancel discards an open recording window without saving anything, so
+// the scenario name can be recorded again.
+func (h *replaytestHandler) handleCancel(in ReplaytestInput) (*mcp.CallToolResult, ReplaytestOutput, error) {
+	if in.Name == "" {
+		return fail[ReplaytestOutput]("provide a scenario name to cancel")
+	}
+	h.mu.Lock()
+	_, ok := h.sessions[in.Name]
+	delete(h.sessions, in.Name)
+	h.mu.Unlock()
+	if !ok {
+		return fail[ReplaytestOutput]("no active recording for " + in.Name)
+	}
+	out := ReplaytestOutput{Message: "cancelled recording " + in.Name + "; nothing was saved", Success: true}
+	return replaytestOK(out.Message), out, nil
+}
+
 func replaytestOK(msg string) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: msg}},
@@ -542,7 +571,7 @@ func replaytestOK(msg string) *mcp.CallToolResult {
 }
 
 // RegisterReplaytestTool registers the replaytest MCP tool. The license manager
-// gates the record/stop/refine/replay/explore actions on the advanced_testing
+// gates the record/stop/cancel/refine/replay/explore actions on the advanced_testing
 // capability; list/show are free.
 func RegisterReplaytestTool(server *mcp.Server, lic *license.Manager, clientFn func() (replaytestLogClient, error)) {
 	h := newReplaytestHandler(lic, clientFn)
@@ -559,12 +588,15 @@ Actions:
            N seeds (explore_agents) for the calling agent to fan out to
            browser-debugger subagents.
   refine:  Use an LLM to mask volatile auto-captured assertions. Requires
-           ANTHROPIC_API_KEY or CLAUDE_KEY in the daemon environment.
+           ANTHROPIC_API_KEY or CLAUDE_KEY in the agnt MCP server's environment
+           (the process your agent launched, not the daemon).
   record:  Open a recording window against a proxy (record + proxy_id). Captures
            traffic from this moment until stop.
   stop:    Close the recording window (stop + name): pulls the full-fidelity
            proxy log captured since record, assembles a scenario with response
            bodies preserved, and saves it. Requires daemon mode.
+  cancel:  Discard an open recording window (cancel + name) without saving. An
+           unstopped recording also stops reserving its name after 2h.
 
 Examples:
   replaytest {action: "list"}
@@ -572,7 +604,10 @@ Examples:
   replaytest {action: "replay", name: "checkout"}
   replaytest {action: "replay", name: "checkout", preset: "latency"}
   replaytest {action: "explore", name: "checkout", explore_agents: 4}
-  replaytest {action: "refine", name: "checkout"}`,
+  replaytest {action: "refine", name: "checkout"}
+  replaytest {action: "record", name: "checkout", proxy_id: "dev"}
+  replaytest {action: "stop", name: "checkout"}
+  replaytest {action: "cancel", name: "checkout"}`,
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in ReplaytestInput) (*mcp.CallToolResult, ReplaytestOutput, error) {
 		return h.handle(ctx, in)
 	})

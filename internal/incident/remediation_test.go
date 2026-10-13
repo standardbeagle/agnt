@@ -72,9 +72,8 @@ var allSources = []Source{
 	SourceProcessOutput,
 	SourceProcessCrash,
 	SourceBuildFail,
-	SourcePortConflict,
-	SourceShutdown,
-	SourceHookStopFail,
+	SourceChaosSwallow,
+	SourceExternal,
 }
 
 // ── exhaustiveness ────────────────────────────────────────────────────────────
@@ -118,16 +117,6 @@ func TestRoute_ContextInjection_HTTP5xx_IncludesProxyAndProcess(t *testing.T) {
 	// fallback also gets context
 	if r.FallbackArgs["process_id"] != "backend" {
 		t.Errorf("fallback process_id not injected: got %v", r.FallbackArgs["process_id"])
-	}
-}
-
-func TestRoute_ContextInjection_PortConflict_IncludesPort(t *testing.T) {
-	t.Parallel()
-	ev := FromPortConflict(8080, 12345, "node")
-	r := Resolve(&ev)
-
-	if r.PrimaryArgs["port"] != 8080 {
-		t.Errorf("port not injected: got %v", r.PrimaryArgs["port"])
 	}
 }
 

@@ -27,6 +27,16 @@ type acpClient struct {
 	spin        *stderrSpinner
 	textPrinted bool
 
+	// ask reads one line of user input for a permission prompt. Stdin has
+	// exactly one reader in every mode — the line editor (overlay REPL), the
+	// REPL's scanner goroutine (cooked REPL), or nobody (one-shot) — and a
+	// second direct os.Stdin read here would race it or, in raw mode, never
+	// see the '\n' it waits for. Each mode installs the asker that goes
+	// through its own reader; nil means one-shot, where reading stdin
+	// directly is safe. See setAsker.
+	ask      func(ctx context.Context, prompt string) (string, bool)
+	stdinBuf *bufio.Reader // one-shot fallback reader, created on first use
+
 	// Terminal registry: agent-requested commands run under us when the
 	// terminal capability is advertised. See acp_terminal.go.
 	termMu    sync.Mutex
@@ -52,6 +62,39 @@ func (c *acpClient) setWriters(out, errw io.Writer) {
 	c.mu.Lock()
 	c.out, c.err = out, errw
 	c.mu.Unlock()
+}
+
+// setAsker installs the function that reads a permission-prompt answer from
+// the mode's single stdin owner.
+func (c *acpClient) setAsker(ask func(ctx context.Context, prompt string) (string, bool)) {
+	c.mu.Lock()
+	c.ask = ask
+	c.mu.Unlock()
+}
+
+// askLine prompts for and returns one line of user input, or ok=false when
+// input is unavailable (EOF, cancel).
+func (c *acpClient) askLine(ctx context.Context, prompt string) (string, bool) {
+	c.mu.Lock()
+	ask := c.ask
+	c.mu.Unlock()
+	if ask != nil {
+		return ask(ctx, prompt)
+	}
+	// One-shot mode: nothing else reads stdin. The reader is kept across
+	// prompts so input buffered past one answer is not lost to the next.
+	fmt.Fprint(c.errWriter(), prompt)
+	c.mu.Lock()
+	if c.stdinBuf == nil {
+		c.stdinBuf = bufio.NewReader(os.Stdin)
+	}
+	r := c.stdinBuf
+	c.mu.Unlock()
+	line, err := r.ReadString('\n')
+	if err != nil && strings.TrimSpace(line) == "" {
+		return "", false
+	}
+	return line, true
 }
 
 // errWriter returns the current status sink.
@@ -122,8 +165,8 @@ func (c *acpClient) SessionUpdate(_ context.Context, params acp.SessionNotificat
 }
 
 // RequestPermission auto-approves in lightest mode (prefer an allow option),
-// otherwise prompts on stderr/stdin.
-func (c *acpClient) RequestPermission(_ context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
+// otherwise prompts the user through the mode's stdin owner (see askLine).
+func (c *acpClient) RequestPermission(ctx context.Context, params acp.RequestPermissionRequest) (acp.RequestPermissionResponse, error) {
 	if c.autoApprove {
 		for _, o := range params.Options {
 			if o.Kind == acp.PermissionOptionKindAllowOnce || o.Kind == acp.PermissionOptionKindAllowAlways {
@@ -148,18 +191,17 @@ func (c *acpClient) RequestPermission(_ context.Context, params acp.RequestPermi
 	for i, opt := range params.Options {
 		fmt.Fprintf(w, "   %d. %s (%s)\n", i+1, opt.Name, opt.Kind)
 	}
-	reader := bufio.NewReader(os.Stdin)
 	for {
-		fmt.Fprint(w, "Choose: ")
-		line, err := reader.ReadString('\n')
+		line, ok := c.askLine(ctx, "Choose: ")
 		idx := -1
 		_, _ = fmt.Sscanf(strings.TrimSpace(line), "%d", &idx)
 		if idx >= 1 && idx <= len(params.Options) {
 			return selectOption(params.Options[idx-1].OptionId), nil
 		}
-		if err != nil {
-			// stdin closed/redirected (EOF): cannot prompt, so cancel the
-			// request instead of spinning forever on "Invalid option.".
+		if !ok {
+			// Input closed, redirected (EOF) or cancelled by the user: cannot
+			// prompt, so cancel the request instead of spinning forever on
+			// "Invalid option.".
 			return acp.RequestPermissionResponse{
 				Outcome: acp.RequestPermissionOutcome{Cancelled: &acp.RequestPermissionOutcomeCancelled{}},
 			}, nil
@@ -240,6 +282,21 @@ func runACPRepl(ctx context.Context, conn *acp.ClientSideConnection, client *acp
 			stdinCh <- scanner.Text()
 		}
 	}()
+
+	// Permission prompts (--no-auto-approve) read their answer from the same
+	// scanner channel. They only arrive during a turn, when this loop is
+	// blocked in acpPromptTurn and not receiving, so the answer cannot be
+	// mistaken for the next prompt — which is what happened when
+	// RequestPermission opened its own reader on os.Stdin.
+	client.setAsker(func(actx context.Context, prompt string) (string, bool) {
+		fmt.Fprint(os.Stderr, prompt)
+		select {
+		case line, ok := <-stdinCh:
+			return line, ok
+		case <-actx.Done():
+			return "", false
+		}
+	})
 
 	firstTurn := true
 	runTurn := func(text string) {

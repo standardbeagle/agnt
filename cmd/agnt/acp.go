@@ -18,8 +18,6 @@ import (
 
 	acp "github.com/coder/acp-go-sdk"
 	"github.com/spf13/cobra"
-	"github.com/standardbeagle/agnt/internal/aichannel"
-	"github.com/standardbeagle/agnt/internal/daemon"
 	"github.com/standardbeagle/agnt/internal/overlay"
 	"golang.org/x/term"
 )
@@ -245,10 +243,12 @@ func runACPInteractive(ctx context.Context, agent string, argv []string) error {
 	// Start the AI overlay server (message injection source) before daemon
 	// registration so the daemon learns its endpoint.
 	var aiOverlay *AIOverlay
-	var msgCh <-chan string
+	var msgCh <-chan aiOverlayMessage
 	var overlayEndpoint string
 	if !acpNoSession {
 		aiOverlay = newAIOverlay(code)
+		cwd, _ := os.Getwd()
+		aiOverlay.configureAlerts(cwd)
 		if err := aiOverlay.Start(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "[agnt] overlay start failed: %v\n", err)
 			aiOverlay = nil
@@ -278,14 +278,17 @@ func runACPInteractive(ctx context.Context, agent string, argv []string) error {
 	// before they become prompt turns. The REPL pulls only while idle, which
 	// is the deterministic ACP activity gate.
 	var gate *acpAlertGate
+	var pauseForwarding func(bool)
 	if msgCh != nil {
 		gate = newACPAlertGate(msgCh)
+		gate.overflow = aiOverlay.TakeDropped
+		pauseForwarding = aiOverlay.SetForwardingPaused
 		go gate.Run(ctx)
 	}
 
 	useOverlay := !acpNoOverlay && isTerminal(os.Stdin)
 	if useOverlay {
-		return runACPOverlay(ctx, conn, client, sid, systemContext, gate)
+		return runACPOverlay(ctx, conn, client, sid, systemContext, gate, pauseForwarding)
 	}
 	return runACPRepl(ctx, conn, client, sid, systemContext, gate)
 }
@@ -311,7 +314,11 @@ func buildACPSystemContext(allowSetup bool) string {
 // involve no LLM call, so they are normally sub-second; a generous ceiling
 // turns a genuinely unresponsive agent into a loud failure instead of an
 // indefinite hang. The prompt turn itself is NOT bounded here — model
-// latency is legitimately unbounded and is cancellable via SIGINT.
+// latency is legitimately unbounded. A turn is cancelled by Ctrl+C: in the
+// overlay REPL (raw mode, so Ctrl+C is a byte, not a signal) the line editor's
+// interrupt handler cancels the per-turn context; in cooked/one-shot mode the
+// SIGINT cancels the command context. Either way the SDK follows the
+// cancellation with session/cancel.
 const acpHandshakeTimeout = 60 * time.Second
 
 // dialACPAgent spawns the agent subprocess, runs the ACP handshake
@@ -456,7 +463,7 @@ func sanitizeAgentName(agent string) string {
 // (raw mode, status bar, Ctrl+←/→ panels, message injection). It mirrors
 // runAiClaudeOverlay, swapping the per-turn query for an ACP prompt turn:
 // the acpClient renders streamed updates straight into the raw-mode writer.
-func runACPOverlay(ctx context.Context, conn *acp.ClientSideConnection, client *acpClient, sid acp.SessionId, systemContext string, gate *acpAlertGate) error {
+func runACPOverlay(ctx context.Context, conn *acp.ClientSideConnection, client *acpClient, sid acp.SessionId, systemContext string, gate *acpAlertGate, pauseForwarding func(bool)) error {
 	width, height := 80, 24
 	if w, h, err := term.GetSize(int(os.Stdin.Fd())); err == nil {
 		width, height = w, h
@@ -498,22 +505,13 @@ func runACPOverlay(ctx context.Context, conn *acp.ClientSideConnection, client *
 	lineEditor := NewLineEditor(rawWriter, "> ")
 	replAdapter := NewREPLAdapter(lineEditor)
 
-	var statusFetcher *overlay.StatusFetcher
-
-	cfg := overlay.DefaultConfig()
-	cfg.ShowIndicator = showIndicator
-	cfg.Version = appVersion
-	cfg.OnAction = func(action overlay.Action) error {
-		if action == overlay.ActionRefreshStatus && statusFetcher != nil {
-			statusFetcher.Refresh()
-		}
-		return nil
-	}
-
-	termOverlay = overlay.New(replAdapter, width, height, cfg)
-	termOverlay.SetGate(outputGate)
-
-	inputRouter := overlay.NewInputRouter(replAdapter, termOverlay)
+	// Shared overlay component chain (overlay, input router, daemon
+	// connection + adapters, summarizer, status fetcher) — the same one
+	// `agnt run` and `agnt ai claude` build, so the three cannot drift.
+	core := newOverlayCore(replAdapter, width, height, showIndicator, outputGate)
+	termOverlay = core.term
+	inputRouter := core.router
+	defer core.daemonConn.Close()
 
 	outputGate.SetCallbacks(nil, func() {
 		if outputFilter != nil {
@@ -522,32 +520,19 @@ func runACPOverlay(ctx context.Context, conn *acp.ClientSideConnection, client *
 		lineEditor.Redraw()
 	})
 
-	daemonSocketPath := getSocketPath(rootCmd)
-	daemonConn := daemon.NewConn(daemonSocketPath)
-	defer daemonConn.Close()
-
-	daemonClient := newDaemonClientAdapter(daemonConn)
-	outputFetcher := overlay.NewDaemonOutputFetcher(daemonClient)
-	inputRouter.SetOutputFetcher(outputFetcher)
-	daemonConnector := newDaemonConnector(daemonConn)
-	inputRouter.SetDaemonConnector(daemonConnector)
-	scriptController := overlay.NewDaemonScriptController(daemonClient)
-	inputRouter.SetScriptController(scriptController)
-
-	if agent := detectAIAgent(); agent != "" {
-		projectPath, _ := os.Getwd()
-		summarizer := overlay.NewSummarizer(daemonClient, overlay.SummarizerConfig{
-			Agent:       aichannel.AgentType(agent),
-			Timeout:     2 * time.Minute,
-			ProjectPath: projectPath,
-		})
-		inputRouter.SetSummarizer(summarizer)
-	}
-
-	statusFetcher = overlay.NewStatusFetcher(daemonClient, termOverlay, 2*time.Second)
+	statusFetcher := core.statusFetcher
 	statusFetcher.Start(ctx)
 	defer statusFetcher.Stop()
-	inputRouter.SetStatusFetcher(statusFetcher)
+
+	// Ctrl+Up/Down forwarding pause: gate auto-generated alerts at the source.
+	if pauseForwarding != nil {
+		inputRouter.SetForwardingToggle(pauseForwarding)
+	}
+
+	// With --no-auto-approve the agent's permission requests are answered
+	// through the line editor: in raw mode it is the only path from the
+	// keyboard to a submitted line.
+	client.setAsker(lineEditor.Ask)
 
 	sizeCh := make(chan os.Signal, 1)
 	signal.Notify(sizeCh, syscall.SIGWINCH)
@@ -597,8 +582,19 @@ func runACPOverlay(ctx context.Context, conn *acp.ClientSideConnection, client *
 			turnContext = systemContext
 			firstTurn = false
 		}
+		// Per-turn context: Ctrl+C during the turn cancels it (the SDK then
+		// sends session/cancel to the agent) without ending the REPL.
+		turnCtx, cancelTurn := context.WithCancel(ctx)
+		lineEditor.SetInterruptHandler(cancelTurn)
 		lineEditor.SetActive(false)
-		if err := acpPromptTurn(ctx, conn, client, sid, text, turnContext, true); err != nil {
+		err := acpPromptTurn(turnCtx, conn, client, sid, text, turnContext, true)
+		interrupted := turnCtx.Err() != nil && ctx.Err() == nil
+		lineEditor.SetInterruptHandler(nil)
+		cancelTurn()
+		switch {
+		case interrupted:
+			fmt.Fprint(rawWriter, "\r\033[K(interrupted)\n")
+		case err != nil:
 			fmt.Fprintf(rawWriter, "Error: %v\n", err)
 		}
 		fmt.Fprintln(rawWriter)

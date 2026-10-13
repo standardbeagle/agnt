@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -29,6 +30,7 @@ func (d *Daemon) procActions() map[string]handlerFn {
 		"LIST":         d.hubHandleProcList,
 		"CLEANUP-PORT": d.hubHandleProcCleanupPort,
 		"AUTORESTART":  d.hubHandleProcAutoRestart,
+		"STDIN":        d.hubHandleProcStdin,
 	}
 	valid := routerSubVerbs(actions)
 	actions[""] = func(_ context.Context, conn *hubpkg.Connection, _ *hubproto.Command) error {
@@ -66,22 +68,28 @@ func (d *Daemon) hubHandleProcStatus(ctx context.Context, conn *hubpkg.Connectio
 	}
 
 	processID := cmd.Args[0]
-	proc, err := d.hub.ProcessManager().Get(processID)
+	proc, err := d.resolveProc(conn, processID)
 	if err != nil {
 		// ProcessManager miss might mean the process is still pending
 		// on dependencies — check the pending tracker before returning
 		// NotFound. A pending process has a registry entry but no
 		// ManagedProcess yet (StartScriptExplicit hasn't run).
-		if pending, ok := d.pendingProcs.Get(processID); ok {
+		if pending, ok := d.pendingProcs.Get(d.pendingProcID(conn, processID)); ok && !errors.Is(err, goprocess.ErrProcessAmbiguous) {
 			resp := pendingStatusResponse(pending)
 			data, _ := json.Marshal(resp)
 			return conn.WriteJSON(data)
 		}
-		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("process %q not found", processID))
+		return d.writeProcLookupErr(conn, processID, err)
 	}
+	// Everything below is keyed by the process's own id; the caller may have
+	// passed its short name.
+	processID = proc.ID
 
 	resp := map[string]interface{}{
-		"id":           proc.ID,
+		"id": proc.ID,
+		// The short name the process runs under; PROC verbs accept it from
+		// the process's own project.
+		"name":         stripProcessPrefix(proc.ID),
 		"command":      proc.Command,
 		"args":         proc.Args,
 		"state":        proc.State().String(),
@@ -170,10 +178,11 @@ func (d *Daemon) hubHandleProcOutput(ctx context.Context, conn *hubpkg.Connectio
 	}
 
 	processID := cmd.Args[0]
-	proc, err := d.hub.ProcessManager().Get(processID)
+	proc, err := d.resolveProc(conn, processID)
 	if err != nil {
-		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("process %q not found", processID))
+		return d.writeProcLookupErr(conn, processID, err)
 	}
+	processID = proc.ID
 
 	// Parse optional filter from JSON data
 	filter, err := unmarshalCommand[hubproto.OutputFilter](cmd)
@@ -244,6 +253,30 @@ func (d *Daemon) hubHandleProcOutput(ctx context.Context, conn *hubpkg.Connectio
 	return conn.WriteEnd()
 }
 
+// hubHandleProcStdin handles PROC STDIN <id> with the bytes to write as data.
+// It replaces the shared hub's handler only to resolve the id the way every
+// other PROC verb does (resolveProc), so a short name reaches the process; the
+// write itself is the ProcessManager's. Only a process started with a stdin
+// pipe (RUN enable_stdin) accepts it.
+func (d *Daemon) hubHandleProcStdin(_ context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
+	if len(cmd.Args) < 1 {
+		return conn.WriteErr(hubproto.ErrMissingParam, "process_id required")
+	}
+	if len(cmd.Data) == 0 {
+		return conn.WriteErr(hubproto.ErrMissingParam, "PROC STDIN requires data")
+	}
+	proc, err := d.resolveProc(conn, cmd.Args[0])
+	if err != nil {
+		return d.writeProcLookupErr(conn, cmd.Args[0], err)
+	}
+	n, err := d.hub.ProcessManager().WriteStdin(proc.ID, cmd.Data)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidState, err.Error())
+	}
+	data, _ := json.Marshal(map[string]interface{}{"bytes_written": n})
+	return conn.WriteJSON(data)
+}
+
 // hubHandleProcStop handles PROC STOP <id>.
 
 func (d *Daemon) hubHandleProcStop(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
@@ -251,7 +284,8 @@ func (d *Daemon) hubHandleProcStop(ctx context.Context, conn *hubpkg.Connection,
 		return conn.WriteErr(hubproto.ErrMissingParam, "process_id required")
 	}
 
-	processID := cmd.Args[0]
+	// The pending launch, like the process, may be named by its short name.
+	processID := d.pendingProcID(conn, cmd.Args[0])
 
 	// A process still waiting on depends_on has no ProcessManager entry —
 	// only a pending launch. Cancel that first, whatever the ProcessManager
@@ -262,10 +296,10 @@ func (d *Daemon) hubHandleProcStop(ctx context.Context, conn *hubpkg.Connection,
 		d.readySignaler.SignalFailed(processID, errors.New("not started: launch cancelled by PROC STOP"))
 	}
 
-	proc, err := d.hub.ProcessManager().Get(processID)
+	proc, err := d.resolveProc(conn, processID)
 	if err != nil {
 		if !cancelledPending {
-			return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("process %q not found", processID))
+			return d.writeProcLookupErr(conn, processID, err)
 		}
 		d.retireIncidentProcessOwner(processID)
 		resp := map[string]interface{}{
@@ -277,6 +311,7 @@ func (d *Daemon) hubHandleProcStop(ctx context.Context, conn *hubpkg.Connection,
 		data, _ := json.Marshal(resp)
 		return conn.WriteJSON(data)
 	}
+	processID = proc.ID
 
 	if !proc.IsRunning() {
 		d.retireIncidentProcessOwner(processID)
@@ -300,7 +335,9 @@ func (d *Daemon) hubHandleProcStop(ctx context.Context, conn *hubpkg.Connection,
 		d.autoRestarter.Unregister(processID)
 	}
 
-	if err := d.hub.ProcessManager().Stop(ctx, processID); err != nil {
+	// Stop the instance that was resolved, not whatever a second bare-ID
+	// lookup would find.
+	if err := d.hub.ProcessManager().StopProcess(ctx, proc); err != nil {
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to stop: %v", err))
 	}
 	d.retireIncidentProcessOwner(processID)
@@ -369,6 +406,7 @@ func (d *Daemon) hubHandleProcList(ctx context.Context, conn *hubpkg.Connection,
 		seenProcessIDs[p.ID] = true
 		entry := map[string]interface{}{
 			"id":           p.ID,
+			"name":         stripProcessPrefix(p.ID),
 			"command":      p.Command,
 			"state":        p.State().String(),
 			"summary":      p.Summary(),
@@ -483,10 +521,53 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 	processID := cmd.Args[0]
 
 	// Get the process to capture its config
-	proc, err := d.hub.ProcessManager().Get(processID)
+	proc, err := d.resolveProc(conn, processID)
 	if err != nil {
-		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("process %q not found", processID))
+		return d.writeProcLookupErr(conn, processID, err)
 	}
+	processID = proc.ID
+
+	// Check if process is in a restartable state
+	state := proc.State().String()
+	if state != "running" && state != "stopped" && state != "failed" {
+		return conn.WriteErr(hubproto.ErrInvalidState, fmt.Sprintf("process %q is in state %s, cannot restart", processID, state))
+	}
+
+	newProc, err := d.restartProcess(ctx, proc, conn.SessionCode())
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart: %v", err))
+	}
+
+	resp := map[string]interface{}{
+		"id":           processID,
+		"process_id":   processID,
+		"command":      proc.Command,
+		"args":         proc.Args,
+		"project_path": proc.ProjectPath,
+		"state":        newProc.State().String(),
+		"pid":          newProc.PID(),
+		"restarted":    true,
+		"success":      true,
+		"message":      fmt.Sprintf("Process %q restarted successfully", processID),
+	}
+
+	data, _ := json.Marshal(resp)
+	return conn.WriteJSON(data)
+}
+
+// restartProcess stops proc if it is running and starts it again with the
+// launch settings it already had: command, args, env, working directory, and —
+// when it was registered for auto-restart — that registration's config, env
+// and ports. PROC RESTART and RESTART-ALL both go through it so the two cannot
+// drift.
+//
+// callerSession is the session the restart is issued from. It becomes the new
+// lifetime's incident owner; when the caller has none, the previous owner is
+// kept, so a restart from an unbound connection does not cut the process off
+// from its session's incident inbox.
+func (d *Daemon) restartProcess(ctx context.Context, proc *goprocess.ManagedProcess, callerSession string) (*goprocess.ManagedProcess, error) {
+	pm := d.hub.ProcessManager()
+	processID := proc.ID
 
 	// Capture config before stopping
 	command := proc.Command
@@ -495,39 +576,48 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 	projectPath := proc.ProjectPath
 	workingDir := proc.WorkingDir
 
-	// Check if process is in a restartable state
-	state := proc.State().String()
-	if state != "running" && state != "stopped" && state != "failed" {
-		return conn.WriteErr(hubproto.ErrInvalidState, fmt.Sprintf("process %q is in state %s, cannot restart", processID, state))
-	}
-
-	// Capture auto-restart state before stopping so we can re-register after restart.
-	wasAutoRestart := d.autoRestarter != nil && d.autoRestarter.IsRegistered(processID)
-
-	// Unregister from auto-restart before stopping to prevent the monitor from
-	// racing with this explicit restart.
+	// Capture the auto-restart registration before stopping so it can be put
+	// back as it was, then unregister so the monitor does not race this
+	// explicit restart.
+	var prior autoRestartRegistration
+	wasAutoRestart := false
 	if d.autoRestarter != nil {
+		prior, wasAutoRestart = d.autoRestarter.Registration(processID)
 		d.autoRestarter.Unregister(processID)
 	}
 
 	// Stop the process if running
-	if state == "running" {
+	if proc.State().String() == "running" {
 		// Mark this stop as daemon-initiated so the health.OutageClassifier
 		// treats the upcoming outage as a Rebuild rather than a Crash.
 		d.healthTracker.MarkDaemonInitiatedStop(processID)
 		stopCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		defer cancel()
-		if err := d.hub.ProcessManager().Stop(stopCtx, processID); err != nil {
+		if err := pm.StopProcess(stopCtx, proc); err != nil {
 			debug.Warn("daemon", "error stopping process %s: %v", processID, err)
 			d.recordStartupEntry(processID, "", "warning", "stop_failed",
-				fmt.Sprintf("PROC RESTART: failed to stop process: %v", err), 0)
+				fmt.Sprintf("restart: failed to stop process: %v", err), 0)
 		}
 		// Wait for process to fully stop
 		time.Sleep(100 * time.Millisecond)
 	}
 
-	// Detect expected port for EADDRINUSE recovery
-	expectedPort := d.getExpectedPortForProcess(proc)
+	// Ports for pre-flight cleanup and EADDRINUSE recovery: the registered set
+	// when there is one, else the single port the URL tracker or command line
+	// reveals.
+	expectedPorts := prior.ExpectedPorts
+	if len(expectedPorts) == 0 {
+		expectedPorts = []int{d.getExpectedPortForProcess(proc)}
+	}
+
+	ownerSession := callerSession
+	if ownerSession == "" {
+		if prev, ok := d.incidentProcessOwner.Load(processID); ok {
+			if owner := ownerAsIncidentResource(prev); owner != nil {
+				ownerSession = owner.SessionCode
+			}
+		}
+	}
 
 	// Clear URL tracker state so new process output is scanned fresh
 	d.urlTracker.ClearProcess(processID)
@@ -538,42 +628,114 @@ func (d *Daemon) hubHandleProcRestart(ctx context.Context, conn *hubpkg.Connecti
 	d.maybeRetireOnProcStop(processID)
 
 	// Remove the old process registration
-	d.hub.ProcessManager().RemoveByPath(processID, projectPath)
+	pm.RemoveByPath(processID, projectPath)
 	d.retireIncidentProcessOwner(processID)
-	d.registerIncidentProcessOwner(processID, conn.SessionCode())
+	d.registerIncidentProcessOwner(processID, ownerSession)
 
 	// Start with EADDRINUSE recovery (pre-flight cleanup + startup monitoring)
 	d.readySignaler.Reset(processID)
-	newProc, startupErr := d.startScriptWithRetry(ctx, processID, projectPath, workingDir, command, args, env, []int{expectedPort}, false)
+	newProc, startupErr := d.startScriptWithRetry(ctx, processID, projectPath, workingDir, command, args, env, expectedPorts, false)
 	if startupErr != nil {
 		d.readySignaler.SignalFailed(processID, startupErr)
 		d.retireIncidentProcessOwner(processID)
-		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to restart: %v", startupErr))
+		return nil, startupErr
 	}
-	d.armReadiness(processID, []int{expectedPort})
+	d.armReadiness(processID, expectedPorts)
 
-	// Re-register auto-restart if it was previously explicitly enabled
+	// Put the auto-restart registration back with what it had. The env is the
+	// registered one when present (the configured env, before secret
+	// injection), else the env the process ran with.
 	if wasAutoRestart && d.autoRestarter != nil {
-		restartConfig := DefaultAutoRestartConfig()
+		restartConfig := prior.Config
 		restartConfig.Enabled = true // Preserve the explicit enable
-		d.autoRestarter.Register(processID, restartConfig, command, args, nil, []int{expectedPort}, projectPath, projectPath)
+		restartEnv := prior.Env
+		if restartEnv == nil {
+			restartEnv = env
+		}
+		restartDir := prior.WorkingDir
+		if restartDir == "" {
+			restartDir = workingDir
+		}
+		d.autoRestarter.Register(processID, restartConfig, command, args, restartEnv, expectedPorts, projectPath, restartDir)
 	}
 
-	resp := map[string]interface{}{
-		"id":           processID,
-		"process_id":   processID,
-		"command":      command,
-		"args":         args,
-		"project_path": projectPath,
-		"state":        newProc.State().String(),
-		"pid":          newProc.PID(),
-		"restarted":    true,
-		"success":      true,
-		"message":      fmt.Sprintf("Process %q restarted successfully", processID),
-	}
+	return newProc, nil
+}
 
-	data, _ := json.Marshal(resp)
-	return conn.WriteJSON(data)
+// resolveProc looks a process up for an ID-scoped PROC verb. The argument is
+// either a process id ("myapp-1a2b3c4d:dev", what RUN and PROC RUN return) or
+// the short name the process was started under ("dev").
+//
+//  1. The caller's own project, by id and then by short name. A short name
+//     several projects use therefore resolves to the caller's process.
+//  2. The exact id, daemon-wide. Derived ids encode the project and are
+//     unique; a bare id two projects share is ErrProcessAmbiguous.
+//  3. For a connection bound to no session only: the short name, daemon-wide,
+//     when exactly one process has it (ErrProcessAmbiguous otherwise). A
+//     session-bound caller's short names stay inside its project.
+func (d *Daemon) resolveProc(conn *hubpkg.Connection, processID string) (*goprocess.ManagedProcess, error) {
+	pm := d.hub.ProcessManager()
+	projectPath := d.getSessionProjectPath(conn)
+	if projectPath != "" {
+		if proc, err := pm.GetByPath(processID, projectPath); err == nil {
+			return proc, nil
+		}
+		if proc, err := pm.GetByPath(makeProcessID(projectPath, processID), projectPath); err == nil {
+			return proc, nil
+		}
+	}
+	proc, err := pm.Get(processID)
+	if err == nil || errors.Is(err, goprocess.ErrProcessAmbiguous) || projectPath != "" {
+		return proc, err
+	}
+	var match *goprocess.ManagedProcess
+	for _, p := range pm.List() {
+		if p.ID != processID && stripProcessPrefix(p.ID) == processID {
+			if match != nil {
+				return nil, goprocess.ErrProcessAmbiguous
+			}
+			match = p
+		}
+	}
+	if match == nil {
+		return nil, goprocess.ErrProcessNotFound
+	}
+	return match, nil
+}
+
+// pendingProcID returns the id a dependency-gated launch is tracked under for
+// the name the caller gave: the argument itself when a launch is pending under
+// it, else the caller's project's derived id when one is pending under that.
+func (d *Daemon) pendingProcID(conn *hubpkg.Connection, processID string) string {
+	if _, ok := d.pendingProcs.Get(processID); ok {
+		return processID
+	}
+	if projectPath := d.getSessionProjectPath(conn); projectPath != "" {
+		derived := makeProcessID(projectPath, processID)
+		if _, ok := d.pendingProcs.Get(derived); ok {
+			return derived
+		}
+	}
+	return processID
+}
+
+// writeProcLookupErr reports a failed resolveProc. An ambiguous ID is not
+// "not found": the reply names the projects that have it, so the caller can
+// see why and which session to issue the command from.
+func (d *Daemon) writeProcLookupErr(conn *hubpkg.Connection, processID string, err error) error {
+	if !errors.Is(err, goprocess.ErrProcessAmbiguous) {
+		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("process %q not found", processID))
+	}
+	var projects []string
+	for _, p := range d.hub.ProcessManager().List() {
+		if p.ID == processID || stripProcessPrefix(p.ID) == processID {
+			projects = append(projects, p.ProjectPath)
+		}
+	}
+	sort.Strings(projects)
+	return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf(
+		"process %q is ambiguous: %d projects have a process with that id (%s) — issue the command from a session attached to one of them",
+		processID, len(projects), strings.Join(projects, ", ")))
 }
 
 // hubHandleProcAutoRestart handles PROC AUTORESTART <id> [enable|disable|status].
@@ -591,10 +753,11 @@ func (d *Daemon) hubHandleProcAutoRestart(ctx context.Context, conn *hubpkg.Conn
 	}
 
 	// Get the process
-	proc, err := d.hub.ProcessManager().Get(processID)
+	proc, err := d.resolveProc(conn, processID)
 	if err != nil {
-		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("process %q not found", processID))
+		return d.writeProcLookupErr(conn, processID, err)
 	}
+	processID = proc.ID
 
 	switch action {
 	case "enable":
@@ -614,8 +777,14 @@ func (d *Daemon) hubHandleProcAutoRestart(ctx context.Context, conn *hubpkg.Conn
 			}
 		}
 
-		// Register for auto-restart
-		d.autoRestarter.Register(processID, config, proc.Command, proc.Args, nil, nil, proc.ProjectPath, proc.WorkingDir)
+		// Register for auto-restart with the env the process is running with
+		// and the port it is known to use: a restart without them comes back
+		// without its configured environment and skips port cleanup.
+		var expectedPorts []int
+		if port := d.getExpectedPortForProcess(proc); port > 0 {
+			expectedPorts = []int{port}
+		}
+		d.autoRestarter.Register(processID, config, proc.Command, proc.Args, proc.Env, expectedPorts, proc.ProjectPath, proc.WorkingDir)
 
 		resp := map[string]interface{}{
 			"id":            processID,
@@ -887,6 +1056,8 @@ func (d *Daemon) hubHandleProcRun(ctx context.Context, conn *hubpkg.Connection, 
 	// port resolution falls back to command-line / PORT env scanning in
 	// getExpectedPortsForScript.
 	processID := makeProcessID(projectPath, name)
+	// A PROC RUN under this name supersedes an earlier top-level RUN of it.
+	d.runLaunches.Delete(processID)
 	d.registerIncidentProcessOwner(processID, conn.SessionCode())
 	result := d.StartProcessWithDeps(ctx, name, scriptCfg, projectPath, deps, depTimeout)
 	foreground := isForegroundRunMode(payload.Mode)

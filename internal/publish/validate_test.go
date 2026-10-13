@@ -22,7 +22,7 @@ func happyVariantSet() string {
 }
 
 func TestDecodeVariantSet_HappyPath(t *testing.T) {
-	if _, err := DecodeVariantSet([]byte(happyVariantSet())); err != nil {
+	if _, err := decodeVariantSet([]byte(happyVariantSet())); err != nil {
 		t.Fatalf("happy path must validate, got: %v", err)
 	}
 }
@@ -66,7 +66,7 @@ func TestMaliciousFixtures(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := DecodeVariantSet([]byte(tc.json)); err == nil {
+			if _, err := decodeVariantSet([]byte(tc.json)); err == nil {
 				t.Fatalf("expected rejection for %s, got nil error", tc.name)
 			}
 		})
@@ -77,7 +77,7 @@ func TestMaliciousFixtures(t *testing.T) {
 // must pass.
 func TestAcceptsLegitStyle(t *testing.T) {
 	j := `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"color":"#fff","margin":"8px"}}]}]}`
-	if _, err := DecodeVariantSet([]byte(j)); err != nil {
+	if _, err := decodeVariantSet([]byte(j)); err != nil {
 		t.Fatalf("legit style must be accepted, got: %v", err)
 	}
 }
@@ -119,14 +119,12 @@ func TestINV6RetirementAcceptsRawContent(t *testing.T) {
 		{"css-url-uppercase", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"background":"URL(https://cdn.example.com/x)"}}]}]}`},
 		// §6a raw-content ops proper.
 		{"addStyle-raw-css", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"addStyle","css":"@import url(https://cdn.example.com/t.css); .x{position:fixed}"}]}]}`},
-		{"addScript-inline-code", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"addScript","code":"document.title='demo'"}]}]}`},
-		// NOTE: addScript with `src` used to sit here as an accepted "publish-time
-		// fetch input". It is now refused at publish — see
-		// TestAddScriptSrcRefusedAtPublish for why.
+		// addScript is NOT here: authored script is refused in every form
+		// (INV-14) — see TestAddScriptRefusedInEveryForm.
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := DecodeVariantSet([]byte(tc.json)); err != nil {
+			if _, err := decodeVariantSet([]byte(tc.json)); err != nil {
 				t.Fatalf("INV-6 is retired: %s must be accepted, got: %v", tc.name, err)
 			}
 		})
@@ -134,9 +132,9 @@ func TestINV6RetirementAcceptsRawContent(t *testing.T) {
 }
 
 // TestRawOpGuards pins the guards that SURVIVE on the raw-content ops (§6a):
-// size caps, the selector rules, and addScript's src-xor-code contract. These
-// are parse/abuse bounds, not injection controls, so INV-6's retirement leaves
-// them standing.
+// size caps and the selector rules. These are parse/abuse bounds, not injection
+// controls, so INV-6's retirement leaves them standing. (addScript has no
+// guards of its own any more — the op is refused outright.)
 func TestRawOpGuards(t *testing.T) {
 	set := func(op string) string {
 		return `{"version":"v1","id":"s","variants":[{"id":"a","ops":[` + op + `]}]}`
@@ -152,27 +150,9 @@ func TestRawOpGuards(t *testing.T) {
 		{"addStyle-oversize", set(`{"op":"addStyle","css":"` + strings.Repeat("a", MaxStylePatchBytes+1) + `"}`)},
 		{"addStyle-rejects-selector", set(`{"op":"addStyle","selector":".x","css":".a{color:red}"}`)},
 		{"addStyle-empty", set(`{"op":"addStyle","css":""}`)},
-		{"addScript-oversize", set(`{"op":"addScript","code":"` + strings.Repeat("a", MaxRawScriptBytes+1) + `"}`)},
-		{"addScript-src-and-code", set(`{"op":"addScript","src":"https://cdn.example.com/a.js","code":"x=1"}`)},
-		{"addScript-neither", set(`{"op":"addScript"}`)},
-		{"addScript-rejects-selector", set(`{"op":"addScript","selector":".x","code":"x=1"}`)},
-		// addScript's `src` refusal is pinned — with teeth — by
-		// TestAddScriptSrcRefusedAtPublish. It is scheme-agnostic: src is refused
-		// wholesale because publish-time fetching is unimplemented (op.go
-		// OpAddScript), NOT by an https-only scheme check — none exists. Rows that
-		// varied the src scheme (http/data/javascript) once lived here claiming to
-		// test "§4a/INV-13: https only"; that assertion was vacuous, because the
-		// code makes no scheme distinction, so each row passed on the wholesale
-		// refusal regardless of scheme. Deleted rather than kept as three
-		// indistinguishable copies of the src refusal.
 		// Raw content does not smuggle in stray declarative fields.
 		{"setHTML-stray-value", set(`{"op":"setHTML","selector":".x","html":"<b/>","value":"y"}`)},
 		{"setText-stray-html", set(`{"op":"setText","selector":".x","value":"y","html":"<b/>"}`)},
-		// §5 caps the raw-script budget per authored revision, not per op: two
-		// under-cap bodies that together exceed it are rejected.
-		{"addScript-revision-budget", `{"version":"v1","id":"s","variants":[` +
-			`{"id":"a","ops":[{"op":"addScript","code":"` + strings.Repeat("a", MaxRawScriptBytes-10) + `"}]},` +
-			`{"id":"b","ops":[{"op":"addScript","code":"` + strings.Repeat("b", 20) + `"}]}]}`},
 		// §5 caps the style patch per VARIANT: applyStyle + addStyle share it.
 		{"style-variant-budget", `{"version":"v1","id":"s","variants":[{"id":"a","ops":[` +
 			`{"op":"addStyle","css":"` + strings.Repeat("a", MaxStylePatchBytes-10) + `"},` +
@@ -180,70 +160,80 @@ func TestRawOpGuards(t *testing.T) {
 	}
 	for _, tc := range reject {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := DecodeVariantSet([]byte(tc.json)); err == nil {
+			if _, err := decodeVariantSet([]byte(tc.json)); err == nil {
 				t.Fatalf("expected rejection for %s, got nil error", tc.name)
 			}
 		})
 	}
 }
 
-// TestAddScriptSrcRefusedAtPublish pins that an addScript op carrying `src` is
-// REFUSED at publish time, with an error that names why.
-//
-// Before this gate, `src` was a validated input with NO consumer
-// (.claude/rules/publish-security-review-lessons.md §5): nothing in the daemon
-// fetches Op.Src, authoredScriptCSPHashes contributes no 'sha256-' source for
-// such an op, and variant-engine.js refuses it at render time — so the op
-// validated, published, reported success, and then silently never ran. The
-// author got no signal at all. §6a's publish-time fetch-and-inline decision
-// stands as the recorded plan; until its fetch half exists, refusing at the
-// source is what makes the unimplemented state loud.
-func TestAddScriptSrcRefusedAtPublish(t *testing.T) {
-	set := func(op string) string {
-		return `{"version":"v1","id":"s","variants":[{"id":"a","ops":[` + op + `]}]}`
+// TestAddScriptRefusedInEveryForm pins the single addScript refusal at the op:
+// whatever the op carries — a body, a URL, both, neither, a stray selector — it
+// is refused by the SAME INV-14 message. There used to be five different
+// answers here (xor contract, "src not implemented", a size cap, a per-revision
+// budget, "one of src or code is required"), each describing a feature that no
+// publish path could reach; an author hitting any of them was told how to fix an
+// op that would be refused anyway.
+func TestAddScriptRefusedInEveryForm(t *testing.T) {
+	forms := map[string]Op{
+		"inline code":    {Op: OpAddScript, Code: "document.title='demo'"},
+		"src":            {Op: OpAddScript, Src: "https://cdn.example.com/demo.js"},
+		"src and code":   {Op: OpAddScript, Src: "https://cdn.example.com/demo.js", Code: "x=1"},
+		"neither":        {Op: OpAddScript},
+		"with selector":  {Op: OpAddScript, Selector: ".x", Code: "x=1"},
+		"oversize body":  {Op: OpAddScript, Code: strings.Repeat("a", 1<<16)},
+		"with css field": {Op: OpAddScript, CSS: ".a{}"},
 	}
-
-	// src alone: refused, and the error must be actionable — it names that
-	// publish-time fetching is not implemented and points at inline `code`.
-	_, err := DecodeVariantSet([]byte(set(`{"op":"addScript","src":"https://cdn.example.com/demo.js"}`)))
-	if err == nil {
-		t.Fatal("addScript with src must be refused at publish, got nil error")
-	}
-	srcMsg := err.Error()
-	for _, want := range []string{"src", "not implemented", "code"} {
-		if !strings.Contains(srcMsg, want) {
-			t.Fatalf("src rejection must mention %q, got: %s", want, srcMsg)
+	// The reason is spelled as a literal: comparing against the function that
+	// produces it would pass any rewording, including one that drops INV-14.
+	const reason = "addScript is not permitted on a published walkthrough"
+	var first string
+	for name, op := range forms {
+		op := op
+		err := op.Validate()
+		if err == nil {
+			t.Fatalf("%s: addScript must be refused, got nil", name)
+		}
+		msg := err.Error()
+		if !strings.Contains(msg, reason) || !strings.Contains(msg, "INV-14") {
+			t.Fatalf("%s: must be refused BY the INV-14 rule, got: %s", name, msg)
+		}
+		if first == "" {
+			first = msg
+		} else if msg != first {
+			t.Fatalf("%s: every form must get the same refusal\n got: %s\nwant: %s", name, msg, first)
 		}
 	}
 
-	// src+code together stays a distinct rejection (the §6a 422): the two errors
-	// must not collapse into one indistinguishable message, or an author who
-	// supplied both would be told the wrong thing.
-	_, bothErr := DecodeVariantSet([]byte(set(`{"op":"addScript","src":"https://cdn.example.com/demo.js","code":"x=1"}`)))
-	if bothErr == nil {
-		t.Fatal("addScript with both src and code must be refused, got nil error")
+	// A bare variant set is refused too: the rule is on the op, so there is no
+	// "permissive" validator left for a second publish path to pick up.
+	bare := `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"addScript","code":"x=1"}]}]}`
+	if _, err := decodeVariantSet([]byte(bare)); err == nil || !strings.Contains(err.Error(), reason) {
+		t.Fatalf("a bare variant set carrying addScript must be refused by the INV-14 rule, got: %v", err)
 	}
-	if bothMsg := bothErr.Error(); bothMsg == srcMsg {
-		t.Fatalf("src-only and src+code rejections must be distinguishable, both: %s", bothMsg)
-	} else if !strings.Contains(bothMsg, "alternatives") {
-		t.Fatalf("src+code rejection must name the xor contract, got: %s", bothMsg)
+	// Strict decode still knows the op's fields, so the artifact is refused by
+	// the rule and not by an opaque "unknown field" parse error.
+	for _, body := range []string{`"code":"x=1"`, `"src":"https://cdn.example.com/a.js"`} {
+		_, err := decodeVariantSet([]byte(`{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"addScript",` + body + `}]}]}`))
+		if err == nil || strings.Contains(err.Error(), "unknown field") || !strings.Contains(err.Error(), "INV-14") {
+			t.Fatalf("addScript{%s} must decode and be refused by INV-14, got: %v", body, err)
+		}
 	}
-
-	// The supported form is untouched: an inline `code` body still publishes,
-	// and the exact bytes survive to the revision the CSP hash is pinned from
-	// (internal/proxy's TestAuthoredScriptHashPinnedInScriptSrc hashes
-	// Op.Code — so preserving these bytes is what keeps that hash correct).
-	const code = "document.title='demo'"
-	vs, err := DecodeVariantSet([]byte(set(`{"op":"addScript","code":"` + code + `"}`)))
-	if err != nil {
-		t.Fatalf("inline code must still publish, got: %v", err)
+	// Near miss: the script fields are still stray on every other op, and that
+	// stays its own (different) error.
+	stray := Op{Op: OpSetText, Selector: ".x", Value: "hi", Code: "x=1"}
+	if err := stray.Validate(); err == nil || !strings.Contains(err.Error(), "unexpected field 'code'") {
+		t.Fatalf("code on a non-script op must be a stray-field error, got: %v", err)
 	}
-	op := vs.Variants[0].Ops[0]
-	if op.Code != code {
-		t.Fatalf("inline code body altered: got %q want %q", op.Code, code)
-	}
-	if op.Src != "" {
-		t.Fatalf("inline-code op must carry no src, got %q", op.Src)
+	// Near miss: the neighbouring raw-content ops still validate.
+	for _, op := range []Op{
+		{Op: OpAddStyle, CSS: ".a{color:red}"},
+		{Op: OpSetHTML, Selector: ".x", HTML: "<script>alert(1)</script>"},
+	} {
+		op := op
+		if err := op.Validate(); err != nil {
+			t.Fatalf("%s must still validate, got: %v", op.Op, err)
+		}
 	}
 }
 
@@ -272,11 +262,10 @@ func publishedWithOps(ops ...Op) *PublishedWalkthrough {
 // preserved instead by refusing addScript at publish on exactly the shares that
 // carry the mandatory disclosure — every published walkthrough.
 //
-// The refusal lives at the PublishedWalkthrough boundary, not the op or
-// variant-set validator: a bare variant set is never served on the public plane,
-// so DecodeVariantSet stays permissive (see the bare-set assertion below and
-// TestINV6RetirementAcceptsRawContent). Deleting the guard makes the first
-// assertion fail — addScript{code} publishes again — so this test has teeth.
+// The refusal lives at the op (Op.Validate), which every publish path reaches
+// through PublishedWalkthrough.Validate; this test pins that the walkthrough
+// boundary surfaces it. Deleting the guard makes the first assertion fail —
+// addScript{code} publishes again — so this test has teeth.
 func TestAddScriptRefusedOnPublishedWalkthrough(t *testing.T) {
 	// code form: refused, and the error is actionable — it names addScript, the
 	// invariant it protects, and a remedy.
@@ -322,13 +311,15 @@ func TestAddScriptRefusedOnPublishedWalkthrough(t *testing.T) {
 		t.Fatalf("variant-set-free walkthrough must publish, got: %v", err)
 	}
 
-	// The variant-set validator itself stays permissive — the badge-mandatory
-	// boundary is the PUBLISHED walkthrough, not a bare variant set (a bare set is
-	// never served on the public plane). Over-rejecting here would break the
-	// documented raw-content contract (TestINV6RetirementAcceptsRawContent).
-	bare := `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"addScript","code":"document.title='x'"}]}]}`
-	if _, err := DecodeVariantSet([]byte(bare)); err != nil {
-		t.Fatalf("bare variant-set addScript{code} must stay accepted, got: %v", err)
+	// The op is refused wherever in the set it sits, not just in the first
+	// variant's first op.
+	deep := publishedWithOps(Op{Op: OpSetText, Selector: ".x", Value: "hi"})
+	deep.VariantSet.Variants = append(deep.VariantSet.Variants, Variant{ID: "b", Ops: []Op{
+		{Op: OpAddClass, Selector: ".x", Value: "promo"},
+		{Op: OpAddScript, Code: "x=1"},
+	}})
+	if err := deep.Validate(); err == nil || !strings.Contains(err.Error(), "INV-14") {
+		t.Fatalf("addScript in a later variant must be refused by INV-14, got: %v", err)
 	}
 }
 
@@ -379,7 +370,7 @@ func tooManyVariants() string {
 func TestOversizeText(t *testing.T) {
 	big := strings.Repeat("x", MaxTextBytes+1)
 	j := `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"setText","selector":".x","value":"` + big + `"}]}]}`
-	if _, err := DecodeVariantSet([]byte(j)); err == nil {
+	if _, err := decodeVariantSet([]byte(j)); err == nil {
 		t.Fatal("oversize setText value must be rejected")
 	}
 }
@@ -388,7 +379,7 @@ func TestOversizeStylePatch(t *testing.T) {
 	// One allowlisted property whose value blows the 4096B patch cap.
 	big := strings.Repeat("a", MaxStylePatchBytes+10)
 	j := `{"version":"v1","id":"s","variants":[{"id":"a","ops":[{"op":"applyStyle","selector":".x","props":{"font-family":"` + big + `"}}]}]}`
-	if _, err := DecodeVariantSet([]byte(j)); err == nil {
+	if _, err := decodeVariantSet([]byte(j)); err == nil {
 		t.Fatal("oversize style patch must be rejected")
 	}
 }
@@ -476,4 +467,18 @@ func TestInvalidSelectors(t *testing.T) {
 			t.Errorf("expected %q invalid, got nil", s)
 		}
 	}
+}
+
+// decodeVariantSet strictly decodes and validates a bare variant set. It is a
+// test driver only: production validates a set as part of a whole
+// PublishedWalkthrough, never on its own.
+func decodeVariantSet(data []byte) (*VariantSet, error) {
+	vs, err := strictDecode[VariantSet](data)
+	if err != nil {
+		return nil, err
+	}
+	if err := vs.Validate(); err != nil {
+		return nil, err
+	}
+	return vs, nil
 }

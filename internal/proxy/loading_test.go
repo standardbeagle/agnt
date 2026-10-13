@@ -55,9 +55,9 @@ func TestServeLoadingPage(t *testing.T) {
 }
 
 func TestServeLoadingPageTimerFormat(t *testing.T) {
-	ps := &ProxyServer{
-		startTime: time.Now().Add(-45 * time.Second),
-	}
+	// The timer counts the current outage, not the proxy's uptime.
+	ps := &ProxyServer{startTime: time.Now().Add(-time.Hour)}
+	ps.outageStart.Store(time.Now().Add(-45 * time.Second).UnixNano())
 
 	w := httptest.NewRecorder()
 	ps.serveLoadingPage(w, nil, "http://localhost:8080")
@@ -67,10 +67,12 @@ func TestServeLoadingPageTimerFormat(t *testing.T) {
 }
 
 func TestServeLoadingPageTimeout(t *testing.T) {
-	// After maxLoadingWait, should serve error page instead of loading page
-	ps := &ProxyServer{
-		startTime: time.Now().Add(-90 * time.Second),
-	}
+	// Once the current outage has outlasted maxLoadingWait, serve the error
+	// page instead of the loading page. (The budget is the outage's age; see
+	// TestLoadingPage_BudgetRunsFromOutageNotProxyStart for the proxy-uptime
+	// case this used to pin.)
+	ps := &ProxyServer{startTime: time.Now().Add(-time.Hour)}
+	ps.outageStart.Store(time.Now().Add(-90 * time.Second).UnixNano())
 
 	w := httptest.NewRecorder()
 	ps.serveLoadingPage(w, nil, "http://localhost:3456")

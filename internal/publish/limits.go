@@ -25,10 +25,6 @@ const (
 	MaxTextBytes = 2048
 	// MaxURLLength caps any op-supplied URL (§5: "Max URL length = 2048 chars").
 	MaxURLLength = 2048
-	// MaxFeedbackBytes caps a feedback body (§5: "Max feedback body = 4096
-	// bytes"). Declared here for completeness; feedback is owned by P8.
-	MaxFeedbackBytes = 4096
-
 	// MaxIDLength / MaxTitleLength / MaxBodyLength bound stable identifiers and
 	// narration text. The spec fixes text/selector/url limits but is silent on
 	// id/title/body; we pick conservative defaults so no field is unbounded
@@ -44,13 +40,22 @@ const (
 	MaxGestureLabelLength = 64
 	// MaxAttrValueLength bounds a setAttribute value; reuses the text cap.
 	MaxAttrValueLength = MaxTextBytes
+	// MaxAttrNameLength bounds a setAttribute name (aria-*/data-*; the fixed
+	// names are all shorter). The spec is silent, so this is a conservative
+	// default under the "no field is unbounded" principle.
+	MaxAttrNameLength = 128
+
+	// MaxOpsPerVariant caps the ops in one variant. Each op is individually
+	// bounded, but without a count cap a variant — and so the walkthrough.json
+	// and variants.json every viewer downloads — is not.
+	MaxOpsPerVariant = 256
+	// MaxArtifactBytes caps the canonical encoding of a whole published
+	// walkthrough. It is the bound on what one anonymous GET of
+	// walkthrough.json can make the daemon serialize and send.
+	MaxArtifactBytes = 1 << 20
 
 	// MaxRawHTMLBytes caps one setHTML fragment (§5: "Max raw-HTML fragment
 	// (setHTML) = 8192 bytes per op"). A parse-cost bound, not an injection
 	// control.
 	MaxRawHTMLBytes = 8192
-	// MaxRawScriptBytes caps the raw script an authored revision may carry
-	// (§5: "Max raw-script size (addScript) = 16384 bytes per authored
-	// revision"). Also bounds the script-src hash set INV-12 must pin.
-	MaxRawScriptBytes = 16384
 )

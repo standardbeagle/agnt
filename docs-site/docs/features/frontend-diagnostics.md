@@ -690,16 +690,36 @@ window.__devtool.isConnected()
 
 ### getStatus
 
-Detailed connection status:
+Socket state as a string:
 
 ```javascript
 window.__devtool.getStatus()
+→ "connected"   // or "connecting", "closing", "closed", "not_initialized"
+```
+
+### transport.getConnectionState
+
+Detailed connection status, including reconnect progress:
+
+```javascript
+window.__devtool.transport.getConnectionState()
 → {
     connected: true,
+    readyState: 1,
+    readyStateLabel: "OPEN",
     reconnectAttempts: 0,
-    lastMessage: "2024-01-15T10:30:00Z"
+    maxReconnectAttempts: null,   // no attempt limit
+    reconnectPending: false,
+    reconnectMaxDelayMs: 30000,
+    wsUrl: "ws://localhost:12345/__devtool_metrics"
   }
 ```
+
+Reconnect never gives up. The delay doubles from 1s (1s, 2s, 4s, ...) and is
+capped at 30s; coming back online or showing the tab again reconnects at once.
+`window.__devtool.transport.reconnect()` resets the backoff and reconnects now.
+`window.__devtool.transport` is the same object as
+`window.__devtool_transport_diag`.
 
 ## Error Handling
 

@@ -21,7 +21,7 @@ import (
 // NOT reachable through this tool.
 type PublishInput struct {
 	Action      string          `json:"action"                jsonschema:"Action: create | status | list | revoke | rotate | feedback"`
-	Walkthrough json.RawMessage `json:"walkthrough,omitempty" jsonschema:"create: the published walkthrough artifact as JSON - steps plus an optional variantSet whose ops may include the raw-content ops setHTML/addStyle/addScript (validated before publish)"`
+	Walkthrough json.RawMessage `json:"walkthrough,omitempty" jsonschema:"create: the published walkthrough artifact as JSON - steps plus an optional variantSet whose ops may include the raw-content ops setHTML and addStyle (validated before publish; addScript is refused on a published walkthrough)"`
 	Upstream    string          `json:"upstream,omitempty"    jsonschema:"create: https URL of the live origin this walkthrough is demonstrated against; equivalent to walkthrough.upstream.url and rejected if it contradicts one already present"`
 	ID          string          `json:"id,omitempty"          jsonschema:"status/revoke/rotate/feedback: the viewer-safe share id returned by create"`
 	Cursor      string          `json:"cursor,omitempty"      jsonschema:"feedback: opaque pagination cursor from a prior call's next_cursor (empty = first page)"`
@@ -74,9 +74,11 @@ Actions:
             plus a viewer-safe share id and the /s/{token} URL.
             Accepts a live origin to demo against — either walkthrough.upstream.url
             or the top-level "upstream" field (naming two different origins is
-            rejected) — and variant ops including the raw-content ops setHTML,
-            addStyle, and addScript. Publisher script runs only because its
-            sha256 is pinned in the served revision's CSP script-src.
+            rejected) — and variant ops including the raw-content ops setHTML
+            and addStyle. addScript is REFUSED, in both its code and src forms:
+            every share carries the mandatory demo indicator, and an authored
+            script could remove it. No upstream or authored JavaScript runs on
+            a published share.
             The /s/{token} URL it returns is a PATH: prefix it with the origin
             serving the public plane, or use "agnt publish serve --dir" which
             prints whole URLs (and folds in a tunnel origin).
@@ -104,7 +106,7 @@ func makePublishHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolRequ
 	return func(ctx context.Context, req *mcp.CallToolRequest, input PublishInput) (*mcp.CallToolResult, PublishOutput, error) {
 		action := strings.ToLower(strings.TrimSpace(input.Action))
 		if action == "" {
-			return fail[PublishOutput]("publish: action is required (create|status|list|revoke|rotate)")
+			return fail[PublishOutput]("publish: action is required (create|status|list|revoke|rotate|feedback)")
 		}
 		if dt == nil {
 			return fail[PublishOutput]("publish unavailable: no daemon client")
@@ -188,7 +190,7 @@ func makePublishHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolRequ
 			return renderPublish(out, input.Raw), out, nil
 
 		default:
-			return fail[PublishOutput]("publish: unknown action " + action + " (create|status|list|revoke|rotate)")
+			return fail[PublishOutput]("publish: unknown action " + action + " (create|status|list|revoke|rotate|feedback)")
 		}
 	}
 }

@@ -270,12 +270,16 @@ func TestE2E_VariantEngine_RealBrowser(t *testing.T) {
 		assert.Contains(t, mask, "linear-gradient", "an off-allowlist property must apply")
 	})
 
-	// 9. the AGGREGATE budgets (internal/publish/validate.go:94 and :139), which
-	//    the engine previously did not mirror at all: splitting one oversize
-	//    payload across several per-op-legal ops must not dodge the bound.
+	// 9. the AGGREGATE budget (Variant.Validate in internal/publish/validate.go),
+	//    which the engine previously did not mirror at all: splitting one
+	//    oversize payload across several per-op-legal ops must not dodge the
+	//    bound. (The per-revision SCRIPT budget that sat beside it is gone with
+	//    the op it budgeted: addScript is refused outright, INV-14 — every such
+	//    op is refused by name, whatever its size.)
 	t.Run("aggregate_budgets_enforced", func(t *testing.T) {
 		loadFixture(t, ctx, url)
-		var styleRefused, scriptRefused int
+		var styleRefused, scriptRefused, scriptEls int
+		var scriptReason string
 		require.NoError(t, cdp.Run(ctx,
 			// Per-VARIANT style budget: applyStyle and addStyle share one 4096B
 			// budget, so 3000B + 3000B overflows even though neither op alone does.
@@ -287,19 +291,23 @@ func TestE2E_VariantEngine_RealBrowser(t *testing.T) {
 				] }]);
 				return window.__eng.refusedOps().length;
 			})()`, &styleRefused),
-			// Per-REVISION script budget: summed across every variant in the set,
-			// so two 10000B bodies in two different variants overflow 16384B.
+			// addScript: two tiny bodies in two variants. Size plays no part —
+			// both are refused, by the rule and not by a budget.
 			cdp.Evaluate(`(function(){
-				var body = new Array(10001).join('y');
 				window.mkEngine([
-					{ id: 'p', ops: [{ op: 'addScript', code: body }] },
-					{ id: 'q', ops: [{ op: 'addScript', code: body }] }
+					{ id: 'p', ops: [{ op: 'addScript', code: 'window.__p=1' }] },
+					{ id: 'q', ops: [{ op: 'addScript', code: 'window.__q=1' }] }
 				]);
 				return window.__eng.refusedOps().length;
 			})()`, &scriptRefused),
+			cdp.Evaluate(`String(window.__eng.refusedOps()[0].reason)`, &scriptReason),
+			cdp.Evaluate(`(function(){ window.__eng.apply('p'); return document.querySelectorAll('#__variant-engine-root script').length; })()`, &scriptEls),
 		))
 		assert.Equal(t, 1, styleRefused, "the op that overflows the per-variant style budget must be refused")
-		assert.Equal(t, 1, scriptRefused, "the op that overflows the per-revision script budget must be refused")
+		assert.Equal(t, 2, scriptRefused, "every addScript op must be refused, whatever its size")
+		assert.Contains(t, scriptReason, "addScript is not permitted on a published walkthrough",
+			"addScript must be refused by the INV-14 rule, not by a budget or as an unknown op")
+		assert.Equal(t, 0, scriptEls, "a refused addScript op must not produce a script element")
 	})
 
 	// 10. the §5 size limits are denominated in UTF-8 BYTES, not UTF-16 code

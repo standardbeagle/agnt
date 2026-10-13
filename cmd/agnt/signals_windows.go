@@ -42,9 +42,9 @@ func watchResize(ctx context.Context, done <-chan struct{}, handle *ptyHandle, r
 			if err := handle.Resize(w, ch); err != nil {
 				log.Printf("error resizing PTY: %s", err)
 			}
-			if rt.activityMonitor != nil {
+			if am := rt.activityMon.Load(); am != nil {
 				// Keep the preview's virtual screen matched to the child PTY.
-				rt.activityMonitor.Resize(w, ch)
+				am.Resize(w, ch)
 			}
 			if rt.termOverlay != nil {
 				rt.termOverlay.SetSize(w, h)

@@ -101,6 +101,11 @@ func extractHTTPTransport(t *testing.T, ps *ProxyServer) *http.Transport {
 	if fb, ok := underlying.(*TLSFallbackTransport); ok {
 		underlying = fb.secure
 	}
+	// The *http.Transport itself sits behind a swapTransport (what
+	// FlushConnections replaces).
+	if swap, ok := underlying.(*swapTransport); ok {
+		underlying = swap.cur.Load()
+	}
 	httpTransport, ok := underlying.(*http.Transport)
 	require.True(t, ok, "expected *http.Transport underneath ChaosTransport, got %T", underlying)
 
@@ -252,25 +257,99 @@ func TestNewProxyServer_LocalhostBindNeedsNoFlag(t *testing.T) {
 	}
 }
 
-func TestIsExternalBindAddress(t *testing.T) {
+func TestClassifyBindAddress(t *testing.T) {
 	cases := []struct {
 		addr     string
+		ip       string
 		external bool
 	}{
-		{"", false},
-		{"127.0.0.1", false},
-		{"localhost", false},
-		{"::1", false},
-		{"0.0.0.0", true},
-		{"::", true},
-		{"192.168.1.1", true},
-		{"10.0.0.1", true},
-		{"not-an-ip", false}, // unparseable falls through
+		{"", "127.0.0.1", false},
+		{"127.0.0.1", "127.0.0.1", false},
+		{"localhost", "127.0.0.1", false},
+		{"LOCALHOST", "127.0.0.1", false},
+		{"::1", "::1", false},
+		{"[::1]", "::1", false},
+		{"0.0.0.0", "0.0.0.0", true},
+		{"::", "::", true},
+		{"[::]", "::", true},
+		{"192.168.1.1", "192.168.1.1", true},
+		{"10.0.0.1", "10.0.0.1", true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.addr, func(t *testing.T) {
-			assert.Equal(t, tc.external, isExternalBindAddress(tc.addr))
+			ip, external, err := classifyBindAddress(tc.addr)
+			require.NoError(t, err)
+			assert.Equal(t, tc.ip, ip)
+			assert.Equal(t, tc.external, external)
 		})
+	}
+
+	// Default-deny: what cannot be classified is refused, and reported as
+	// external so no caller can mistake the zero value for "loopback".
+	for _, addr := range []string{"not-an-ip", "example.com", "my-host.local", "fe80::1%eth0", "[", "0.0.0.0:80"} {
+		t.Run("refused/"+addr, func(t *testing.T) {
+			_, external, err := classifyBindAddress(addr)
+			require.Error(t, err)
+			assert.True(t, external)
+		})
+	}
+}
+
+// The allow-external gate, through the constructor, for every spelling of an
+// all-interfaces or unclassifiable bind. Before the gate was default-deny,
+// "[::]" and any hostname were waved through as "not external" and then
+// listened wherever net.Listen resolved them.
+func TestNewProxyServer_BindGateIsDefaultDeny(t *testing.T) {
+	newProxy := func(addr string, allow bool) (*ProxyServer, error) {
+		ps, err := NewProxyServer(ProxyConfig{
+			ID: "bind-gate", TargetURL: "http://localhost:3000", ListenPort: 8123,
+			MaxLogSize: 100, BindAddress: addr, AllowExternal: allow,
+		})
+		if ps != nil {
+			t.Cleanup(func() { ps.pageTracker.Stop(); ps.StopChaos() })
+		}
+		return ps, err
+	}
+
+	// External spellings: refused by the allow-external gate without the
+	// flag, accepted with it, and given a listen address net.Listen can parse.
+	external := map[string]string{
+		"0.0.0.0": "0.0.0.0:8123",
+		"::":      "[::]:8123",
+		"[::]":    "[::]:8123",
+	}
+	for addr, wantListen := range external {
+		_, err := newProxy(addr, false)
+		require.Errorf(t, err, "bind %q must need allow-external", addr)
+		assert.Containsf(t, err.Error(), "allow_external", "bind %q was refused for the wrong reason: %v", addr, err)
+
+		ps, err := newProxy(addr, true)
+		require.NoErrorf(t, err, "bind %q with allow-external", addr)
+		assert.Equal(t, wantListen, ps.ListenAddr)
+		_, _, splitErr := net.SplitHostPort(ps.ListenAddr)
+		assert.NoErrorf(t, splitErr, "listen address %q must be parseable", ps.ListenAddr)
+	}
+
+	// Loopback spellings need no flag and stay on loopback.
+	loopback := map[string]string{
+		"":          "127.0.0.1:8123",
+		"127.0.0.1": "127.0.0.1:8123",
+		"localhost": "127.0.0.1:8123",
+		"::1":       "[::1]:8123",
+		"[::1]":     "[::1]:8123",
+	}
+	for addr, wantListen := range loopback {
+		ps, err := newProxy(addr, false)
+		require.NoErrorf(t, err, "bind %q", addr)
+		assert.Equal(t, wantListen, ps.ListenAddr)
+	}
+
+	// A hostname is refused outright — allow-external does not rescue it,
+	// because nothing here can say what it would resolve to.
+	for _, allow := range []bool{false, true} {
+		_, err := newProxy("dev.example.com", allow)
+		require.Errorf(t, err, "a hostname bind must be refused (allow-external=%v)", allow)
+		assert.Contains(t, err.Error(), "not a usable bind address")
 	}
 }
 

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,6 +29,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/overlay"
 	"github.com/standardbeagle/agnt/internal/pathutil"
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/selflog"
 	"github.com/standardbeagle/agnt/internal/shims"
 	"github.com/standardbeagle/agnt/internal/tools"
 )
@@ -200,17 +202,13 @@ type daemonSessionConfig struct {
 	// session leader). The daemon uses it at session cleanup time to
 	// reap every descendant the coding agent spawned via non-interactive
 	// bash (`npm run dev &` etc.) that the daemon has no explicit handle
-	// on. Zero on Windows (Job Object cleanup is reported via
-	// SessionJobHandle instead) or when the caller cannot determine a
-	// pgid.
+	// on. Zero on Windows (the Job Object held by this process contains
+	// the subtree there) or when the caller cannot determine a pgid.
 	SessionPGID int
-	// SessionJobHandle is the Windows Job Object handle for the PTY
-	// child subtree. Windows equivalent of SessionPGID: every process
-	// assigned to this job (and its descendants) is killed when the
-	// job is terminated via platform.KillSessionJobObject. Stored as
-	// uint64 because windows.Handle is not available on non-Windows
-	// builds — the protocol-level JSON field is also uint64. Zero on
-	// Unix or when the caller cannot create a job.
+	// SessionJobHandle is a legacy wire field and is always sent as 0.
+	// A handle value only means something in the process that created
+	// it, so the daemon never acts on one; the Job Object stays in this
+	// process and KILL_ON_JOB_CLOSE contains the subtree.
 	SessionJobHandle uint64
 }
 
@@ -448,7 +446,12 @@ func printAutostartProgressNotice(notify overlay.Notifier, handle *daemonSession
 // port-conflict prompt and the multi-line autostart error dump still write
 // to w, the gated terminal writer, because a notification row cannot hold
 // a prompt or a captured output block.
-func displayAutostartResults(handle *daemonSessionHandle, notify overlay.Notifier, router *overlay.InputRouter, w io.Writer, timeout time.Duration) {
+//
+// stdin is the session's single stdin owner (the input router, or the raw
+// relay under --no-overlay); the prompt borrows input through its modal
+// capture and never reads os.Stdin itself. A nil stdin means there is no way
+// to ask, which declines.
+func displayAutostartResults(handle *daemonSessionHandle, notify overlay.Notifier, stdin stdinModal, w io.Writer, timeout time.Duration) {
 	if handle == nil {
 		return
 	}
@@ -476,46 +479,34 @@ func displayAutostartResults(handle *daemonSessionHandle, notify overlay.Notifie
 			fmt.Fprintf(w, "\x1b[33m  %d (%s) <- %s (PID %v)\x1b[0m\r\n", c.Port, c.ScriptName, c.ProcessName, c.PIDs)
 		}
 		// Take ownership of input for the answer keystroke BEFORE showing the
-		// prompt. When the input router is running it is the sole reader of
-		// os.Stdin; routing the prompt through its modal channel avoids a
-		// second os.Stdin.Read racing the router's producer for the byte.
+		// prompt. The session's stdin owner is the sole reader of stdin in
+		// every mode; routing the prompt through its modal channel is what
+		// keeps a second reader from racing it for the byte. Capture can
+		// begin before the owner's loop is running — the first byte it reads
+		// is diverted either way.
 		var modalCh <-chan byte
-		useModal := router != nil && router.IsRunning()
-		if useModal {
-			modalCh = router.BeginModalCapture()
+		if stdin != nil {
+			modalCh = stdin.BeginModalCapture()
 		}
 
 		fmt.Fprintf(w, "\x1b[33m  Kill all blocking processes? [Y/n] \x1b[0m")
 
-		answer := byte('Y')
-		if useModal {
+		// Killing another process is destructive and must never happen
+		// unattended, so every path that is not an explicit keypress means
+		// "decline" (proceed without killing), not the [Y] default: no
+		// keypress within the window, or no stdin owner to ask through. An
+		// awake developer who wants the kill still presses Enter/Y.
+		answer := byte('n')
+		if stdin != nil {
 			select {
 			case b := <-modalCh:
+				answer = 'Y'
 				if b != '\n' && b != '\r' {
 					answer = b
 				}
 			case <-time.After(timeout):
-				// No keypress within the window. Killing another process
-				// is destructive and must never happen unattended, so a
-				// timeout means "decline" (proceed without killing), not
-				// the [Y] default. An awake developer who wants the kill
-				// still presses Enter/Y.
-				answer = 'n'
 			}
-			router.EndModalCapture()
-		} else {
-			// Fallback: no router (raw passthrough). Read stdin directly; in
-			// this mode nothing else consumes stdin so there is no race.
-			// Killing another process is destructive and must never happen
-			// unattended: a read error or EOF (non-TTY, closed stdin) means
-			// "decline", not the [Y] default.
-			buf := make([]byte, 1)
-			n, err := os.Stdin.Read(buf)
-			if err != nil || n == 0 {
-				answer = 'n'
-			} else if buf[0] != '\n' && buf[0] != '\r' {
-				answer = buf[0]
-			}
+			stdin.EndModalCapture()
 		}
 
 		if answer == 'n' || answer == 'N' {
@@ -667,29 +658,56 @@ func setupAlertScanner(projectPath, sessionCode string, netOverlay *Overlay, dae
 		scannerCfg.DisabledIDs = agntCfg.Alerts.Disable
 
 		// Convert custom patterns from config
-		for id, pcfg := range agntCfg.Alerts.Patterns {
-			compiled, err := regexp.Compile(pcfg.Pattern)
-			if err != nil {
-				debug.Log("alerts", "invalid pattern %q: %v", id, err)
-				continue
-			}
-			sev := overlay.AlertSeverityError
-			switch pcfg.Severity {
-			case "warning":
-				sev = overlay.AlertSeverityWarning
-			case "info":
-				sev = overlay.AlertSeverityInfo
-			}
-			scannerCfg.Patterns = append(scannerCfg.Patterns, &overlay.AlertPattern{
-				ID:       id,
-				Pattern:  compiled,
-				Severity: sev,
-				Category: "custom",
-			})
+		patterns, problems := compileCustomAlertPatterns(agntCfg.Alerts.Patterns)
+		scannerCfg.Patterns = append(scannerCfg.Patterns, patterns...)
+		for _, p := range problems {
+			// A pattern declared in .agnt.kdl that cannot compile will never
+			// fire. Config load does not compile these, so this is the first
+			// and only place the mistake is detectable — say so on screen and
+			// in the self-error log (`agnt hook log`), not just the debug log.
+			notifyUser(overlay.LevelWarn, "%s", p)
+			selflog.Record("alerts", "%s", p)
 		}
 	}
 
 	return overlay.NewAlertScanner(scannerCfg)
+}
+
+// compileCustomAlertPatterns turns the `alerts.patterns` config block into
+// scanner patterns. A regex that does not compile is left out and reported in
+// problems (one user-facing line each) rather than dropped silently. Output
+// order follows the pattern ids so the messages are stable.
+func compileCustomAlertPatterns(cfgs map[string]*config.AlertPatternConfig) (patterns []*overlay.AlertPattern, problems []string) {
+	ids := make([]string, 0, len(cfgs))
+	for id := range cfgs {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		pcfg := cfgs[id]
+		if pcfg == nil {
+			continue
+		}
+		compiled, err := regexp.Compile(pcfg.Pattern)
+		if err != nil {
+			problems = append(problems, fmt.Sprintf("alert pattern %q in %s is not a valid regular expression and will never fire: %v", id, config.AgntConfigFileName, err))
+			continue
+		}
+		sev := overlay.AlertSeverityError
+		switch pcfg.Severity {
+		case "warning":
+			sev = overlay.AlertSeverityWarning
+		case "info":
+			sev = overlay.AlertSeverityInfo
+		}
+		patterns = append(patterns, &overlay.AlertPattern{
+			ID:       id,
+			Pattern:  compiled,
+			Severity: sev,
+			Category: "custom",
+		})
+	}
+	return patterns, problems
 }
 
 // daemonClientAdapter wraps *daemon.Conn to implement overlay.DaemonClient.
@@ -805,6 +823,14 @@ Flags:
   --no-overlay          Disable terminal overlay entirely
   --no-autostart        Skip auto-starting scripts and proxies from .agnt.kdl
   --config <path>       Use a specific .agnt.kdl (default: <cwd>/.agnt.kdl, no walk-up)
+  --                    End of agnt flags; the rest goes to the command untouched
+
+agnt's flags (the list above, plus --debug/-d and --debug-log) are recognized
+anywhere on the line, before or after the command. To pass the wrapped command
+a flag with one of those names, put it after "--":
+
+  agnt run claude -- --debug              # claude gets --debug, not agnt
+  agnt run --session dev codex -- --config model=o3
 
 Examples:
   agnt run claude --dangerously-skip-permissions
@@ -961,6 +987,14 @@ func parseRunCommandArgs(args []string) ([]string, error) {
 	commandArgs := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--":
+			// End of agnt's own flags: everything after the first `--` belongs
+			// to the wrapped command verbatim, the `--` itself consumed. agnt
+			// flags are otherwise recognized anywhere in the line (`agnt run
+			// claude --session dev`), so this is the only way to hand the
+			// child a flag that shares a name with one of ours — `--debug`,
+			// `--config`, `--session`.
+			return append(commandArgs, args[i+1:]...), nil
 		case "--overlay-socket":
 			if i+1 >= len(args) {
 				return nil, fmt.Errorf("%s requires a value", args[i])
@@ -1223,7 +1257,7 @@ func phaseCmdArgsAndPrompt(adapter agentadapter.Adapter, command string, cmdArgs
 		// Agents without an automatically loaded context mechanism (aider), or
 		// a failed/disabled persistence write, retain the stdin fallback.
 		if lookupAgentSupport(adapter.Name()).Mechanism == mechNone ||
-			!writePersistentContext(adapter.Name(), projectDir, prompt) {
+			!persistAdapterContext(adapter, projectDir, prompt) {
 			injectInitialPrompt = true
 		}
 	} else {
@@ -1232,9 +1266,14 @@ func phaseCmdArgsAndPrompt(adapter agentadapter.Adapter, command string, cmdArgs
 		// file (AGENTS.md, GEMINI.md, …) so non-Claude agents keep the agnt
 		// tool guidance every turn without injecting a visible first user
 		// message.
-		// No-op for Claude, for an empty projectDir, and when disabled in
-		// config. Best-effort: never blocks launch.
-		writePersistentContext(adapter.Name(), projectDir, prompt)
+		// No-op for Claude, for an empty projectDir, when disabled in config
+		// (`persist-context false` or the adapter's `disabled true`), and for
+		// a command agnt has no context file for. Best-effort: never blocks
+		// launch.
+		persisted := persistAdapterContext(adapter, projectDir, prompt)
+		if msg := unsteeredAgentNotice(adapter, persisted, cmdArgs, prompt); msg != "" {
+			notifyUser(overlay.LevelInfo, "%s", msg)
+		}
 	}
 	built := adapter.BuildArgs(cmdArgs, prompt)
 	return agentLaunch{
@@ -1503,16 +1542,23 @@ type pipelineRuntime struct {
 	outputFilter    *overlay.ProtectedWriter
 	outputGate      *overlay.OutputGate
 	startupSplash   *overlay.StartupSplash
-	activityMonitor *overlay.ActivityMonitor
+	// stdin is this session's lease on the process stdin pump: the one input
+	// stream the router (or the raw relay) reads. Stop closes it, which ends
+	// that reader instead of leaving it parked in os.Stdin.Read.
+	stdin *stdinLease
+	// stdinModal is whichever stdin owner is running (router or raw relay),
+	// for prompts that need to borrow input. Nil only before wiring.
+	stdinModal stdinModal
 	// alertScanner is assigned from the PTY-output goroutine and read from the
 	// StatusFetcher goroutine (queue-depth provider) and Stop(); an atomic
 	// pointer keeps those cross-goroutine accesses race-free.
 	alertScanner atomic.Pointer[overlay.AlertScanner]
 
 	// activityMon is assigned from the PTY-output goroutine and read from the
-	// overlay's draw path, which runs on the input goroutine. Same reason as
-	// alertScanner above: the monitor may not exist yet when the overlay is
-	// wired up.
+	// overlay's draw path (input goroutine), the alert scanner's state probe,
+	// the resize watcher and Stop(). Same reason as alertScanner above: the
+	// monitor may not exist yet when its readers are wired up. It is the only
+	// handle on the monitor — there is deliberately no plain field beside it.
 	activityMon atomic.Pointer[overlay.ActivityMonitor]
 	daemonConn  *daemon.Conn
 	outputTap   *childOutputTap
@@ -1536,14 +1582,21 @@ func (r *pipelineRuntime) Stop() {
 	if r.inputRouter != nil {
 		r.inputRouter.Stop()
 	}
+	// End the session's stdin reader. Without this the --no-overlay stdin
+	// copy stays blocked in Read and the wg.Wait below hangs until a keypress;
+	// with the router it stops the producer goroutine from outliving the
+	// session and eating the next phase's keystrokes.
+	if r.stdin != nil {
+		_ = r.stdin.Close()
+	}
 	if r.startupSplash != nil {
 		r.startupSplash.Stop()
 	}
 	if r.outputFilter != nil {
 		r.outputFilter.Stop()
 	}
-	if r.activityMonitor != nil {
-		r.activityMonitor.Stop()
+	if am := r.activityMon.Load(); am != nil {
+		am.Stop()
 	}
 	if s := r.alertScanner.Load(); s != nil {
 		s.Stop()
@@ -1601,8 +1654,10 @@ func runOverlayPipeline(
 	// Daemon session registration (autostart + overlay endpoint scoping).
 	daemonSocketPath := getSocketPath(rootCmd)
 	rt.daemonHandle = startDaemonSession(ctx, daemonSessionConfig{
-		SessionCode:      sessionCode,
-		OverlayEndpoint:  rt.netOverlay.SocketPath(),
+		SessionCode: sessionCode,
+		// Empty when the overlay failed to start: never register a socket
+		// this session is not listening on.
+		OverlayEndpoint:  rt.netOverlay.Endpoint(),
 		ProjectPath:      projectPath,
 		Command:          launch.Command,
 		CmdArgs:          launch.Args,
@@ -1615,10 +1670,19 @@ func runOverlayPipeline(
 	// Terminal overlay (indicator bar, menus, status fetcher, input router).
 	// From here on user messages go through the overlay's notification
 	// stack (or CRLF lines in raw passthrough); finishSession restores stderr.
+	// One stdin owner per session, reading a lease on the process-wide pump
+	// (see stdinPump): the input router when the overlay is on, a raw relay
+	// otherwise. Both can lend input to a modal prompt.
+	rt.stdin = processStdin.Acquire()
+	var rawRelay *rawStdinRelay
 	if useTermOverlay {
 		setupTerminalOverlay(ctx, handle, rt)
+		rt.inputRouter.SetInput(rt.stdin)
+		rt.stdinModal = rt.inputRouter
 		rt.restoreNotifier = setUserNotifier(rt.termOverlay)
 	} else {
+		rawRelay = newRawStdinRelay(rt.stdin, handle.Backend)
+		rt.stdinModal = rawRelay
 		rt.restoreNotifier = setUserNotifier(overlay.NewLineNotifier(os.Stderr, true))
 	}
 
@@ -1661,7 +1725,7 @@ func runOverlayPipeline(
 		if rt.outputGate != nil {
 			autostartOut = rt.outputGate
 		}
-		displayAutostartResults(rt.daemonHandle, userNotifier.Load().n, rt.inputRouter, autostartOut, 10*time.Second)
+		displayAutostartResults(rt.daemonHandle, userNotifier.Load().n, rt.stdinModal, autostartOut, 10*time.Second)
 	}()
 
 	// Resize watcher — platform-specific dispatcher (SIGWINCH on Unix,
@@ -1682,7 +1746,7 @@ func runOverlayPipeline(
 		if rt.inputRouter != nil {
 			rt.inputRouter.Run()
 		} else {
-			_, _ = io.Copy(handle.Backend, os.Stdin)
+			rawRelay.Run()
 		}
 	}()
 
@@ -1741,8 +1805,8 @@ func runOverlayPipeline(
 		// canonical dedup/batch/activity-defer queue. Stored on the
 		// runtime so Stop() can call alertScanner.Stop() deterministically.
 		scanner := setupAlertScanner(projectPath, sessionCode, rt.netOverlay, rt.daemonHandle, func() overlay.ActivityState {
-			if rt.activityMonitor != nil {
-				return rt.activityMonitor.State()
+			if am := rt.activityMon.Load(); am != nil {
+				return am.State()
 			}
 			return overlay.ActivityIdle
 		})
@@ -1761,9 +1825,9 @@ func runOverlayPipeline(
 			}
 		}
 
-		rt.activityMonitor = overlay.NewActivityMonitor(outputDest, activityCfg)
-		rt.activityMon.Store(rt.activityMonitor)
-		_, _ = io.Copy(io.MultiWriter(newActivityPulse(outputPulse), rt.activityMonitor), handle.Backend)
+		activityMonitor := overlay.NewActivityMonitor(outputDest, activityCfg)
+		rt.activityMon.Store(activityMonitor)
+		_, _ = io.Copy(io.MultiWriter(newActivityPulse(outputPulse), activityMonitor), handle.Backend)
 		close(rt.done)
 	}()
 

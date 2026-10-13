@@ -2562,9 +2562,11 @@
       // Element preview - show selector and highlight the element
       var info = document.createElement('div');
       info.style.cssText = STYLES.attachmentPreviewElement;
-      info.innerHTML = '<strong>' + (attachment.data.tag || 'element') + '</strong>\n' +
-        (attachment.data.selector || '') + '\n\n' +
-        (attachment.data.text ? '"' + attachment.data.text.substring(0, 100) + '"' : '');
+      // tag / selector / text all come from the inspected page (text is the
+      // element's raw textContent), so each is escaped before it is markup.
+      info.innerHTML = '<strong>' + escapeHtml(attachment.data.tag || 'element') + '</strong>\n' +
+        escapeHtml(attachment.data.selector || '') + '\n\n' +
+        (attachment.data.text ? '"' + escapeHtml(String(attachment.data.text).substring(0, 100)) + '"' : '');
       popup.appendChild(info);
 
       // Highlight the element on the page
@@ -2595,17 +2597,17 @@
       var elements = attachment.data.elements || [];
       sketchInfo.innerHTML = '<strong>Sketch</strong>\n' +
         elements.length + ' element' + (elements.length !== 1 ? 's' : '') + '\n' +
-        (attachment.summary || '');
+        escapeHtml(attachment.summary || '');
       popup.appendChild(sketchInfo);
     } else if (attachment.type === 'style-edit' && attachment.data) {
       // Style-edit preview - show diff of original -> current values
       var styleInfo = document.createElement('div');
       styleInfo.style.cssText = STYLES.attachmentPreviewElement;
       var changes = attachment.data.changes || [];
-      var lines = ['<strong>' + (attachment.data.selector || 'style-edit') + '</strong>'];
+      var lines = ['<strong>' + escapeHtml(attachment.data.selector || 'style-edit') + '</strong>'];
       for (var ci = 0; ci < changes.length; ci++) {
         var c = changes[ci];
-        lines.push(c.property + ': ' + c.original + ' \u2192 ' + c.current);
+        lines.push(escapeHtml(c.property) + ': ' + escapeHtml(c.original) + ' \u2192 ' + escapeHtml(c.current));
       }
       styleInfo.innerHTML = lines.join('\n');
       popup.appendChild(styleInfo);
@@ -2613,8 +2615,8 @@
       // Audit preview - show summary
       var auditInfo = document.createElement('div');
       auditInfo.style.cssText = STYLES.attachmentPreviewElement;
-      auditInfo.innerHTML = '<strong>' + (attachment.data.auditType || 'Audit') + '</strong>\n' +
-        (attachment.summary || '');
+      auditInfo.innerHTML = '<strong>' + escapeHtml(attachment.data.auditType || 'Audit') + '</strong>\n' +
+        escapeHtml(attachment.summary || '');
       popup.appendChild(auditInfo);
     } else {
       // Default: show summary

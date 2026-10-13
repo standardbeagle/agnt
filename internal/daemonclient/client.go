@@ -2,7 +2,9 @@ package daemonclient
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -663,14 +665,15 @@ func (c *Client) SessionRegisterWithPGID(code string, overlayPath string, projec
 	return c.SessionRegisterWithContainment(code, overlayPath, projectPath, command, args, sessionPGID, 0)
 }
 
-// SessionRegisterWithContainment registers a new session and reports
-// both the Unix session pgid and the Windows Job Object handle for the
-// PTY child subtree. Callers on Unix pass sessionPGID and 0 for
-// sessionJobHandle; callers on Windows pass 0 for sessionPGID and the
-// uint64 form of a windows.Handle for sessionJobHandle. The daemon
-// invokes whichever containment path matches the running OS at
-// cleanup time; both are safe no-ops when their corresponding field
-// is unset.
+// SessionRegisterWithContainment registers a new session and reports the
+// Unix session pgid of the PTY child subtree, which the daemon reaps at
+// session cleanup. Pass 0 for sessionPGID on Windows.
+//
+// sessionJobHandle is a legacy wire field: pass 0 on every platform. A
+// Windows handle is an index into the owning process's handle table, so
+// the daemon cannot act on one from another process — it reports a
+// non-zero value and ignores it. Windows containment belongs to the
+// `agnt run` process, whose Job Object kills the tree when it exits.
 func (c *Client) SessionRegisterWithContainment(code string, overlayPath string, projectPath string, command string, args []string, sessionPGID int, sessionJobHandle uint64) (map[string]interface{}, error) {
 	metadata := protocol.SessionRegisterConfig{
 		OverlayPath:      overlayPath,
@@ -735,9 +738,19 @@ func (c *Client) SessionTasks(dirFilter protocol.DirectoryFilter) (map[string]in
 	return req.JSON()
 }
 
-// SessionGenerateCode requests a new session code from the daemon.
+// SessionGenerateCode returns a new session code for command: "<command>-<8 hex>".
+//
+// The suffix is 32 bits from crypto/rand, generated locally. It used to be
+// time.Now().UnixNano()%10000 — ten thousand values at best, about a hundred
+// where the clock ticks in 100ns units — and SESSION REGISTER treats an
+// existing code as a reconnect, so two sessions drawing the same code meant
+// the second took over the first's registration.
 func (c *Client) SessionGenerateCode(command string) (string, error) {
-	return fmt.Sprintf("%s-%d", command, time.Now().UnixNano()%10000), nil
+	var suffix [4]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return "", fmt.Errorf("generate session code: %w", err)
+	}
+	return fmt.Sprintf("%s-%s", command, hex.EncodeToString(suffix[:])), nil
 }
 
 // SessionFind finds a session by directory ancestry.
@@ -987,8 +1000,9 @@ func (c *Client) StopAll() (map[string]interface{}, error) {
 	return c.StopAllScoped(protocol.DirectoryFilter{})
 }
 
-// StopAllScoped stops resources for the project resolved by filter. The MCP
-// daemon connection is not session-bound, so it names the project (or global)
+// StopAllScoped stops resources for the project resolved by filter. A
+// connection is session-bound only after SESSION REGISTER or SESSION ATTACH,
+// so a caller that may not be attached names the project (or global)
 // explicitly via the filter — mirroring the other gated tools.
 func (c *Client) StopAllScoped(filter protocol.DirectoryFilter) (map[string]interface{}, error) {
 	return c.conn.Request("STOP-ALL").WithJSON(filter).JSON()

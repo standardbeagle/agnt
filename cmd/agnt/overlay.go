@@ -22,6 +22,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/httpcaps"
 	"github.com/standardbeagle/agnt/internal/overlay"
+	"github.com/standardbeagle/agnt/internal/pathutil"
 )
 
 // PtyWriter is an interface for writing to a PTY.
@@ -130,13 +131,20 @@ type ToastMessage struct {
 	Duration int    `json:"duration"` // Duration in ms (0 for default)
 }
 
-// DefaultOverlaySocketPath returns the default socket path for the overlay.
+// overlaySocketDir returns the per-user directory that holds overlay sockets.
 // Uses /tmp (or os.TempDir on Windows) unconditionally — XDG_RUNTIME_DIR is
 // intentionally ignored for the same reason as the daemon socket: pam_systemd
 // cleans it up on logout, which would delete the socket mid-session.
-// Windows uses UID-equivalent USERNAME to avoid per-user collisions.
-func DefaultOverlaySocketPath() string {
+//
+// The directory, not the socket name, is what scopes sockets to a user.
+// Session codes ("claude-1") are generated per user, so two users on one host
+// produce the same socket name; directly under /tmp the second lost its
+// overlay, and anyone could pre-create a victim's predictable path. The
+// directory is created 0700 and verified by prepareOverlaySocket.
+func overlaySocketDir() string {
 	if os.PathSeparator == '\\' {
+		// os.TempDir is already per-user on Windows; the username keeps the
+		// name unique where TEMP is shared (services, some CI images).
 		username := os.Getenv("USERNAME")
 		if username == "" {
 			u, err := user.Current()
@@ -147,9 +155,65 @@ func DefaultOverlaySocketPath() string {
 		if username == "" {
 			username = fmt.Sprintf("%d", os.Getuid())
 		}
-		return filepath.Join(os.TempDir(), fmt.Sprintf("devtool-overlay-%s.sock", username))
+		return filepath.Join(os.TempDir(), "agnt-overlay-"+pathutil.SafePathComponent(username))
 	}
-	return fmt.Sprintf("/tmp/devtool-overlay-%d.sock", os.Getuid())
+	return fmt.Sprintf("/tmp/agnt-overlay-%d", os.Getuid())
+}
+
+// DefaultOverlaySocketPath returns the default socket path for the overlay:
+// a fixed name inside the per-user overlaySocketDir.
+func DefaultOverlaySocketPath() string {
+	return filepath.Join(overlaySocketDir(), "devtool-overlay.sock")
+}
+
+// overlaySocketProbeTimeout bounds the liveness probe of an existing socket.
+const overlaySocketProbeTimeout = 500 * time.Millisecond
+
+// listenOverlaySocket creates the overlay's Unix-socket listener at path. It
+// is the one place both overlay servers (Overlay, AIOverlay) get a listener,
+// so the hygiene rules cannot drift between them:
+//
+//   - A socket in the default per-user directory gets that directory created
+//     and checked (0700, ours, not a symlink). A caller-chosen path
+//     (--overlay-socket) is used as given.
+//   - An existing socket is removed only when nothing answers on it. A socket
+//     that accepts a connection belongs to a live session — a second run with
+//     the same --session — and unlinking it would silently steal that
+//     session's browser events; that is an error instead.
+//   - The socket is chmod 0600. Anything that can connect can type into the
+//     agent (/type, /key), so access must not depend on the umask.
+func listenOverlaySocket(path string) (net.Listener, error) {
+	if path == "" {
+		return nil, fmt.Errorf("no overlay socket path")
+	}
+	if filepath.Dir(path) == overlaySocketDir() {
+		if err := secureOverlayDir(filepath.Dir(path)); err != nil {
+			return nil, fmt.Errorf("overlay socket directory %s: %w", filepath.Dir(path), err)
+		}
+	}
+
+	if _, err := os.Lstat(path); err == nil {
+		if conn, dialErr := net.DialTimeout("unix", path, overlaySocketProbeTimeout); dialErr == nil {
+			_ = conn.Close()
+			return nil, fmt.Errorf("overlay socket %s is in use by a live session (is another agnt run using the same --session code?)", path)
+		}
+		debug.Log("overlay", "removing stale socket: %s", path)
+		if err := os.Remove(path); err != nil {
+			return nil, fmt.Errorf("stale overlay socket %s could not be removed: %w", path, err)
+		}
+	}
+
+	debug.Log("overlay", "creating Unix socket listener at: %s", path)
+	listener, err := net.Listen("unix", path)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create overlay socket at %s: %w", path, err)
+	}
+	if err := restrictOverlaySocket(path); err != nil {
+		_ = listener.Close()
+		_ = os.Remove(path)
+		return nil, fmt.Errorf("overlay socket %s could not be restricted to its owner: %w", path, err)
+	}
+	return listener, nil
 }
 
 func newOverlay(socketPath string, ptmx PtyWriter) *Overlay {
@@ -176,8 +240,19 @@ func newOverlay(socketPath string, ptmx PtyWriter) *Overlay {
 	}
 }
 
-// SocketPath returns the socket path the overlay is listening on.
+// SocketPath returns the socket path the overlay is configured for.
 func (o *Overlay) SocketPath() string {
+	return o.socketPath
+}
+
+// Endpoint returns the socket path to register with the daemon: the path when
+// the overlay is listening, "" when Start failed or has not run. Registering
+// the bare path after a failed Start pointed the daemon at a socket nothing
+// of ours answers — or one another process owns.
+func (o *Overlay) Endpoint() string {
+	if o.listener == nil {
+		return ""
+	}
 	return o.socketPath
 }
 
@@ -192,19 +267,11 @@ func (o *Overlay) NotifyActivity() {
 }
 
 func (o *Overlay) Start(ctx context.Context) error {
-	// Remove stale socket if it exists
-	if _, err := os.Stat(o.socketPath); err == nil {
-		debug.Log("overlay", "removing stale socket: %s", o.socketPath)
-		if err := os.Remove(o.socketPath); err != nil {
-			debug.Log("overlay", "failed to remove stale socket %s: %v", o.socketPath, err)
-		}
-	}
-
-	// Create Unix socket listener
-	debug.Log("overlay", "creating Unix socket listener at: %s", o.socketPath)
-	listener, err := net.Listen("unix", o.socketPath)
+	// Create the Unix socket listener (per-user dir, liveness-probed stale
+	// removal, owner-only mode — see listenOverlaySocket).
+	listener, err := listenOverlaySocket(o.socketPath)
 	if err != nil {
-		return fmt.Errorf("failed to create overlay socket at %s: %w", o.socketPath, err)
+		return err
 	}
 	debug.Log("overlay", "socket listener started successfully")
 
@@ -241,11 +308,13 @@ func (o *Overlay) Stop() {
 		_ = o.server.Shutdown(ctx)
 	}
 
-	// Close listener and remove socket file
+	// Close listener and remove socket file. Only when this overlay actually
+	// listened: after a failed Start the path may be a live session's socket
+	// (that is one of the ways Start fails), and it is not ours to unlink.
 	if o.listener != nil {
 		o.listener.Close()
+		os.Remove(o.socketPath)
 	}
-	os.Remove(o.socketPath)
 
 	// Close all WebSocket connections
 	o.clients.Range(func(key, value interface{}) bool {
@@ -469,42 +538,16 @@ func (o *Overlay) processProxyEvent(event ProxyEvent) {
 // bypassed every gate and caused the "vite reconnect spam" bug. See
 // .claude/skills/messaging-queue for the single-queue invariant.
 func (o *Overlay) processAutoForwardEvent(event ProxyEvent) {
-	if !o.autoForwardEnabled.Load() {
-		return
+	var cascade []string
+	if w := o.alertQueue.Load(); w != nil {
+		cascade = w.jsCascadePatterns
 	}
-
-	// Source filter (browser vs http).
-	source := "browser"
-	if event.Type == "http_error" {
-		source = "http"
-	}
-	af := o.autoForward.Load()
-	if af != nil && !af.ShouldForwardSource(source) {
-		return
-	}
-
-	// Severity filter for HTTP errors (4xx = warning, 5xx = error).
-	if event.Type == "http_error" && af != nil {
-		minSev := af.GetSeverity()
-		var data struct {
-			StatusCode int `json:"status_code"`
-		}
-		if json.Unmarshal(event.Data, &data) == nil {
-			if minSev == "error" && data.StatusCode < 500 {
-				return
-			}
-		}
-	}
-
-	canonical := canonicalAutoForwardMessage(event)
-	if canonical == "" {
-		return
-	}
-
-	// Cascade-pattern check: drop transport-layer noise (vite/webpack
-	// reconnect spam) before it reaches the queue.
-	if o.matchesJSCascade(canonical) {
-		debug.Log("overlay", "auto-forward dropped cascade match: type=%s msg=%q", event.Type, canonical)
+	canonical, ok := autoForwardPolicy{
+		enabled: o.autoForwardEnabled.Load(),
+		cfg:     o.autoForward.Load(),
+		cascade: cascade,
+	}.admit(event)
+	if !ok {
 		return
 	}
 
@@ -513,6 +556,7 @@ func (o *Overlay) processAutoForwardEvent(event ProxyEvent) {
 		return
 	}
 
+	source := autoForwardSource(event)
 	matchSource := overlay.AlertSourceBrowser
 	patternID := "browser-js-error"
 	if event.Type == "http_error" {
@@ -531,6 +575,104 @@ func (o *Overlay) processAutoForwardEvent(event ProxyEvent) {
 		Source:       matchSource,
 		RenderedText: rendered,
 	})
+}
+
+// isAutoForwardEvent reports whether event is an auto-generated error event
+// (as opposed to an explicit user action such as a panel message or sketch).
+func isAutoForwardEvent(event ProxyEvent) bool {
+	return event.Type == "browser_error" || event.Type == "http_error"
+}
+
+// autoForwardSource is the `alerts.auto-forward.sources` name for an event.
+func autoForwardSource(event ProxyEvent) string {
+	if event.Type == "http_error" {
+		return "http"
+	}
+	return "browser"
+}
+
+// autoForwardPolicy is the `.agnt.kdl` alerts filter chain for browser_error /
+// http_error proxy events: the enabled switch, the source filter, the HTTP
+// severity floor, and the cascade (transport-noise) patterns. It is the one
+// definition of "does this error reach the agent", shared by the PTY overlay
+// (Overlay.processAutoForwardEvent) and the AI REPL overlay
+// (AIOverlay.handleEvent). Before it existed the AI REPL path had no filter at
+// all, so `alerts { auto-forward { enabled false } }` was silently ignored
+// under `agnt ai claude` / `agnt acp`.
+type autoForwardPolicy struct {
+	// enabled is the runtime switch (config value, possibly toggled).
+	enabled bool
+	// cfg may be nil; its accessors are nil-safe and return the defaults.
+	cfg *config.AutoForwardConfig
+	// cascade holds lowercased substrings; a canonical message containing
+	// one is transport-layer noise (vite/webpack reconnect spam).
+	cascade []string
+}
+
+// admit reports whether event passes the chain, returning its canonical
+// (dedup-key) message when it does.
+func (p autoForwardPolicy) admit(event ProxyEvent) (canonical string, ok bool) {
+	if !p.enabled {
+		return "", false
+	}
+
+	// Source filter (browser vs http).
+	if p.cfg != nil && !p.cfg.ShouldForwardSource(autoForwardSource(event)) {
+		return "", false
+	}
+
+	// Severity filter for HTTP errors (4xx = warning, 5xx = error).
+	if event.Type == "http_error" && p.cfg != nil {
+		var data struct {
+			StatusCode int `json:"status_code"`
+		}
+		if json.Unmarshal(event.Data, &data) == nil {
+			if p.cfg.GetSeverity() == "error" && data.StatusCode < 500 {
+				return "", false
+			}
+		}
+	}
+
+	canonical = canonicalAutoForwardMessage(event)
+	if canonical == "" {
+		return "", false
+	}
+
+	// Cascade-pattern check: drop transport-layer noise (vite/webpack
+	// reconnect spam) before it reaches the queue.
+	if matchesCascade(canonical, p.cascade) {
+		debug.Log("overlay", "auto-forward dropped cascade match: type=%s msg=%q", event.Type, canonical)
+		return "", false
+	}
+	return canonical, true
+}
+
+// matchesCascade reports whether canonical contains any of the pre-lowercased
+// patterns (case-insensitive substring match).
+func matchesCascade(canonical string, patterns []string) bool {
+	if len(patterns) == 0 {
+		return false
+	}
+	lower := strings.ToLower(canonical)
+	for _, p := range patterns {
+		if p != "" && strings.Contains(lower, p) {
+			return true
+		}
+	}
+	return false
+}
+
+// lowerCascadePatterns returns the cascade patterns to match against,
+// lowercased, substituting the defaults when none are configured.
+func lowerCascadePatterns(patterns []string) []string {
+	if len(patterns) == 0 {
+		patterns = config.DefaultJSCascadePatterns
+	}
+	lowered := make([]string, len(patterns))
+	for i, p := range patterns {
+		lowered[i] = strings.ToLower(p)
+	}
+	return lowered
 }
 
 // canonicalAutoForwardMessage extracts a stable dedup key from an auto-
@@ -565,16 +707,10 @@ func canonicalAutoForwardMessage(event ProxyEvent) string {
 // insensitive substring.
 func (o *Overlay) matchesJSCascade(canonical string) bool {
 	w := o.alertQueue.Load()
-	if w == nil || len(w.jsCascadePatterns) == 0 {
+	if w == nil {
 		return false
 	}
-	lower := strings.ToLower(canonical)
-	for _, p := range w.jsCascadePatterns {
-		if p != "" && strings.Contains(lower, p) {
-			return true
-		}
-	}
-	return false
+	return matchesCascade(canonical, w.jsCascadePatterns)
 }
 
 // injectOrFallback routes a match through the canonical alert queue (dedup,
@@ -608,14 +744,7 @@ type alertWiring struct {
 // config so the auto-forward gate uses the same definition as the
 // daemon-side hold buffer.
 func (o *Overlay) SetAlertScanner(scanner *overlay.AlertScanner, cascadePatterns []string) {
-	if len(cascadePatterns) == 0 {
-		cascadePatterns = config.DefaultJSCascadePatterns
-	}
-	lowered := make([]string, len(cascadePatterns))
-	for i, p := range cascadePatterns {
-		lowered[i] = strings.ToLower(p)
-	}
-	o.alertQueue.Store(&alertWiring{scanner: scanner, jsCascadePatterns: lowered})
+	o.alertQueue.Store(&alertWiring{scanner: scanner, jsCascadePatterns: lowerCascadePatterns(cascadePatterns)})
 }
 
 // SetAutoForwardConfig configures the auto-forward filter from .agnt.kdl alerts config.

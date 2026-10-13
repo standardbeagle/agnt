@@ -13,6 +13,8 @@ import (
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/platform"
 	"github.com/standardbeagle/agnt/internal/proxy"
+	"github.com/standardbeagle/go-cli-server/process"
+	"github.com/standardbeagle/go-cli-server/script"
 )
 
 func (d *Daemon) restoreProxies() {
@@ -476,6 +478,10 @@ func (d *Daemon) StopAllResources(ctx context.Context) {
 	cleanupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
+	// Nothing may start a process back up behind the stop.
+	d.quiesceLaunchers(d.hub.ProcessManager().List(), "")
+	defer d.markStoppedScripts(d.scriptRegistry.ListAll())
+
 	var wg sync.WaitGroup
 
 	// Stop all tunnels
@@ -551,6 +557,49 @@ func (d *Daemon) StopAllResources(ctx context.Context) {
 	debug.Log("daemon", "all resources stopped (last client disconnected)")
 }
 
+// quiesceLaunchers removes everything that would start a process again after a
+// stop-all: the auto-restart registration of each process about to be stopped,
+// and every launch still waiting on depends_on. Without it the auto-restart
+// monitor sees the stop as an exit and relaunches the process a couple of
+// seconds after STOP-ALL reported it stopped, and a gated PROC RUN launches
+// when its dependency's readiness signal arrives.
+//
+// pendingProject selects the pending launches to cancel: a normalized project
+// path, or "" for every project.
+func (d *Daemon) quiesceLaunchers(procs []*process.ManagedProcess, pendingProject string) {
+	if d.autoRestarter != nil {
+		for _, p := range procs {
+			d.autoRestarter.Unregister(p.ID)
+		}
+	}
+	if d.pendingProcs == nil {
+		return
+	}
+	for _, pending := range d.pendingProcs.ListByProject(pendingProject) {
+		if d.pendingProcs.Cancel(pending.ProcessID) && d.readySignaler != nil {
+			d.readySignaler.SignalFailed(pending.ProcessID, errors.New("not started: launch cancelled by STOP-ALL"))
+		}
+	}
+}
+
+// markStoppedScripts moves the script-registry entries of processes a stop-all
+// took down to StateStopped, so SCRIPT LIST and the overlay indicators do not
+// keep reporting them as running. An entry whose process is still running
+// (the stop failed or timed out) is left alone — the registry must not claim
+// more than the OS confirms.
+func (d *Daemon) markStoppedScripts(entries []*script.Entry) {
+	pm := d.hub.ProcessManager()
+	for _, entry := range entries {
+		if proc, err := pm.GetByPath(entry.ProcessID, entry.ProjectPath); err == nil && proc.IsRunning() {
+			continue
+		}
+		state := entry.State()
+		if state == script.StateRunning || state == script.StateStarting || state == script.StateRestarting {
+			entry.CompareAndSwapState(state, script.StateStopped)
+		}
+	}
+}
+
 // StopProjectResources is the project-scoped sibling of StopAllResources. Where
 // StopAllResources is the true global daemon-shutdown path (StopAll on every
 // manager plus clearing the daemon-wide overlay endpoint), this stops ONLY the
@@ -566,6 +615,11 @@ func (d *Daemon) StopAllResources(ctx context.Context) {
 func (d *Daemon) StopProjectResources(ctx context.Context, projectPath string) {
 	cleanupCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
+
+	// Nothing may start a process back up behind the stop. Pending launches
+	// are keyed by the normalized path PROC RUN used.
+	d.quiesceLaunchers(procsForProject(d.hub.ProcessManager().List(), projectPath), normalizePath(projectPath))
+	defer d.markStoppedScripts(d.scriptRegistry.List(projectPath))
 
 	var wg sync.WaitGroup
 

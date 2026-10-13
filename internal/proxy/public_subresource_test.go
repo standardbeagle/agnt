@@ -37,8 +37,21 @@ func signedSubPath(t *testing.T, h *PublicHandler, absURL string, depth int) str
 	q := url.Values{}
 	q.Set("u", absURL)
 	q.Set("d", strconv.Itoa(depth))
-	q.Set("sig", h.signer.Sign(subShareID, absURL, depth))
+	q.Set("sig", h.signer.Sign(subShareID, revisionForToken(h, validToken), absURL, depth))
 	return sharePrefix + validToken + subPrefixPath + "?" + q.Encode()
+}
+
+// revisionForToken names the revision the handler binds subresource references
+// to for the share a token resolves to — derived the way the handler derives it,
+// so a test signs for exactly the revision the route will verify against. ""
+// (an unknown token) makes the signer mint nothing, which fails the test at the
+// route rather than here.
+func revisionForToken(h *PublicHandler, token string) string {
+	rev, shareID, ok := h.verifier.VerifyToken(token)
+	if !ok {
+		return ""
+	}
+	return h.revisionOf(rev, shareID)
 }
 
 // upstreamServing returns a guarded fetcher whose upstream answers a fixed map
@@ -108,7 +121,7 @@ func TestProxiedDocumentRewritesSubresourceRefs(t *testing.T) {
 			t.Fatalf("rewritten ref does not parse: %q", ref)
 		}
 		q := u.Query()
-		if !h.signer.Verify(subShareID, q.Get("u"), 1, q.Get("sig")) {
+		if !h.signer.Verify(subShareID, revisionForToken(h, validToken), q.Get("u"), 1, q.Get("sig")) {
 			t.Fatalf("rewritten ref carries a signature that does not verify: %q", ref)
 		}
 		if q.Get("d") != "1" {

@@ -97,8 +97,9 @@ var softDeps = map[string]map[string]bool{
 	// api.js: plain-value captures (`mutations: mutations`), guarded lookups
 	// (`wireframe ? … : fallback`, `window.__devtool_snapshot || {…}`,
 	// per-call `window.__devtool_walkthrough` lookups), the guarded indicator
-	// block (indicatorNotLoaded fallback), and core.js's pre-installed
-	// __devtool_diagnostics fallback.
+	// block (indicatorNotLoaded fallback), and the diagnostics block, which
+	// falls back to "not loaded" stubs unless __devtool_diagnostics carries a
+	// real method.
 	"api": {
 		"interaction": true, "mutation": true, "audit-api": true,
 		"audit-loading": true, "audit-animations": true, "audit-design": true,

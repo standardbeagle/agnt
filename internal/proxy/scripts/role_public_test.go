@@ -34,13 +34,13 @@ var rolePublicGoldenManifest = []string{
 //
 // Scope, restated after INV-6's retirement (spec §6a, 2026-07-27): this gate
 // bans the DEV CONTROL SURFACE, not authored content. The public plane now
-// renders publisher-authored HTML/CSS/script (variant-engine's setHTML/addStyle/
-// addScript), so markup and script-element sinks are a SANCTIONED public
-// capability and must not be listed here — TestRolePublicPermitsAuthoredContent
-// pins that they stay permitted. Containment of authored script is CSP's job:
-// it runs iff its sha256 is in the served revision's pinned script-src
-// (INV-11/INV-12). What remains banned is anything that would let the public
-// plane *control the developer's session* or run code CSP never pinned.
+// renders publisher-authored HTML and CSS (variant-engine's setHTML/addStyle),
+// so markup and style sinks are a SANCTIONED public capability and must not be
+// listed here — TestRolePublicPermitsAuthoredContent pins that they stay
+// permitted. Authored SCRIPT is not sanctioned: addScript is refused at publish,
+// at load, and by the engine (INV-14), and script-src is the bundle hash alone
+// (INV-11/INV-12). What remains banned here is anything that would let the
+// public plane *control the developer's session* or run code CSP never pinned.
 //
 // Each token is derived from a REAL dev-surface entrypoint, not guessed:
 //
@@ -174,28 +174,27 @@ func TestRolePublicScanCatchesDevControlModule(t *testing.T) {
 
 // TestRolePublicPermitsAuthoredContent pins the OTHER half of the rewritten
 // gate: since INV-6's retirement the public plane's whole job includes rendering
-// publisher-authored HTML/CSS/script (§6a), so the authored-content render path
+// publisher-authored HTML and CSS (§6a), so the authored-content render path
 // must be PRESENT in the public bundle and must not trip the dev-control scan.
-// This fails if someone "hardens" the gate by re-banning markup/script sinks,
-// which would silently delete the capability the epic exists to ship.
+// This fails if someone "hardens" the gate by re-banning markup/style sinks,
+// which would silently delete the capability the epic exists to ship. It also
+// pins the opposite edge: the bundle's renderer has no script-element sink.
 func TestRolePublicPermitsAuthoredContent(t *testing.T) {
 	pub := GetCombinedScriptForRole(RolePublic)
 	for _, want := range []string{
 		"el.innerHTML = op.html", // setHTML
 		"styleEl.textContent",    // addStyle
-		"scriptEl.textContent",   // addScript — the hash-pinnable script element
-		"__variant-engine-root",  // the variant root the two root-ops append to
+		"__variant-engine-root",  // the variant root addStyle appends to
 	} {
 		if !strings.Contains(pub, want) {
 			t.Errorf("public bundle missing sanctioned authored-content render path %q (§6a)", want)
 		}
 	}
-	// And the authored path must not itself be a dynamic-code path: the served
-	// CSP has no 'unsafe-eval', so an authored body only ever runs via the
-	// hash-pinned script element, never a compile call.
-	for _, tok := range []string{"eval(", "new Function"} {
+	// And the authored path is not a code path of any kind: no compile call
+	// (the served CSP has no 'unsafe-eval') and no script element (INV-14).
+	for _, tok := range []string{"eval(", "new Function", "createElement('script')", "scriptEl"} {
 		if strings.Contains(variantEngineJS, tok) {
-			t.Errorf("the authored-content path must not use %q — script executes only via CSP hash pinning (INV-12)", tok)
+			t.Errorf("the authored-content path must not use %q — the renderer runs no authored code (INV-12/INV-14)", tok)
 		}
 	}
 }

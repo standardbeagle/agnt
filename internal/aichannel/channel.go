@@ -19,6 +19,10 @@ var (
 	ErrTimeout       = errors.New("request timed out")
 )
 
+// DefaultMaxTokens is the API-mode response cap applied when Config.MaxTokens
+// is unset.
+const DefaultMaxTokens = 1024
+
 // AgentType represents a known AI coding agent.
 type AgentType string
 
@@ -105,6 +109,8 @@ type Channel struct {
 	config     Config
 	configured bool
 	provider   Provider // For API mode
+	// providerErr is why API-mode provider setup failed, if it did.
+	providerErr error
 }
 
 // New creates a new AI channel.
@@ -125,6 +131,7 @@ func (c *Channel) Configure(config Config) {
 	config = applyDefaults(config)
 	c.config = config
 	c.configured = true
+	c.providerErr = nil
 
 	// Set up provider for API mode
 	if config.UseAPI {
@@ -153,17 +160,36 @@ func (c *Channel) createProvider() Provider {
 		MaxTokens: c.config.MaxTokens,
 	})
 	if err != nil {
-		debug.Warn("aichannel", "failed to initialize %s provider: %v", string(provider), err)
+		// Kept on the channel, not just logged: the debug log is invisible in
+		// a normal session, and without the cause every later call could only
+		// say "provider not configured". Send/SendAndParse return it.
+		c.providerErr = fmt.Errorf("failed to initialize %s provider: %w", provider, err)
+		debug.Warn("aichannel", "%v", c.providerErr)
 		return nil
 	}
 
 	return langchainProvider
 }
 
+// errProviderUnavailable is the error for an API-mode call with no usable
+// provider, carrying the initialization failure when there was one.
+func (c *Channel) errProviderUnavailable() error {
+	if c.providerErr != nil {
+		return fmt.Errorf("%w: %v", ErrNotAvailable, c.providerErr)
+	}
+	return fmt.Errorf("%w: provider not configured (no API key found for any supported provider)", ErrNotAvailable)
+}
+
 // applyDefaults fills in default values based on agent type.
 func applyDefaults(config Config) Config {
 	if config.Timeout == 0 {
 		config.Timeout = 2 * time.Minute
+	}
+	// The documented default. It used to exist only in the field's comment:
+	// nothing applied it, so API-mode calls ran at whatever cap the provider
+	// library chose.
+	if config.MaxTokens == 0 {
+		config.MaxTokens = DefaultMaxTokens
 	}
 
 	// Set command and flags based on agent type if not specified
@@ -313,7 +339,7 @@ func (c *Channel) Send(ctx context.Context, prompt string, inputContext string) 
 // sendWithAPI sends a prompt using the API provider.
 func (c *Channel) sendWithAPI(ctx context.Context, prompt string, inputContext string) (string, error) {
 	if c.provider == nil {
-		return "", fmt.Errorf("%w: provider not configured", ErrNotAvailable)
+		return "", c.errProviderUnavailable()
 	}
 
 	if !c.provider.IsConfigured() {
@@ -343,7 +369,7 @@ func (c *Channel) SendAndParse(ctx context.Context, prompt string, inputContext 
 	// For API mode, get response directly from provider
 	if c.config.UseAPI {
 		if c.provider == nil {
-			return nil, fmt.Errorf("%w: provider not configured", ErrNotAvailable)
+			return nil, c.errProviderUnavailable()
 		}
 		if !c.provider.IsConfigured() {
 			return nil, ErrNoAPIKey

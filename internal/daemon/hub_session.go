@@ -235,6 +235,22 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 		// particular MUST be refreshed: a reconnecting client rebuilds its
 		// overlay on a new socket, and a stale OverlayPath would send SESSION
 		// SEND / scheduled deliveries to a dead socket.
+		if existing, ok := d.sessionRegistry.Get(session.Code); ok {
+			// A reconnect comes from the wrapper process that registered the
+			// session. A different, known owner while the recorded one is still
+			// running is a second session that drew the same code: merging it
+			// would hand it the first session's registration, and the first
+			// session's exit would then tear the second one down. Refused before
+			// cancelPendingCleanup so the live session's state is untouched.
+			existing.mu.RLock()
+			existingOwner := existing.OwnerPID
+			existing.mu.RUnlock()
+			if existingOwner > 1 && session.OwnerPID > 1 && existingOwner != session.OwnerPID && pidAlive(existingOwner) {
+				return conn.WriteErr(hubproto.ErrAlreadyExists, fmt.Sprintf(
+					"session code %q is already registered by a running agnt process (pid %d); choose a different session name",
+					session.Code, existingOwner))
+			}
+		}
 		d.cancelPendingCleanup(session.Code)
 		if existing, ok := d.sessionRegistry.Get(session.Code); ok {
 			existing.mu.RLock()
@@ -270,6 +286,10 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 			// flip overlay ownership within a project on every reconnect.
 			session.StartedAt = existing.StartedAt
 			existing.mu.RUnlock()
+			// The investigation record belongs to the logical session, which a
+			// reconnect continues; only unregister, heartbeat timeout, and
+			// shutdown end it.
+			session.investigation.Store(existing.investigation.Load())
 			session.LastSeen = time.Now()
 			session.Status = SessionStatusActive
 			if !d.sessionRegistry.ReplaceExact(session.Code, existing, session) {
@@ -280,7 +300,13 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 
 	d.logSessionTargetStarting(session)
 	conn.SetSessionCode(session.Code)
+	// This connection is the session's control connection: only its loss
+	// schedules deferred cleanup (see onSessionConnectionClosed).
+	d.sessionControlConns.Store(session.Code, conn)
 	d.addIncidentSession(session.Code)
+	// Scheduled tasks persist per project; pick up the ones a previous daemon
+	// lifetime left for this project now that it has a session again.
+	d.scheduler.RestoreProject(session.ProjectPath)
 
 	// Rebind overlay endpoints for existing proxies that may have been
 	// created before this session registered.
@@ -441,6 +467,9 @@ func emitAutostartErrorsToAlertStore(d *Daemon, projectPath string, result *Auto
 			Category:    "autostart",
 			Description: errMsg,
 			ScriptID:    projectPath,
+			// Project-scoped ALERTS QUERY filters on ProjectPath; without it
+			// these were visible to global queries only.
+			ProjectPath: normalizePath(projectPath),
 			Timestamp:   time.Now(),
 		})
 	}
@@ -508,7 +537,10 @@ func (d *Daemon) hubHandleSessionHeartbeat(conn *hubpkg.Connection, cmd *hubprot
 // SESSION LIST [-- <directory_filter_json>]
 
 func (d *Daemon) hubHandleSessionList(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	filter, _ := unmarshalCommand[protocol.DirectoryFilter](cmd)
+	filter, err := unmarshalCommand[protocol.DirectoryFilter](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid filter JSON: %v", err))
+	}
 
 	// Route through the mandatory session-scope chokepoint (see
 	// resolveProjectScope). A non-global query with no resolvable project
@@ -660,7 +692,10 @@ func (d *Daemon) hubHandleSessionCancel(conn *hubpkg.Connection, cmd *hubproto.C
 // SESSION TASKS [-- <directory_filter_json>]
 
 func (d *Daemon) hubHandleSessionTasks(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	filter, _ := unmarshalCommand[protocol.DirectoryFilter](cmd)
+	filter, err := unmarshalCommand[protocol.DirectoryFilter](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid filter JSON: %v", err))
+	}
 
 	// Route through the mandatory session-scope chokepoint (see
 	// resolveProjectScope). A non-global query with no resolvable project

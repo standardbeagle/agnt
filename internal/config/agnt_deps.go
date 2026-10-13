@@ -7,13 +7,6 @@ import (
 	"github.com/sblinch/kdl-go/document"
 )
 
-// DefaultDependencyTimeout is the legacy default timeout for script
-// dependencies. The current parser defaults to 0 (wait indefinitely until
-// the parent context is cancelled or an explicit per-dep timeout is set in
-// .agnt.kdl), so this constant is retained only for backward compatibility
-// with internal/autostart and existing tests.
-const DefaultDependencyTimeout = 120 * time.Second
-
 // ScriptDependency represents a dependency on another script.
 type ScriptDependency struct {
 	// Name is the name of the script this depends on.
@@ -53,18 +46,9 @@ func (d *DependsOnList) UnmarshalKDL(node *document.Node) error {
 		// Default to 0 (wait indefinitely). Per .claude/rules/daemon-lifecycle.md
 		// a Starting process must never be abandoned by a hardcoded timeout —
 		// only an explicit user-set `timeout=N` should bound the wait.
-		var timeout time.Duration
-		if node.Properties.Exist() {
-			if tv, ok := node.Properties.Get("timeout"); ok {
-				tval, ok := toSeconds(tv.Value)
-				if !ok {
-					// The user declared timeout=N in .agnt.kdl; a non-numeric
-					// value must fail loudly rather than silently fall back to
-					// "wait indefinitely" (Silent Failure Prohibition).
-					return fmt.Errorf("depends-on timeout must be a number of seconds, got %T (%v)", tv.Value, tv.Value)
-				}
-				timeout = tval
-			}
+		timeout, err := dependsOnTimeout(node, "depends-on")
+		if err != nil {
+			return err
 		}
 		for _, arg := range node.Arguments {
 			name, ok := arg.Value.(string)
@@ -85,21 +69,42 @@ func (d *DependsOnList) UnmarshalKDL(node *document.Node) error {
 	for _, child := range node.Children {
 		name := child.Name.ValueString()
 		// Default to 0 (wait indefinitely). See note in the args branch above.
-		dep := ScriptDependency{Name: name, Timeout: 0}
-		if child.Properties.Exist() {
-			if tv, ok := child.Properties.Get("timeout"); ok {
-				tval, ok := toSeconds(tv.Value)
-				if !ok {
-					// Same as the args branch: a malformed per-dependency
-					// timeout the user declared must surface, not be dropped.
-					return fmt.Errorf("depends-on %q timeout must be a number of seconds, got %T (%v)", name, tv.Value, tv.Value)
-				}
-				dep.Timeout = tval
-			}
+		if len(child.Arguments) > 0 || len(child.Children) > 0 {
+			return fmt.Errorf("depends-on %q takes only a timeout=<seconds> property", name)
 		}
-		*d = append(*d, dep)
+		timeout, err := dependsOnTimeout(child, fmt.Sprintf("depends-on %q", name))
+		if err != nil {
+			return err
+		}
+		*d = append(*d, ScriptDependency{Name: name, Timeout: timeout})
 	}
 	return nil
+}
+
+// dependsOnTimeout reads the one property a depends-on node accepts.
+//
+// This unmarshaler replaces kdl-go's own, so its unknown-property check does
+// not run here: without the loop below a misspelt `timout=30` parsed cleanly
+// and left the timeout at 0, which means wait forever. Every declared property
+// is therefore either `timeout` or an error. A non-numeric value fails rather
+// than falling back to the indefinite wait, and a negative one is refused
+// because it has no meaning (0 is the documented "no bound").
+func dependsOnTimeout(node *document.Node, what string) (time.Duration, error) {
+	var timeout time.Duration
+	for key, tv := range node.Properties.Unordered() {
+		if key != "timeout" {
+			return 0, fmt.Errorf("%s: unknown property %q (accepted: timeout=<seconds>)", what, key)
+		}
+		tval, ok := toSeconds(tv.Value)
+		if !ok {
+			return 0, fmt.Errorf("%s timeout must be a number of seconds, got %T (%v)", what, tv.Value, tv.Value)
+		}
+		if tval < 0 {
+			return 0, fmt.Errorf("%s timeout must not be negative, got %v (use 0 to wait indefinitely)", what, tv.Value)
+		}
+		timeout = tval
+	}
+	return timeout, nil
 }
 
 // toSeconds converts a numeric value to a time.Duration in seconds.

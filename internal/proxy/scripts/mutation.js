@@ -74,6 +74,20 @@
     var batchTimer = null;
     var disposed = false;
 
+    // Mutation telemetry belongs to the canonical content frame only — the same
+    // gate interaction.js applies. The chrome shell never ships this module, but
+    // the full bundle also lands in passive foreign frames (nested embeds), where
+    // observers and timers would run with no transport to report to. Standalone
+    // pages (no frame context) resolve to content and keep full tracking.
+    function isTelemetryFrame() {
+      try {
+        var ctx = window.__devtool_context;
+        return !ctx || !ctx.role || ctx.role === 'content';
+      } catch (e) {
+        return true;
+      }
+    }
+
     // Bounded enqueue for the send batch: drop-oldest at MAX_PENDING_BATCH so
     // a mutation storm (or a dead transport) cannot grow the queue unbounded.
     function queueBatchRecord(record) {
@@ -463,7 +477,7 @@
     // Safe observer start
     function startObserver() {
       try {
-        if (observer || disposed) return;
+        if (observer || disposed || !isTelemetryFrame()) return;
 
         if (!hasMutationObserver) {
           console.warn('[DevTool][Mutation] MutationObserver not available');
@@ -540,7 +554,7 @@
     // Start max rate tracking (checks current rate and updates max)
     function startMaxRateTracking() {
       try {
-        if (disposed || rateCheckInterval) return;
+        if (disposed || rateCheckInterval || !isTelemetryFrame()) return;
         maxRateTracking = true;
 
         rateCheckInterval = setInterval(function() {
@@ -900,7 +914,7 @@
 
     function startSpinnerObserver() {
       try {
-        if (spinnerObserver || disposed) return;
+        if (spinnerObserver || disposed || !isTelemetryFrame()) return;
         if (!hasMutationObserver || !document.body) return;
         if (!hasWeakMap) {
           // Without WeakMap we cannot reliably pair appear/disappear; bail loudly.

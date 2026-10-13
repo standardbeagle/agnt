@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	"net/http"
 	"net/url"
 	"strings"
@@ -389,5 +390,121 @@ func TestStripFrameDenyHeadersPreservesUpstreamScriptSrc(t *testing.T) {
 				"re-read .claude/rules/publish-security-review-lessons.md before adjusting this test",
 				survivor, csp)
 		}
+	}
+}
+
+// A rewritten URL must carry the origin the client is actually on. One proxy
+// answers on several at once, and rewriting to a single proxy-wide value sent
+// tailnet/LAN browsers to their own localhost and — once a tunnel was up —
+// local browsers out to the public hostname.
+func TestRewriteURLFor_UsesTheOriginTheRequestArrivedOn(t *testing.T) {
+	const location = "http://localhost:3000/login?next=%2F"
+	const tailnetName = "build1.example.ts.net"
+
+	tailnetProxy := func() *ProxyServer {
+		ps := newTestProxyServer("http://localhost:3000", "100.87.26.14:8443")
+		ps.tailnetIdentities = func(context.Context) []string { return []string{tailnetName, "100.87.26.14"} }
+		return ps
+	}
+	tunnelledProxy := func() *ProxyServer {
+		ps := newTestProxyServer("http://localhost:3000", "127.0.0.1:8080")
+		ps.SetPublicURL("https://abc.trycloudflare.com")
+		return ps
+	}
+
+	tests := []struct {
+		name string
+		ps   *ProxyServer
+		req  *http.Request
+		want string
+	}{
+		{
+			name: "tailnet bind, browser on the MagicDNS name over the tailnet certificate",
+			ps:   tailnetProxy(),
+			req:  rewriteFor(tailnetName+":8443", "https", false),
+			want: "https://" + tailnetName + ":8443/login?next=%2F",
+		},
+		{
+			name: "tailnet bind, browser on the tailnet address over plain http",
+			ps:   tailnetProxy(),
+			req:  rewriteFor("100.87.26.14:8443", "http", false),
+			want: "http://100.87.26.14:8443/login?next=%2F",
+		},
+		{
+			name: "tailnet bind, a hostname that is not this node keeps the proxy-wide origin",
+			ps:   tailnetProxy(),
+			req:  rewriteFor("evil.example.com:8443", "https", false),
+			want: "http://localhost:8443/login?next=%2F",
+		},
+		{
+			name: "tunnel up, local browsing stays on localhost",
+			ps:   tunnelledProxy(),
+			req:  rewriteFor("localhost:8080", "http", false),
+			want: "http://localhost:8080/login?next=%2F",
+		},
+		{
+			name: "tunnel up, local browsing by loopback address stays there",
+			ps:   tunnelledProxy(),
+			req:  rewriteFor("127.0.0.1:8080", "http", false),
+			want: "http://127.0.0.1:8080/login?next=%2F",
+		},
+		{
+			name: "tunnel up, request addressed to the public host goes to the public URL",
+			ps:   tunnelledProxy(),
+			req:  rewriteFor("abc.trycloudflare.com", "http", false),
+			want: "https://abc.trycloudflare.com/login?next=%2F",
+		},
+		{
+			name: "tunnel up, request from the named tunnel's ingress goes to the public URL",
+			ps:   tunnelledProxy(),
+			req:  rewriteFor("localhost:8080", "http", true),
+			want: "https://abc.trycloudflare.com/login?next=%2F",
+		},
+		{
+			name: "tunnel up, a Host on the wrong port is not echoed",
+			ps:   tunnelledProxy(),
+			req:  rewriteFor("localhost:9999", "http", false),
+			want: "https://abc.trycloudflare.com/login?next=%2F",
+		},
+		{
+			name: "no request keeps the proxy-wide origin",
+			ps:   tunnelledProxy(),
+			req:  nil,
+			want: "https://abc.trycloudflare.com/login?next=%2F",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := tt.ps.rewriteURLFor(tt.req, location); got != tt.want {
+				t.Errorf("rewriteURLFor = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// The same per-request origin reaches both callers in modifyResponse: the
+// Location header and URL-bearing attributes in the body.
+func TestRewrite_LocationAndBodyFollowTheRequestOrigin(t *testing.T) {
+	ps := newTestProxyServer("http://localhost:3000", "127.0.0.1:8080")
+	ps.SetPublicURL("https://abc.trycloudflare.com")
+	local := rewriteFor("localhost:8080", "http", false)
+
+	resp := &http.Response{Header: http.Header{}, Request: local}
+	resp.Header.Set("Location", "http://localhost:3000/dashboard")
+	ps.rewriteLocationHeader(resp)
+	if got, want := resp.Header.Get("Location"), "http://localhost:8080/dashboard"; got != want {
+		t.Errorf("Location = %q, want %q (a local browser must not be redirected to the tunnel)", got, want)
+	}
+
+	body := string(ps.rewriteURLsInBodyFor(local, []byte(`<a href="http://localhost:3000/a">a</a>`)))
+	if want := `<a href="http://localhost:8080/a">a</a>`; body != want {
+		t.Errorf("body = %q, want %q", body, want)
+	}
+
+	// The same response for a visitor on the tunnel points at the tunnel.
+	public := rewriteFor("abc.trycloudflare.com", "http", false)
+	body = string(ps.rewriteURLsInBodyFor(public, []byte(`<a href="http://localhost:3000/a">a</a>`)))
+	if want := `<a href="https://abc.trycloudflare.com/a">a</a>`; body != want {
+		t.Errorf("body = %q, want %q", body, want)
 	}
 }

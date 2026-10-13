@@ -53,6 +53,10 @@ type darwinProcRow struct {
 	PPID int
 	PGID int
 	UID  int
+	// Comm is the kernel's short command name (p_comm, at most 16 bytes). It
+	// is the only name available for processes whose argv the kernel will
+	// not hand over; the orphan classifier does not read it, Scan does.
+	Comm string
 }
 
 // procSourceFn is the injectable seam between the classifier and the

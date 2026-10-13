@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/incident"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
@@ -43,6 +45,15 @@ func (d *Daemon) hubHandleAlertsReport(conn *hubpkg.Connection, cmd *hubproto.Co
 		ts = time.Now()
 	}
 
+	// Normalise the reported project path the way the scope gate normalises
+	// the query side (ALERTS QUERY compares ProjectPath by exact string). A
+	// reporter that sends a raw cwd would otherwise store an entry no scoped
+	// query can match on a case-insensitive filesystem.
+	projectPath := payload.ProjectPath
+	if projectPath != "" {
+		projectPath = normalizePath(projectPath)
+	}
+
 	d.alertStore.Add(&AlertEntry{
 		PatternID:   payload.PatternID,
 		Severity:    payload.Severity,
@@ -50,7 +61,7 @@ func (d *Daemon) hubHandleAlertsReport(conn *hubpkg.Connection, cmd *hubproto.Co
 		Description: payload.Description,
 		Line:        payload.Line,
 		ScriptID:    payload.ScriptID,
-		ProjectPath: payload.ProjectPath,
+		ProjectPath: projectPath,
 		Timestamp:   ts,
 	})
 
@@ -65,15 +76,71 @@ func (d *Daemon) hubHandleAlertsReport(conn *hubpkg.Connection, cmd *hubproto.Co
 	// process's stale errors, same as the daemon-scanner path.
 	d.maybeRetireOnBuildSuccess(payload.PatternID, payload.ScriptID, ts)
 
+	// An externally reported failure (error_queue tool, `agnt errors`) has no
+	// other route into the incident pipeline, and the inbox is the only
+	// incident pull surface — so without this the report was stored where
+	// get_incidents never looks.
+	if strings.HasPrefix(payload.PatternID, externalAlertPatternPrefix) {
+		n := d.publishExternalIncident(payload, projectPath)
+		return conn.WriteOK(fmt.Sprintf("alert stored; incident queued for %d session inbox(es)", n))
+	}
+
 	return conn.WriteOK("alert stored")
+}
+
+// externalAlertPatternPrefix marks an ALERTS REPORT that originated outside
+// agnt's own monitors. The error_queue tool and `agnt errors` both stamp it.
+// PTY-scanned process/browser matches are NOT published from here: those
+// signals already reach the bus from their own daemon-side sources, and
+// publishing the report too would double-count them.
+const externalAlertPatternPrefix = "external."
+
+// publishExternalIncident publishes one incident per session of the reported
+// project and returns how many inboxes it was queued for. Inboxes are
+// per-session (numbered contract 1) and the report names a project, not a
+// session, so every session working on that project receives its own copy; a
+// report for a project with no session lands in no inbox (it stays in the
+// alert store, visible through proc snapshot).
+func (d *Daemon) publishExternalIncident(payload protocol.AlertReportPayload, projectPath string) int {
+	if d.incidentBus == nil || d.sessionRegistry == nil || projectPath == "" {
+		return 0
+	}
+	var sev incident.Severity
+	switch payload.Severity {
+	case "warning":
+		sev = incident.SeverityWarning
+	case "info":
+		sev = incident.SeverityInfo
+	default:
+		sev = incident.SeverityError
+	}
+	queued := 0
+	for _, s := range d.sessionRegistry.List("", true) {
+		if s.ProjectPath == "" || normalizePath(s.ProjectPath) != projectPath || !d.incidentBus.HasSession(s.Code) {
+			continue
+		}
+		d.incidentBus.Publish(incident.NewIncidentEvent(
+			incident.SourceExternal, sev, payload.Category, payload.Line,
+			incident.Context{SessionID: s.Code, ProjectPath: projectPath, ProcessID: payload.ScriptID},
+			nil,
+		))
+		queued++
+	}
+	return queued
 }
 
 // hubHandleAlertsQuery handles ALERTS QUERY command.
 // Receives an optional AlertQueryFilter and returns matching entries.
 
 func (d *Daemon) hubHandleAlertsQuery(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	protoFilter, _ := unmarshalCommand[protocol.AlertQueryFilter](cmd)
-	scopeFilter, _ := unmarshalCommand[protocol.DirectoryFilter](cmd)
+	protoFilter, err := unmarshalCommand[protocol.AlertQueryFilter](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid filter JSON: %v", err))
+	}
+	scopeFilter, err := unmarshalCommand[protocol.DirectoryFilter](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid filter JSON: %v", err))
+	}
 
 	// Route through the mandatory session-scope chokepoint. A non-global
 	// query that can't resolve a project is rejected fail-loud (mirrors
@@ -141,7 +208,7 @@ func (d *Daemon) hubHandleStartupLog(conn *hubpkg.Connection, cmd *hubproto.Comm
 		Limit: 50,
 	}
 
-	f, _ := unmarshalCommand[struct {
+	f, err := unmarshalCommand[struct {
 		Since       string `json:"since,omitempty"`
 		ProcessID   string `json:"process_id,omitempty"`
 		Level       string `json:"level,omitempty"`
@@ -150,7 +217,13 @@ func (d *Daemon) hubHandleStartupLog(conn *hubpkg.Connection, cmd *hubproto.Comm
 		SessionCode string `json:"session_code,omitempty"`
 		Directory   string `json:"directory,omitempty"`
 	}](cmd)
-	scopeFilter, _ := unmarshalCommand[protocol.DirectoryFilter](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid filter JSON: %v", err))
+	}
+	scopeFilter, err := unmarshalCommand[protocol.DirectoryFilter](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid filter JSON: %v", err))
+	}
 	if f.ProcessID != "" {
 		filter.ProcessID = f.ProcessID
 	}

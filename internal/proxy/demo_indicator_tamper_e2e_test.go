@@ -10,8 +10,9 @@ package proxy
 // demo-indicator.js with a MutationObserver whose stated threat model is a
 // framework replacing the DOM ("hostile removal is P10's slice and is not
 // claimed here" — demo-indicator.js header). Meanwhile INV-6 was retired, so a
-// variant now legitimately carries raw CSS/HTML/JS. The publisher can therefore
-// AIM at the badge. Nothing proved it loses until this file.
+// variant now legitimately carries raw CSS and HTML. The publisher can therefore
+// AIM at the badge. Nothing proved it loses until this file. (Raw script is the
+// one payload that would win; it is refused at publish, which is pinned below.)
 //
 // WHAT AN ASSERTION HERE MUST BE. A closed shadow root resists ordinary page CSS
 // but is not absolute, and DOM presence is not disclosure: a host that is present
@@ -129,7 +130,9 @@ func assertVisible(t *testing.T, st indicatorState, attack string) {
 }
 
 // publishTamperShare publishes a share whose single variant carries ops. Each
-// attack gets its own revision because an addScript body is pinned per revision.
+// attack gets its own revision so one attack's state cannot colour the next.
+// Every op passed here must be publishable: addScript is refused at publish
+// (INV-14) and is asserted through requireAddScriptRefusedAtPublish instead.
 func publishTamperShare(t *testing.T, p *e2ePlane, id string, ops []publish.Op) string {
 	t.Helper()
 	wt := e2eWalkthrough()
@@ -137,7 +140,7 @@ func publishTamperShare(t *testing.T, p *e2ePlane, id string, ops []publish.Op) 
 	wt.VariantSet.ID = "set-" + id
 	wt.VariantSet.Variants[0].Ops = ops
 	_, token, err := p.store.Create(wt, e2eProjectA)
-	require.NoError(t, err, "the hostile variant must PUBLISH — INV-14 is a runtime guarantee, not a validator rejection")
+	require.NoError(t, err, "the hostile variant must PUBLISH — for CSS and markup, INV-14 is a runtime guarantee, not a validator rejection")
 	return token
 }
 
@@ -313,44 +316,23 @@ func TestE2E_PublicPlane_DemoIndicatorSurvivesVariantHTML(t *testing.T) {
 		assertVisible(t, readIndicator(t, ctx), "setHTML wipe of body")
 	})
 
-	// addScript is the sharpest publisher-reachable weapon on this plane: since
-	// S3/S4 the authored body's sha256 is PINNED into script-src, so unlike every
-	// other raw payload it genuinely EXECUTES. What it can reach is therefore the
-	// real boundary of INV-14, and the two properties below are the ones the
-	// shipped module actually holds.
+	// addScript WAS the sharpest publisher-reachable weapon on this plane: an
+	// authored body ran in the module's own realm, where no shadow root or
+	// observer can out-race arbitrary script. INV-14 is therefore held at the
+	// publish boundary instead — PublishedWalkthrough.Validate refuses addScript
+	// on every published walkthrough — and that refusal is what this subtest
+	// pins: the control refused, for that reason, and minted nothing.
 	//
-	// SCOPE, stated rather than implied: an authored script runs in the same realm
-	// as the module, so this subtest covers the two vectors a hostile script has
-	// no answer to — a one-shot removal (the observer wins) and reaching into the
-	// badge's internals (the root is CLOSED). It does NOT claim the module beats
-	// arbitrary same-realm script; the vectors that defeat it are recorded on the
-	// task rather than asserted here, because a test that asserted them would be
-	// pinning a gap as intended behaviour.
-	t.Run("authored_script_one_shot_removal_and_closed_shadow_root", func(t *testing.T) {
-		code := `window.__attackRan = 'yes';` +
-			`var h = document.getElementById('` + demoIndicatorHostID + `');` +
-			// The shadow root is the interesting read: a page handle on it would
-			// let the attacker edit the badge's own stylesheet from the inside.
-			`window.__attackShadow = String(h && h.shadowRoot);` +
-			`if (h) { h.remove(); }`
-		token := publishTamperShare(t, p, "addscript", []publish.Op{
-			{Op: publish.OpAddScript, Code: code},
-		})
-		loadTamperPage(t, ctx, p, token)
-
-		// PREMISE: the authored body really executed. Without this the survival
-		// below could just mean CSP refused the script — a different (and
-		// already-covered) story, not evidence about removal.
-		var ran, shadowSeen string
-		require.NoError(t, cdp.Run(ctx,
-			cdp.Evaluate(`String(window.__attackRan)`, &ran),
-			cdp.Evaluate(`String(window.__attackShadow)`, &shadowSeen),
-		))
-		require.Equal(t, "yes", ran,
-			"premise broken: the authored script did not run, so this asserts nothing about hostile removal")
-		assert.Equal(t, "null", shadowSeen,
-			"an authored script must NOT reach the badge's shadow root (mode: 'closed')")
-
-		assertVisible(t, readIndicator(t, ctx), "authored script node removal")
+	// The browser case that used to live here ("an authored script removes the
+	// badge once and reads host.shadowRoot") is deleted, not rewritten: no
+	// publishable input can run script on a share any more. Its two properties
+	// stay covered by inputs that ARE publishable — a one-shot removal of the
+	// host is the setHTML body wipe above (the observer re-mounts it), and the
+	// closed shadow root is asserted by assertVisible on every attack in this
+	// file (Shadow == "null").
+	t.Run("addScript_aimed_at_the_badge_is_refused_at_publish", func(t *testing.T) {
+		code := `var h = document.getElementById('` + demoIndicatorHostID + `'); if (h) { h.remove(); }`
+		requireAddScriptRefusedAtPublish(t, p, "addscript",
+			publish.Op{Op: publish.OpAddScript, Code: code})
 	})
 }

@@ -114,6 +114,26 @@ func envMapToSlice(env map[string]string) []string {
 	return result
 }
 
+// envSliceToMap converts KEY=VALUE entries to a map; a later entry for the
+// same key wins. Entries with no "=" or an empty key are dropped — on Windows
+// os.Environ() carries per-drive entries of the form "=C:=C:\dir", which have
+// no name a child process could be given.
+func envSliceToMap(env []string) map[string]string {
+	if len(env) == 0 {
+		return nil
+	}
+	result := make(map[string]string, len(env))
+	for _, kv := range env {
+		if idx := strings.Index(kv, "="); idx > 0 {
+			result[kv[:idx]] = kv[idx+1:]
+		}
+	}
+	if len(result) == 0 {
+		return nil
+	}
+	return result
+}
+
 // scriptConfigToEntry converts agnt's ScriptConfig to go-cli-server's script.Config.
 func scriptConfigToEntry(cfg *config.ScriptConfig) *script.Config {
 	return &script.Config{

@@ -24,10 +24,10 @@ const (
 	SourceProcessOutput Source = "process_output"
 	SourceProcessCrash  Source = "process_crash"
 	SourceBuildFail     Source = "build_fail"
-	SourcePortConflict  Source = "port_conflict"
-	SourceShutdown      Source = "shutdown"
-	SourceHookStopFail  Source = "hook_stop_failure"
 	SourceChaosSwallow  Source = "chaos_swallowed_error"
+	// SourceExternal is a failure reported from outside agnt's own monitors
+	// (CI, deploy logs, a hosted service) through the error_queue tool.
+	SourceExternal Source = "external"
 )
 
 // Severity orders incidents by urgency.
@@ -81,7 +81,7 @@ type BlobRef struct {
 	MIME string // "text/plain", "application/json", "text/html"
 }
 
-// IncidentEvent is the canonical envelope for all 11 signal sources.
+// IncidentEvent is the canonical envelope for every signal source.
 // ID is a time-ordered UUID v7 string — monotonic, sortable, cursor-friendly.
 // Summary is capped at maxSummaryBytes; any message longer than that has its
 // full bytes preserved in BlobStore via PayloadRef, so a truncated Summary
@@ -185,11 +185,24 @@ func newID() string {
 // the same error raised in two distinct content frames collapses to one entry
 // upstream of the inbox, and the second failing surface no longer exists to be
 // labelled by any downstream field.
+//
+// The owning process and proxy are folded in the same way (the scope_id of the
+// messaging-queue fingerprint contract): two processes printing the same line
+// are two failures. Merged, the entry's sample carried whichever process fired
+// last, so a clean build of one retired — or failed to retire — the other's
+// still-live error, and a process_id filter hid it for one of the two.
 func fingerprintLocation(ctx Context) string {
-	if ctx.FrameID == "" {
-		return ctx.URL
+	loc := ctx.URL
+	if ctx.FrameID != "" {
+		loc += "#" + ctx.FrameID
 	}
-	return ctx.URL + "#" + ctx.FrameID
+	if ctx.ProcessID != "" {
+		loc += "\x00proc=" + ctx.ProcessID
+	}
+	if ctx.ProxyID != "" {
+		loc += "\x00proxy=" + ctx.ProxyID
+	}
+	return loc
 }
 
 func computeFingerprint(source, category, canonMsg, location string) string {

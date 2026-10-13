@@ -295,7 +295,9 @@ func (dt *DaemonTools) ReplaytestLogClient() (replaytestLogClient, error) {
 }
 
 // StartChannelSink starts a goroutine that subscribes to daemon StreamEvents
-// and forwards matching entries as MCP channel notifications. Returns a cancel
+// and forwards matching entries as MCP channel notifications. Error-class
+// events the incident pipeline ingests are not forwarded here (ChannelSink
+// drops them); they arrive through StartIncidentDigestSink instead. Returns a cancel
 // function to stop the sink. No-op and returns nil if channel is not enabled.
 // projectPath scopes the subscription to proxies for that project directory;
 // pass "" to receive events from all proxies (legacy behavior).
@@ -355,51 +357,93 @@ func (dt *DaemonTools) StartChannelSink(server *mcp.Server, cfg *config.ChannelC
 	return cancel
 }
 
-// StartIncidentDigestSink subscribes a always-on goroutine to the daemon event
-// stream filtered to incident_digest entries and forwards each as an MCP Log
-// notification to all connected sessions. Unlike the channel sink, this is not
-// gated on channel mode: it is the universal push path that surfaces the unified
-// inbox's periodic digest to the agent. Returns a cancel function to stop it.
-func (dt *DaemonTools) StartIncidentDigestSink(server *mcp.Server) context.CancelFunc {
+// IncidentDigestFilter builds the STREAM-EVENTS filter for the digest sink.
+//
+// It is ALWAYS project-scoped and never global: the daemon stamps each digest
+// with its owning session's project (broadcastIncidentDigest), and a global
+// subscription disables that filter, so every `agnt mcp` process would forward
+// every other project's "you have incidents" ping to its own agent. The scope
+// is named the same way every other tool names it (sessionScope): the attached
+// session code when there is one, else the project directory. Global is pinned
+// to an explicit false so a project's `scope.default-global` cannot widen it.
+//
+// Type-only (no severity) so the digest is never dropped by the stream's
+// severity gate.
+func IncidentDigestFilter(sessionCode, projectPath string) protocol.StreamEventFilter {
+	filter := protocol.StreamEventFilter{
+		Types:          []string{string(proxy.LogTypeIncidentDigest)},
+		GlobalOverride: protocol.Bool(false),
+	}
+	if sessionCode != "" {
+		filter.SessionCode = sessionCode
+	} else {
+		filter.Directory = projectPath
+	}
+	return filter
+}
+
+// StartIncidentDigestSink subscribes an always-on goroutine to the daemon event
+// stream filtered to incident_digest entries and delivers each to all connected
+// sessions on one transport: a claude/channel event when channel mode is
+// enabled, an MCP Log notification otherwise (ForwardIncidentDigest). It is the
+// single push path for errors — the channel sink no longer forwards them raw —
+// and it runs whether or not channel mode is on. Returns a cancel function.
+//
+// projectPath scopes the subscription to this MCP process's project (see
+// IncidentDigestFilter); empty falls back to getProjectPath().
+func (dt *DaemonTools) StartIncidentDigestSink(server *mcp.Server, projectPath string, channelCfg *config.ChannelConfig) context.CancelFunc {
 	ctx, cancel := context.WithCancel(context.Background())
 
-	// Type-only filter (no severity) so the digest is never dropped by the
-	// stream's severity gate. The digest broadcasts with an empty proxyID, so
-	// project-scope filtering is bypassed daemon-side.
-	filter := protocol.StreamEventFilter{
-		Types:  []string{string(proxy.LogTypeIncidentDigest)},
-		Global: true,
+	channelOn := channelCfg != nil && channelCfg.IsEnabled()
+	// Best-effort fan-out on both transports: a failed send to one session
+	// must not block the digest reaching the others.
+	logFn := func(ctx context.Context, level, message string) error {
+		for session := range server.Sessions() {
+			if err := session.Log(ctx, &mcp.LoggingMessageParams{
+				Level:  mcp.LoggingLevel(level),
+				Logger: "agnt-incidents",
+				Data:   message,
+			}); err != nil {
+				debug.Log("incident-digest-sink", "log notify failed: %v", err)
+			}
+		}
+		return nil
+	}
+	notify := func(ctx context.Context, method string, params any) error {
+		for session := range server.Sessions() {
+			if err := session.Notify(ctx, method, params); err != nil {
+				debug.Log("incident-digest-sink", "channel notify failed: %v", err)
+			}
+		}
+		return nil
+	}
+
+	if projectPath == "" {
+		projectPath = getProjectPath()
 	}
 
 	go func() {
+		// A session code that has since gone stale makes the daemon reject the
+		// subscription; fall back to the project directory on the next attempt
+		// rather than retrying a dead code forever.
+		sessionRejected := false
 		for {
 			if ctx.Err() != nil {
 				return
 			}
+			sessionCode := ""
+			if !sessionRejected {
+				sessionCode = dt.SessionCode()
+			}
+			filter := IncidentDigestFilter(sessionCode, projectPath)
 			client := daemonclient.NewClient(daemonclient.WithSocketPath(dt.config.SocketPath))
 			err := client.StreamEvents(ctx, filter, func(entry proxy.LogEntry) error {
-				if entry.Type != proxy.LogTypeIncidentDigest || entry.Custom == nil {
-					return nil
-				}
-				level := entry.Custom.Level
-				if level == "" {
-					level = "info"
-				}
-				for session := range server.Sessions() {
-					// Best-effort fan-out: a failed Log to one session must not
-					// block the digest reaching the others.
-					if err := session.Log(ctx, &mcp.LoggingMessageParams{
-						Level:  mcp.LoggingLevel(level),
-						Logger: "agnt-incidents",
-						Data:   entry.Custom.Message,
-					}); err != nil {
-						debug.Log("incident-digest-sink", "log notify failed: %v", err)
-					}
-				}
+				ForwardIncidentDigest(ctx, entry, channelOn, logFn, notify)
 				return nil
 			})
 			if err != nil {
 				debug.Log("incident-digest-sink", "stream ended: %v", err)
+				sessionRejected = sessionCode != "" && !sessionRejected
 			}
 			select {
 			case <-ctx.Done():
@@ -558,10 +602,17 @@ Modes:
 A script declared in .agnt.kdl runs with everything it declares there: env, cwd,
 shell, ports, url-matchers, depends-on, auto-restart, and lifecycle hooks.
 
-Auto-restart: Background processes automatically restart on crash (rate-limited to
-prevent loops: max 5 restarts/minute). Use no_auto_restart: true to disable.
-  run {script_name: "dev"}                    # Auto-restarts by default
-  run {script_name: "test", no_auto_restart: true}  # Disable for one-time tasks
+IDs: the returned process_id is project-scoped ("myapp-1a2b3c4d:dev"); name is the
+short name ("dev" - the script name, or the id you passed). proc accepts either
+one from this project. Running an id that is already running returns that process.
+
+Auto-restart: run does not auto-restart by default. A process restarts on crash only
+when its script declares auto-restart in .agnt.kdl, or after it is enabled with
+proc {action: "autorestart"} (rate-limited: max 5 restarts/minute by default).
+no_auto_restart: true turns a declared script's auto-restart off for this launch.
+  run {script_name: "dev"}                         # Restarts on crash only if .agnt.kdl says so
+  run {script_name: "dev", no_auto_restart: true}  # Ignore the configured auto-restart this time
+  proc {action: "autorestart", process_id: "dev", auto_restart_enable: true}  # Enable afterwards
 
 Restarting: Use proc restart (preferred) or stop then run again:
   proc {action: "restart", process_id: "dev"}
@@ -606,9 +657,10 @@ Restarting dev servers:
   proc {action: "restart", process_id: "dev"}
 Never use pkill or external commands - always use proc stop/restart for clean shutdown.
 
-Auto-restart: Background processes automatically restart on crash by default (rate-limited
-to max 5 restarts/minute to prevent loops). Use autorestart action to check or disable:
-  proc {action: "autorestart", process_id: "dev"}  # Check status
+Auto-restart: off unless the script declares auto-restart in .agnt.kdl or it is enabled
+here (rate-limited to max 5 restarts/minute by default). Use the autorestart action to
+enable or disable it:
+  proc {action: "autorestart", process_id: "dev", auto_restart_enable: true}   # Enable
   proc {action: "autorestart", process_id: "dev", auto_restart_enable: false}  # Disable
 
 Examples:

@@ -1,6 +1,8 @@
 package daemon
 
 import (
+	"fmt"
+
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/go-cli-server/script"
 )
@@ -62,7 +64,8 @@ func (d *Daemon) reconcileScriptStates(projectPath string) []*script.Entry {
 
 // emitScriptStopped sends a ScriptStopped proxy event for the given scriptID.
 // Uses a non-blocking send — if the event channel is full, the event is dropped
-// with a warning log.
+// and the drop is recorded in the startup log, where the agent and the session
+// log can see that the script's proxies were not cleaned up.
 func (d *Daemon) emitScriptStopped(scriptID string) {
 	select {
 	case d.proxyEvents <- ProxyEvent{
@@ -71,5 +74,9 @@ func (d *Daemon) emitScriptStopped(scriptID string) {
 	}:
 	default:
 		debug.Warn("daemon", "reconcile: proxy event channel full, dropping ScriptStopped for %s", scriptID)
+		if d.startupErrorStore != nil {
+			d.recordStartupEntry(scriptID, stripProcessPrefix(scriptID), "warning", "proxy_event_dropped",
+				fmt.Sprintf("proxy event channel full: script stopped event dropped for %s — proxies may not be cleaned up", scriptID), 0)
+		}
 	}
 }

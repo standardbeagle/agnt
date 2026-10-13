@@ -22,15 +22,42 @@ single-timestamp debounce has been removed. The remaining direct `typeText`
 in `processProxyEvent` is for non-error UI/automation events (panel messages,
 sketch, design) only — error sources all flow through the queue.
 
-**Still parallel (cross-process, low incidence):** the daemon incident
-pipeline delivers to MCP-native agents via `incident_digest` → `session.Log()`
-(consumed only by `agnt mcp`, `serve.go`), while PTY-wrapped agents get stdin
-injection via the overlay socket (consumed by `agnt run`). These serve
-*different consumer processes / different agents* (MCP-native vs PTY-only), so
-the same agent does not normally get both. A single agent that is *both*
-MCP-connected and under `agnt run` could double-receive; per-session
-delivery-mode routing (adapter identity → mcp|stdin) is the intended fix and
-is not yet wired.
+**Resolved (channel mode):** `internal/tools/channel_sink.go::ChannelSink` no
+longer forwards error-class events raw. Whatever the incident pipeline ingests
+from the proxy — browser JS errors, HTTP 4xx/5xx, non-info diagnostics
+(`pipelineOwned`, mirroring `fireToIncidentBus`) — is dropped there and reaches
+a channel-mode agent once, as the incident digest. `ChannelSink` keeps only
+what the pipeline does not carry: user actions (panel message, interaction,
+responsive handoff — delivered immediately, never deduplicated) and the
+adapter-less machine events (custom logs, info diagnostics, status-less
+transport failures — these alone still honour `channel.dedupe-window`, which is
+not sink-side dedup of pipeline traffic).
+
+**One digest, one transport per MCP process:** the pinger's `mcpNotify` sink
+broadcasts an `incident_digest` stream entry (after pause and `alerts.push`);
+`agnt mcp` (`StartIncidentDigestSink` → `tools.ForwardIncidentDigest`) delivers
+it as a `notifications/claude/channel` event when channel mode is on, and as
+`session.Log()` otherwise — never both. The channel form lists the top unread
+incidents from the `PingPayload` the daemon attaches under
+`incident.DigestPayloadKey`. There is no daemon-side channel callback: only the
+MCP process can send a channel notification, so the transport choice lives
+there and adds no gate of its own.
+
+**Still parallel (cross-process, low incidence):** MCP-native agents get the
+digest from `agnt mcp` as above, while PTY-wrapped agents get stdin injection
+via the overlay socket (consumed by `agnt run`). These serve *different
+consumer processes / different agents* (MCP-native vs PTY-only), so the same
+agent does not normally get both. A single agent that is *both* MCP-connected
+and under `agnt run` could double-receive; per-session delivery-mode routing
+(adapter identity → mcp|stdin) is the intended fix and is not yet wired.
+
+The digest sink itself is project/session-scoped, never global
+(`internal/tools/daemon_tools.go::IncidentDigestFilter`, used by
+`StartIncidentDigestSink`): it subscribes by the attached session code, else
+the project directory, with `global` pinned to an explicit `false` so
+`scope.default-global` cannot widen it. An `agnt mcp` process never forwards
+another project's digest. A session code the daemon rejects falls back to the
+project directory on the next attempt.
 
 ## Required Pipeline Layers
 
@@ -93,7 +120,7 @@ This collapses two independent goroutines + two fingerprint hashes + two retry c
 | Global single-timestamp debounce | Different events mask each other; identical events re-fire each window | `cmd/agnt/overlay.go::lastForwardNs` (RESOLVED — removed) |
 | Unbounded pending during deferral | Burst piles up while agent busy, then floods stdin on idle | Fixed by the `MaxPending` overload throttle (layer 4b) |
 | Per-feature fingerprinting | Same event hashes differently in different gates → dedup breaks across layers | `HoldBuffer` reinvented `fingerprint` separate from `AlertScanner.fingerprint` |
-| Sink-side dedup | Each sink dedupes independently → consumers see different streams | None today; do not add |
+| Sink-side dedup | Each sink dedupes independently → consumers see different streams | `ChannelSink`'s dedupe ring over raw error events (RESOLVED — errors no longer pass through it; the ring now covers only adapter-less machine events the pipeline never sees). Do not add another |
 | Skipping activity gate on "high priority" | "Important" errors interrupt the agent mid-response, derail responses | `processAutoForwardEvent` (RESOLVED — routes through `Inject` → deferred `flush`) |
 | Cascade pattern list with only generic tokens | Vite/webpack/turbo HMR errors slip through | `DefaultJSCascadePatterns` now includes vite (`@vite/client`, `ViteHotContext`, `send was called before connect`) + webpack (`[HMR]`) tokens — keep it covering new dev-server reconnect noise |
 

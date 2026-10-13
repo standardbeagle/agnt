@@ -19,18 +19,18 @@ var contractFS embed.FS
 // formatter over Input — never hand-typed; otherwise Text is a verbatim
 // recording of a tool whose response carries no formatter-owned next: line.
 type fixtureResponse struct {
-	Call        fixtureCall     `json:"call"`
-	Text        string          `json:"text,omitempty"`
-	Formatter   string          `json:"formatter,omitempty"` // incidents|responsive|buffer|diagnose_layout|diagnose_click
-	Headline    string          `json:"headline,omitempty"`
-	Input       json.RawMessage `json:"input,omitempty"`
-	Next        string          `json:"next,omitempty"` // raw-JSON next field; verbatim non-formatter responses only
+	Call      fixtureCall     `json:"call"`
+	Text      string          `json:"text,omitempty"`
+	Formatter string          `json:"formatter,omitempty"` // incidents|responsive|buffer|diagnose_layout|diagnose_click
+	Headline  string          `json:"headline,omitempty"`
+	Input     json.RawMessage `json:"input,omitempty"`
+	Next      string          `json:"next,omitempty"` // raw-JSON next field; verbatim non-formatter responses only
 	// Prescribed records a sweep link the shipped contract does not emit
 	// as a pointer: the follower still executes it, but the step is
 	// marked prescribed in the trace and disclosed in the docs table.
-	Prescribed  string          `json:"prescribed,omitempty"`
-	Useful      bool            `json:"useful,omitempty"`
-	FindingKind string          `json:"finding_kind,omitempty"`
+	Prescribed  string `json:"prescribed,omitempty"`
+	Useful      bool   `json:"useful,omitempty"`
+	FindingKind string `json:"finding_kind,omitempty"`
 }
 
 type fixtureCall struct {
@@ -49,6 +49,7 @@ type contractFixture struct {
 // tool+args, formatter-rendered where a shipped formatter exists. A call
 // with no recorded response is a loud error — never an invented answer.
 type fixtureExecutor struct {
+	t        testing.TB
 	scenario string
 	byKey    map[string]fixtureResponse
 }
@@ -63,7 +64,7 @@ func loadContractFixture(t *testing.T, scenario string) *fixtureExecutor {
 	if err := json.Unmarshal(data, &fx); err != nil {
 		t.Fatalf("parse contract fixture %q: %v", scenario, err)
 	}
-	ex := &fixtureExecutor{scenario: scenario, byKey: map[string]fixtureResponse{}}
+	ex := &fixtureExecutor{t: t, scenario: scenario, byKey: map[string]fixtureResponse{}}
 	for _, r := range fx.Responses {
 		if r.Formatter != "" && r.Next != "" {
 			t.Fatalf("contract fixture %q: formatter-rendered response (tool=%s) carries an injected next override %q — record it as prescribed instead",
@@ -91,7 +92,7 @@ func (ex *fixtureExecutor) Execute(call Call) (Response, error) {
 	}
 	text := r.Text
 	if r.Formatter != "" {
-		rendered, err := renderFixtureText(call, r)
+		rendered, err := renderFixtureText(ex.t, call, r)
 		if err != nil {
 			return Response{}, fmt.Errorf("contract fixture %q: render %s: %w", ex.scenario, r.Formatter, err)
 		}
@@ -105,7 +106,7 @@ func (ex *fixtureExecutor) Execute(call Call) (Response, error) {
 }
 
 // renderFixtureText runs the shipped formatter for a fixture response.
-func renderFixtureText(call Call, r fixtureResponse) (string, error) {
+func renderFixtureText(t testing.TB, call Call, r fixtureResponse) (string, error) {
 	profile := "full"
 	if p, ok := call.Args["profile"].(string); ok && p != "" {
 		profile = p
@@ -116,21 +117,21 @@ func renderFixtureText(call Call, r fixtureResponse) (string, error) {
 		if err := json.Unmarshal(r.Input, &views); err != nil {
 			return "", err
 		}
-		return tools.RenderIncidentsCompactForBench(views), nil
+		return tools.RenderIncidentsCompactForBench(t, views), nil
 	case "responsive":
-		return tools.RenderResponsiveCompactForBench(r.Input, profile)
+		return tools.RenderResponsiveCompactForBench(t, r.Input, profile)
 	case "buffer":
 		var parsed map[string]any
 		if err := json.Unmarshal(r.Input, &parsed); err != nil {
 			return "", err
 		}
-		return tools.RenderBufferAuditCompactForBench(r.Headline, parsed, "dev", profile), nil
+		return tools.RenderBufferAuditCompactForBench(t, r.Headline, parsed, "dev", profile), nil
 	case "diagnose_layout":
 		var findings []finding.Finding
 		if err := json.Unmarshal(r.Input, &findings); err != nil {
 			return "", err
 		}
-		return tools.RenderDiagnoseLayoutCompactForBench("dev", findings), nil
+		return tools.RenderDiagnoseLayoutCompactForBench(t, "dev", findings), nil
 	case "diagnose_click":
 		var in struct {
 			Verdict  string            `json:"verdict"`
@@ -139,7 +140,7 @@ func renderFixtureText(call Call, r fixtureResponse) (string, error) {
 		if err := json.Unmarshal(r.Input, &in); err != nil {
 			return "", err
 		}
-		return tools.RenderDiagnoseClickCompactForBench("dev", in.Verdict, in.Findings), nil
+		return tools.RenderDiagnoseClickCompactForBench(t, "dev", in.Verdict, in.Findings), nil
 	}
 	return "", fmt.Errorf("unknown formatter %q", r.Formatter)
 }
@@ -410,8 +411,8 @@ func TestFollower_UnknownNextActionFailsLoud(t *testing.T) {
 	// the run ends clean.
 	ex3 := &fixtureExecutor{scenario: "clean_end", byKey: map[string]fixtureResponse{
 		(Call{Tool: "currentpage"}).key(): {
-			Call:    fixtureCall{Tool: "currentpage"},
-			Text:    "=== currentpage ===\n\nerror: TypeError boom",
+			Call:        fixtureCall{Tool: "currentpage"},
+			Text:        "=== currentpage ===\n\nerror: TypeError boom",
 			Useful:      true,
 			FindingKind: "errors",
 		},

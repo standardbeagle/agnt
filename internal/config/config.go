@@ -31,6 +31,12 @@ type Config struct {
 	// PublicPlane holds the public-plane request-rate limits (artifact GET +
 	// per-origin outbound fetch).
 	PublicPlane PublicPlaneConfig `json:"public_plane"`
+
+	// Warnings holds non-fatal notes collected while parsing the global
+	// config: today, the keys that are still accepted but that nothing reads
+	// (`version`, `languages`). Not a config key. The caller that loads the
+	// config is expected to surface them where the operator will see them.
+	Warnings []string `json:"-"`
 }
 
 // DefaultGracefulTimeout is the canonical graceful-shutdown budget: SIGTERM,
@@ -110,18 +116,6 @@ func DefaultConfig() *Config {
 	}
 }
 
-// ToCommandDef converts a CommandConfig to a project.CommandDef.
-func (c *CommandConfig) ToCommandDef(name string) project.CommandDef {
-	return project.CommandDef{
-		Name:        name,
-		Description: c.Description,
-		Command:     c.Command,
-		Args:        c.Args,
-		Timeout:     c.Timeout,
-		Persistent:  c.Persistent,
-	}
-}
-
 // goCommandsToConfig converts project.CommandDef slice to config map.
 func goCommandsToConfig(cmds []project.CommandDef) map[string]CommandConfig {
 	result := make(map[string]CommandConfig)
@@ -145,53 +139,6 @@ func nodeCommandsToConfig(cmds []project.CommandDef) map[string]CommandConfig {
 // pythonCommandsToConfig converts project.CommandDef slice to config map.
 func pythonCommandsToConfig(cmds []project.CommandDef) map[string]CommandConfig {
 	return goCommandsToConfig(cmds) // Same conversion logic
-}
-
-// GetLanguageCommands returns command definitions for a language.
-func (c *Config) GetLanguageCommands(lang string) []project.CommandDef {
-	langConfig, ok := c.Languages[lang]
-	if !ok {
-		return nil
-	}
-
-	cmds := make([]project.CommandDef, 0, len(langConfig.Commands))
-	for name, cmdConfig := range langConfig.Commands {
-		cmds = append(cmds, cmdConfig.ToCommandDef(name))
-	}
-	return cmds
-}
-
-// MergeProjectConfig merges per-project config with global config.
-func (c *Config) MergeProjectConfig(projConfig *ProjectConfig) *Config {
-	if projConfig == nil {
-		return c
-	}
-
-	// Create a copy to avoid modifying the original
-	merged := *c
-
-	// Override language-specific commands if project specifies them
-	if projConfig.Language != "" {
-		if langConfig, ok := merged.Languages[projConfig.Language]; ok {
-			// Merge commands
-			for name, cmd := range projConfig.Commands {
-				langConfig.Commands[name] = cmd
-			}
-			merged.Languages[projConfig.Language] = langConfig
-		}
-	}
-
-	return &merged
-}
-
-// ProjectConfig holds per-project configuration from .agnt.kdl.
-type ProjectConfig struct {
-	// Language overrides the detected language.
-	Language string `json:"language,omitempty"`
-	// PackageManager overrides the detected package manager.
-	PackageManager string `json:"package_manager,omitempty"`
-	// Commands override default commands.
-	Commands map[string]CommandConfig `json:"commands,omitempty"`
 }
 
 // Validate checks the configuration for errors.

@@ -1,6 +1,7 @@
 package aichannel
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -20,6 +21,8 @@ const (
 	helperModeEnv = "AGNT_AICHANNEL_TEST_HELPER"
 	// helperOutputEnv carries the canned stdout for the "emit" mode.
 	helperOutputEnv = "AGNT_AICHANNEL_TEST_HELPER_OUTPUT"
+	// helperArgvFileEnv names the file the "argv" mode writes its arguments to.
+	helperArgvFileEnv = "AGNT_AICHANNEL_TEST_HELPER_ARGV_FILE"
 )
 
 func TestMain(m *testing.M) {
@@ -57,6 +60,20 @@ func runHelperAgent(mode string, args []string) int {
 		time.Sleep(time.Duration(secs) * time.Second)
 	case "emit": // a script that prints fixed output and ignores its args
 		fmt.Fprint(os.Stdout, os.Getenv(helperOutputEnv))
+	case "argv": // record argv exactly as received, one JSON array, to a file
+		// A file, not stdout: under a PTY the terminal re-wraps and re-encodes
+		// what is printed, so stdout cannot show whether an argument with
+		// newlines arrived as one piece.
+		data, err := json.Marshal(args)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		if err := os.WriteFile(os.Getenv(helperArgvFileEnv), data, 0o600); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return 1
+		}
+		fmt.Fprintln(os.Stdout, "argv-recorded")
 	default:
 		fmt.Fprintf(os.Stderr, "unknown %s mode %q\n", helperModeEnv, mode)
 		return 2

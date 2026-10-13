@@ -1,6 +1,7 @@
 package sshclient
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -74,7 +75,7 @@ Host targethost
 	}
 
 	prompter := Prompter{In: strings.NewReader("yes\nyes\n"), Out: &discardWriter{}}
-	sshClient, err := dialWithJumps(cfg, configPath, filepath.Join(dir, "known_hosts"), "tester", prompter)
+	sshClient, err := dialWithJumps(context.Background(), cfg, configPath, filepath.Join(dir, "known_hosts"), "tester", prompter)
 	if err != nil {
 		t.Fatalf("dialWithJumps: %v", err)
 	}

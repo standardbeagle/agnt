@@ -203,10 +203,16 @@ window.__devtool.isConnected()
 → true
 
 window.__devtool.getStatus()
-→ {connected: true, reconnectAttempts: 0, lastMessage: "..."}
+→ "connected"   // or "connecting", "closing", "closed", "not_initialized"
+
+window.__devtool.transport.getConnectionState()
+→ {connected: true, readyState: 1, readyStateLabel: "OPEN", reconnectAttempts: 0,
+   maxReconnectAttempts: null, reconnectPending: false, reconnectMaxDelayMs: 30000, wsUrl: "..."}
 ```
 
-Auto-reconnects with exponential backoff if disconnected.
+Auto-reconnects with exponential backoff if disconnected: 1s, 2s, 4s, ... capped
+at 30s, with no attempt limit. Coming back online or showing the tab again
+reconnects immediately.
 
 ## Custom Logging
 

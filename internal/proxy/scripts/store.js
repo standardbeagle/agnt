@@ -1,5 +1,10 @@
 // Store API for DevTool
-// Provides persistent key-value storage with multiple scopes
+// Provides persistent key-value storage with multiple scopes.
+//
+// The store is the proxy's own project store: the server fixes the project,
+// and `scope` / `scope_key` only pick a namespace inside it ("global" here
+// means project-wide, not cross-project). Secret entries read back masked and
+// cannot be written, deleted or cleared from the page.
 
 (function() {
   'use strict';

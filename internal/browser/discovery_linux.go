@@ -5,7 +5,6 @@ package browser
 import (
 	"os"
 	"path/filepath"
-	"sort"
 )
 
 // platformDiscoverer implements Discoverer for Linux.
@@ -28,6 +27,9 @@ func (d *platformDiscoverer) Find() string {
 	}
 
 	// Try PATH lookup
+	if path := findInPath("google-chrome-stable"); path != "" {
+		return path
+	}
 	if path := findInPath("google-chrome"); path != "" {
 		return path
 	}
@@ -52,14 +54,9 @@ func findPlaywrightChromium() string {
 	if err != nil {
 		return ""
 	}
-	pattern := filepath.Join(home, ".cache", "ms-playwright", "chromium-*", "chrome-linux64", "chrome")
-	matches, err := filepath.Glob(pattern)
-	if err != nil || len(matches) == 0 {
-		return ""
-	}
-	sort.Strings(matches)
-	// Return the highest version (last alphabetically, e.g. chromium-1208 > chromium-1179)
-	return matches[len(matches)-1]
+	return newestPlaywrightChromium(
+		filepath.Join(home, ".cache", "ms-playwright", "chromium-*", "chrome-linux*", "chrome"),
+	)
 }
 
 // fileExists checks if a file exists.

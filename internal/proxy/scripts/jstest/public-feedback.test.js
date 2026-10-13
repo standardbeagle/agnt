@@ -339,7 +339,14 @@ describe('feedback client transport', () => {
     }
   });
 
-  it.each(['//evil.example/collect', '/\\evil.example', 'https://evil.example/x', 'feedback', ''])(
+  it.each([
+    '//evil.example/collect', '/\\evil.example', 'https://evil.example/x', 'feedback', '',
+    // Spellings the URL parser rewrites into "//host": it discards tab, CR and
+    // LF anywhere in its input, so each of these resolves to evil.example.
+    '/\t/evil.example/c', '/\n/evil.example/c', '/\r\\evil.example/c', '/\t\\evil.example/c',
+    // Whitespace and control characters are refused wherever they appear.
+    '/s/tok/feed back', '/s/tok/feedback\n', '/s/tok\u0000/feedback',
+  ])(
     'rejects the cross-origin or relative endpoint %j',
     async (endpoint) => {
       const p = await page({ publicPlane: false });
@@ -349,4 +356,19 @@ describe('feedback client transport', () => {
       expect(p.posts).toEqual([]);
     },
   );
+
+  it('the refused spellings really do resolve cross-origin', () => {
+    // Guards the test above against going stale: if a URL parser ever stopped
+    // rewriting these, the cases would be asserting nothing.
+    for (const endpoint of ['/\t/evil.example/c', '/\n/evil.example/c', '/\r\\evil.example/c']) {
+      expect(new URL(endpoint, 'http://localhost:8899/s/x').origin).toBe('http://evil.example');
+    }
+  });
+
+  it('accepts an ordinary same-origin path', async () => {
+    const p = await page({ publicPlane: false });
+    const res = await p.w.__feedbackClient.init({ endpoint: `/s/${TOKEN}/feedback` }).submit({ message: 'hi' });
+    expect(res.ok).toBe(true);
+    expect(p.posts).toHaveLength(1);
+  });
 });

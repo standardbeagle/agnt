@@ -35,7 +35,67 @@ const (
 	// flight. At the cap the read loop waits for a slot, so a client that
 	// floods spawned requests is slowed instead of multiplying goroutines.
 	wsMaxHandlers = 8
+
+	// Frame-rate cap for one connection (see wsFrameLimiter). A frame costs one
+	// token plus one per wsFrameCostUnit bytes, so a 16 MiB screenshot frame
+	// spends most of a burst and a flood of them is held to a few MB/s. The
+	// numbers leave ordinary telemetry (batched interactions, voice audio at
+	// tens of frames a second, an occasional screenshot) untouched.
+	wsFrameRatePerSecond = 100
+	wsFrameBurst         = 400
+	wsFrameCostUnit      = 64 << 10
 )
+
+// wsFrameLimiter is a token bucket for the frames of one control WebSocket
+// connection. The HTTP request-rate cap counts the upgrade once; after that a
+// connection could send frames — each up to wsMaxMessageBytes, many of them
+// written to disk — at whatever rate the socket allowed. Used only from the
+// connection's read loop, so it needs no locking.
+type wsFrameLimiter struct {
+	tokens float64
+	last   time.Time
+}
+
+func newWSFrameLimiter(now time.Time) *wsFrameLimiter {
+	return &wsFrameLimiter{tokens: wsFrameBurst, last: now}
+}
+
+// reserve charges one frame of size bytes and returns how long the caller must
+// wait before handling it (0 when the frame is within budget). The charge is
+// always taken, so the bucket may go negative; the wait is what repays it.
+func (l *wsFrameLimiter) reserve(now time.Time, size int) time.Duration {
+	if elapsed := now.Sub(l.last); elapsed > 0 {
+		l.tokens += elapsed.Seconds() * wsFrameRatePerSecond
+		if l.tokens > wsFrameBurst {
+			l.tokens = wsFrameBurst
+		}
+		l.last = now
+	}
+	l.tokens -= float64(1 + size/wsFrameCostUnit)
+	if l.tokens >= 0 {
+		return 0
+	}
+	return time.Duration(-l.tokens / wsFrameRatePerSecond * float64(time.Second))
+}
+
+// controlCallerTrusted reports whether the caller behind a control WebSocket
+// upgrade is one the dev OIDC issuer would serve: a verified Cloudflare Access
+// identity, an identified tailnet peer, or a request that can only have come
+// from this machine. Everything else — above all an unauthenticated tunnel
+// visitor, who can open this socket because checkWSOrigin trusts the bound
+// public URL — is refused the frames that write secrets or spend the
+// operator's API keys (secret_submit, voice_start).
+//
+// It reuses devOIDCCaller so the two surfaces cannot drift: the decision
+// comes from the listener and TCP peer the request arrived on, and a
+// client-supplied header can only take trust away.
+func (ps *ProxyServer) controlCallerTrusted(r *http.Request) bool {
+	if _, ok := AccessIdentityFrom(r.Context()); ok {
+		return true
+	}
+	caller := ps.devOIDCCaller(r)
+	return caller.Local || caller.TailnetLogin != ""
+}
 
 // errorHandler handles proxy errors.
 func (ps *ProxyServer) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
@@ -129,8 +189,13 @@ func (ps *ProxyServer) errorHandler(w http.ResponseWriter, r *http.Request, err 
 		},
 	})
 
-	// Record this connection attempt for the loading page history
+	// Record this connection attempt for the loading page history, and — for a
+	// genuine upstream failure — against the loading page's outage budget. A
+	// client that went away says nothing about the upstream.
 	ps.recordConnAttempt(diagEvent, userMsg)
+	if !isClientCanceled {
+		ps.noteUpstreamFailure(timestamp)
+	}
 
 	// For browser requests hitting a server that isn't up yet, serve a friendly
 	// loading page with auto-refresh instead of a cryptic error string.
@@ -152,6 +217,20 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer rawConn.Close()
+
+	// A counter makes the id unique per proxy; the clock alone does not (see
+	// wsConnSeq). The timestamp keeps ids distinct across proxy restarts.
+	connID := fmt.Sprintf("conn-%d-%d", time.Now().UnixNano(), ps.wsConnSeq.Add(1))
+
+	// Cleanup voice session on disconnect. Registered before the handler
+	// Wait below so it runs AFTER it: voice_start dials on a handler
+	// goroutine, and a session stored after this cleanup had run would never
+	// be closed.
+	defer func() {
+		if session, ok := ps.voiceSessions.LoadAndDelete(connID); ok {
+			session.(*VoiceSession).Close()
+		}
+	}()
 
 	// Track per-message handler goroutines so they cannot outlive the
 	// connection: the deferred Wait (registered after the Close defers, so
@@ -176,7 +255,6 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	defer handlerWG.Wait()
 
 	// Store connection for sending messages
-	connID := fmt.Sprintf("conn-%d", time.Now().UnixNano())
 	ps.wsConns.Store(connID, asyncConn)
 	debug.Log("proxy", "WebSocket client connected: proxy=%s connID=%s remote=%s", ps.ID, connID, r.RemoteAddr)
 
@@ -198,15 +276,9 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	}
 
 	defer func() {
-		ps.wsConns.Delete(connID)
+		// By identity: this close must retire this connection's entry only.
+		ps.wsConns.CompareAndDelete(connID, asyncConn)
 		debug.Log("proxy", "WebSocket client disconnected: proxy=%s connID=%s", ps.ID, connID)
-	}()
-
-	// Cleanup voice session on disconnect
-	defer func() {
-		if session, ok := ps.voiceSessions.LoadAndDelete(connID); ok {
-			session.(*VoiceSession).Close()
-		}
 	}()
 
 	// Per-connection dispatch state: captures map is written by the binary
@@ -217,7 +289,11 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		connID:       connID,
 		captures:     make(map[string]string),
 		spawnHandler: spawnHandler,
+		// Decided once, from the listener and connection the upgrade arrived
+		// on — never from anything a later frame says.
+		trusted: ps.controlCallerTrusted(r),
 	}
+	frames := newWSFrameLimiter(time.Now())
 
 	// Keepalive: a half-open connection (client vanished without a close frame)
 	// would otherwise block ReadMessage forever, leaking this goroutine and the
@@ -255,6 +331,28 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		// Active client → extend the read deadline so a steady telemetry stream is
 		// not disconnected between pings.
 		rawConn.SetReadDeadline(time.Now().Add(wsPongWait))
+
+		// Per-connection frame-rate cap. Over the cap the read loop waits,
+		// which pushes back on the sender through TCP instead of dropping a
+		// frame or multiplying work; the first wait is reported so a throttled
+		// page is not a silent failure.
+		if wait := frames.reserve(time.Now(), len(rawMessage)); wait > 0 {
+			if !connState.frameCapReported {
+				connState.frameCapReported = true
+				ps.logger.LogDiagnostic(ProxyDiagnostic{
+					Timestamp: time.Now(),
+					Level:     DiagnosticWarning,
+					Category:  "proxy",
+					Event:     "ws_frame_rate_capped",
+					Message:   fmt.Sprintf("proxy %s is slowing control WebSocket frames from %s: the per-connection frame-rate cap was exceeded", ps.ID, r.RemoteAddr),
+					Data:      map[string]any{"proxy_id": ps.ID, "conn_id": connID},
+				})
+			}
+			select {
+			case <-time.After(wait):
+			case <-r.Context().Done():
+			}
+		}
 
 		// Binary messages: voice audio or screenshot PNG bytes
 		if messageType == websocket.BinaryMessage {

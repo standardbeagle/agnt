@@ -4,8 +4,7 @@ import (
 	"encoding/json"
 	"sync"
 	"sync/atomic"
-
-	"github.com/gorilla/websocket"
+	"time"
 )
 
 // wsJSONWriter is the write side a control-plane handler (session/store/voice)
@@ -37,17 +36,25 @@ type wsWriter interface {
 //
 // The drain goroutine prefers the control lane when both are ready, so a
 // broadcast burst cannot starve a pending reply.
+//
+// Every write carries a deadline (wsWriteWait) when the conn supports one, and
+// Close closes the conn before it waits for the drain. Together they bound
+// teardown: a peer that stops reading used to park the drain in a kernel write
+// with no deadline, and Close — which waited for the drain before closing the
+// conn that would have unblocked it — hung with it, taking ProxyServer.Stop
+// (which holds ps.mu) and the connection's LimitListener slot along.
 type asyncWSWriter struct {
 	conn    wsWriter
 	ch      chan []byte
 	control chan wsControlFrame
 	msgType int
 
-	done    chan struct{} // closed by Close; unblocks senders and the drain loop
-	once    sync.Once
-	closed  atomic.Bool
-	dropped atomic.Int64
-	wg      sync.WaitGroup
+	done     chan struct{} // closed by Close; unblocks senders and the drain loop
+	once     sync.Once
+	closeErr error // result of the one conn.Close, set inside once
+	closed   atomic.Bool
+	dropped  atomic.Int64
+	wg       sync.WaitGroup
 }
 
 // wsControlFrame is a control-lane write plus the channel the drain goroutine
@@ -109,6 +116,7 @@ func (w *asyncWSWriter) writeControl(f wsControlFrame) {
 		f.errCh <- errConnClosed
 		return
 	}
+	w.armWriteDeadline()
 	err := w.conn.WriteMessage(w.msgType, f.data)
 	if err != nil {
 		w.closed.Store(true)
@@ -121,10 +129,27 @@ func (w *asyncWSWriter) writeBroadcast(msg []byte) {
 		w.dropped.Add(1)
 		return
 	}
+	w.armWriteDeadline()
 	if err := w.conn.WriteMessage(w.msgType, msg); err != nil {
 		// Connection gone — subsequent frames are discarded (broadcast) or
 		// failed (control) until Close.
 		w.closed.Store(true)
+	}
+}
+
+// wsWriteDeadliner is the optional deadline half of a wsWriter. The production
+// conn (*websocket.Conn) has it; test stubs may not.
+type wsWriteDeadliner interface {
+	SetWriteDeadline(t time.Time) error
+}
+
+// armWriteDeadline bounds the next frame write. Called only from the drain
+// goroutine, the sole data-frame writer. A write that misses the deadline
+// fails, which marks the writer closed; the read loop then ends on its own
+// deadline and tears the connection down.
+func (w *asyncWSWriter) armWriteDeadline() {
+	if d, ok := w.conn.(wsWriteDeadliner); ok {
+		_ = d.SetWriteDeadline(time.Now().Add(wsWriteWait))
 	}
 }
 
@@ -195,14 +220,20 @@ func (w *asyncWSWriter) WriteMessage(_ int, data []byte) error {
 }
 
 // Close stops the drain goroutine, fails any in-flight control writes, and
-// closes the underlying conn. Safe to call multiple times.
+// closes the underlying conn. Safe to call multiple times; every call returns
+// the result of the single underlying Close.
+//
+// The conn is closed BEFORE waiting for the drain: closing it is what unblocks
+// a drain parked in a write to a peer that is not reading. (gorilla permits
+// Close concurrently with a write.)
 func (w *asyncWSWriter) Close() error {
 	w.once.Do(func() {
 		w.closed.Store(true)
 		close(w.done)
+		w.closeErr = w.conn.Close()
 		w.wg.Wait()
 	})
-	return w.conn.Close()
+	return w.closeErr
 }
 
 // errConnClosed is returned by the write methods when the underlying
@@ -228,11 +259,6 @@ func connFromMap(value interface{}) wsWriter {
 	}
 	if w, ok := value.(wsWriter); ok {
 		return w
-	}
-	// Legacy path: bare *websocket.Conn stored directly (should not happen
-	// in production after this refactor, but kept for safety).
-	if c, ok := value.(*websocket.Conn); ok {
-		return c
 	}
 	return nil
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -260,10 +261,17 @@ func (d *Daemon) hubHandleIncidentsQuery(conn *hubpkg.Connection, cmd *hubproto.
 // exactly the page the caller will see. Doing the over-fetch here (rather than the
 // tool inflating Limit and truncating client-side) is what keeps the dropped record
 // from being marked read and swept past the cursor unseen.
+//
+// A ranked pull (see rankedIncidentPull) is the exception: it selects by
+// severity across the whole inbox, so the inbox is asked for every matching
+// entry and the hub does the limiting after ranking.
 func incidentQueryFilterToInternal(f protocol.IncidentQueryFilter) (incident.QueryFilter, error) {
 	limit := f.Limit
 	if limit > 0 {
 		limit++
+	}
+	if rankedIncidentPull(f) {
+		limit = 0
 	}
 	qf := incident.QueryFilter{Limit: limit}
 	for _, s := range f.Severities {
@@ -302,8 +310,16 @@ func buildIncidentQueryResultWithHydrator(entries []incident.InboxEntry, stats i
 	//
 	// Truncate before the secondary filters run: they can drop the surplus and
 	// hide the fact that the inbox had more matching entries.
+	//
+	// A ranked pull is selected differently (see rankedIncidentPull): `entries`
+	// is then the whole inbox, every one of them was examined, and the
+	// secondary filters run across all of it before anything is cut.
 	examined, truncated := examinedIncidentEntries(entries, filter)
 	filtered := returnedIncidentEntries(entries, filter)
+	if rankedIncidentPull(filter) {
+		examined, truncated = entries, false
+		filtered = applySecondaryFilters(entries, filter)
+	}
 
 	// The profile projection runs here, hub-side, so the cursor and (in the
 	// mark_read path) the read-set cover exactly the rendered rows. Rows the
@@ -446,12 +462,65 @@ func returnedIncidentEntries(entries []incident.InboxEntry, filter protocol.Inci
 	return applySecondaryFilters(examined, filter)
 }
 
-// profiledIncidentEntries is the full hub-side selection pipeline: truncation
-// page → secondary filters → profile projection. The mark-read callback and
-// the result builder share it so the read-set and the rendered set cannot
-// drift apart.
+// rankedIncidentPull reports whether a query is answered by ranking the whole
+// inbox instead of paging it: a pull with no cursor under a triage profile
+// (bug / changed / release — `bug` is what the tool sends by default).
+//
+// Paging keeps the OLDEST Limit entries so that successive `since=cursor` pulls
+// sweep the inbox gap-free. That is right for a sweep and wrong for the call an
+// agent actually makes when it is pinged: `get_incidents {}` has no cursor, so
+// it re-read the same oldest page forever — a fresh error was absent once 20
+// older entries existed, and a `process_id` filter saw nothing newer than that
+// page. A cursor-less triage pull therefore answers "what matters most right
+// now": secondary filters across every entry, then severity order (newest
+// first within a severity), then the limit.
+//
+// The legacy identity profile ("" / full) and every pull that carries a cursor
+// keep the oldest-page semantics unchanged.
+func rankedIncidentPull(filter protocol.IncidentQueryFilter) bool {
+	return filter.Since == "" && incident.ProfileActive(filter.Profile)
+}
+
+func incidentSeverityRank(s incident.Severity) int {
+	switch s {
+	case incident.SeverityCritical:
+		return 0
+	case incident.SeverityError:
+		return 1
+	case incident.SeverityWarning:
+		return 2
+	default:
+		return 3
+	}
+}
+
+// profiledIncidentEntries is the full hub-side selection pipeline. The
+// mark-read callback and the result builder share it so the read-set and the
+// rendered set cannot drift apart.
+//
+//   - paged (cursor, or legacy profile): truncation page → secondary filters →
+//     profile projection.
+//   - ranked (rankedIncidentPull): secondary filters over every entry →
+//     severity order → profile projection → limit.
 func profiledIncidentEntries(entries []incident.InboxEntry, filter protocol.IncidentQueryFilter) ([]incident.InboxEntry, error) {
-	return incident.ApplyProfile(returnedIncidentEntries(entries, filter), filter.Profile)
+	if !rankedIncidentPull(filter) {
+		return incident.ApplyProfile(returnedIncidentEntries(entries, filter), filter.Profile)
+	}
+	matched := applySecondaryFilters(entries, filter)
+	ranked := make([]incident.InboxEntry, len(matched))
+	copy(ranked, matched)
+	// entries arrive newest-first; a stable sort keeps that within a severity.
+	sort.SliceStable(ranked, func(i, j int) bool {
+		return incidentSeverityRank(ranked[i].Severity) < incidentSeverityRank(ranked[j].Severity)
+	})
+	projected, err := incident.ApplyProfile(ranked, filter.Profile)
+	if err != nil {
+		return nil, err
+	}
+	if filter.Limit > 0 && len(projected) > filter.Limit {
+		projected = projected[:filter.Limit]
+	}
+	return projected, nil
 }
 
 // applySecondaryFilters narrows entries by Sources, ProxyID, ProcessID, and Fingerprints

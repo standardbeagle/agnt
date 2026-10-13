@@ -202,3 +202,141 @@ func TestManagedTreeChecker_ProtectsDescendants(t *testing.T) {
 		t.Fatalf("protected = %v, want only the managed grandchild %d", got, grandchild)
 	}
 }
+
+// Where the vendored port lookup also matches processes merely connected to
+// the port (macOS: `lsof -ti :PORT`), the guard approved the kill on the
+// listener set and the vendored kill then took the broad set — including a
+// browser with the dev server open. On that path the daemon must signal
+// exactly the listeners its own scan returned and never hand the port to the
+// broad kill.
+func TestKillPortHolders_ExactPathKillsOnlyListeners(t *testing.T) {
+	forceWindowsPIDsLocal(t, false)
+	const self, listener, browser = 100, 300, 400
+	broad := []int{listener, browser} // what `lsof -ti :PORT` would return
+
+	var signalled []int
+	broadKillFired := false
+	ops := portKillOps{
+		listeners:   func(context.Context, int) ([]int, []int) { return []int{listener, listener}, nil },
+		self:        self,
+		isProtected: func(int) bool { return false },
+		exact:       true,
+		killByPort: func(context.Context, int) ([]int, error) {
+			broadKillFired = true
+			return broad, nil
+		},
+		killPID: func(pid int) error {
+			signalled = append(signalled, pid)
+			return nil
+		},
+	}
+
+	killed, protected, err := killPortHolders(context.Background(), 5173, ops)
+	if err != nil || len(protected) != 0 {
+		t.Fatalf("killPortHolders: killed=%v protected=%v err=%v", killed, protected, err)
+	}
+	if broadKillFired {
+		t.Fatal("the exact path must not delegate to the vendored kill, which re-discovers holders with the broad lookup")
+	}
+	if len(signalled) != 1 || signalled[0] != listener {
+		t.Fatalf("signalled %v, want exactly the listener [%d]", signalled, listener)
+	}
+	for _, pid := range signalled {
+		if pid == browser {
+			t.Fatalf("a client of the port (pid %d) was signalled", browser)
+		}
+	}
+	if len(killed) != 1 || killed[0] != listener {
+		t.Fatalf("killed = %v, want [%d]", killed, listener)
+	}
+}
+
+// Every refusal the guard makes still holds on the exact path: the daemon
+// itself, a managed PID, or a descendant of one holding the port means nothing
+// is signalled at all.
+func TestKillPortHolders_ExactPathHonoursRefusals(t *testing.T) {
+	forceWindowsPIDsLocal(t, false)
+	const self, managedChild, stranger = 100, 250, 300
+
+	for name, holders := range map[string][]int{
+		"daemon itself":           {self, stranger},
+		"managed or its subtree":  {managedChild, stranger},
+		"both, stranger in front": {stranger, managedChild, self},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fired := false
+			ops := portKillOps{
+				listeners:   func(context.Context, int) ([]int, []int) { return holders, nil },
+				self:        self,
+				isProtected: func(pid int) bool { return pid == managedChild },
+				exact:       true,
+				killByPort:  func(context.Context, int) ([]int, error) { fired = true; return nil, nil },
+				killPID:     func(int) error { fired = true; return nil },
+			}
+			killed, protected, err := killPortHolders(context.Background(), 5173, ops)
+			if err != nil {
+				t.Fatalf("err = %v", err)
+			}
+			if fired || len(killed) != 0 {
+				t.Fatalf("a protected holder must stop the whole kill; killed=%v fired=%v", killed, fired)
+			}
+			if len(protected) == 0 {
+				t.Fatal("the protected PIDs must be returned so the caller can report the skip")
+			}
+		})
+	}
+}
+
+// Off the broad-lookup hosts nothing changes: the vendored kill still does the
+// work (it also signals descendants), and no PID is signalled directly.
+func TestKillPortHolders_DelegatesWhereVendoredLookupIsListenerOnly(t *testing.T) {
+	forceWindowsPIDsLocal(t, false)
+	direct := false
+	ops := portKillOps{
+		listeners:   func(context.Context, int) ([]int, []int) { return []int{300}, nil },
+		self:        100,
+		isProtected: func(int) bool { return false },
+		exact:       false,
+		killByPort:  func(context.Context, int) ([]int, error) { return []int{300}, nil },
+		killPID:     func(int) error { direct = true; return nil },
+	}
+	killed, _, err := killPortHolders(context.Background(), 5173, ops)
+	if err != nil || len(killed) != 1 || killed[0] != 300 || direct {
+		t.Fatalf("killed=%v err=%v direct=%v, want the vendored kill's result and no direct signal", killed, err, direct)
+	}
+}
+
+// A failed signal is reported with its PID, and the listeners that did die are
+// still returned.
+func TestKillPortHolders_ExactPathReportsPerPIDFailure(t *testing.T) {
+	forceWindowsPIDsLocal(t, false)
+	ops := portKillOps{
+		listeners:   func(context.Context, int) ([]int, []int) { return []int{300, 301}, nil },
+		self:        100,
+		isProtected: func(int) bool { return false },
+		exact:       true,
+		killPID: func(pid int) error {
+			if pid == 301 {
+				return fmt.Errorf("operation not permitted")
+			}
+			return nil
+		},
+	}
+	killed, _, err := killPortHolders(context.Background(), 5173, ops)
+	if len(killed) != 1 || killed[0] != 300 {
+		t.Fatalf("killed = %v, want [300]", killed)
+	}
+	if err == nil || !strings.Contains(err.Error(), "pid 301") {
+		t.Fatalf("err = %v, want it to name pid 301", err)
+	}
+}
+
+func TestPortKillTargets(t *testing.T) {
+	got := portKillTargets([]int{300, 0, 1, 100, 300, -5, 301}, 100)
+	if len(got) != 2 || got[0] != 300 || got[1] != 301 {
+		t.Fatalf("portKillTargets = %v, want [300 301] (no self, init, non-PIDs or repeats)", got)
+	}
+	if got := portKillTargets(nil, 100); got != nil {
+		t.Fatalf("portKillTargets(nil) = %v, want nil", got)
+	}
+}

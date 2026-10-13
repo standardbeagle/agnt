@@ -4,12 +4,15 @@ package tunnel
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"os/exec"
 	"regexp"
 	"runtime"
+	"strconv"
 	"strings"
 
 	"github.com/standardbeagle/agnt/internal/config"
@@ -215,10 +218,21 @@ func (t *Tunnel) Stop(ctx context.Context) error {
 		cancel()
 	}
 
-	if cmd != nil && cmd.Process != nil {
-		// Send interrupt first for graceful shutdown
-		if err := cmd.Process.Kill(); err != nil {
-			return fmt.Errorf("failed to kill tunnel process: %w", err)
+	if cmd != nil && cmd.Process != nil && !t.exited() {
+		// A process that has already exited (it crashed, or the cancel above
+		// got there first) is the outcome Stop wants, not a failure to stop.
+		// The error for that is not portable — os.ErrProcessDone on Unix, a
+		// raw "invalid argument" or "access denied" on Windows depending on
+		// whether it has been reaped — so the test is whether the process is
+		// in fact gone, which the wait goroutine reports by closing done.
+		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			select {
+			case <-t.done:
+			case <-time.After(killExitGrace):
+				return fmt.Errorf("failed to kill tunnel process: %w", err)
+			case <-ctx.Done():
+				return fmt.Errorf("failed to kill tunnel process: %w", err)
+			}
 		}
 	}
 
@@ -231,6 +245,20 @@ func (t *Tunnel) Stop(ctx context.Context) error {
 
 	t.setState(StateStopped)
 	return nil
+}
+
+// killExitGrace is how long Stop waits for a process whose Kill failed to
+// turn out to have exited on its own.
+const killExitGrace = time.Second
+
+// exited reports whether the tunnel process has been reaped (done is closed).
+func (t *Tunnel) exited() bool {
+	select {
+	case <-t.done:
+		return true
+	default:
+		return false
+	}
 }
 
 // State returns the current tunnel state.
@@ -459,20 +487,59 @@ func checkCredentialsFile(path string) error {
 const cloudflaredRegistered = "Registered tunnel connection"
 
 func (t *Tunnel) parseCloudflareOutput(r io.Reader) {
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		line := scanner.Text()
+	forEachLine(r, func(line string) {
 		if named := t.config.Named; named != nil {
 			if strings.Contains(line, cloudflaredRegistered) && t.PublicURL() == "" {
 				t.setPublicURL("https://" + named.Hostname)
 				t.markConnected()
 			}
-			continue
+			return
 		}
 		if match := cloudflareURLPattern.FindString(line); match != "" {
 			t.setPublicURL(match)
 			t.markConnected()
 		}
+	})
+}
+
+// maxTunnelLineBytes is the longest provider output line that is parsed.
+const maxTunnelLineBytes = 64 << 10
+
+// forEachLine calls fn for every line of a tunnel child's output, and keeps
+// reading until the stream ends.
+//
+// Draining to the end is the point. The child writes to a pipe; once nobody
+// reads it the pipe fills and the child blocks in its next log write, which
+// stalls the tunnel. bufio.Scanner stops for good at the first line over its
+// 64 KiB limit, which did exactly that. Here a line over maxTunnelLineBytes is
+// discarded whole, up to its newline — never parsed as a truncated head, and
+// its tail never handed to fn as if it were a fresh line — and reading goes on
+// with the next one. Nothing of an over-long line is buffered past the cap.
+func forEachLine(r io.Reader, fn func(line string)) {
+	br := bufio.NewReader(r)
+	var line []byte
+	discarding := false
+	for {
+		chunk, isPrefix, err := br.ReadLine()
+		if err != nil {
+			return
+		}
+		if !discarding {
+			if len(line)+len(chunk) > maxTunnelLineBytes {
+				discarding = true
+				line = line[:0]
+			} else {
+				line = append(line, chunk...)
+			}
+		}
+		if isPrefix {
+			continue
+		}
+		if !discarding {
+			fn(string(line))
+		}
+		line = line[:0]
+		discarding = false
 	}
 }
 
@@ -497,7 +564,7 @@ func (t *Tunnel) startNgrok(ctx context.Context) error {
 		return err
 	}
 
-	cmd := exec.CommandContext(ctx, binary, "http", fmt.Sprintf("%d", t.config.LocalPort))
+	cmd := exec.CommandContext(ctx, binary, "http", ngrokTarget(t.config.LocalHost, t.config.LocalPort))
 
 	// ngrok outputs to stdout
 	stdout, err := cmd.StdoutPipe()
@@ -538,15 +605,35 @@ func (t *Tunnel) startNgrok(ctx context.Context) error {
 	return nil
 }
 
+// isLoopbackHost reports whether host is this machine's loopback, as a name or
+// an address. An empty host counts: New defaults it to "localhost".
+func isLoopbackHost(host string) bool {
+	host = strings.Trim(host, "[]")
+	if host == "" || strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+// ngrokTarget is the forwarding target for `ngrok http`: the bare port for a
+// loopback host (the form this always used), host:port for any other, so a
+// configured LocalHost is forwarded to rather than silently replaced by
+// localhost.
+func ngrokTarget(host string, port int) string {
+	if isLoopbackHost(host) {
+		return strconv.Itoa(port)
+	}
+	return net.JoinHostPort(strings.Trim(host, "[]"), strconv.Itoa(port))
+}
+
 func (t *Tunnel) parseNgrokOutput(r io.Reader) {
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		line := scanner.Text()
+	forEachLine(r, func(line string) {
 		if match := ngrokURLPattern.FindString(line); match != "" {
 			t.setPublicURL(match)
 			t.markConnected()
 		}
-	}
+	})
 }
 
 // tailscale serve output patterns
@@ -570,6 +657,18 @@ func (t *Tunnel) startTailscale(ctx context.Context) error {
 
 	if _, err := exec.LookPath(binary); err != nil {
 		err = fmt.Errorf("tailscale not found in PATH: %w", err)
+		t.setState(StateFailed)
+		t.setError(err)
+		t.closeDone()
+		return err
+	}
+
+	// `tailscale serve <port>` forwards to this machine's loopback. A LocalHost
+	// that is not loopback cannot be honoured by that form, and used to be
+	// dropped without a word — the tunnel came up pointing at localhost
+	// instead. Refuse it, so the configuration either works or says why.
+	if !isLoopbackHost(t.config.LocalHost) {
+		err := fmt.Errorf("tailscale serve forwards to localhost only; local host %q is not supported (use cloudflare or ngrok for a non-local target)", t.config.LocalHost)
 		t.setState(StateFailed)
 		t.setError(err)
 		t.closeDone()
@@ -648,12 +747,10 @@ func (t *Tunnel) startTailscale(ctx context.Context) error {
 }
 
 func (t *Tunnel) parseTailscaleOutput(r io.Reader) {
-	scanner := bufio.NewScanner(r)
-	for scanner.Scan() {
-		line := scanner.Text()
+	forEachLine(r, func(line string) {
 		if match := tailscaleURLPattern.FindString(line); match != "" {
 			t.setPublicURL(match)
 			t.markConnected()
 		}
-	}
+	})
 }

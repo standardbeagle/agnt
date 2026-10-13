@@ -3,9 +3,12 @@
 package platform
 
 import (
+	"errors"
 	"os/exec"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/windows"
 )
 
 // TestCreateSessionJobObject_Smoke is the minimum compile-time guarantee
@@ -37,6 +40,76 @@ func TestKillSessionJobObject_ZeroHandleIsNoop(t *testing.T) {
 	}
 }
 
+// TestKillSessionJobObject_RefusesForeignHandle pins the cross-process
+// handle bug: a handle value this process did not get from
+// CreateSessionJobObject (here a real job object opened behind its back,
+// standing in for a number that arrived over IPC) must be neither
+// terminated nor closed. The child assigned to it has to survive, and the
+// handle has to still be open afterwards.
+func TestKillSessionJobObject_RefusesForeignHandle(t *testing.T) {
+	foreign, err := windows.CreateJobObject(nil, nil)
+	if err != nil {
+		t.Fatalf("CreateJobObject: %v", err)
+	}
+	closed := false
+	defer func() {
+		if !closed {
+			_ = windows.CloseHandle(foreign)
+		}
+	}()
+
+	// ping, not `timeout`: timeout exits at once when stdin is not a console,
+	// which would make "the child survived" unobservable.
+	cmd := exec.Command("ping", "-n", "30", "127.0.0.1")
+	if err := cmd.Start(); err != nil {
+		t.Skipf("cannot spawn child (%v); skipping", err)
+	}
+	exited := make(chan struct{})
+	go func() { _ = cmd.Wait(); close(exited) }()
+	defer func() { _ = cmd.Process.Kill(); <-exited }()
+
+	proc, err := windows.OpenProcess(windows.PROCESS_SET_QUOTA|windows.PROCESS_TERMINATE, false, uint32(cmd.Process.Pid))
+	if err != nil {
+		t.Fatalf("OpenProcess: %v", err)
+	}
+	err = windows.AssignProcessToJobObject(foreign, proc)
+	_ = windows.CloseHandle(proc)
+	if err != nil {
+		t.Fatalf("AssignProcessToJobObject: %v", err)
+	}
+
+	err = KillSessionJobObject(uintptr(foreign))
+	if !errors.Is(err, ErrForeignJobHandle) {
+		t.Fatalf("KillSessionJobObject(foreign) = %v, want ErrForeignJobHandle", err)
+	}
+
+	select {
+	case <-exited:
+		t.Fatal("child in a foreign job was terminated")
+	case <-time.After(500 * time.Millisecond):
+	}
+	// Still open: a handle that had been closed would fail here.
+	if err := windows.CloseHandle(foreign); err != nil {
+		t.Fatalf("foreign handle was closed by KillSessionJobObject: %v", err)
+	}
+	closed = true
+}
+
+// TestReleaseSessionJobObject_ForgetsHandle checks a released handle is no
+// longer owned, so a later kill on the same (recyclable) number is refused.
+func TestReleaseSessionJobObject_ForgetsHandle(t *testing.T) {
+	job, err := CreateSessionJobObject()
+	if err != nil {
+		t.Fatalf("CreateSessionJobObject: %v", err)
+	}
+	if err := ReleaseSessionJobObject(job); err != nil {
+		t.Fatalf("ReleaseSessionJobObject: %v", err)
+	}
+	if err := KillSessionJobObject(uintptr(job)); !errors.Is(err, ErrForeignJobHandle) {
+		t.Fatalf("KillSessionJobObject after release = %v, want ErrForeignJobHandle", err)
+	}
+}
+
 // TestSessionJobObject_KillsAssignedChild is the full end-to-end
 // containment test. It creates a job object, spawns a long-lived
 // child, assigns the child to the job, then calls
@@ -57,7 +130,9 @@ func TestSessionJobObject_KillsAssignedChild(t *testing.T) {
 	// /t 30 /nobreak` is a stock Windows command shipped with
 	// every recent Windows SKU. If it isn't available the test
 	// skips cleanly after closing the job handle so nothing leaks.
-	cmd := exec.Command("cmd.exe", "/c", "timeout /t 30 /nobreak > NUL")
+	// (ping rather than `timeout`, which exits immediately without a
+	// console stdin and so proved nothing about the kill.)
+	cmd := exec.Command("ping", "-n", "30", "127.0.0.1")
 	if err := cmd.Start(); err != nil {
 		_ = KillSessionJobObject(uintptr(job))
 		t.Skipf("cannot spawn child (%v); skipping containment assertion", err)

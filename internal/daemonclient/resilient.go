@@ -352,7 +352,9 @@ func (rc *ResilientClient) InvestigationGet(sessionCode string) (*protocol.Inves
 
 // InvestigationMerge applies patch to the session's investigation record.
 func (rc *ResilientClient) InvestigationMerge(sessionCode string, patch protocol.InvestigationPatch) (*protocol.InvestigationResult, error) {
-	return withResult(rc, func(c *Client) (*protocol.InvestigationResult, error) { return c.InvestigationMerge(sessionCode, patch) })
+	return withResult(rc, func(c *Client) (*protocol.InvestigationResult, error) {
+		return c.InvestigationMerge(sessionCode, patch)
+	})
 }
 
 // ProxyLogStats gets proxy log statistics.
@@ -543,10 +545,10 @@ func (rc *ResilientClient) SessionRegisterWithPGID(code, overlayPath, projectPat
 	return rc.SessionRegisterWithContainment(code, overlayPath, projectPath, command, args, sessionPGID, 0)
 }
 
-// SessionRegisterWithContainment registers a new session and reports
-// both the Unix session pgid and the Windows Job Object handle for the
-// PTY child subtree. See Client.SessionRegisterWithContainment for
-// platform semantics.
+// SessionRegisterWithContainment registers a new session and reports the
+// Unix session pgid of the PTY child subtree. sessionJobHandle is a
+// legacy wire field, passed as 0. See
+// Client.SessionRegisterWithContainment.
 func (rc *ResilientClient) SessionRegisterWithContainment(code, overlayPath, projectPath, command string, args []string, sessionPGID int, sessionJobHandle uint64) (map[string]interface{}, error) {
 	return withResult(rc, func(c *Client) (map[string]interface{}, error) {
 		return c.SessionRegisterWithContainment(code, overlayPath, projectPath, command, args, sessionPGID, sessionJobHandle)

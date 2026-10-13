@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/httpcaps"
 	"github.com/standardbeagle/agnt/internal/publish"
 	"github.com/standardbeagle/agnt/internal/tunnel"
 )
@@ -22,29 +23,46 @@ func (ps *ProxyServer) Stop(ctx context.Context) error {
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 
-	if !ps.running.Load() {
+	wasRunning, err := ps.teardownLocked(ctx)
+	if !wasRunning {
 		debug.Log("proxy", "Stop: proxy %s not running", ps.ID)
-		// Still release the page-tracker actor: a proxy that failed to start
-		// or was already stopped must not leak its owner goroutine.
-		ps.pageTracker.Stop()
-		// Deterministically reclaim the async onLogEntry worker. A proxy the
-		// daemon registered a callback on (SetOnLogEntry) but that never ran —
-		// or that is being stopped a second time — must not leak the dispatcher
-		// goroutine to the finalizer backstop. Close() is nil-safe/idempotent.
-		ps.logger.Close()
 		return fmt.Errorf("proxy server not running")
 	}
+	return err
+}
+
+// teardown releases everything the proxy owns, whatever state it is in. It is
+// Stop without the "not running" error, for callers retiring a crashed proxy.
+func (ps *ProxyServer) teardown(ctx context.Context) {
+	ps.mu.Lock()
+	defer ps.mu.Unlock()
+	_, _ = ps.teardownLocked(ctx)
+}
+
+// teardownLocked is the body of Stop. ps.mu must be held.
+//
+// It runs in full regardless of `running`, which is status only: runServer
+// clears it when Serve returns unexpectedly, and a proxy in that state still
+// owns its context (health probe, restart loop), its named tunnel and
+// cloudflared child, and every hijacked WebSocket connection. Returning early
+// on !running left all of those alive behind a proxy the manager had already
+// deregistered — and a Stop landing in the restart backoff let runServer
+// rebind and serve again. Every step is idempotent, so a second Stop is safe.
+func (ps *ProxyServer) teardownLocked(ctx context.Context) (wasRunning bool, err error) {
+	wasRunning = ps.running.Load()
 
 	// Stop tunnel first
 	if n := ps.tunnel.Swap(nil); n != nil {
 		n.stop()
 	}
 
+	// Cancelling under ps.mu is what stops a pending auto-restart: runServer
+	// re-checks the context under the same lock before it publishes a rebound
+	// server.
 	if ps.cancelFunc != nil {
 		ps.cancelFunc()
 	}
 
-	var err error
 	if srv := ps.httpServer.Load(); srv != nil {
 		err = srv.Shutdown(ctx)
 	}
@@ -61,15 +79,13 @@ func (ps *ProxyServer) Stop(ctx context.Context) error {
 				debug.Log("proxy", "error closing WS conn during shutdown of proxy %s: %v", ps.ID, err)
 			}
 		}
-		ps.wsConns.Delete(key)
+		ps.wsConns.CompareAndDelete(key, value)
 		return true
 	})
 
 	// Release idle backend connections so the pool does not keep half-open
 	// sockets to a backend that may itself be restarting.
-	if ps.baseTransport != nil {
-		ps.baseTransport.CloseIdleConnections()
-	}
+	ps.closeIdleBackendConns()
 
 	// Stop the page-tracker actor goroutine after the HTTP server has drained
 	// (no more TrackHTTPRequest senders).
@@ -77,19 +93,23 @@ func (ps *ProxyServer) Stop(ctx context.Context) error {
 
 	// Mirror the proxy_started diagnostic (server.go Start) so STREAM-EVENTS
 	// consumers can tear down a forward event-driven rather than only on the
-	// next periodic PROXY LIST poll.
-	ps.logger.LogDiagnostic(ProxyDiagnostic{
-		Timestamp: time.Now(),
-		Level:     DiagnosticInfo,
-		Category:  "proxy",
-		Event:     "proxy_stopped",
-		Message:   fmt.Sprintf("proxy %s stopped", ps.ID),
-		Target:    ps.ListenAddr,
-		Data: map[string]any{
-			"proxy_id":    ps.ID,
-			"listen_addr": ps.ListenAddr,
-		},
-	})
+	// next periodic PROXY LIST poll. Once per started proxy: a crashed proxy
+	// announced its start too, and a repeated Stop must not announce twice.
+	if ps.started && !ps.stopAnnounced {
+		ps.stopAnnounced = true
+		ps.logger.LogDiagnostic(ProxyDiagnostic{
+			Timestamp: time.Now(),
+			Level:     DiagnosticInfo,
+			Category:  "proxy",
+			Event:     "proxy_stopped",
+			Message:   fmt.Sprintf("proxy %s stopped", ps.ID),
+			Target:    ps.ListenAddr,
+			Data: map[string]any{
+				"proxy_id":    ps.ID,
+				"listen_addr": ps.ListenAddr,
+			},
+		})
+	}
 
 	// Deterministically reclaim the async onLogEntry worker goroutine now that
 	// the proxy is fully torn down, rather than waiting on the finalizer
@@ -99,7 +119,7 @@ func (ps *ProxyServer) Stop(ctx context.Context) error {
 	// and a no-op when no callback was ever registered.
 	ps.logger.Close()
 
-	return err
+	return wasRunning, err
 }
 
 // IsRunning returns true if the proxy is running.
@@ -115,15 +135,15 @@ func (ps *ProxyServer) TunnelURL() string {
 	return ""
 }
 
-// HasTunnel returns true if the proxy declares its own tunnel.
-func (ps *ProxyServer) HasTunnel() bool {
-	return ps.namedTunnelSetup != nil
-}
-
 // IsTunnelRunning returns true if the proxy's own tunnel is connected.
 func (ps *ProxyServer) IsTunnelRunning() bool {
 	n := ps.tunnel.Load()
 	return n != nil && n.tun.State() == tunnel.StateConnected
+}
+
+// HasTunnel returns true if the proxy declares its own tunnel.
+func (ps *ProxyServer) HasTunnel() bool {
+	return ps.namedTunnelSetup != nil
 }
 
 // Logger returns the traffic logger.
@@ -229,8 +249,28 @@ func (ps *ProxyServer) GetStatusURL() string {
 
 // SetSessionClientFactory sets the factory for creating session clients.
 // This is used by the browser session API to communicate with the daemon.
+//
+// The factory's clients must be bound to this proxy's project: the browser
+// never chooses a scope (see ws_session.go), so whatever the client can reach
+// is what a page on this proxy can reach. Safe to call while serving; nil
+// removes it.
 func (ps *ProxyServer) SetSessionClientFactory(factory SessionClientFactory) {
-	ps.sessionClientFactory = factory
+	if factory == nil {
+		ps.sessionClientFactory.Store(nil)
+		return
+	}
+	ps.sessionClientFactory.Store(&factory)
+}
+
+// sessionClient builds a client for one browser session/store request. ok is
+// false when no factory is installed.
+func (ps *ProxyServer) sessionClient() (client SessionClient, ok bool, err error) {
+	factory := ps.sessionClientFactory.Load()
+	if factory == nil {
+		return nil, false, nil
+	}
+	client, err = (*factory)()
+	return client, true, err
 }
 
 // OverlayNotifier returns the overlay notifier for direct access.
@@ -242,21 +282,31 @@ func (ps *ProxyServer) OverlayNotifier() *OverlayNotifier {
 // connections to the backend. Call this when the backend restarts so requests
 // don't hang on half-open TCP connections waiting for the OS timeout.
 func (ps *ProxyServer) FlushConnections() {
-	if ps.baseTransport == nil {
+	// Each pool is swapped behind its own atomic pointer (swapTransport), so
+	// this is safe against in-flight RoundTrips and against itself — a backend
+	// restart fails many requests at once and each calls here. The wrappers
+	// (chaos, TLS fallback and its skipped state) are left in place: replacing
+	// the chain with a bare clone dropped the TLS fallback, after which a
+	// self-signed backend failed verification until the proxy was recreated.
+	switch {
+	case ps.tlsFallback != nil:
+		ps.tlsFallback.flush()
+	case ps.baseTransport != nil:
+		ps.baseTransport.flush()
+	default:
 		return
 	}
-	// Clone the transport to get a fresh connection pool while preserving
-	// all dial/TLS/timeout settings. The old transport's connections (including
-	// in-flight ones) will be closed when they next attempt I/O.
-	newTransport := ps.baseTransport.Clone()
-	ps.baseTransport.CloseIdleConnections()
-	ps.baseTransport = newTransport
-
-	// Update the chaos transport wrapper to use the new base transport
-	if ct, ok := ps.proxy.Transport.(*ChaosTransport); ok {
-		ct.underlying = newTransport
-	}
 	debug.Log("proxy", "Replaced transport for proxy %s (flushed all connections)", ps.ID)
+}
+
+// closeIdleBackendConns releases idle backend connections on every pool.
+func (ps *ProxyServer) closeIdleBackendConns() {
+	if ps.tlsFallback != nil {
+		ps.tlsFallback.closeIdle()
+	}
+	if ps.baseTransport != nil {
+		ps.baseTransport.closeIdle()
+	}
 }
 
 // SetDependencies registers the set of dependency names the proxy
@@ -474,7 +524,7 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 			ID:             reqID,
 			Timestamp:      startTime,
 			Method:         r.Method,
-			URL:            r.URL.String(),
+			URL:            publish.ScrubSharePath(r.URL.String()),
 			RequestHeaders: reqHeaders,
 			StatusCode:     http.StatusServiceUnavailable,
 			ResponseBody:   `{"error":"` + ReadinessSentinel + `","pending":` + formatPendingJSON(pending) + `}`,
@@ -513,7 +563,18 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		reqBody = fmt.Sprintf("[request body not captured: %d bytes exceeds %dKB cap]",
 			r.ContentLength, maxRecordedBody/1024)
 	default:
+		// This listener has no whole-request read deadline (it streams — see
+		// httpcaps.Streaming), so bound this one buffered read: a client that
+		// declares a small body and never sends it would otherwise hold the
+		// handler, and its connection slot, for as long as it liked. The
+		// deadline is lifted again before the request is forwarded. A writer
+		// that cannot take a deadline (a test recorder) is left as it was.
+		rc := http.NewResponseController(w)
+		deadlineSet := rc.SetReadDeadline(time.Now().Add(requestBodyCaptureTimeout)) == nil
 		bodyBytes, err := io.ReadAll(r.Body)
+		if deadlineSet {
+			_ = rc.SetReadDeadline(time.Time{})
+		}
 		if err != nil {
 			// The body is partially consumed; forwarding it with the original
 			// Content-Length intact would leave the backend waiting for bytes
@@ -544,7 +605,7 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 			ID:             reqID,
 			Timestamp:      startTime,
 			Method:         r.Method,
-			URL:            r.URL.String(),
+			URL:            publish.ScrubSharePath(r.URL.String()),
 			RequestHeaders: reqHeaders,
 			StatusCode:     http.StatusSwitchingProtocols,
 			Duration:       0,
@@ -573,7 +634,7 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 			ID:                reqID,
 			Timestamp:         startTime,
 			Method:            r.Method,
-			URL:               r.URL.String(),
+			URL:               publish.ScrubSharePath(r.URL.String()),
 			RequestHeaders:    reqHeaders,
 			RequestBody:       reqBody,
 			StatusCode:        errorCode,
@@ -672,6 +733,11 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 // per-request buffer without bound (previously the whole body was buffered and
 // truncated only afterwards — an OOM vector).
 const maxRecordedBody = 10 * 1024
+
+// requestBodyCaptureTimeout bounds the read of a small request body that
+// handleProxy buffers for the traffic log (under maxRecordedBody bytes, so
+// this is generous for any real client).
+const requestBodyCaptureTimeout = httpcaps.DefaultReadTimeout
 
 // responseRecorder captures response data for logging.
 type responseRecorder struct {

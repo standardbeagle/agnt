@@ -215,3 +215,38 @@ func TestParseProcNetTCPLine_PortRoundsCorrectly(t *testing.T) {
 		assert.Equal(t, want, port, "hex %s must decode big-endian to %d", hexPort, want)
 	}
 }
+
+// The macOS port-owner lookup must select LISTENING TCP sockets on the port
+// and AND its criteria together. `lsof -ti :PORT` (the previous form) also
+// matched clients and remote-port matches, and those PIDs were killed as
+// "port blockers".
+func TestLsofListenerArgs_ListenersOnly(t *testing.T) {
+	args := lsofListenerArgs(3000)
+	joined := strings.Join(args, " ")
+	for _, want := range []string{"-a", "-iTCP:3000", "-sTCP:LISTEN", "-t"} {
+		found := false
+		for _, a := range args {
+			if a == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("lsof args %q missing %q", joined, want)
+		}
+	}
+	for _, a := range args {
+		if a == "-ti" || a == ":3000" {
+			t.Errorf("lsof args %q still use the any-socket form (%q)", joined, a)
+		}
+	}
+}
+
+func TestParseLsofPIDs(t *testing.T) {
+	got := parseLsofPIDs([]byte("123\n456\n123\n\nnot-a-pid\n0\n"))
+	if len(got) != 2 || got[0] != 123 || got[1] != 456 {
+		t.Fatalf("parseLsofPIDs = %v, want [123 456]", got)
+	}
+	if parseLsofPIDs(nil) != nil {
+		t.Fatal("empty output must yield nil")
+	}
+}

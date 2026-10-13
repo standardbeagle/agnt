@@ -24,11 +24,11 @@ for an explicit audit request, not routine debugging.
 | Tool | Description |
 |------|-------------|
 | `detect` | Detect project type (Go/Node/Python) + scripts |
-| `run` | Run scripts/commands (background/foreground/foreground-raw) |
-| `proc` | Process management (status, output, stop, list, cleanup_port) |
+| `run` | Run scripts/commands (background/foreground/foreground-raw). Returns a project-scoped `process_id` (`myapp-1a2b3c4d:dev`) and the short `name` (`dev`); `proc` accepts either from the same project |
+| `proc` | Process management (status, output, find, stop, restart, list, cleanup_port, autorestart, scripts, script_output, script_history, run, run_group, snapshot, wait) |
 | `proxy` | Reverse proxy (start, stop, restart, status, list, exec, navigate, resize, toast, chaos) |
 | `proxylog` | Query proxy logs (query, summary, clear, stats) |
-| `tunnel` | Tunnel management (cloudflare/ngrok/tailscale) |
+| `tunnel` | Tunnel management (cloudflare/ngrok/tailscale): start, stop, status, list |
 | `currentpage` | Inner/content-page inspection: framework triage (default) + layout diagnostics + list/get/summary/clear; responses identify `execution_context` and `frame_id` |
 | `get_incidents` | The error/incident surface — cursor-based, priority-ordered, with remediation hints and retention actions |
 | `verify_change` | Recheck only the session's recorded findings — re-runs each finding's producer in-process, reports resolved/persist/new, merges the outcome back into the Investigation |
@@ -37,10 +37,18 @@ for an explicit audit request, not routine debugging.
 | `diagnose` | Dead-click triage in one call (`action:"click"`), or layout composite (`action:"layout"`: layout diagnose + current-viewport responsive risk + stacking/container causes, `screenshot_recommended` when a visual finding exists) |
 | `api_audit` | API efficiency audit (waterfall, N+1, duplicate, chatty-load) over the fetch/XHR buffer |
 | `loading_audit` | Loading-UX audit (spinner cascade + concurrent fragmentation) over the spinner timeline |
-| `snapshot` | Visual regression testing (baseline/compare screenshots) |
-| `daemon` | Daemon management |
+| `snapshot` | Visual regression testing (baseline, compare, list, delete, get, screenshot) |
+| `daemon` | Daemon management (status, info, start, stop, restart, stop_all, restart_all, startup_log, doctor) |
+| `session` | Agent sessions: list, send a message to one, schedule a delayed message, tasks, cancel, get |
+| `store` | Scoped key/value store (get, set, delete, list, clear, get_all) |
+| `browser` | Launch and manage a real browser against a URL or proxy (start, stop, status, list) |
+| `automation` | Headless chromedp sessions (start, stop, status, list, screenshot, navigate, evaluate) |
+| `error_queue` | Queue an external failure (CI, deploy, hosted service) — it appears in `get_incidents` with source `external` for every session on that project, and in `proc snapshot` |
+| `walkthrough` | Live in-browser walkthrough step list (load, start, stop, next, prev, play, pause, status, list) |
+| `devauth` | Dev OIDC personas (personas, as, token) — see [devauth](#devauth-dev-oidc-personas) |
+| `replaytest` | Record/replay browser replay-tests (Pro: `advanced_testing`): record, stop, cancel, refine, replay, explore; list and show are free |
 | `watch` | Get monitor command for streaming events (errors, interactions, process, all) |
-| `channel_reply` | Send messages to developer's browser overlay (channel mode beta) |
+| `channel_reply` | Send messages to developer's browser overlay (channel mode beta; registered only when channel mode and its reply tool are enabled) |
 | `publish` | Public walkthrough shares — create/status/list/revoke/rotate + owner-scoped feedback read |
 | `demo` | Narrated demo-video authoring — list/record/assemble/inspect/publish via the in-repo engine as a daemon-managed process (repo-checkout capability) |
 
@@ -61,7 +69,7 @@ Cursor-based pull from the always-active incident inbox. This is the authoritati
 | `severity` | string[] | all | Filter: `critical`, `error`, `warning`, `info` |
 | `since` | string | beginning | Cursor from a prior pull (RFC3339) or duration like `5m` |
 | `fingerprints` | string[] | — | Retrieve specific incident fingerprints |
-| `sources` | string[] | all | Filter by source (e.g. `browser_js`, `http_5xx`) |
+| `sources` | string[] | all | Filter by source: `browser_js`, `http_5xx`, `http_4xx`, `transport_err`, `proxy_diag`, `process_alert`, `process_crash`, `build_fail`, `chaos_swallowed_error`, `external` |
 | `proxy_id` / `process_id` | string | — | Filter to a specific proxy/process |
 | `detail` | string | `summary` | `full` hydrates from the caller session's bounded blob store; evicted payloads fall back to summary |
 | `mark_read` | bool | false | Advance cursor and mark returned incidents read. With an active `profile`, the daemon projects the page first, so exactly the rendered rows are marked read and dropped rows raise `truncated` instead of being swept past the cursor |
@@ -74,6 +82,21 @@ Cursor-based pull from the always-active incident inbox. This is the authoritati
 
 There is no `global` flag: the inbox is per-session hard-isolated (numbered
 contract 1), which is a stronger guarantee than project scoping.
+
+**Which rows a pull returns.** A pull with no `since` under a triage profile
+(`bug`, `changed`, `release` — `bug` is the default) is *ranked*: `sources` /
+`proxy_id` / `process_id` / `fingerprints` are applied across the whole inbox,
+the matches are ordered by severity (critical → error → warning → info, newest
+first within a severity), and then `limit` and the profile cut the page. This
+is the call to make when pinged: it returns the most severe, most recent
+incidents. A pull that carries `since`, and any pull with `profile:"full"`, is
+*paged* instead: it returns the oldest `limit` entries after the cursor so that
+successive `since=<replay_cursor>` pulls sweep the inbox with no gaps.
+
+**Severity.** `critical` is a managed process crashing (`process_crash` with
+reason `crash`); its ping bypasses rate limiting and coalescing. Every other
+source lands in `error`, `warning` or `info`. Build-lifecycle progress lines
+(`build succeeded`, `rebuilding`, `page reload`) are not incidents.
 
 **Retention actions** (`action` param; default `query`):
 
@@ -235,6 +258,8 @@ project that has no engine checkout returns a loud error naming the requirement
 Actions:
 - `list` — Enumerate demos under `docs-site/screenshots/demos`, each with a
   segment breakdown (id + type) and a narration summary (voice + segment count).
+  `name` is always the directory name, the value every other action takes;
+  `display_name` is added only when `demo.json`'s own `name` differs from it.
   Resolved client-side from the project path; no daemon roundtrip.
 - `record` — Start a recording as a **daemon-managed process** (via `PROC RUN`)
   and return a `process_id` immediately. The recording survives and reports like
@@ -262,7 +287,9 @@ from the managed process. It is addressed by a stable id: `demo-<name>` for
 `demo-publish-<name>` for the others.
 
 A demo `name` is a directory name (letters, digits, `.`, `_`, `-`); anything
-else is refused before the engine runs.
+else is refused before the engine runs. `only` applies to `record` and
+`inspect`; passing it to `list`, `assemble` or `publish` is an error, not
+ignored.
 
 Examples:
 ```
@@ -754,8 +781,25 @@ Returns shell command string for streaming daemon events via `agnt monitor` CLI.
 
 **Core**:
 - `log(message, level, data)` (returns `{sent: boolean}`), `screenshot(name)`, `isConnected()`
-- `interactions.getHistory/getLastClick/getLastClickContext()`
+- `interactions.getHistory/getLastClick/getLastClickContext()`. Keystroke
+  privacy: a `keydown` on a password field records `key: ''`, `code: ''`,
+  `masked: true` and no modifiers; a printable character typed into any other
+  editable target (text inputs, textarea, select, contenteditable) is masked
+  the same way. Modifier combos (Ctrl/Alt/Meta) and non-printing keys (Enter,
+  Escape, Tab, arrows) keep `key`/`code`, as do keys pressed outside an
+  editable target.
 - `mutations.getHistory/highlightRecent()`
+- `transport` (= `window.__devtool_transport_diag`) — control-WebSocket
+  diagnostics: `getHistory()`, `getRecent(n=20)`, `getByCategory(cat)`,
+  `subscribe(cb)` (returns an unsubscribe function), `getStats()`, `clear()`,
+  `setDebug(bool)`, `log(category, event, data)`, `reconnect()` (reset backoff
+  and reconnect now), and `getConnectionState()` → `{connected, readyState,
+  readyStateLabel, reconnectAttempts, maxReconnectAttempts: null,
+  reconnectPending, reconnectMaxDelayMs: 30000, wsUrl}`. The buffer keeps the
+  last 200 events. It has its own global because `window.__devtool_diagnostics`
+  is the CSS visual-debugging API. Reconnect has no attempt limit: 1s, 2s, 4s …
+  capped at 30s, and immediate when the browser comes back online or the tab
+  becomes visible.
 - `window.__devtool_vitals` — buffered PerformanceObserver accumulator registered at
   injection time (content frame only): `{lcp, cls, inp, longTasks:[{start,duration}]
   (capped 50), longTasksCapped}`. Unsupported metrics stay `null`.
@@ -773,6 +817,48 @@ Returns shell command string for streaming daemon events via `agnt monitor` CLI.
 - `sketch.open/close/toggle/save/toJSON/fromJSON()`
 - `design.start/stop/selectElement/next/previous/addAlternative/chat()`
 - `responsive.open/close/toggle/setWidth/getState()` — responsive mode (4th indicator mode)
+
+**Sessions & store** (Promise-based; each call is one request over the control
+WebSocket, rejected with the server's reason on refusal, or after 10s):
+- `session.list()`, `session.get(code)`, `session.send(code, message)`,
+  `session.schedule(code, duration, message)` (`duration` is a Go duration such
+  as `"5m"` or `"1h30m"`), `session.tasks()`, `session.cancel(taskId)`.
+- `store.get/set/delete/list/getAll/clear(…, {scope, scopeKey})` plus the
+  `store.global`, `store.folder` and `store.page` namespaces, which fill in
+  `scope` and a URL-derived `scopeKey`.
+
+Both are **scoped to the proxy's own project, and the page cannot change that**:
+- Sessions are the ones running in the project that owns the proxy (the most
+  specific active `agnt run` session at or above the proxy's directory). A
+  session code or task id from another project is answered "not found in this
+  proxy's project". With no session running for the project, every `session.*`
+  call fails with "no agnt session is running for this proxy's project".
+- `session.list(true)` / `session.tasks(true)` (global) are refused, not
+  narrowed: the reply is an error and a `ws_scope_refused` diagnostic.
+  The page-visible session record is `code`, `project_path`, `command`,
+  `status`, `started_at`, `kind` — not the overlay socket or PIDs the MCP
+  `session` tool returns.
+- The store is the project's own (`<project>/.agnt/store`, the store the MCP
+  `store` tool reads). `scope` (`global` | `folder` | `page`) and `scopeKey`
+  pick a namespace inside it; they cannot address another project.
+- Secret entries (written by the secret-entry field) read back as their masked
+  ref, as they do through the MCP `store` tool. From the page they cannot be
+  overwritten, deleted, or cleared, and `metadata.secret` /
+  `metadata.fingerprint` cannot be set.
+
+Both are **refused to an untrusted caller** — the same test `secret_submit` and
+voice use (`controlCallerTrusted`, `internal/proxy/ws_handler.go`): the
+connection must be local to the machine on the proxy's loopback listener, an
+identified tailnet peer, or carry a verified Cloudflare Access identity. A
+visitor arriving through an unauthenticated tunnel gets "not available on this
+connection" and a `ws_privileged_frame_refused` diagnostic. While a quick
+tunnel is bound to a proxy, connections on its listener cannot be told apart
+from tunnel traffic, so local pages are refused too.
+
+Limits per request: store key 256 bytes, `scopeKey` 2048 bytes, value 256 KiB
+(as JSON), metadata 16 KiB; session message 16 KiB; one reply 1 MiB (a larger
+result is refused whole — narrow the scope). Requests also count against the
+per-connection frame-rate cap.
 
 **Diagnostics** (categories):
 - Element Inspection (9): getElementInfo, getPosition, getComputed, etc.
@@ -842,8 +928,11 @@ sweet spot where source-only LLM reasoning reliably suggests the wrong fix
 (bump z-index, suppress, `!important`). Three helpers surface the runtime
 cause directly. The CSS-trigger detection is centralized in
 `utils.stackingContextTriggers` / `utils.containingBlockTrap`
-(`internal/proxy/scripts/utils.js`) so `getStacking`, `getStackingChain`,
-and `findStackingContexts` can never disagree on what creates a context.
+(`internal/proxy/scripts/utils.js`) so `getStacking`, `findStackingContexts`
+and the internal `getStackingChain` walk can never disagree on what creates a
+context. `getStackingChain` is not a `__devtool` method: it exists only as
+`window.__devtool_utils.getStackingChain(element)`, and its result is what
+`getStacking` returns as `chain`.
 
 - **`getStacking(selector)`** → `{zIndex, position, createsContext,
   selfTriggers:[{property,value}], stackingRoot, rootTrigger:{property,value},

@@ -19,13 +19,19 @@
 //
 // # IP / X-Forwarded-For trust stance
 //
-// The rate-limit key uses the remoteAddr the proxy actually observed on the
-// connection (r.RemoteAddr), NOT a client-supplied X-Forwarded-For header. XFF
-// is attacker-controlled on a public plane, so trusting it would let one client
-// rotate the header to evade the per-IP bucket. The store deliberately ignores
-// XFF; only the terminating proxy's real peer address gates the limiter. (If a
-// trusted L7 load balancer ever fronts this plane, the wiring layer — not this
-// store — must resolve the real client IP before calling Accept.)
+// The rate-limit key is built from the client address the WIRING LAYER hands to
+// Accept/Admit, never from a header this store reads. By default that is the
+// connection peer (r.RemoteAddr): a forwarded-address header is attacker-
+// controlled on a public plane, so trusting it blindly would let one client
+// rotate the header to evade the per-client bucket. The one sanctioned
+// exception lives in the wiring layer (proxy.PublicHandler.WithClientAddr, used
+// by `agnt publish serve --tunnel`): when the TCP peer is loopback AND a tunnel
+// this process started is the only thing in front of the listener, the
+// tunnel's own client-address header is used, because otherwise every viewer
+// arrives as 127.0.0.1 and shares one bucket.
+//
+// The address is reduced by clientRateKey: IPv4 as-is, IPv6 to its /64. A
+// per-share aggregate bucket sits behind the per-client one.
 package publish
 
 import (
@@ -38,6 +44,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"path/filepath"
 	"sort"
@@ -62,7 +69,19 @@ var (
 	// file fails to load or its integrity checksum does not match — the store
 	// fails loud rather than silently dropping data (Silent Failure Prohibition).
 	ErrFeedbackCorrupt = errors.New("publish: corrupt feedback record")
+	// ErrFeedbackCursorUnknown is returned by ReadByShare for a cursor that names
+	// no stored row — typically one the retention ring evicted between pages.
+	// Restarting silently from the first row would hand the caller duplicates it
+	// cannot tell from new rows, so the read fails and the caller restarts.
+	ErrFeedbackCursorUnknown = errors.New("publish: feedback cursor does not match a stored row (it may have been evicted); restart from the first page")
 )
+
+// feedbackShareAggregateFactor sizes the per-SHARE aggregate bucket as a
+// multiple of the per-(share, client) one. The per-client bucket is charged
+// first, so one client can draw at most its own rate from the aggregate: it
+// takes more than this many distinct clients to exhaust a share, and a flood
+// spread over many addresses is bounded per share rather than per address.
+const feedbackShareAggregateFactor = 6
 
 // FeedbackLimits are the ingest/retention bounds (mirrors config.FeedbackConfig;
 // kept as a plain struct here so package publish stays free of a config import).
@@ -114,6 +133,12 @@ type FeedbackStore struct {
 	now     func() time.Time
 	limits  FeedbackLimits
 	limiter *tokenBucketLimiter
+	// shareLimiter is the per-share aggregate bucket (see
+	// feedbackShareAggregateFactor), keyed by share id alone.
+	shareLimiter *tokenBucketLimiter
+	// readOnly forbids every disk write: no mkdir, no persist, no remove. Set
+	// only by OpenFeedbackStoreReadOnly, for reading a store another process owns.
+	readOnly bool
 
 	mu             sync.Mutex
 	byShare        map[string][]FeedbackRecord
@@ -130,6 +155,23 @@ const feedbackFileSuffix = ".feedback.json"
 // checksum-mismatched record file makes NewFeedbackStore return an error wrapping
 // ErrFeedbackCorrupt (fail loud; spec §8 / INV-8).
 func NewFeedbackStore(dir string, limits FeedbackLimits, now func() time.Time) (*FeedbackStore, error) {
+	return openFeedbackStore(dir, limits, now, false)
+}
+
+// OpenFeedbackStoreReadOnly opens an EXISTING feedback store for reading only.
+// It creates nothing (a missing directory is an error), and retention is applied
+// to the rows it returns without being written back: an expired row is never
+// served, but the ring file is left exactly as its owner wrote it. Accept and
+// AcceptAdmitted return ErrReadOnly.
+//
+// This is what a second process uses to read the store of a running `agnt
+// publish serve`. NewFeedbackStore prunes on load and on read, which makes any
+// reader a second writer on the same ring file and the same temp path.
+func OpenFeedbackStoreReadOnly(dir string, limits FeedbackLimits, now func() time.Time) (*FeedbackStore, error) {
+	return openFeedbackStore(dir, limits, now, true)
+}
+
+func openFeedbackStore(dir string, limits FeedbackLimits, now func() time.Time, readOnly bool) (*FeedbackStore, error) {
 	if dir == "" {
 		return nil, errors.New("publish: empty feedback dir")
 	}
@@ -140,14 +182,20 @@ func NewFeedbackStore(dir string, limits FeedbackLimits, now func() time.Time) (
 	if now == nil {
 		now = time.Now
 	}
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		return nil, fmt.Errorf("publish: create feedback dir: %w", err)
+	if !readOnly {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return nil, fmt.Errorf("publish: create feedback dir: %w", err)
+		}
 	}
 	s := &FeedbackStore{
-		dir:            dir,
-		now:            now,
-		limits:         limits,
-		limiter:        newTokenBucketLimiter(limits.RatePerMinute, limits.Burst, now),
+		dir:     dir,
+		now:     now,
+		limits:  limits,
+		limiter: newTokenBucketLimiter(limits.RatePerMinute, limits.Burst, now),
+		shareLimiter: newTokenBucketLimiter(
+			limits.RatePerMinute*feedbackShareAggregateFactor,
+			limits.Burst*feedbackShareAggregateFactor, now),
+		readOnly:       readOnly,
 		byShare:        make(map[string][]FeedbackRecord),
 		droppedByShare: make(map[string]int64),
 	}
@@ -182,6 +230,13 @@ func (s *FeedbackStore) load() error {
 		if err != nil {
 			return fmt.Errorf("%w: %s: %v", ErrFeedbackCorrupt, name, err)
 		}
+		// The file name is derived from the share id, so a record whose id does
+		// not hash to its own file name was copied or edited in place. Loading it
+		// would file one share's rows under another id — and expire would then
+		// remove a DIFFERENT file than the one read.
+		if want := feedbackFileName(sf.ShareID); name != want {
+			return fmt.Errorf("%w: %s: record names share %q, whose file is %s", ErrFeedbackCorrupt, name, sf.ShareID, want)
+		}
 		s.byShare[sf.ShareID] = sf.Records
 		if err := s.expire(sf.ShareID); err != nil {
 			return err
@@ -190,8 +245,10 @@ func (s *FeedbackStore) load() error {
 	return nil
 }
 
-// expire drops a share's rows that have aged past RetentionDays and makes the
-// drop durable. It is called on every path that exposes stored rows (load,
+// expire drops a share's rows that have aged past RetentionDays or overflow
+// MaxRowsPerShare, and makes the drop durable (a read-only store prunes its
+// in-memory view only). The row cap is applied here as well as on Accept so a
+// lowered max-rows-per-share takes effect on a share nobody is posting to. It is called on every path that exposes stored rows (load,
 // ReadByShare, Count), so retention holds for a share nobody is posting to.
 // Caller holds the lock, or is the single-threaded load.
 //
@@ -202,10 +259,19 @@ func (s *FeedbackStore) expire(shareID string) error {
 	records := s.byShare[shareID]
 	cutoff := s.now().Add(-time.Duration(s.limits.RetentionDays) * 24 * time.Hour)
 	// Rows are kept oldest first, so a fresh head means nothing has expired.
-	if len(records) == 0 || !records[0].CreatedAt.Before(cutoff) {
+	if len(records) == 0 || (!records[0].CreatedAt.Before(cutoff) && len(records) <= s.limits.MaxRowsPerShare) {
 		return nil
 	}
 	kept := s.prune(records)
+	if s.readOnly {
+		// Never touch the owner's file: prune the view, leave the disk alone.
+		if len(kept) == 0 {
+			delete(s.byShare, shareID)
+		} else {
+			s.byShare[shareID] = kept
+		}
+		return nil
+	}
 	if len(kept) == 0 {
 		delete(s.byShare, shareID)
 		err := os.Remove(filepath.Join(s.dir, feedbackFileName(shareID)))
@@ -249,23 +315,51 @@ type feedbackPayload struct {
 }
 
 // Accept validates, rate-limits, and durably appends one anonymous feedback row.
-// It is the FeedbackSink the public handler wires in. remoteAddr is the real
-// connection peer (host or host:port) — never a client XFF header (see package
-// doc). Order: rate-limit first (bounds abuse work), then strict validation,
-// then atomic append + retention prune.
+// It is the FeedbackSink the public handler wires in. remoteAddr is the client
+// address the wiring layer resolved (host or host:port) — never a header this
+// store read itself (see package doc). Order: rate-limit first (bounds abuse
+// work), then strict validation, then atomic append + retention prune.
+//
+// It is Admit followed by AcceptAdmitted. A caller that can run the two apart
+// (the public handler does) calls Admit BEFORE reading the request body, so a
+// throttled client costs no body read at all.
 func (s *FeedbackStore) Accept(shareID string, revisionDigest RevisionDigest, remoteAddr string, body []byte) error {
+	if err := s.Admit(shareID, remoteAddr); err != nil {
+		return err
+	}
+	return s.AcceptAdmitted(shareID, revisionDigest, body)
+}
+
+// Admit charges one feedback submission against the (share, client) bucket and
+// then the per-share aggregate bucket, and returns ErrFeedbackRateLimited when
+// either is empty. A refusal is counted in Dropped/DroppedByShare. It reads no
+// body and touches no disk, so it is safe to call before the body is read.
+func (s *FeedbackStore) Admit(shareID, remoteAddr string) error {
 	if shareID == "" {
 		return fmt.Errorf("%w: empty share id", ErrFeedbackInvalid)
 	}
-
-	// Rate-limit by (share, real IP). A flood — valid or not — is throttled here
-	// before any parse/disk cost.
-	if !s.limiter.allow(rateKey(shareID, remoteAddr)) {
+	// Per-client first: a single flooding client is refused by its own bucket
+	// and so cannot drain the share's aggregate budget for everyone else.
+	if !s.limiter.allow(rateKey(shareID, remoteAddr)) || !s.shareLimiter.allow(shareID) {
 		s.mu.Lock()
 		s.dropped++
 		s.droppedByShare[shareID]++
 		s.mu.Unlock()
 		return ErrFeedbackRateLimited
+	}
+	return nil
+}
+
+// AcceptAdmitted validates and durably appends one feedback row WITHOUT
+// charging the rate limiter — the caller already did, through Admit. Calling it
+// without a prior Admit bypasses the limiter; use Accept unless the two steps
+// genuinely have to be separated.
+func (s *FeedbackStore) AcceptAdmitted(shareID string, revisionDigest RevisionDigest, body []byte) error {
+	if shareID == "" {
+		return fmt.Errorf("%w: empty share id", ErrFeedbackInvalid)
+	}
+	if s.readOnly {
+		return ErrReadOnly
 	}
 
 	if err := s.validate(body); err != nil {
@@ -318,6 +412,12 @@ func (s *FeedbackStore) validate(body []byte) error {
 	if len(p.Message) > s.limits.MaxBodyBytes {
 		return fmt.Errorf("%w: message too long", ErrFeedbackInvalid)
 	}
+	// A row must say something: a message, or at least a rating. "{}" and a
+	// whitespace-only message are valid JSON carrying nothing, and each one
+	// accepted evicts a real row from the retention ring.
+	if strings.TrimSpace(p.Message) == "" && p.Rating == nil {
+		return fmt.Errorf("%w: empty feedback (a message or a rating is required)", ErrFeedbackInvalid)
+	}
 	if p.Rating != nil && (*p.Rating < 0 || *p.Rating > 5) {
 		return fmt.Errorf("%w: rating out of range", ErrFeedbackInvalid)
 	}
@@ -362,7 +462,9 @@ func (s *FeedbackStore) prune(records []FeedbackRecord) []FeedbackRecord {
 //
 // cursor is the ID of the last row a prior call returned (empty = start);
 // nextCursor is the last returned row's ID, or "" when the page reached the
-// end. limit <= 0 defaults to all remaining rows.
+// end. limit <= 0 defaults to all remaining rows. A cursor that names no
+// stored row — the ring evicted it between pages — returns
+// ErrFeedbackCursorUnknown rather than restarting silently from the first row.
 //
 // The rows are returned RAW/inert (INV-7). The caller (P9) is responsible for
 // escaping them before rendering into any HTML surface — the store never
@@ -388,11 +490,16 @@ func (s *FeedbackStore) ReadByShare(shareID, cursor string, limit int) (rows []F
 
 	start := 0
 	if cursor != "" {
+		found := false
 		for i := range all {
 			if all[i].ID == cursor {
 				start = i + 1
+				found = true
 				break
 			}
+		}
+		if !found {
+			return nil, "", ErrFeedbackCursorUnknown
 		}
 	}
 	end := len(all)
@@ -438,6 +545,9 @@ func (s *FeedbackStore) Count(shareID string) int {
 // persist atomically writes a share's ring to its file with 0600 perms. Caller
 // holds the lock.
 func (s *FeedbackStore) persist(shareID string, records []FeedbackRecord) error {
+	if s.readOnly {
+		return ErrReadOnly
+	}
 	sf := shareFeedback{ShareID: shareID, Records: records}
 	sf.Checksum = sf.computeChecksum()
 	data, err := json.MarshalIndent(&sf, "", "  ")
@@ -492,16 +602,38 @@ func (sf *shareFeedback) verifyChecksum() error {
 	return nil
 }
 
-// rateKey composes the limiter key from the share id and the real client IP. The
-// IP is extracted from remoteAddr (host or host:port); an unparseable value is
-// used verbatim so it still partitions, never collapsing every client into one
-// shared bucket.
+// rateKey composes the limiter key from the share id and the client address.
 func rateKey(shareID, remoteAddr string) string {
-	ip := remoteAddr
-	if host, _, err := net.SplitHostPort(remoteAddr); err == nil {
-		ip = host
+	return shareID + "\x00" + clientRateKey(remoteAddr)
+}
+
+// clientRateKey reduces a client address (host or host:port) to the unit one
+// client is rate-limited as:
+//
+//   - IPv4 (including IPv4-mapped IPv6): the address.
+//   - IPv6: its /64. A single subscriber is routinely delegated a whole /64 and
+//     can rotate through 2^64 source addresses, so keying on the /128 would
+//     hand every rotation a fresh full bucket.
+//   - anything unparseable: used verbatim, so it still partitions rather than
+//     collapsing every such client into one shared bucket.
+func clientRateKey(remoteAddr string) string {
+	host := remoteAddr
+	if h, _, err := net.SplitHostPort(remoteAddr); err == nil {
+		host = h
 	}
-	return shareID + "\x00" + ip
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return host
+	}
+	addr = addr.Unmap().WithZone("")
+	if addr.Is4() {
+		return addr.String()
+	}
+	prefix, err := addr.Prefix(64)
+	if err != nil {
+		return addr.String()
+	}
+	return prefix.String()
 }
 
 // mintFeedbackID returns a server-assigned CSPRNG id. A crypto/rand failure is

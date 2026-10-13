@@ -240,6 +240,16 @@ func (d *Daemon) RunAutostartAsync(
 			})
 			result.PortConflicts = conflicts
 			return result
+
+		default:
+			// The parser rejects unknown policies, but configs are also built
+			// directly (overrides, tests). An unrecognised policy must not fall
+			// through to a launch with port cleanup still armed.
+			msg := fmt.Sprintf("port conflicts detected, aborting (unknown port-conflict policy %q; want fail, skip, auto-kill or prompt): %d conflict(s)", policy, len(conflicts))
+			log.Error("", "port_conflict_abort", msg)
+			result.Errors = append(result.Errors, msg)
+			result.PortConflicts = conflicts
+			return result
 		}
 	}
 
@@ -340,6 +350,7 @@ func (d *Daemon) registerAndStartScripts(ctx context.Context, cfg *config.AgntCo
 			d.scriptRegistry.Remove(entry.Name, projectPath)
 			d.scriptConfigs.Delete(entry.ProcessID)
 			d.portKillDeclined.Delete(entry.ProcessID)
+			d.runLaunches.Delete(entry.ProcessID)
 			if d.autoRestarter != nil {
 				d.autoRestarter.Unregister(entry.ProcessID)
 			}

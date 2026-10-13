@@ -13,9 +13,17 @@ func FromProcessExit(processID, reason string, exitCode int, stderrTail string) 
 	if stderrTail != "" {
 		msg += "\n" + stderrTail
 	}
+	// A crash is the pipeline's critical signal: the process the agent is
+	// working against is gone, so it lands in the critical band and its ping
+	// bypasses rate limiting and coalescing. A deliberate stop or a signal is
+	// an ordinary error-band record.
+	sev := SeverityError
+	if reason == "crash" {
+		sev = SeverityCritical
+	}
 	return NewIncidentEvent(
 		SourceProcessCrash,
-		SeverityError,
+		sev,
 		"process_exit",
 		msg,
 		Context{ProcessID: processID},

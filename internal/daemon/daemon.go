@@ -283,7 +283,10 @@ type Daemon struct {
 	// nothing on the process's ports while the mark is set. Not user-visible.
 	// Each StartScript call rewrites the mark; it is retired with scriptConfigs.
 	portKillDeclined sync.Map // processID -> struct{}
-	proxyConfigs     sync.Map // proxyID -> configuredProxy (launch snapshot)
+	// runLaunches marks processes started by the top-level RUN verb (see
+	// runLaunch in hub_run.go). Not user-visible; retired with scriptConfigs.
+	runLaunches  sync.Map // processID -> runLaunch
+	proxyConfigs sync.Map // proxyID -> configuredProxy (launch snapshot)
 
 	// Session and scheduling (agnt-specific extensions)
 	sessionRegistry   *SessionRegistry
@@ -428,6 +431,13 @@ type Daemon struct {
 	// sessionLifecycle serializes registration and retirement for the same
 	// session code. Different session codes use independent gates.
 	sessionLifecycle sessionLifecycleGates
+	// sessionControlConns records the connection that registered each classic
+	// session (code -> *hub.Connection). SESSION ATTACH binds further
+	// connections to the same code for scoping, and the hub reports every bound
+	// connection's close; only the registering connection's close is a reason
+	// to schedule cleanup. Written under the session lifecycle gate, retired in
+	// finalizeSessionState. Not user-visible.
+	sessionControlConns sync.Map
 
 	// autostartManager coordinates at-most-one autostart run per project path.
 	// Session registration delegates autostart to GetOrCreate so multiple
@@ -806,9 +816,7 @@ func (d *Daemon) bootstrap() error {
 
 	// Register session cleanup callback with Hub
 	// Uses deferred cleanup so daemonclient.ResilientClient reconnects don't kill processes.
-	d.hub.SetSessionCleanup(func(sessionCode string) {
-		d.CleanupSessionResourcesDeferred(sessionCode)
-	})
+	d.hub.SetSessionCleanup(d.onSessionConnectionClosed)
 	d.daemonStartupLog("info", "daemon_session_cleanup_registered", "daemon session cleanup callback registered")
 
 	// Start the Hub (handles socket creation, accept loop, client management)
@@ -853,7 +861,56 @@ func (d *Daemon) bootstrap() error {
 	}()
 	d.daemonStartupLog("info", "hook_drain_started", "hook event drain started")
 
+	// Mark sessions whose heartbeats stopped as disconnected. Without this
+	// sweep the heartbeat timeout was never applied: every registered session
+	// stayed "active" for as long as it sat in the registry. Exits when d.ctx
+	// is cancelled.
+	d.wg.Add(1)
+	go func() {
+		defer d.wg.Done()
+		d.runHeartbeatSweep(d.ctx, d.sessionRegistry.HeartbeatTimeout()/4)
+	}()
+
 	return nil
+}
+
+// runHeartbeatSweep calls SessionRegistry.CheckHeartbeats every interval until
+// ctx ends. The sweep only flips status (and drops the investigation record,
+// see markDisconnectedIfStale); it never tears a session down — a later
+// heartbeat or re-register revives it.
+func (d *Daemon) runHeartbeatSweep(ctx context.Context, interval time.Duration) {
+	if interval <= 0 {
+		interval = 15 * time.Second
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			d.sessionRegistry.CheckHeartbeats()
+		}
+	}
+}
+
+// onSessionConnectionClosed is the hub's callback for the close of any
+// connection bound to a session code. Both SESSION REGISTER and SESSION ATTACH
+// bind one, so an MCP connection that attached for scoping reports here too
+// when it goes away. Only the loss of the connection that registered the
+// session says anything about the session itself; the close of an attached
+// connection while that one is still open is ignored.
+//
+// A session with no recorded control connection keeps the old behaviour:
+// every bound connection's close schedules the deferred cleanup.
+func (d *Daemon) onSessionConnectionClosed(sessionCode string) {
+	if v, ok := d.sessionControlConns.Load(sessionCode); ok {
+		if control, ok := v.(*hub.Connection); ok && !control.IsClosed() {
+			debug.Log("daemon", "session %s: an attached connection closed; control connection is still open, no cleanup scheduled", sessionCode)
+			return
+		}
+	}
+	d.CleanupSessionResourcesDeferred(sessionCode)
 }
 
 // Start starts the daemon and begins accepting connections.
@@ -1037,6 +1094,11 @@ func (d *Daemon) ingestProcessAlert(m *overlay.AlertMatch, fallbackTS time.Time)
 }
 
 func (d *Daemon) ingestProcessIncident(m *overlay.AlertMatch) {
+	// Rebuild-lifecycle lines (build succeeded, rebuilding, page reload) are
+	// health/retention signals handled by the caller, not incidents.
+	if !incident.AlertMatchIsIncident(m) {
+		return
+	}
 	ev := incident.FromAlertMatch(m, m.ScriptID)
 	owner, _ := m.LifetimeToken.(*health.ResourceOwner)
 	if d.stampIncidentOwner(&ev, &d.incidentProcessOwner, m.ScriptID, owner) {

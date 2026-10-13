@@ -77,7 +77,7 @@ func TestGateMaxBatchTruncation(t *testing.T) {
 	if !ok {
 		t.Fatal("expected pending")
 	}
-	if !strings.Contains(got, "2 more alert(s) coalesced") {
+	if !strings.Contains(got, "2 more alert(s) dropped") {
 		t.Fatalf("expected truncation notice, got %q", got)
 	}
 	if strings.Count(got, "\n") != 3 { // 3 items + notice line = 3 newlines
@@ -104,16 +104,16 @@ func TestGateDedupWindowExpiry(t *testing.T) {
 // coalesces into one Ready signal carrying the deduped set. No arbitrary
 // sleeps — it waits on the Ready signal.
 func TestGateRunBatchesAndDedups(t *testing.T) {
-	in := make(chan string, 8)
+	in := make(chan aiOverlayMessage, 8)
 	g := newACPAlertGate(in)
 	g.batchWin = 25 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go g.Run(ctx)
 
-	in <- "alpha"
-	in <- "alpha" // dup
-	in <- "beta"
+	in <- aiOverlayMessage{text: "alpha"}
+	in <- aiOverlayMessage{text: "alpha"} // dup
+	in <- aiOverlayMessage{text: "beta"}
 
 	select {
 	case <-g.Ready():
@@ -124,6 +124,72 @@ func TestGateRunBatchesAndDedups(t *testing.T) {
 	if !ok || got != "alpha\nbeta" {
 		t.Fatalf("Pull = %q, %v; want \"alpha\\nbeta\"", got, ok)
 	}
+}
+
+// TestGateProtectedMessagesBypassDedupAndCaps pins the PTY path's rule on this
+// path too: an explicit user action is never deduped and never dropped by the
+// batch cap, while auto-generated alerts around it still are.
+func TestGateProtectedMessagesBypassDedupAndCaps(t *testing.T) {
+	g := newACPAlertGate(nil)
+	g.maxBatch = 1
+	g.addMessage(aiOverlayMessage{text: "yes", protected: true})
+	g.addMessage(aiOverlayMessage{text: "yes", protected: true}) // same text, must survive
+	g.add("alert one")
+	g.add("alert two") // over the cap of 1
+	g.addMessage(aiOverlayMessage{text: "panel message", protected: true})
+
+	got, ok := g.Pull()
+	if !ok {
+		t.Fatal("expected pending")
+	}
+	if strings.Count(got, "yes") != 2 {
+		t.Fatalf("protected duplicate was deduped: %q", got)
+	}
+	if !strings.Contains(got, "panel message") {
+		t.Fatalf("protected message after the cap was dropped: %q", got)
+	}
+	if strings.Contains(got, "alert two") || !strings.Contains(got, "1 more alert(s) dropped") {
+		t.Fatalf("unprotected alert past the cap should be dropped and counted: %q", got)
+	}
+}
+
+// TestGateReportsOverflow: alerts lost upstream (full channel) or to the
+// backlog bound are counted and announced in the next Pull instead of
+// vanishing into the debug log.
+func TestGateReportsOverflow(t *testing.T) {
+	t.Run("upstream channel drops", func(t *testing.T) {
+		g := newACPAlertGate(nil)
+		upstream := 3
+		g.overflow = func() int { n := upstream; upstream = 0; return n }
+		g.add("kept")
+		got, ok := g.Pull()
+		if !ok || !strings.Contains(got, "kept") || !strings.Contains(got, "3 more alert(s) dropped") {
+			t.Fatalf("Pull = %q, %v; want kept + drop notice", got, ok)
+		}
+		if _, ok := g.Pull(); ok {
+			t.Fatal("drop count must reset after being reported")
+		}
+	})
+
+	t.Run("backlog bound", func(t *testing.T) {
+		g := newACPAlertGate(nil)
+		g.maxPending = 2
+		for _, m := range []string{"a", "b", "c", "d"} {
+			g.add(m)
+		}
+		got, ok := g.Pull()
+		if !ok || !strings.Contains(got, "2 more alert(s) dropped") {
+			t.Fatalf("Pull = %q, %v; want a 2-dropped notice", got, ok)
+		}
+	})
+
+	t.Run("notice alone still surfaces", func(t *testing.T) {
+		g := newACPAlertGate(nil)
+		g.overflow = func() int { return 1 }
+		if got, ok := g.Pull(); !ok || !strings.Contains(got, "1 more alert(s) dropped") {
+			t.Fatalf("Pull = %q, %v; want the notice with nothing else pending", got, ok)
+		}
+	})
 }
 
 // TestGateNilSafe verifies a nil gate is inert (the --no-session path).

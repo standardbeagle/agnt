@@ -38,18 +38,6 @@ func strictDecode[T any](data []byte) (*T, error) {
 	return &v, nil
 }
 
-// DecodeVariantSet strictly decodes and fully validates a variant set.
-func DecodeVariantSet(data []byte) (*VariantSet, error) {
-	vs, err := strictDecode[VariantSet](data)
-	if err != nil {
-		return nil, err
-	}
-	if err := vs.Validate(); err != nil {
-		return nil, err
-	}
-	return vs, nil
-}
-
 // DecodePublishedWalkthrough strictly decodes and fully validates a published
 // walkthrough (including any bound variant set).
 func DecodePublishedWalkthrough(data []byte) (*PublishedWalkthrough, error) {
@@ -73,6 +61,9 @@ func (v *Variant) Validate() error {
 	}
 	if !noControlChars(v.Label) {
 		return errf("variant %q: label has control character", v.ID)
+	}
+	if len(v.Ops) > MaxOpsPerVariant {
+		return errf("variant %q: %d ops exceeds max %d", v.ID, len(v.Ops), MaxOpsPerVariant)
 	}
 	seen := map[string]bool{}
 	styleBytes := 0
@@ -117,7 +108,6 @@ func (vs *VariantSet) Validate() error {
 		return errf("variant set %q: %d variants exceeds max %d", vs.ID, len(vs.Variants), MaxVariantsPerSet)
 	}
 	seen := map[string]bool{}
-	scriptBytes := 0
 	for i := range vs.Variants {
 		v := &vs.Variants[i]
 		if seen[v.ID] {
@@ -127,17 +117,6 @@ func (vs *VariantSet) Validate() error {
 		if err := v.Validate(); err != nil {
 			return err
 		}
-		for j := range v.Ops {
-			scriptBytes += len(v.Ops[j].Code)
-		}
-	}
-	// §5's raw-script cap is per authored REVISION, not per op — the variant set
-	// is the revision's script-bearing content, and this bound is also what keeps
-	// the script-src hash set INV-12 pins from growing without limit. Bodies
-	// fetched from an addScript src count against the same budget once inlined,
-	// which happens in the publish pipeline, not here.
-	if scriptBytes > MaxRawScriptBytes {
-		return errf("variant set %q: raw script %d bytes exceeds max %d per revision", vs.ID, scriptBytes, MaxRawScriptBytes)
 	}
 	return nil
 }
@@ -159,7 +138,13 @@ func (a *Advance) Validate() error {
 			if a.Value == "" || len(a.Value) > MaxURLLength {
 				return errf("advance: wait url-contains value length invalid")
 			}
-		} else if a.Value != "" {
+		} else {
+			// element-present / element-visible wait ON a selector. An empty one
+			// can never match, so the step would never advance: refuse it here
+			// rather than publish a walkthrough that hangs at this step.
+			if a.Value == "" {
+				return errf("advance: wait %s requires a selector in value", a.When)
+			}
 			if err := ValidateSelector(a.Value); err != nil {
 				return errf("advance: wait value must be a valid selector: %w", err)
 			}
@@ -224,6 +209,9 @@ func (pw *PublishedWalkthrough) Validate() error {
 	if pw.Title == "" || len(pw.Title) > MaxTitleLength {
 		return errf("walkthrough %q: title length invalid", pw.ID)
 	}
+	if !noControlChars(pw.Title) {
+		return errf("walkthrough %q: title has control character", pw.ID)
+	}
 	// Nil-safe: an artifact with no live origin is legal.
 	if err := pw.Upstream.Validate(); err != nil {
 		return errf("walkthrough %q: %w", pw.ID, err)
@@ -246,36 +234,26 @@ func (pw *PublishedWalkthrough) Validate() error {
 		}
 	}
 	if pw.VariantSet != nil {
-		// INV-14 / operator decision 2026-08-18 (task 01M09KYHZ0CFAX2NVGMAQJ1WFW,
-		// option (a)): a published walkthrough is served on the public plane AS the
-		// artifact document, always carrying the mandatory agnt disclosure
-		// indicator (the RolePublic demo-indicator module, §9b). An authored
-		// addScript body runs in the same realm as that indicator and — proven in
-		// real Chrome (task 01KYQFAZRH: id squatting, re-assert-budget exhaustion,
-		// Node.prototype.appendChild monkeypatch) — can defeat the disclosure from
-		// first paint. Same-realm script beats same-realm script; the module cannot
-		// be hardened against it. So INV-14's "no publisher-reachable input can
-		// remove, hide, or blank the indicator" is preserved by refusing addScript
-		// at publish on exactly the shares that carry the mandatory disclosure —
-		// every published walkthrough. BOTH op forms are refused here: the inline
-		// `code` body, and the publish-time-fetched `src` (already refused at the op
-		// level for a different reason, §6a — this boundary refuses it under INV-14
-		// too, so the reason a viewer-facing share rejects it is the disclosure, not
-		// the unimplemented fetch). The bare-variant-set path (DecodeVariantSet)
-		// stays permissive because a bare set is never served on the public plane.
-		for i := range pw.VariantSet.Variants {
-			for j := range pw.VariantSet.Variants[i].Ops {
-				if pw.VariantSet.Variants[i].Ops[j].Op == OpAddScript {
-					return errf("walkthrough %q: addScript is not permitted on a published walkthrough: it is served with the mandatory agnt disclosure indicator, and an authored script can defeat that disclosure (INV-14) — remove the addScript op (both an inline `code` body and a `src` URL are refused)", pw.ID)
-				}
-			}
-		}
+		// addScript is refused inside this call, at the op that carries it
+		// (Op.Validate → errAddScriptRefused, INV-14). Every publish path
+		// validates a whole PublishedWalkthrough, so that one refusal is on
+		// every route to a viewer; there is no second check here to drift.
 		if err := pw.VariantSet.Validate(); err != nil {
 			return err
 		}
 		if sid := pw.VariantSet.StepID; sid != "" && !seen[sid] {
 			return errf("walkthrough %q: variant set bound to unknown step %q", pw.ID, sid)
 		}
+	}
+	// Whole-artifact cap, checked last so the per-field errors above stay the
+	// ones an author sees first. Every field is individually bounded, so this
+	// only trips on an artifact that is large in aggregate.
+	encoded, err := CanonicalJSON(pw)
+	if err != nil {
+		return errf("walkthrough %q: encode: %w", pw.ID, err)
+	}
+	if len(encoded) > MaxArtifactBytes {
+		return errf("walkthrough %q: artifact is %d bytes, exceeds max %d", pw.ID, len(encoded), MaxArtifactBytes)
 	}
 	return nil
 }

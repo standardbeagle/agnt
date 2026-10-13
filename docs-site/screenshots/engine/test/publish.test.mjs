@@ -123,10 +123,46 @@ test('the .vtt sidecar is copied only when the demo has one', () => {
   const h = harness({files: [P.srcWebm, P.srcVtt]});
   const r = publishDemo(DIRS, h.deps);
   assert.equal(r.vtt, P.destVtt);
-  assert.ok(h.ops.some(([op, a, b]) => op === 'copy' && a === P.srcVtt && b === P.destVtt));
+  // Staged like the other assets: copied into the temp dir, then moved in.
+  const tmpVtt = path.join(TMP, 'vhs-spiral.vtt');
+  assert.ok(h.ops.some(([op, a, b]) => op === 'copy' && a === P.srcVtt && b === tmpVtt));
+  assert.ok(h.ops.some(([op, a, b]) => op === 'move' && a === tmpVtt && b === P.destVtt));
+  assert.ok(!h.ops.some(([op, , b]) => op === 'copy' && b === P.destVtt), 'the vtt is never copied straight into docs-site');
   const silent = harness();
   publishDemo(DIRS, silent.deps);
   assert.ok(!silent.ops.some(([, , dst]) => dst === P.destVtt));
+});
+
+test('a silent republish removes captions published by an earlier narrated run', () => {
+  const h = harness({files: [P.srcWebm, P.destVtt]});
+  const r = publishDemo(DIRS, h.deps);
+  assert.equal(r.vtt, null);
+  assert.ok(!h.present.has(P.destVtt), 'the stale .vtt must not stay beside the new clip');
+  // Near miss: a narrated republish keeps (replaces) its captions.
+  const narrated = harness({files: [P.srcWebm, P.srcVtt, P.destVtt]});
+  publishDemo(DIRS, narrated.deps);
+  assert.ok(narrated.present.has(P.destVtt));
+});
+
+test('an install that fails part-way restores every asset it had replaced', () => {
+  const before = [P.srcWebm, P.srcVtt, P.destWebm, P.destPoster, P.destAnim, P.destVtt];
+  const h = harness({files: before});
+  const move = h.deps.move;
+  // The poster is the second install: the clip has already been replaced.
+  h.deps.move = (a, b) => {
+    if (b === P.destPoster && a.startsWith(TMP) && !path.basename(a).startsWith('replaced-')) {
+      throw new Error('disk full');
+    }
+    move(a, b);
+  };
+  assert.throws(() => publishDemo(DIRS, h.deps), /disk full/);
+  for (const f of [P.destWebm, P.destPoster, P.destAnim, P.destVtt]) {
+    assert.ok(h.present.has(f), `${path.basename(f)} must be back in place`);
+  }
+  // The clip that was put back is the ORIGINAL one, not the staged one.
+  const restores = h.ops.filter(([op, a, b]) => op === 'move' && b === P.destWebm).map(([, a]) => a);
+  assert.ok(path.basename(restores[restores.length - 1]).startsWith('replaced-'),
+    'the last write to the clip path must be the set-aside original');
 });
 
 test('names that could escape the asset directories are refused', () => {

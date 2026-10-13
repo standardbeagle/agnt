@@ -40,8 +40,9 @@ type SessionKind string
 
 const (
 	// SessionKindClassic is the existing agnt-run-owns-the-PTY flavor.
-	// doCleanupExact's killSessionPGID/killSessionJobObject calls apply to it
-	// on client disconnect, same as always.
+	// doCleanupExact's killSessionPGID applies to it once the session is
+	// retired (explicit unregister, or a dropped control connection whose
+	// owning wrapper is confirmed gone).
 	SessionKindClassic SessionKind = "classic"
 	// SessionKindSessionHost is a daemon-owned detachable PTY session
 	// (SESSION-HOST CREATE). Per spec §2.2 invariant 11, it must NOT be
@@ -67,31 +68,28 @@ type Session struct {
 	// child is started as its own session leader (via creack/pty's Setsid),
 	// so on Unix this equals the PTY child PID and identifies every process
 	// the coding agent spawned via non-interactive bash, including
-	// backgrounded `npm run dev &` style jobs. Zero on Windows (Job Object
-	// cleanup is handled separately) or when the client didn't report one.
+	// backgrounded `npm run dev &` style jobs. Zero on Windows (the tree is
+	// contained by the Job Object `agnt run` owns, not by the daemon) or
+	// when the client didn't report one.
 	SessionPGID int `json:"session_pgid,omitempty"`
 
 	// OwnerPID identifies the agnt wrapper process that owns a classic session.
 	// A dropped control connection is not proof that this process exited: the
-	// daemon must confirm OwnerPID is gone before reaping SessionPGID/the Job
-	// Object. Zero means ownership is unknown and therefore fails safe.
+	// daemon must confirm OwnerPID is gone before reaping SessionPGID. Zero
+	// means ownership is unknown and therefore fails safe.
 	OwnerPID int `json:"owner_pid,omitempty"`
 
-	// SessionJobHandle is the Windows Job Object handle for the PTY child
-	// subtree, reported by `agnt run` on Windows. The Windows equivalent
-	// of SessionPGID: every process assigned to this job (and its
-	// descendants) is killed when the job is terminated via
-	// platform.KillSessionJobObject. Zero on Unix or when the client
-	// didn't report one. Stored as uint64 because windows.Handle is not
-	// available outside the Windows build-tagged platform package.
+	// SessionJobHandle is a legacy wire field. Current clients always send
+	// 0, on every platform, and the daemon never acts on the value: a
+	// Windows handle is an index into the owning process's handle table,
+	// so the number `agnt run` holds names an unrelated object here.
 	//
-	// Caveat: job handles are per-process on Windows. This field is a
-	// best-effort hint for the daemon; the authoritative containment is
-	// JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE on the owning `agnt run`
-	// process. When the daemon IS the owner (shared process) or when
-	// the handle is still valid cross-process (e.g. via inheritance),
-	// explicit KillSessionJobObject at session cleanup accelerates
-	// teardown.
+	// Windows session containment is owned by `agnt run` alone: its Job
+	// Object carries JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, so the PTY child
+	// subtree dies when that process releases the handle or exits. A
+	// non-zero value can only come from an older client; it is stored,
+	// then reported and ignored at cleanup (killSessionJobObject in
+	// daemon_session_cleanup.go).
 	SessionJobHandle uint64 `json:"session_job_handle,omitempty"`
 
 	// Kind distinguishes classic (agnt-run-owned PTY) from session-host
@@ -183,6 +181,12 @@ func (s *Session) GetLastSeen() time.Time {
 func (s *Session) markDisconnectedIfStale(cutoff time.Time) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// A session-host session has no client heartbeat: the daemon owns its PTY
+	// and its liveness is the in-process sessionhost status, so it never goes
+	// stale here.
+	if s.Kind == SessionKindSessionHost {
+		return false
+	}
 	if s.Status == SessionStatusActive && s.LastSeen.Before(cutoff) {
 		s.Status = SessionStatusDisconnected
 		// Heartbeat-timeout disconnect ends the investigation exactly like an
@@ -369,29 +373,6 @@ func (r *SessionRegistry) TotalRegistered() int64 {
 // TotalUnregistered returns the total number of sessions unregistered.
 func (r *SessionRegistry) TotalUnregistered() int64 {
 	return r.totalUnregistered.Load()
-}
-
-// GenerateSessionCode generates a unique session code based on command name.
-// Returns codes like "claude-1", "claude-2", etc.
-func (r *SessionRegistry) GenerateSessionCode(command string) string {
-	// Find the next available number for this command prefix
-	maxNum := 0
-	prefix := command + "-"
-
-	r.sessions.Range(func(key, value interface{}) bool {
-		code := key.(string)
-		if len(code) > len(prefix) && code[:len(prefix)] == prefix {
-			var num int
-			if _, err := fmt.Sscanf(code[len(prefix):], "%d", &num); err == nil {
-				if num > maxNum {
-					maxNum = num
-				}
-			}
-		}
-		return true
-	})
-
-	return fmt.Sprintf("%s-%d", command, maxNum+1)
 }
 
 // Info returns statistics about the session registry.

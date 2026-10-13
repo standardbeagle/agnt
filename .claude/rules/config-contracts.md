@@ -20,6 +20,27 @@ A struct field nothing reads is a bug. Adding a key means tracing it to its cons
 | `project.port-conflict` | port preflight |
 | `shims.enabled` / `watch-script` / `rules` | `shims.Ensure` + `routeShim` / `WatchScriptName` / `shims.Resolve` |
 
+### Keys that parse but have no consumer (decision, 2026-10-13)
+
+These predate the rule and are in users' files, so removing the field would make an existing config fail to load (the parser rejects unknown nodes). They stay accepted and each one produces a warning saying it has no effect:
+
+| Key | File | Warning carried by |
+|-----|------|--------------------|
+| `proxies.<n>.websocket`, `ai.skill`, `ai.env` | `.agnt.kdl` | `AgntConfig.Warnings` → `surfaceConfigWarnings` → startup log (`config_warning`) |
+| `version`, `languages { … }` | global `config.kdl` | `Config.Warnings` (the daemon start path must log them; `debug.Log` alone does not count) |
+
+They are not in the default template or `docs/configuration.md`. Do not add a key to this list: a new key gets a consumer or is rejected at parse time. Detection is by presence in the document (`inspectAgntDocument`, `agnt_validate.go`), not by value, so `websocket false` warns too.
+
+## Validate what the unmarshaller cannot
+
+`agnt_validate.go` runs inside `ParseAgntConfig`:
+
+- **Closed sets** fail with the accepted values listed: `project.port-conflict`, `alerts.preset`. A consumer `switch` over such a value still needs a safe `default`.
+- **Number shape** is checked on the raw document, because kdl-go truncates a float into an `int` field without an error: `scripts.<n>.ports`, `proxies.<n>.listen-port` / `port` / `fallback-port` / `max-log-size`, `automation.max-sessions`. Ports are range-checked too.
+- **Custom unmarshalers skip kdl-go's unknown-property check.** `depends-on` rejects any property but `timeout` itself, and a negative timeout.
+
+The default template (`DefaultAgntConfigKDL`) must parse, and so must every example in it once uncommented (`TestDefaultAgntConfigKDL_ExamplesParse`).
+
 ## URL matchers
 
 `{url}` is removed and the rest used as a substring regex, after ANSI stripping. Test against real output from common dev servers (dotnet, vite, next, flask).

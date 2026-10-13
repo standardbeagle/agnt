@@ -152,3 +152,70 @@ func mustJSON(t *testing.T, v any) string {
 	require.NoError(t, err)
 	return string(b)
 }
+
+// TestPublishWithoutSessionReturnsCandidates pins the scope-gate wiring: a
+// connection with no bound session is not told a bare "no session" — it is
+// handed the active sessions to attach to, like every other gated verb. The
+// refusal must come from the scope gate (it names a session), and nothing may
+// have been created or listed on the way.
+func TestPublishWithoutSessionReturnsCandidates(t *testing.T) {
+	sockPath := shortSockPath(t)
+	d := newBootedDaemonWithConfig(t, DaemonConfig{SocketPath: sockPath})
+
+	owner := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
+	require.NoError(t, owner.Connect())
+	t.Cleanup(func() { _ = owner.Close() })
+	_, err := owner.SessionRegister("sess-owner", "/tmp/owner.sock", "/proj-a", "test", nil)
+	require.NoError(t, err)
+	res, err := owner.PublishCreate(protocol.PublishCreateRequest{Walkthrough: publishTestWalkthrough(t)})
+	require.NoError(t, err)
+
+	bare := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
+	require.NoError(t, bare.Connect())
+	t.Cleanup(func() { _ = bare.Close() })
+
+	_, err = bare.PublishList()
+	require.Error(t, err, "a session-less connection must not list shares")
+	require.Contains(t, err.Error(), "sess-owner", "the refusal must offer the active session as a candidate")
+	require.Contains(t, err.Error(), "/proj-a", "the candidate must name its project")
+
+	_, err = bare.PublishCreate(protocol.PublishCreateRequest{Walkthrough: publishTestWalkthrough(t)})
+	require.Error(t, err, "a session-less connection must not create a share")
+	require.Contains(t, err.Error(), "sess-owner")
+
+	_, err = bare.PublishStatus(res.ID)
+	require.Error(t, err, "a session-less connection must not address a share by id")
+	require.Contains(t, err.Error(), "sess-owner")
+
+	// The refused create stored nothing.
+	require.Len(t, d.publishStore.List("/proj-a"), 1, "the refused create must not have stored a share")
+
+	// Near miss: the owning session is unaffected.
+	list, err := owner.PublishList()
+	require.NoError(t, err)
+	require.Len(t, list.Shares, 1)
+}
+
+// TestPublishFeedbackUnknownCursorIsACallerError: an evicted or mistyped cursor
+// is reported as such, not served as a silent restart from the first row.
+func TestPublishFeedbackUnknownCursorIsACallerError(t *testing.T) {
+	d, c := bootPublishSession(t, "/proj-a")
+	res, err := c.PublishCreate(protocol.PublishCreateRequest{Walkthrough: publishTestWalkthrough(t)})
+	require.NoError(t, err)
+	require.NotNil(t, d.feedbackStore, "premise broken: the daemon has no feedback store")
+	require.NoError(t, d.feedbackStore.Accept(res.ID, "rev", "1.2.3.4:1", []byte(`{"message":"hi"}`)))
+
+	// Premise: an ordinary read returns the row.
+	fb, err := c.PublishFeedback(res.ID, "", 0)
+	require.NoError(t, err)
+	require.Len(t, fb.Rows, 1)
+
+	_, err = c.PublishFeedback(res.ID, "no-such-row", 0)
+	require.Error(t, err, "an unknown cursor must be an error")
+	require.Contains(t, err.Error(), "cursor does not match", "the error must be the cursor verdict, not a generic failure")
+
+	// Near miss: the id of a row that exists is a valid cursor.
+	fb, err = c.PublishFeedback(res.ID, fb.Rows[0].ID, 0)
+	require.NoError(t, err)
+	require.Len(t, fb.Rows, 0)
+}

@@ -19,16 +19,50 @@ scope {
 The default is `false`. A tool call's explicit `global: true` or `global: false`
 always overrides this setting; omitting `global` uses the project setting.
 
-## Hardcoded defaults (`main.go:31-36`)
+## The two config files
 
-```go
-ManagerConfig{
-    DefaultTimeout:    0,                    // No timeout
-    MaxOutputBuffer:   256 * 1024,          // 256KB
-    GracefulTimeout:   5 * time.Second,
-    HealthCheckPeriod: 10 * time.Second,
+| File | Scope | Read by | Sections |
+|---|---|---|---|
+| `<project>/.agnt.kdl` | one project | `config.LoadAgntConfig` (the directory itself only; no walk up the tree) | everything in this document except the three blocks below |
+| `$XDG_CONFIG_HOME/agnt/config.kdl` (default `~/.config/agnt/config.kdl`) | this user, every project | `config.LoadGlobalConfig`, when the daemon starts and for `agnt publish serve` | `settings`, `feedback`, `public-plane`, and `ai { adapters … }` |
+
+The parser is strict: an unknown node is an error, not something skipped. So
+a block written in the wrong file breaks that file. `feedback` or
+`public-plane` in `.agnt.kdl` fails the whole project config (no autostart
+scripts, no proxies), and `scripts` in the global file stops the daemon from
+starting. A malformed global config is fatal to daemon start on purpose: the
+limits in it are not allowed to fall back silently.
+
+The daemon reads the global file once, when it starts. Restart it
+(`agnt daemon stop`; the next command starts it again) after editing
+`settings`, `feedback` or `public-plane`.
+
+A value outside what a key accepts fails the parse with the accepted values in
+the message: an unknown `port-conflict` or `alerts.preset`, a fractional or
+out-of-range port, a misspelt `depends-on` property. A few keys are still
+accepted but do nothing (`proxies.<id>.websocket`, `ai.skill`, `ai.env`; in the
+global file, `version` and `languages`); each is reported as a `config_warning`
+rather than failing, and none of them is documented below.
+
+## Process manager settings (`settings` in the global `config.kdl`)
+
+```kdl
+settings {
+    default-timeout 0          // seconds a managed process may run; 0 = no limit (default)
+    max-output-buffer 262144   // bytes of output kept per stream (default 256 KiB)
+    graceful-timeout 5         // seconds between SIGTERM and SIGKILL on stop (default 5)
 }
 ```
+
+| Key | Default | Notes |
+|---|---|---|
+| `default-timeout` | `0` | Whole seconds; `0` means no timeout. A fractional value is refused rather than truncated, because truncating `0.5` would silently mean "no limit". |
+| `max-output-buffer` | `262144` | A non-positive value falls back to the default. |
+| `graceful-timeout` | `5` | Whole seconds; a non-positive value falls back to the default. |
+
+The defaults live in `config.DefaultConfig` (`internal/config/config.go`) and are
+threaded into the process manager by `newDaemonConfig` (`cmd/agnt/daemon.go`),
+which also fixes the health-check period at 10s (not configurable).
 
 ## Dev Server URL Tracking (`internal/daemon/urltracker.go`)
 
@@ -52,6 +86,8 @@ project {
 | `auto-kill` | Kill blocking process trees automatically, log what killed |
 | `skip` | Log warning, start scripts anyway and kill nothing (they'll fail on bind) |
 | `fail` | Abort autostart entirely |
+
+Any other value fails config parsing and names these four.
 
 A declined kill (`skip`, or `AUTOSTART CONTINUE`) also turns off the launch path's own pre-flight port cleanup and EADDRINUSE recovery for those scripts, including on later restarts; a held port is reported as `port_cleanup_declined` in the startup log.
 
@@ -86,7 +122,8 @@ scripts {
   defaults to 0. This is the one sentinel: a positive value (fractional or
   whole) enforces a hard upper bound; 0 removes the bound.
 - A non-numeric `timeout` fails the parse loudly rather than falling back to the
-  indefinite-wait default.
+  indefinite-wait default. So does a negative one, and so does any other
+  property: a misspelt `timout=30` is an error, not a silent wait-forever.
 - **A dependency that fails to start is not "ready".** Its dependents are not
   started; each is recorded as failed (`dependency_failed` in the startup log
   and autostart result) and the failure cascades to their own dependents. An
@@ -192,6 +229,13 @@ machine and nowhere else.
 | unset / `127.0.0.1` | this machine | no |
 | `"tailscale"` | this tailnet, authenticated and device-scoped | no |
 | `"0.0.0.0"`, or any literal non-loopback address | every network this machine is on | yes |
+
+Accepted spellings are exactly: an IP literal (IPv4 or IPv6, brackets optional:
+`"::1"` and `"[::1]"` are the same), `"localhost"` (bound as `127.0.0.1`), and
+`"tailscale"`. Anything else is refused when the proxy is created: a hostname
+(`"my-host.local"`), an address with a port (`"0.0.0.0:80"`), a zoned address
+(`"fe80::1%eth0"`), or any value that does not parse as an IP. `"::"` / `"[::]"`
+is every interface and needs `allow-external` like `"0.0.0.0"`.
 
 `bind "tailscale"` resolves to this node's tailnet IPv4 (`100.64.0.0/10`) when
 the proxy starts. It is written as that word rather than the address itself
@@ -589,7 +633,10 @@ dev config, or the breakout never sees the navigation.
 Interception routes, browser coverage, the MSAL caveat, and security notes:
 **[auth-breakout.md](auth-breakout.md)**.
 
-## Public Walkthrough Feedback (`internal/config/feedback.go`, `feedback` in `.agnt.kdl`)
+## Public Walkthrough Feedback (`internal/config/feedback.go`, `feedback` in the global `config.kdl`)
+
+This block lives in the per-user `~/.config/agnt/config.kdl`, **not** in a
+project's `.agnt.kdl` (where it is a parse error; see *The two config files*).
 
 The `feedback` block bounds the public-plane anonymous feedback sink used by
 published walkthroughs — the rate limit, per-post size cap, and retention ring.
@@ -599,8 +646,8 @@ See the operator guide: **[public-walkthroughs.md](public-walkthroughs.md)**.
 
 ```kdl
 feedback {
-    rate-per-minute 10       // sustained feedback POST budget per (share token, IP)
-    burst 5                  // token-bucket burst allowance per (share token, IP)
+    rate-per-minute 10       // sustained feedback POST budget per (share, client)
+    burst 5                  // token-bucket burst allowance per (share, client)
     max-body-bytes 4096      // max size of a single feedback POST body
     max-rows-per-share 500   // retention ring depth per share (oldest evicted)
     retention-days 90        // evict rows older than this many days
@@ -609,8 +656,8 @@ feedback {
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `rate-per-minute` | int | `10` | Sustained feedback POST budget per (share, IP). Excess ⇒ `429`. |
-| `burst` | int | `5` | Token-bucket burst allowance per (share, IP). |
+| `rate-per-minute` | int | `10` | Sustained feedback POST budget per (share, client). Excess ⇒ `429`, charged before the body is read. |
+| `burst` | int | `5` | Token-bucket burst allowance per (share, client). |
 | `max-body-bytes` | int | `4096` | Per-POST body cap. Over-cap ⇒ `413` (never truncated). |
 | `max-rows-per-share` | int | `500` | Retention ring depth per share; oldest row evicted. |
 | `retention-days` | int | `90` | Rows older than this are evicted. Retention is **500 rows OR 90 days, whichever first**. |
@@ -621,8 +668,14 @@ a guard (a `0` rate would mean "never allow"; a `0` cap would mean "reject
 everything"), so it is always replaced with the safe default rather than left
 unbounded.
 
+Behind the per-(share, client) bucket sits a **per-share aggregate** bucket at 6×
+the configured rate and burst (60/min, burst 30 at the defaults). The per-client
+bucket is charged first, so one client cannot drain a share alone, and a flood
+spread over many addresses is bounded per share. *Client* is defined under
+*Who a client is* below.
+
 The `feedback` block is defined in `internal/config` (`KDLFeedback` →
-`config.FeedbackConfig`), parses from `.agnt.kdl`, and is honored by the live
+`config.FeedbackConfig`), parses from the global `config.kdl`, and is honored by the live
 limiter: `runDaemonStart` (`cmd/agnt/daemon.go`) loads the config and threads
 `Feedback` into `DaemonConfig.FeedbackLimits`, and `buildPublicPlane` normalizes
 only the *unset* fields to the spec §5 defaults above. A non-default value you set
@@ -655,7 +708,9 @@ interfaces — LAN-reachable without a tunnel. Per the operator posture
 any widening is a deliberate operator decision. Prefer `127.0.0.1:8899` plus a
 tunnel unless you intend direct LAN/public reach; a non-loopback bind logs a
 loud `public_listener_external` startup advisory (it is surfaced, never
-rejected). The same applies to `agnt publish serve --addr`.
+rejected). The same applies to `agnt publish serve --addr`, whose default is
+`127.0.0.1:8899`; a bare `:port` or `0.0.0.0` there binds every interface and
+prints a warning.
 
 **Bounds an operator sees without reading source.** Whatever interface it binds,
 the public listener is hardened to public standard *unconditionally* (the same
@@ -671,10 +726,12 @@ caps hold whether or not you later point a tunnel at it):
 
 ### `public-plane` block (request-rate limits)
 
+Like `feedback`, this block lives in the global `~/.config/agnt/config.kdl`.
+
 ```kdl
 public-plane {
-    artifact-rate-per-minute 240   // sustained share GET budget per (share, IP)
-    artifact-burst 128             // token-bucket burst for share GETs per (share, IP)
+    artifact-rate-per-minute 240   // sustained share GET budget per (share, client)
+    artifact-burst 128             // token-bucket burst for share GETs per (share, client)
     outbound-rate-per-minute 120   // sustained guarded upstream-fetch budget per ORIGIN
     outbound-burst 96              // token-bucket burst per upstream origin
 }
@@ -682,8 +739,8 @@ public-plane {
 
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
-| `artifact-rate-per-minute` | int | `240` | Sustained `GET` budget per (share, IP), shared by the document, its subresources, `variants.json`, and `walkthrough.json`. Excess ⇒ `429` (constant body, no share id/token). |
-| `artifact-burst` | int | `128` | Burst allowance per (share, IP). One page load is the document, both JSON snapshots, and up to 64 rewritten subresources (more for references inside stylesheets), so the burst must exceed that fan-out. |
+| `artifact-rate-per-minute` | int | `240` | Sustained `GET` budget per (share, client), shared by the document, its subresources, `variants.json`, and `walkthrough.json`. Excess ⇒ `429` (constant body, no share id/token). |
+| `artifact-burst` | int | `128` | Burst allowance per (share, client). One page load is the document, both JSON snapshots, and up to 64 rewritten subresources (more for references inside stylesheets), so the burst must exceed that fan-out. |
 | `outbound-rate-per-minute` | int | `120` | Guarded upstream-fetch budget **per upstream origin, across all shares**. Every redirect hop is charged to the origin it lands on. Over-budget ⇒ `503` before any outbound socket opens. |
 | `outbound-burst` | int | `96` | Burst allowance per upstream origin. Must cover one document plus its rewritten subresources (up to 64) when they share the document's origin. |
 
@@ -695,6 +752,41 @@ unbounded outbound traffic at someone else's server. The origin allowlist
 Its default is deliberately tighter than the inbound cap because it protects a
 third party, not the daemon. An unset or non-positive key falls back to the
 default (a guard is never disabled by omission).
+
+**Who a client is.** Every per-client limit above, and the feedback limit, keys
+on one resolved address (`PublicHandler.remoteAddr`, reduced by
+`clientRateKey`):
+
+- IPv4 (including IPv4-mapped IPv6) is keyed by the address; IPv6 by its **/64**,
+  so rotating through a delegated prefix does not earn fresh buckets.
+- The address is the **socket peer**, with one exception: `agnt publish serve
+  --tunnel <provider>` takes it from the tunnel it started — only once that
+  tunnel is up, and only for requests whose socket peer is loopback (the local
+  tunnel agent). `cloudflare`: `CF-Connecting-IP`. `ngrok` and `tailscale`: the
+  **rightmost** entry of `X-Forwarded-For`, which is the one the local agent
+  appended; entries to its left are whatever the viewer sent and are never
+  read. A missing header, or a value that is not an IP address, falls back to
+  the socket peer. The `ngrok` / `tailscale` rule is **unverified against a
+  live tunnel** (it follows those agents' generally known behaviour, not a
+  capture); the per-share aggregate bucket below bounds a share either way.
+- The daemon's `AGNT_PUBLIC_ADDR` listener **always** uses the socket peer. It
+  starts no tunnel of its own, so there is no hop whose header it can trust,
+  and there is no trusted-proxy setting. Behind a tunnel or reverse proxy you
+  run yourself, all viewers share one per-client bucket and the per-share
+  aggregate is the effective bound.
+
+Limits that are not configurable (`internal/proxy/public_routes.go`):
+
+- **Per-share aggregate** — every share `GET` also draws on a per-share bucket at
+  8× the artifact rate and burst (1920/min, burst 1024 at the defaults; it scales
+  with `artifact-rate-per-minute` / `artifact-burst`). The per-client bucket is
+  charged first. Excess ⇒ `429`.
+- **Pre-token per-client cap** — 2400 requests/min, burst 4096, per client, charged
+  before the token is verified. It is the only cap on the token-less paths
+  (`404`/`403`, the bundle asset, token guessing). Excess ⇒ `429`.
+- **Concurrent upstream fetches** — at most 32 guarded upstream fetches in flight
+  across the whole plane. A request waits up to 5s for a slot, then gets `503`
+  with no fetch made.
 
 The **dev proxy is intentionally not rate-capped**: it forwards to your own
 backend, so the third-party amplification argument does not apply; its
@@ -755,3 +847,105 @@ bin dirs, last-session teardown removes the project's bin dir, and a detached
 manifest entry if the daemon stays dead past a 30s grace window (daemon
 auto-restart wins the race). Install bookkeeping lives in
 `$XDG_STATE_HOME/agnt/shims/manifest.json`.
+
+## Key index for the remaining `.agnt.kdl` blocks
+
+Every key the parser accepts that has no section of its own above. The struct
+definitions in `internal/config/agnt.go` carry the full comments.
+
+### `project`
+
+| Key | Notes |
+|---|---|
+| `type`, `name` | Informational only; nothing reads them. |
+| `port-conflict` | See *Port Conflict Pre-flight*. |
+
+### `scripts.<name>`
+
+| Key | Notes |
+|---|---|
+| `run` | Shell command line. Run with `sh -c`, or `cmd.exe /c` on Windows and for a Windows-path `cwd`/command under WSL. |
+| `command`, `args` | Executable and arguments, as the alternative to `run` (no shell). |
+| `shell`, `shell-args` | Override the shell `run` uses. Without `shell-args` the flag is inferred from the shell's name (`/c`, `-Command`, `-c`). |
+| `cwd` | Working directory, relative to the project root. |
+| `env { NAME "value" }` | Extra environment for the script. |
+| `autostart` | Start when a session opens. |
+| `auto-restart` | Restart when the process exits. Default `false`. |
+| `ports` | Ports the script listens on (1–65535), used by port pre-flight and EADDRINUSE recovery. |
+| `url-matchers` | Patterns such as `"Listening on {url}"` that narrow URL detection in the script's output. |
+| `depends-on` | See *Script Dependency Timeouts*. |
+| `hooks { on-start on-stop on-crash on-restart }` | See *Lifecycle Hooks*. |
+
+### `proxies.<id>`
+
+| Key | Notes |
+|---|---|
+| `url` | Target URL, e.g. `"http://localhost:3000"`. |
+| `port`, `host` | Shorthand for `http://<host>:<port>`; `host` defaults to `localhost`. |
+| `target` | Older spelling of `url`; still accepted. |
+| `script` | Link to a script: the proxy is created when a URL is detected in that script's output. |
+| `url-pattern` | Regex choosing among several detected URLs (e.g. `":34115"`). |
+| `fallback-port` | With `script`: the port to proxy if no URL is detected within 30s. |
+| `autostart` | Start with the session. A proxy with an explicit target and no `script` autostarts anyway. |
+| `listen-port` | Fixed port for the proxy itself (1–65535). The proxy binds exactly this port or fails; unset picks a stable hash-derived port. |
+| `bind`, `allow-external` | See *Proxy Bind Address*. |
+| `public-url`, `status-url` | See *Proxy Display Address*. |
+| `cloudflare-tunnel { … }` | See *Named Cloudflare Tunnel*. |
+| `skip-tls-verify` | Do not verify the target's TLS certificate. Default `false`. Without it, a certificate-verification failure is bypassed automatically (with a warning diagnostic) only when the target is `localhost` or every address it resolves to is loopback, private, link-local or a tailnet peer. Any other HTTPS target with a bad certificate fails with the certificate error and an error diagnostic until `skip-tls-verify` is set. |
+| `wait-for` | Script names that must be running before the proxy forwards; until then requests get `503`. Every name must be a declared script. |
+| `max-log-size` | Traffic-log entries kept. Default `1000`. |
+
+### `ai`
+
+| Key | Notes |
+|---|---|
+| `context` | Short project description placed at the top of the system prompt. |
+| `append-system-prompt` | Text appended to the default system prompt. |
+| `system-prompt` | Replaces the default system prompt entirely. |
+| `helpers-cheat-sheet` | `false` omits the `__devtool.*` cheat sheet. Default `true`. |
+| `persist-context` | `false` stops `agnt run` writing its steering block into the agent's context file. Default `true`. |
+| `adapters { <agent> { disabled flag-name stdin-delay-ms aliases } }` | Per-agent injection overrides; see [agent-adapters.md](agent-adapters.md). Also read from the global `config.kdl`. |
+
+### `alerts` (keys not covered by *Alert Push Channels* and *Error Retention*)
+
+| Key | Default | Notes |
+|---|---|---|
+| `enabled` | `true` | Process-output alert monitoring. |
+| `batch-window` | `3` | Seconds alerts are batched before delivery. |
+| `dedupe-window` | `60` | Seconds a duplicate alert is suppressed. |
+| `patterns { <id> { pattern severity } }` | none | Custom patterns: a regex and `error`, `warning` or `info`. |
+| `disable` | none | Built-in pattern ids to turn off. |
+| `auto-forward { enabled sources debounce severity }` | on, `"browser" "http"`, `10`, `"error"` | Forwarding of browser and proxy errors to the agent; `debounce` is in seconds. |
+| `outage-hold { enabled window-ms transport-err-threshold transport-err-window-ms recovery-debounce-ms js-cascade-patterns }` | on, `3000`, `1`, `1000`, `500`, built-in list | Holds transport-cascade errors while a dev server restarts. |
+| `incident-pipeline` | — | Accepted and ignored; see *Alert Push Channels*. |
+
+### `channel`
+
+MCP event forwarding; see [channel-mode.md](channel-mode.md).
+
+| Key | Default | Notes |
+|---|---|---|
+| `enabled` | `false` | |
+| `events` | all | Any of `error`, `diagnostic`, `interaction`, `http`, `custom`, `panel_message`, `responsive_request`. |
+| `severity` | `"warning"` | Minimum severity: `trace`, `debug`, `info`, `warning`, `error`. |
+| `dedupe-window` | `2000` | Milliseconds; `0` disables deduplication. |
+| `reply-tool` | `true` | Register the channel-reply tool. |
+
+### `session`
+
+| Key | Default | Notes |
+|---|---|---|
+| `orphan-pgid-scan` | `true` | At daemon start, reap process groups whose session leader died (Linux, macOS). |
+| `detach-key` | `"ctrl-\ ctrl-\"` | The `agnt attach` detach chord: two space-separated `ctrl-<char>` tokens. |
+
+### `setup`
+
+| Key | Default | Notes |
+|---|---|---|
+| `renudge-ttl-days` | `7` | Days the first-run setup prompt stays quiet after being declined. |
+
+### `hook-rules`
+
+`bypass-env`, `bash-patterns { <name> { pattern action replacement reason } }`
+and `prompt-patterns { <name> { pattern reminder } }`; see
+[hook-rules.md](hook-rules.md).

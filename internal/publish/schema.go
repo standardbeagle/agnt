@@ -32,13 +32,15 @@ func isSupportedVersion(v SchemaVersion) bool { return supportedVersions[v] }
 // is a switch over these and an unknown op is a rejection, never a passthrough.
 //
 // INV-6 RETIRED 2026-07-27: the vocabulary now also carries raw-content ops
-// (§6a) holding publisher-authored CSS/HTML/script strings. INV-6 defended
+// (§6a) holding publisher-authored CSS and HTML strings. INV-6 defended
 // against author-supplied strings, but the author here is the publisher — a
 // trusted actor holding the dev session (§0) — so it guarded the wrong boundary
 // while making the visual variants publishing exists to demo inexpressible.
-// Containment moved to CSP: publisher script runs only because its sha256 is
-// pinned in the served revision's script-src (INV-11/INV-12), so upstream- and
-// viewer-injected script still cannot execute.
+// Containment is CSP: script-src names the public bundle's hash and nothing
+// else (INV-11/INV-12), so no markup a variant writes can execute.
+//
+// Authored SCRIPT is not part of the vocabulary. addScript is a named op only
+// so that it can be refused by name (INV-14, see errAddScriptRefused).
 type OpType string
 
 const (
@@ -51,8 +53,11 @@ const (
 	OpSetImageSrc  OpType = "setImageSrc"
 
 	// Raw-content ops (§6a), admitted by INV-6's retirement.
-	OpSetHTML   OpType = "setHTML"
-	OpAddStyle  OpType = "addStyle"
+	OpSetHTML  OpType = "setHTML"
+	OpAddStyle OpType = "addStyle"
+
+	// OpAddScript is REFUSED everywhere (INV-14): at publish by Op.Validate and
+	// at load by Store.load. The constant exists to name the op in that refusal.
 	OpAddScript OpType = "addScript"
 )
 
@@ -63,7 +68,7 @@ const (
 type Op struct {
 	Op OpType `json:"op"`
 	// Selector is required by every element-targeting op and forbidden on the
-	// variant-root ops (addStyle, addScript).
+	// variant-root op (addStyle).
 	Selector string            `json:"selector,omitempty"`
 	Value    string            `json:"value,omitempty"` // setText, addClass, removeClass, setAttribute
 	Name     string            `json:"name,omitempty"`  // setAttribute
@@ -73,15 +78,13 @@ type Op struct {
 	Props    map[string]string `json:"props,omitempty"` // applyStyle
 	HTML     string            `json:"html,omitempty"`  // setHTML: raw fragment, assigned via innerHTML
 	CSS      string            `json:"css,omitempty"`   // addStyle: raw CSS text for a <style> on the variant root
-	Code     string            `json:"code,omitempty"`  // addScript: inline script body
-	// Src is addScript's alternative body source and is a PUBLISH-TIME FETCH
-	// INPUT, never a runtime attribute (§6a): the daemon fetches it once at
-	// publish time under §4a/INV-13 and inlines the bytes, so no <script src>
-	// ever reaches the served DOM and script-src is never widened to a host
-	// source (INV-12). Src and Code are alternatives; supplying both is a
-	// rejection. The fetch itself belongs to the publish pipeline, not to this
-	// package — here Src is validated as an https URL only.
-	Src string `json:"src,omitempty"`
+	// Code and Src are the two body forms of the refused addScript op. Nothing
+	// reads either one. They are decoded so that an artifact carrying addScript
+	// — a hand-written file, or a record stored before 2026-08-18 — is refused
+	// with the INV-14 reason instead of a JSON "unknown field" error; on any
+	// OTHER op a populated Code/Src is still rejected as a stray field.
+	Code string `json:"code,omitempty"`
+	Src  string `json:"src,omitempty"`
 }
 
 // Variant is one alternative rendering the cycler can switch to. Ops are applied
@@ -93,8 +96,8 @@ type Variant struct {
 }
 
 // VariantSet is a versioned, immutable snapshot of the variants for a published
-// walkthrough. StepID, when set, records the step this set is bound to
-// (see BindVariantSet).
+// walkthrough. StepID, when set, records the step this set is bound to;
+// PublishedWalkthrough.Validate checks that step exists.
 type VariantSet struct {
 	Version  SchemaVersion `json:"version"`
 	ID       string        `json:"id"`

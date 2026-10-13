@@ -466,6 +466,15 @@ func (s *Scheduler) deliverTask(task *ScheduledTask) {
 		return
 	}
 
+	// The code alone does not identify the session the task was scheduled for:
+	// a task restored from disk, or one that outlived its session, can meet a
+	// different session under the same code. The message is typed into an
+	// agent's PTY, so it only goes to a session in the task's own project.
+	if task.ProjectPath != "" && normalizePath(session.ProjectPath) != normalizePath(task.ProjectPath) {
+		s.handleDeliveryFailure(task, fmt.Sprintf("session %q now belongs to a different project", task.SessionCode))
+		return
+	}
+
 	// Create HTTP client for overlay socket
 	client := s.createOverlayClient(session.OverlayPath)
 
@@ -658,6 +667,81 @@ func (s *Scheduler) Cancel(taskID string) error {
 	return nil
 }
 
+// CancelSession cancels every pending task addressed to sessionCode and
+// returns how many it cancelled. Called when the session is retired. A task
+// already being delivered is left to finish.
+func (s *Scheduler) CancelSession(sessionCode string) int {
+	if sessionCode == "" {
+		return 0
+	}
+	cancelled := 0
+	s.tasks.Range(func(_, value interface{}) bool {
+		task := value.(*ScheduledTask)
+		if task.SessionCode != sessionCode {
+			return true
+		}
+		if task.CompareAndSwapStatus(taskStatusPending, taskStatusCancelled) {
+			s.totalCancelled.Add(1)
+			s.removeTaskFromStorage(task)
+			cancelled++
+		}
+		return true
+	})
+	return cancelled
+}
+
+// RestoreProject loads the pending tasks persisted for projectPath into the
+// scheduler and returns how many it added. Task state lives in the project
+// directory, and the daemon only learns which projects exist as their
+// sessions register, so this runs on SESSION REGISTER; Start has no project
+// list to restore from on a fresh daemon. Safe to call repeatedly: a task
+// already scheduled is not added twice.
+func (s *Scheduler) RestoreProject(projectPath string) int {
+	if s.stateMgr == nil || projectPath == "" {
+		return 0
+	}
+	tasks, err := s.stateMgr.LoadTasks(projectPath)
+	if err != nil {
+		debug.Warn("scheduler", "failed to restore scheduled tasks for %s: %v", projectPath, err)
+		return 0
+	}
+	restored := 0
+	for _, task := range tasks {
+		// Keep the ID counter ahead of every persisted ID.
+		if n, ok := parseTaskIDNum(task.ID); ok {
+			for {
+				cur := s.nextTaskID.Load()
+				if n <= cur || s.nextTaskID.CompareAndSwap(cur, n) {
+					break
+				}
+			}
+		}
+		if task.Status() != TaskStatusPending {
+			continue
+		}
+		existing, loaded := s.tasks.LoadOrStore(task.ID, task)
+		if !loaded {
+			restored++
+			continue
+		}
+		if existing.(*ScheduledTask) == task {
+			continue // already scheduled in this daemon lifetime
+		}
+		// The ID was issued again before this project's session came back.
+		// Re-key the restored task rather than drop it.
+		// Out of the persisted set first: once removed, nothing else holds
+		// the task, so its ID can change.
+		if err := s.stateMgr.RemoveTask(task.ID, projectPath); err != nil {
+			debug.Warn("scheduler", "failed to re-key restored task %q: %v", task.ID, err)
+		}
+		task.ID = fmt.Sprintf("task-%d", s.nextTaskID.Add(1))
+		s.tasks.Store(task.ID, task)
+		s.persistTask(task)
+		restored++
+	}
+	return restored
+}
+
 // GetTask retrieves a task by ID.
 func (s *Scheduler) GetTask(taskID string) (*ScheduledTask, bool) {
 	val, ok := s.tasks.Load(taskID)
@@ -674,21 +758,6 @@ func (s *Scheduler) ListTasks(projectPath string, global bool) []*ScheduledTask 
 		task := value.(*ScheduledTask)
 		if global || projectPath == "" || task.ProjectPath == projectPath {
 			result = append(result, task)
-		}
-		return true
-	})
-	return result
-}
-
-// ListPendingTasks returns only pending tasks.
-func (s *Scheduler) ListPendingTasks(projectPath string, global bool) []*ScheduledTask {
-	var result []*ScheduledTask
-	s.tasks.Range(func(key, value interface{}) bool {
-		task := value.(*ScheduledTask)
-		if task.Status() == TaskStatusPending {
-			if global || projectPath == "" || task.ProjectPath == projectPath {
-				result = append(result, task)
-			}
 		}
 		return true
 	})

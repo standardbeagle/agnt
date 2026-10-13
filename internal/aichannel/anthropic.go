@@ -18,9 +18,15 @@ type AnthropicProvider struct {
 }
 
 // Default Anthropic models
+//
+// AnthropicModelHaiku was "claude-haiku-3-5-20241022", which is not a model ID
+// the API has ever served (the 3.5 Haiku ID put the version before the tier).
+// It is Haiku 4.5 rather than the newer Haiku 5.5 on purpose: this provider
+// sends no `thinking` field and a 1024-token default cap, and Haiku 5.5 thinks
+// by default, which would spend that cap before any answer text.
 const (
 	AnthropicModelSonnet = "claude-sonnet-4-5-20250929"
-	AnthropicModelHaiku  = "claude-haiku-3-5-20241022"
+	AnthropicModelHaiku  = "claude-haiku-4-5"
 	AnthropicModelOpus   = "claude-opus-4-5-20251101"
 )
 

@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -76,8 +77,27 @@ type ProxyServer struct {
 	requestSeq        atomic.Int64
 	mu                sync.Mutex
 	cancelFunc        context.CancelFunc
-	wsConns           sync.Map     // Active WebSocket connections
-	lastError         atomic.Value // stores last error (string) if server crashed
+	// started and stopAnnounced are guarded by mu: Start succeeded, and the
+	// matching proxy_stopped diagnostic has been emitted.
+	started       bool
+	stopAnnounced bool
+	// wsConns is the registry of live control WebSocket connections
+	// (connID → *asyncWSWriter). Readers: broadcastRaw (toasts, exec, chaos
+	// state — user-visible) and Stop. Entries are retired by identity
+	// (CompareAndDelete), never by id alone.
+	wsConns sync.Map
+	// wsConnSeq and execSeq mint connection and exec ids. A counter, not the
+	// clock: time.Now() advances in timer ticks on Windows, so two upgrades in
+	// one tick shared an id and overwrote each other's registry entry.
+	wsConnSeq atomic.Int64
+	execSeq   atomic.Int64
+	// outageStart is the UnixNano of the first upstream failure since the last
+	// successful response (0 = no outage). The loading page's give-up budget is
+	// measured from it. Access via noteUpstreamFailure/noteUpstreamSuccess.
+	// lastUpstreamFailure is the UnixNano of the most recent failure.
+	outageStart         atomic.Int64
+	lastUpstreamFailure atomic.Int64
+	lastError           atomic.Value // stores last error (string) if server crashed
 
 	// Ready signal - closed when server is ready to accept connections
 	ready     chan struct{}
@@ -111,15 +131,16 @@ type ProxyServer struct {
 	// needs the current address after a restart calls liveAddr() instead.
 	boundAddr atomic.Pointer[string]
 
-	// Base transport for connection pool management (CloseIdleConnections on backend restart)
-	baseTransport *http.Transport
+	// Backend connection pools, for FlushConnections and Stop. Exactly one is
+	// set: tlsFallback for an HTTPS target without skip-tls-verify (it owns a
+	// verifying and a non-verifying pool), baseTransport otherwise. Both are
+	// swapped in place, so the transport chain itself is immutable after
+	// construction.
+	baseTransport *swapTransport
+	tlsFallback   *TLSFallbackTransport
 
 	// Overlay notifier for sending events to agent overlay
 	overlayNotifier *OverlayNotifier
-
-	// namedCaptures maps screenshot names to file paths for cross-goroutine lookup.
-	// Used by proxy exec screenshots: the WebSocket goroutine writes, MCP tool handler reads.
-	namedCaptures sync.Map // map[string]string: name → filePath
 
 	// Voice sessions for speech-to-text (map[connID]*VoiceSession)
 	voiceSessions sync.Map
@@ -155,7 +176,10 @@ type ProxyServer struct {
 	backoffDuration atomic.Int64
 
 	// Session client factory for handling session API requests from browser
-	sessionClientFactory SessionClientFactory
+	// Atomic: the daemon installs it after the proxy is constructed (the
+	// wireProxyLogger chokepoint), by which time a restored proxy may already
+	// be serving. Access via SetSessionClientFactory / sessionClient.
+	sessionClientFactory atomic.Pointer[SessionClientFactory]
 
 	// readiness gates the forwarding path while the proxy is waiting for
 	// declared script dependencies to reach Running Healthy (or Running
@@ -298,19 +322,33 @@ func resolveTailnetBind(resolve func(context.Context) string) (string, error) {
 	return addr, nil
 }
 
-// isExternalBindAddress returns true if the address would expose the proxy
-// beyond localhost (e.g. 0.0.0.0, ::, or any non-loopback IP).
-func isExternalBindAddress(addr string) bool {
-	switch addr {
-	case "", "127.0.0.1", "localhost", "::1":
-		return false
-	default:
-		ip := net.ParseIP(addr)
-		if ip == nil {
-			return false // unparseable, let net.Listen fail later
-		}
-		return !ip.IsLoopback()
+// classifyBindAddress turns a configured bind address into the literal IP the
+// proxy listens on and says whether that IP is reachable beyond this machine.
+//
+// It is default-deny. Only three spellings are accepted: empty or "localhost"
+// (both 127.0.0.1), and a literal IP address, with or without the brackets
+// IPv6 is usually written in. Anything else — a hostname above all — is an
+// error, never "let net.Listen sort it out": the classification below is the
+// allow-external gate, and a value it cannot classify is one it cannot gate.
+// (The previous version reported every unparseable value as not external, so
+// bind "[::]" listened on all interfaces without allow-external, and a
+// hostname bound wherever the resolver said.)
+//
+// The BindTailscale token is not handled here; NewProxyServer resolves it to
+// an address first and that address is what gets classified.
+func classifyBindAddress(addr string) (ip string, external bool, err error) {
+	addr = strings.TrimSpace(addr)
+	if len(addr) >= 2 && addr[0] == '[' && addr[len(addr)-1] == ']' {
+		addr = addr[1 : len(addr)-1]
 	}
+	if addr == "" || strings.EqualFold(addr, "localhost") {
+		return "127.0.0.1", false, nil
+	}
+	parsed, perr := netip.ParseAddr(addr)
+	if perr != nil || parsed.Zone() != "" {
+		return "", true, fmt.Errorf("bind %q is not a usable bind address: use an IP address, %q or %q", addr, "localhost", BindTailscale)
+	}
+	return parsed.String(), !parsed.Unmap().IsLoopback(), nil
 }
 
 // DefaultPortForURL computes a stable default port based on the target URL.
@@ -354,10 +392,7 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 	}
 
 	// Default bind address to localhost for security
-	bindAddress := config.BindAddress
-	if bindAddress == "" {
-		bindAddress = "127.0.0.1"
-	}
+	bindAddress := strings.TrimSpace(config.BindAddress)
 
 	// A tailnet bind is its own posture: reachable only from this tailnet,
 	// authenticated and device-scoped, and never from the LAN. It is granted
@@ -371,6 +406,12 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 		}
 		bindAddress, tailnetBind = resolved, true
 	}
+
+	// From here bindAddress is a literal IP: every other spelling is refused.
+	bindAddress, externalBind, err := classifyBindAddress(bindAddress)
+	if err != nil {
+		return nil, err
+	}
 	var tailnetTLSState *tailnetTLS
 	var tailnetHTTPSReason string
 	if tailnetBind {
@@ -378,7 +419,7 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 	}
 
 	// Reject non-localhost bind addresses unless explicitly allowed
-	if isExternalBindAddress(bindAddress) && !tailnetBind {
+	if externalBind && !tailnetBind {
 		if !config.AllowExternal {
 			return nil, fmt.Errorf("binding to %s exposes the proxy to the network; set allow_external: true to confirm", bindAddress)
 		}
@@ -405,9 +446,11 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 	}
 
 	ps := &ProxyServer{
-		ID:                  config.ID,
-		TargetURL:           targetURL,
-		ListenAddr:          fmt.Sprintf("%s:%d", bindAddress, config.ListenPort),
+		ID:        config.ID,
+		TargetURL: targetURL,
+		// JoinHostPort brackets an IPv6 literal; "%s:%d" made "::" into the
+		// unlistenable ":::port".
+		ListenAddr:          net.JoinHostPort(bindAddress, strconv.Itoa(config.ListenPort)),
 		Path:                config.Path,
 		BindAddress:         bindAddress,
 		AllowExternal:       config.AllowExternal,
@@ -520,19 +563,29 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 	// ResponseHeaderTimeout is 0 (no limit) because upstream APIs like Figma
 	// may take 4-5+ seconds to respond. The custom DialContext handles dead
 	// backend detection via TCP connect timeout instead.
+	var httpTransport *http.Transport
 	if transport, ok := baseTransport.(*http.Transport); ok {
 		transport.ResponseHeaderTimeout = 0          // No limit - slow APIs are valid
 		transport.IdleConnTimeout = 60 * time.Second // Amortize TLS handshake on HTTPS upstreams (was 10s — too aggressive, forced reconnects during bursts)
 		transport.MaxIdleConnsPerHost = 6            // Limit pooled connections per backend
-		ps.baseTransport = transport
+		httpTransport = transport
 	}
 
 	// For HTTPS targets without an explicit SkipTLSVerify, wrap the transport
 	// in a TLSFallbackTransport that retries cert errors without verification,
 	// logs a warning, and sets tlsCertSkipped so new WS clients receive a toast.
+	// The bypass applies only to loopback/private/tailnet targets; any other
+	// target keeps verification and reports cert_verification_failed.
+	//
+	// Either way the *http.Transport sits behind a swapTransport, which is what
+	// FlushConnections replaces: the wrappers above it are never reassigned.
+	if httpTransport != nil && (config.SkipTLSVerify || targetURL.Scheme != "https") {
+		ps.baseTransport = newSwapTransport(httpTransport)
+		baseTransport = ps.baseTransport
+	}
 	if !config.SkipTLSVerify && targetURL.Scheme == "https" {
-		if baseT, ok := baseTransport.(*http.Transport); ok {
-			baseTransport = NewTLSFallbackTransport(baseT, func(certErr error) {
+		if baseT := httpTransport; baseT != nil {
+			fallback := NewTLSFallbackTransport(baseT, func(certErr error) {
 				debug.Warn("proxy", "TLS cert error for proxy %s (%s): %v — retrying without verification", config.ID, config.TargetURL, certErr)
 				ps.tlsCertSkipped.Store(true)
 				// Emit a warning-level diagnostic rather than a level="warn"
@@ -555,6 +608,24 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 					},
 				})
 			})
+			fallback.allow = isLocalFallbackTarget
+			fallback.onRefused = func(certErr error) {
+				debug.Warn("proxy", "TLS cert error for proxy %s (%s): %v — not bypassed, target is not local", config.ID, config.TargetURL, certErr)
+				ps.logger.LogDiagnostic(ProxyDiagnostic{
+					Timestamp: time.Now(),
+					Level:     DiagnosticError,
+					Category:  "proxy",
+					Event:     "cert_verification_failed",
+					Message:   "TLS certificate verification failed and was NOT bypassed: the automatic bypass applies only to loopback, private and tailnet targets. Set skip-tls-verify on this proxy to accept the certificate.",
+					Target:    config.TargetURL,
+					Data: map[string]any{
+						"proxy_id":   config.ID,
+						"cert_error": certErr.Error(),
+					},
+				})
+			}
+			ps.tlsFallback = fallback
+			baseTransport = fallback
 		}
 	}
 
@@ -730,6 +801,7 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 	}))
 
 	ps.startTime = time.Now()
+	ps.started = true
 	ps.running.Store(true)
 
 	// Start server in goroutine using existing listener, capped to a bounded
@@ -741,7 +813,9 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 	go ps.runHealthCheck(ctx)
 
 	if ps.namedTunnelSetup != nil {
-		ps.startNamedTunnel(ctx, handler)
+		// The unwrapped mux: the ingress applies the rate cap itself, outside
+		// its Access guard.
+		ps.startNamedTunnel(ctx, mux)
 	}
 
 	// Emit a lifecycle diagnostic so STREAM-EVENTS consumers (e.g. agnt ssh's
@@ -958,6 +1032,17 @@ func (ps *ProxyServer) runServer(ctx context.Context, listener net.Listener) {
 			// Re-cap on restart exactly as at initial bind (same Streaming caps),
 			// so an auto-restart never silently drops the bounds.
 			restartCaps := httpcaps.Streaming()
+			// Publish the rebound server under ps.mu, re-checking the context
+			// there. Stop cancels under the same lock, so either it ran first
+			// (seen here: drop the listener and exit) or it runs after and
+			// shuts down the server stored below. Without this a Stop landing
+			// in the backoff window left a live listener nothing would stop.
+			ps.mu.Lock()
+			if ctx.Err() != nil {
+				ps.mu.Unlock()
+				_ = newListener.Close()
+				return
+			}
 			listener = ps.wrapTLS(restartCaps.LimitListener(newListener))
 			ps.setBoundAddr(newAddr)
 			ps.httpServer.Store(restartCaps.Apply(&http.Server{
@@ -968,6 +1053,7 @@ func (ps *ProxyServer) runServer(ctx context.Context, listener net.Listener) {
 				},
 			}))
 			ps.running.Store(true)
+			ps.mu.Unlock()
 
 			// Continue loop to restart server
 			continue

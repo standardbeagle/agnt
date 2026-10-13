@@ -19,6 +19,19 @@ func withOverride(a Adapter, ov Override) Adapter {
 	return &overriddenAdapter{inner: a, override: ov}
 }
 
+// InjectionDisabled reports whether a carries a `disabled true` override.
+//
+// BuildArgs and InitialStdin already go quiet for a disabled adapter, but
+// those are not the only delivery channels: `agnt run` also persists guidance
+// into the agent's context file (AGENTS.md, GEMINI.md, …), and that write is
+// keyed on the adapter's name, which an override does not change. Callers
+// that deliver the prompt any other way must ask here first, or `disabled`
+// silently stops meaning "skip prompt injection for this agent".
+func InjectionDisabled(a Adapter) bool {
+	o, ok := a.(*overriddenAdapter)
+	return ok && o.override.Disabled
+}
+
 func (o *overriddenAdapter) Name() string { return o.inner.Name() }
 
 func (o *overriddenAdapter) Matches(command string) bool {

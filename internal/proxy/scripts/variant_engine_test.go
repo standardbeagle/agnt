@@ -100,19 +100,16 @@ func TestVariantEngineDoesNotResurrectRetiredStyleRule(t *testing.T) {
 }
 
 // TestVariantEngineMirrorsAggregateBudgets pins the direction the JS mirror was
-// LOOSER than Go. The engine mirrored only the per-op caps, but §5's real bounds
-// are aggregates that a tampered snapshot can trivially dodge by splitting one
-// oversize payload across several ops:
-//
-//	internal/publish/validate.go:94  — style patch is per VARIANT
-//	                                   (applyStyle + addStyle share one budget)
-//	internal/publish/validate.go:139 — raw script is per authored REVISION
-//	                                   (summed across every variant in the set)
+// LOOSER than Go. The engine mirrored only the per-op caps, but §5's real bound
+// is an aggregate that a tampered snapshot can trivially dodge by splitting one
+// oversize payload across several ops: the style patch is per VARIANT
+// (Variant.Validate in internal/publish/validate.go — applyStyle + addStyle
+// share one budget). The per-revision SCRIPT budget that used to sit beside it
+// is gone on both sides, with the op it budgeted (INV-14).
 func TestVariantEngineMirrorsAggregateBudgets(t *testing.T) {
 	for _, want := range []string{
-		"styleBytesOf",           // applyStyle + addStyle spend one budget
-		"variant style budget",   // per-variant refusal reason
-		"revision script budget", // per-set refusal reason
+		"styleBytesOf",         // applyStyle + addStyle spend one budget
+		"variant style budget", // per-variant refusal reason
 	} {
 		if !strings.Contains(variantEngineJS, want) {
 			t.Errorf("variant-engine.js missing aggregate-budget mirror %q (mirror internal/publish/validate.go)", want)
@@ -123,57 +120,78 @@ func TestVariantEngineMirrorsAggregateBudgets(t *testing.T) {
 // TestVariantEngineRendersRawOps pins the render primitive for each raw-content
 // op (spec §6a) — one assertion per op kind:
 //
-//	setHTML   -> el.innerHTML = op.html            (element-targeting)
-//	addStyle  -> <style> appended to variant root  (variant-root op)
-//	addScript -> inline <script> appended to root  (variant-root op)
+//	setHTML  -> el.innerHTML = op.html            (element-targeting)
+//	addStyle -> <style> appended to variant root  (variant-root op)
 //
-// The script primitive is deliberately an ELEMENT whose body is the authored
-// text, never a compiled function: the browser runs it only when its sha256 is
-// present in the served revision's script-src (INV-12), which is what makes
-// publisher script executable and byte-identical upstream script inert.
+// There is deliberately NO script primitive: see
+// TestVariantEngineHasNoScriptPrimitive.
 func TestVariantEngineRendersRawOps(t *testing.T) {
 	for _, want := range []string{
 		"el.innerHTML = op.html",
 		"document.createElement('style')",
 		"styleEl.textContent = op.css",
-		"document.createElement('script')",
-		"scriptEl.textContent = op.code",
 		"__variant-engine-root",
 	} {
 		if !strings.Contains(variantEngineJS, want) {
 			t.Errorf("variant-engine.js missing raw-op render primitive %q (spec §6a)", want)
 		}
 	}
-	// A served revision must contain no <script src> (§6a): the publish pipeline
-	// inlines src at publish time, so the renderer never sets that attribute.
-	if strings.Contains(variantEngineJS, "scriptEl.src") || strings.Contains(variantEngineJS, "setAttribute('src', op.src") {
-		t.Error("variant-engine.js must never emit a <script src> — src is a publish-time fetch input (§6a)")
+}
+
+// TestVariantEngineHasNoScriptPrimitive is the source guard for INV-14 on the
+// renderer: the engine creates no script element, by any spelling, and refuses
+// the addScript op by name. Behaviour — that a variant set carrying the op
+// leaves no script element in the document and reports the refusal — is proven
+// in the jsdom tier (jstest/variant-engine.test.js, "addScript"); this guard
+// keeps the property when node is not available.
+func TestVariantEngineHasNoScriptPrimitive(t *testing.T) {
+	for _, gone := range []string{
+		"createElement('script')",
+		`createElement("script")`,
+		"scriptEl",
+		"op.code;",
+		"case 'addScript'",
+		"MAX_RAW_SCRIPT_BYTES",
+		"revision script budget",
+		"src must be inlined at publish time",
+		".src = op.src",
+		"setAttribute('src', op.src",
+	} {
+		if strings.Contains(variantEngineJS, gone) {
+			t.Errorf("variant-engine.js still carries %q — the renderer must have no authored-script path at all (INV-14)", gone)
+		}
+	}
+	// The refusal is explicit and names the rule. Spelled as literals so a
+	// reworded or deleted refusal fails here.
+	for _, want := range []string{
+		"if (op.op === 'addScript') { return { ok: false, reason: ADD_SCRIPT_REFUSED }; }",
+		"addScript is not permitted on a published walkthrough",
+		"INV-14",
+	} {
+		if !strings.Contains(variantEngineJS, want) {
+			t.Errorf("variant-engine.js missing the explicit addScript refusal %q", want)
+		}
+	}
+	// addScript is not a root op any more: only addStyle appends to the root.
+	if !strings.Contains(variantEngineJS, "function isRootOp(op) { return op && op.op === 'addStyle'; }") {
+		t.Error("isRootOp must admit addStyle only")
 	}
 }
 
 // TestVariantEngineRawOpGuards pins the surviving guards for the raw ops: the
-// §5 size caps, and §6a's structural rule that addStyle/addScript are
-// variant-root ops for which a selector is a rejection rather than a hint.
-// There is deliberately NO "script-ness" scan of the payloads — §6a forbids
-// reintroducing one.
+// §5 size caps, and §6a's structural rule that addStyle is a variant-root op
+// for which a selector is a rejection rather than a hint. There is deliberately
+// NO "script-ness" scan of the payloads — §6a forbids reintroducing one.
 func TestVariantEngineRawOpGuards(t *testing.T) {
 	for _, want := range []string{
 		"MAX_RAW_HTML_BYTES = 8192",
-		"MAX_RAW_SCRIPT_BYTES = 16384",
 		"case 'setHTML'",
 		"case 'addStyle'",
-		"case 'addScript'",
 		"unexpected field 'selector'",
 	} {
 		if !strings.Contains(variantEngineJS, want) {
 			t.Errorf("variant-engine.js missing raw-op guard %q (mirror internal/publish op.go/schema.go)", want)
 		}
-	}
-	// An addScript still carrying src at RENDER time is refused: reaching the
-	// browser with an unresolved src means the publish-time fetch did not run,
-	// and the renderer must fail closed rather than invent a runtime fetch.
-	if !strings.Contains(variantEngineJS, "src must be inlined at publish time") {
-		t.Error("variant-engine.js must refuse an unresolved addScript src at render time (§6a)")
 	}
 }
 

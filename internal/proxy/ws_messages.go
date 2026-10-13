@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/debug"
@@ -34,7 +35,55 @@ type wsConnState struct {
 	spawnHandler func(func())
 	id           string
 	timestamp    time.Time
+
+	// trusted is controlCallerTrusted for the upgrade request: false for a
+	// caller the dev OIDC issuer would not serve (an unauthenticated tunnel
+	// visitor above all). Untrusted connections are refused secret_submit and
+	// voice_start; see refusePrivileged.
+	trusted bool
+	// refusalReported and frameCapReported keep the matching diagnostics to
+	// one per connection.
+	refusalReported  bool
+	frameCapReported bool
+
+	// voiceMu guards voicePending (voice_start dials in flight) and
+	// voiceBacklog (audio frames held for them). It is the one piece of
+	// connection state shared between the read loop and a handler goroutine.
+	voiceMu      sync.Mutex
+	voicePending int
+	voiceBacklog [][]byte
 }
+
+// voiceBacklogMaxFrames bounds the audio held while a Deepgram dial is in
+// flight. The browser sends 4096-sample frames at 16 kHz (about a quarter of
+// a second each), so this covers the whole handshake timeout.
+const voiceBacklogMaxFrames = 64
+
+// refusePrivileged reports whether this connection must be refused a frame
+// that writes a secret or spends an operator API key, and records the refusal
+// as a diagnostic (once per connection) so it reaches the agent rather than
+// only the debug log. The caller still owes the browser its own reply.
+func (c *wsConnState) refusePrivileged(msgType string) bool {
+	if c.trusted {
+		return false
+	}
+	debug.Log("proxy", "refused %s on proxy %s: connection %s is not a local, tailnet-identified or Access-verified caller", msgType, c.ps.ID, c.connID)
+	if !c.refusalReported {
+		c.refusalReported = true
+		c.ps.logger.LogDiagnostic(ProxyDiagnostic{
+			Timestamp: time.Now(),
+			Level:     DiagnosticWarning,
+			Category:  "proxy",
+			Event:     "ws_privileged_frame_refused",
+			Message:   fmt.Sprintf("proxy %s refused a %s frame: the control WebSocket caller is not local, tailnet-identified or Cloudflare Access-verified (for example it arrived through an unauthenticated tunnel)", c.ps.ID, msgType),
+			Data:      map[string]any{"proxy_id": c.ps.ID, "frame_type": msgType},
+		})
+	}
+	return true
+}
+
+// privilegedRefusalMessage is the constant reply to a refused frame.
+const privilegedRefusalMessage = "not available on this connection: it requires a local, tailnet or Cloudflare Access-verified caller"
 
 // wsMessageHandlers dispatches browser telemetry frames by type. Each
 // handler runs on the read-loop goroutine unless it explicitly defers to
@@ -71,6 +120,19 @@ var wsMessageHandlers = map[string]func(c *wsConnState, msg *wsMessage){
 // voice session is live, otherwise a screenshot PNG frame with the
 // [1 byte: idLen][id][PNG] layout.
 func (c *wsConnState) handleBinaryFrame(rawMessage []byte) {
+	c.voiceMu.Lock()
+	if c.voicePending > 0 {
+		// Audio for a session whose Deepgram dial is still in flight. Past
+		// the cap the frame is dropped: a whole frame, so the stream stays
+		// aligned, and the gap is only in audio the dial was too slow for.
+		if len(c.voiceBacklog) < voiceBacklogMaxFrames {
+			c.voiceBacklog = append(c.voiceBacklog, rawMessage)
+		}
+		c.voiceMu.Unlock()
+		return
+	}
+	c.voiceMu.Unlock()
+
 	if session, ok := c.ps.voiceSessions.Load(c.connID); ok {
 		session.(*VoiceSession).SendAudio(rawMessage)
 		return
@@ -209,9 +271,6 @@ func (c *wsConnState) handleScreenshot(msg *wsMessage) {
 		return
 	}
 
-	// Register screenshot by name so proxy exec can look up the file path
-	c.ps.registerCapture(name, filePath)
-
 	c.ps.logger.LogScreenshot(Screenshot{
 		ID:        c.id,
 		Timestamp: c.timestamp,
@@ -302,6 +361,19 @@ func (c *wsConnState) handleSecretSubmit(msg *wsMessage) {
 	name := getStringField(msg.Data, "name")
 	value := getStringField(msg.Data, "value")
 	delete(msg.Data, "value")
+
+	// Refused before the sink, the fingerprint, or any event is built: an
+	// untrusted caller must not be able to overwrite a project secret, nor
+	// have its submission announced to the agent as a stored secret.
+	if c.refusePrivileged("secret_submit") {
+		value = ""
+		if wErr := c.asyncConn.WriteJSON(map[string]interface{}{
+			"type": "secret_ack", "name": name, "ok": false, "error": privilegedRefusalMessage,
+		}); wErr != nil {
+			debug.Log("proxy", "failed to send secret_ack refusal for %q: %v", name, wErr)
+		}
+		return
+	}
 	fingerprint := storepkg.Fingerprint(value)
 
 	sinkErr := c.ps.DeliverSecret(name, value)
@@ -364,11 +436,16 @@ func (c *wsConnState) handlePanelMessage(msg *wsMessage) {
 				att.Data["file_path"] = filePath
 				att.Data["file_name"] = filepath.Base(filePath)
 				debug.Log("proxy", "Resolved screenshot: id=%s path=%s", att.ID, filePath)
+			} else if owned, ok := c.ps.ownedCapturePath(att.FilePath); ok {
+				// Fallback: browser echoed the filePath from capture_ack. It is
+				// browser input, so it is accepted only when it names a capture
+				// this proxy wrote (see ownedCapturePath).
+				att.FilePath = owned
+				att.Data["file_path"] = owned
+				att.Data["file_name"] = filepath.Base(owned)
+				debug.Log("proxy", "Resolved screenshot from JS filePath: id=%s path=%s", att.ID, owned)
 			} else if att.FilePath != "" {
-				// Fallback: browser sent filePath from capture_ack
-				att.Data["file_path"] = att.FilePath
-				att.Data["file_name"] = filepath.Base(att.FilePath)
-				debug.Log("proxy", "Resolved screenshot from JS filePath: id=%s path=%s", att.ID, att.FilePath)
+				c.dropForeignAttachmentPath(att)
 			} else {
 				debug.Error("proxy", "No capture for screenshot id=%s (binary frame missing or failed)", att.ID)
 			}
@@ -403,6 +480,22 @@ func (c *wsConnState) handlePanelMessage(msg *wsMessage) {
 		}
 	}
 
+	// Any path still on an attachment is browser input that no branch above
+	// resolved (a non-screenshot attachment, or a screenshot whose capture was
+	// found by id). The whole message is forwarded to the agent, so it gets
+	// the same test.
+	for i := range panelMsg.Attachments {
+		att := &panelMsg.Attachments[i]
+		if att.FilePath == "" {
+			continue
+		}
+		if owned, ok := c.ps.ownedCapturePath(att.FilePath); ok {
+			att.FilePath = owned
+		} else {
+			c.dropForeignAttachmentPath(att)
+		}
+	}
+
 	c.ps.logger.LogPanelMessage(panelMsg)
 
 	// Forward to overlay if configured
@@ -420,6 +513,23 @@ func (c *wsConnState) handlePanelMessage(msg *wsMessage) {
 	if err := UpdateAuditSummary(c.ps.Path); err != nil {
 		debug.Log("proxy", "failed to update audit summary: %v", err)
 	}
+}
+
+// dropForeignAttachmentPath clears a browser-supplied attachment path that
+// does not name one of this proxy's own captures, and says so. The path would
+// otherwise be handed to the agent as "the attached screenshot", letting any
+// control-socket client point the agent at an arbitrary local file.
+func (c *wsConnState) dropForeignAttachmentPath(att *PanelAttachment) {
+	debug.Error("proxy", "dropped attachment path from panel message on proxy %s (id=%s): %q is not a capture this proxy wrote", c.ps.ID, att.ID, att.FilePath)
+	c.ps.logger.LogDiagnostic(ProxyDiagnostic{
+		Timestamp: time.Now(),
+		Level:     DiagnosticWarning,
+		Category:  "proxy",
+		Event:     "attachment_path_refused",
+		Message:   fmt.Sprintf("proxy %s dropped a browser-supplied attachment path: it does not name a capture this proxy wrote", c.ps.ID),
+		Data:      map[string]any{"proxy_id": c.ps.ID, "attachment_id": att.ID, "attachment_type": att.Type},
+	})
+	att.FilePath = ""
 }
 
 // handleWalkthroughEvent handles a walkthrough (live-demo) lifecycle event
@@ -599,13 +709,27 @@ func (c *wsConnState) handleResponsiveState(msg *wsMessage) {
 // handleSessionRequestMsg handles session API requests from the browser.
 // Writes go through the serialising asyncConn — this runs in its own
 // goroutine concurrent with the read loop and the broadcast drain.
+//
+// Refused to an untrusted caller: a session request can type into, or
+// schedule text for, an agent's terminal.
 func (c *wsConnState) handleSessionRequestMsg(msg *wsMessage) {
+	if c.refusePrivileged("session_request") {
+		writeControlResponse(c.asyncConn, "session_response", getStringField(msg.Data, "request_id"), nil, privilegedRefusalMessage)
+		return
+	}
 	c.spawnHandler(func() { c.ps.handleSessionRequest(c.asyncConn, msg.Data) })
 }
 
 // handleStoreRequestMsg handles store API requests from the browser
 // (serialised via asyncConn).
+//
+// Refused to an untrusted caller: a store request reads and writes the
+// project's persistent store.
 func (c *wsConnState) handleStoreRequestMsg(msg *wsMessage) {
+	if c.refusePrivileged("store_request") {
+		writeControlResponse(c.asyncConn, "store_response", getStringField(msg.Data, "request_id"), nil, privilegedRefusalMessage)
+		return
+	}
 	c.spawnHandler(func() { c.ps.handleStoreRequest(c.asyncConn, msg.Data) })
 }
 
@@ -618,6 +742,18 @@ func (c *wsConnState) handleChaosRequestMsg(msg *wsMessage) {
 
 // handleVoiceStart starts a voice transcription session.
 func (c *wsConnState) handleVoiceStart(msg *wsMessage) {
+	// A voice session is opened on the operator's DEEPGRAM_API_KEY, so it is
+	// refused to a caller that is not theirs to spend it.
+	if c.refusePrivileged("voice_start") {
+		if wErr := c.asyncConn.WriteJSON(map[string]interface{}{
+			"type":  "voice_error",
+			"error": privilegedRefusalMessage,
+		}); wErr != nil {
+			debug.Error("proxy", "voice_start: failed to send refusal to client: %v", wErr)
+		}
+		return
+	}
+
 	config := DefaultDeepgramConfig()
 
 	// Apply any config from message
@@ -628,29 +764,76 @@ func (c *wsConnState) handleVoiceStart(msg *wsMessage) {
 		config.Model = model
 	}
 
-	session, err := NewVoiceSession(c.connID, c.asyncConn, config)
-	if err != nil {
-		if wErr := c.asyncConn.WriteJSON(map[string]interface{}{
-			"type":  "voice_error",
-			"error": err.Error(),
-		}); wErr != nil {
-			debug.Error("proxy", "voice_start: failed to send error to client: %v", wErr)
+	// id/timestamp are per-message state the read loop overwrites; copy them
+	// for the handler goroutine.
+	id, timestamp, pageURL := c.id, c.timestamp, msg.URL
+
+	// The browser starts streaming audio as soon as it has sent voice_start,
+	// so mark the dial pending before returning to the read loop: binary
+	// frames that arrive meanwhile are audio and are held for the session
+	// (handleBinaryFrame), not mistaken for screenshot frames.
+	c.voiceMu.Lock()
+	c.voicePending++
+	c.voiceMu.Unlock()
+
+	// The Deepgram dial runs off the read loop: it is a network handshake, and
+	// on the read loop a slow or black-holed Deepgram stalled every other
+	// frame on this connection. The connection's teardown waits for handler
+	// goroutines before it reaps voice sessions, so a session stored here is
+	// always closed.
+	c.spawnHandler(func() {
+		session, err := newVoiceSession(c.connID, c.asyncConn, config)
+
+		// Settle the pending dial under voiceMu, so the held audio reaches the
+		// new session before any frame the read loop takes next.
+		c.voiceMu.Lock()
+		c.voicePending--
+		backlog := c.voiceBacklog
+		if c.voicePending == 0 {
+			c.voiceBacklog = nil
 		}
-		return
-	}
+		if err == nil {
+			// A second voice_start replaces the session: close the one it
+			// replaces, or its Deepgram socket, reader and keepalive live on
+			// with nothing left that could reach them.
+			if prev, loaded := c.ps.voiceSessions.Swap(c.connID, session); loaded {
+				prev.(*VoiceSession).Close()
+			}
+			if c.voicePending == 0 {
+				for _, frame := range backlog {
+					if sErr := session.SendAudio(frame); sErr != nil {
+						break
+					}
+				}
+			}
+		}
+		c.voiceMu.Unlock()
 
-	c.ps.voiceSessions.Store(c.connID, session)
+		if err != nil {
+			if wErr := c.asyncConn.WriteJSON(map[string]interface{}{
+				"type":  "voice_error",
+				"error": err.Error(),
+			}); wErr != nil {
+				debug.Error("proxy", "voice_start: failed to send error to client: %v", wErr)
+			}
+			return
+		}
 
-	// Log voice start
-	c.ps.logger.LogCustom(CustomLog{
-		ID:        c.id,
-		Timestamp: c.timestamp,
-		Level:     "info",
-		Message:   "[Voice] Transcription session started",
-		Data:      map[string]interface{}{"model": config.Model, "language": config.Language},
-		URL:       msg.URL,
+		// Log voice start
+		c.ps.logger.LogCustom(CustomLog{
+			ID:        id,
+			Timestamp: timestamp,
+			Level:     "info",
+			Message:   "[Voice] Transcription session started",
+			Data:      map[string]interface{}{"model": config.Model, "language": config.Language},
+			URL:       pageURL,
+		})
 	})
 }
+
+// newVoiceSession is the voice session constructor; a variable so tests can
+// exercise voice_start without a Deepgram account.
+var newVoiceSession = NewVoiceSession
 
 // handleVoiceStop stops the voice transcription session.
 func (c *wsConnState) handleVoiceStop(msg *wsMessage) {

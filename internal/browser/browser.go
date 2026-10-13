@@ -3,6 +3,7 @@ package browser
 import (
 	"context"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"sync"
@@ -50,6 +51,12 @@ type Config struct {
 	ProxyURL   string // Proxy server URL (optional)
 	Path       string // Project path for session scoping
 	WindowSize string // Window size (default: "1920,1080")
+
+	// UserDataDir is the Chrome profile directory. Empty (the default) gives
+	// every launch its own fresh temporary profile, removed when the browser
+	// exits. A caller that sets it owns the directory: it is used as given
+	// and never removed.
+	UserDataDir string
 }
 
 // Browser represents a running browser instance.
@@ -62,6 +69,17 @@ type Browser struct {
 	done   chan struct{}
 	err    error
 	errMu  sync.RWMutex
+
+	// profileDir is the temporary profile this launch created and must
+	// remove; empty when the caller supplied Config.UserDataDir. Written by
+	// Start before the process exists, read only by the goroutine that reaps
+	// the process.
+	profileDir string
+
+	// afterSpawn, when set, runs in Start after the process exists and before
+	// Running is published. Nil in production; tests use it to land a Stop in
+	// exactly that window.
+	afterSpawn func()
 
 	startedAt atomic.Pointer[time.Time]
 }
@@ -110,6 +128,19 @@ func (b *Browser) Start(ctx context.Context) error {
 		}
 	}
 
+	// Give this launch its own profile directory. Chrome is single-instance
+	// per profile: started against a profile another Chrome already has open
+	// (the user's everyday browser, on the default profile), the new process
+	// hands its URL to that instance and exits at once — so the launch
+	// "succeeds", every flag passed here (proxy, extensions off) is ignored,
+	// and there is no process left to manage or stop.
+	if err := b.prepareProfileDir(); err != nil {
+		b.setState(StateFailed)
+		b.setError(err)
+		close(b.done)
+		return b.Error()
+	}
+
 	// Build Chrome arguments
 	args := b.buildArgs()
 
@@ -119,6 +150,8 @@ func (b *Browser) Start(ctx context.Context) error {
 	b.cmd = exec.CommandContext(ctx, binaryPath, args...)
 
 	if err := b.cmd.Start(); err != nil {
+		cancel()
+		b.removeProfileDir()
 		b.setState(StateFailed)
 		b.setError(fmt.Errorf("failed to start Chrome: %w", err))
 		close(b.done)
@@ -128,12 +161,34 @@ func (b *Browser) Start(ctx context.Context) error {
 	b.pid.Store(int32(b.cmd.Process.Pid))
 	now := time.Now()
 	b.startedAt.Store(&now)
-	b.setState(StateRunning)
+
+	if b.afterSpawn != nil {
+		b.afterSpawn()
+	}
+
+	// Publish Running with a CAS, not a store: Stop may have claimed
+	// Starting→Stopping while the process was being spawned. The CAS pair
+	// also gives Stop happens-before visibility of cancel and cmd written
+	// above, so a Stop that sees Running never observes them nil. (An
+	// unconditional store here used to overwrite Stopping, leaving a browser
+	// that Stop had "stopped" running for good.)
+	if !b.compareAndSwapState(StateStarting, StateRunning) {
+		// Stop won the race during startup — Start owns teardown on this
+		// path, because Stop never touches cancel or cmd from Starting.
+		cancel()
+		_ = b.cmd.Process.Kill()
+		_ = b.cmd.Wait()
+		b.removeProfileDir()
+		b.setState(StateStopped)
+		close(b.done)
+		return fmt.Errorf("browser stopped during startup")
+	}
 
 	// Monitor process in goroutine
 	go func() {
 		defer close(b.done)
 		err := b.cmd.Wait()
+		b.removeProfileDir()
 		if err != nil && ctx.Err() == nil {
 			// Process exited with error (not cancelled)
 			b.setError(fmt.Errorf("chrome exited: %w", err))
@@ -144,6 +199,58 @@ func (b *Browser) Start(ctx context.Context) error {
 	}()
 
 	return nil
+}
+
+// prepareProfileDir creates the temporary profile for this launch unless the
+// caller supplied one.
+func (b *Browser) prepareProfileDir() error {
+	if b.config.UserDataDir != "" {
+		return nil
+	}
+	dir, err := os.MkdirTemp("", "agnt-browser-profile-")
+	if err != nil {
+		return fmt.Errorf("failed to create a browser profile directory: %w", err)
+	}
+	b.profileDir = dir
+	return nil
+}
+
+// userDataDir is the profile directory passed to Chrome: the caller's, or the
+// temporary one prepareProfileDir created. Empty before Start.
+func (b *Browser) userDataDir() string {
+	if b.config.UserDataDir != "" {
+		return b.config.UserDataDir
+	}
+	return b.profileDir
+}
+
+// profileRemoveAttempts and profileRemoveDelay bound the cleanup retry.
+const (
+	profileRemoveAttempts = 20
+	profileRemoveDelay    = 100 * time.Millisecond
+)
+
+// removeProfileDir deletes the temporary profile once the browser process is
+// gone. Chrome's helper processes can outlive the main process by a moment
+// and still hold files in the profile (always, on Windows, where an open file
+// cannot be deleted), so removal is retried briefly. A directory that still
+// cannot be removed is reported on the browser's error rather than dropped:
+// it is a leaked directory someone has to know about.
+func (b *Browser) removeProfileDir() {
+	dir := b.profileDir
+	if dir == "" {
+		return
+	}
+	var err error
+	for i := 0; i < profileRemoveAttempts; i++ {
+		if err = os.RemoveAll(dir); err == nil {
+			return
+		}
+		time.Sleep(profileRemoveDelay)
+	}
+	if b.Error() == nil {
+		b.setError(fmt.Errorf("browser exited but its temporary profile %s could not be removed: %w", dir, err))
+	}
 }
 
 // buildArgs constructs the Chrome command-line arguments.
@@ -176,6 +283,10 @@ func (b *Browser) buildArgs() []string {
 		args = append(args, fmt.Sprintf("--proxy-server=%s", b.config.ProxyURL))
 	}
 
+	if dir := b.userDataDir(); dir != "" {
+		args = append(args, fmt.Sprintf("--user-data-dir=%s", dir))
+	}
+
 	// Add URL as last argument
 	if b.config.URL != "" {
 		args = append(args, b.config.URL)
@@ -191,21 +302,22 @@ func (b *Browser) Stop(ctx context.Context) error {
 		return nil // Already stopped
 	}
 
-	if !b.compareAndSwapState(StateRunning, StateStopping) {
-		// Try from starting state
-		if !b.compareAndSwapState(StateStarting, StateStopping) {
-			return nil // Already stopping or stopped
-		}
-	}
-
-	if b.cancel != nil {
+	if b.compareAndSwapState(StateRunning, StateStopping) {
+		// The Running CAS pairs with Start's Starting→Running CAS, so cancel
+		// and cmd are guaranteed visible (and non-nil) here.
+		//
+		// Cancelling is the kill: the command was built with
+		// exec.CommandContext, whose watcher kills the process as soon as
+		// the context is done. A second, explicit Kill here raced that
+		// watcher and the reaper, and reported "failed to kill browser" for
+		// a browser that was in fact already dead.
 		b.cancel()
-	}
-
-	if b.cmd != nil && b.cmd.Process != nil {
-		if err := b.cmd.Process.Kill(); err != nil {
-			return fmt.Errorf("failed to kill browser: %w", err)
-		}
+	} else if b.compareAndSwapState(StateStarting, StateStopping) {
+		// Start is still spawning the process and owns cancel and cmd; it
+		// will observe Stopping, tear the process down, and close done
+		// itself. Touching those fields from here would be a data race.
+	} else {
+		return nil // Already stopping or stopped
 	}
 
 	// Wait for done or context timeout

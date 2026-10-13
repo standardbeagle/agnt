@@ -251,7 +251,7 @@ func (pt *PageTracker) trackOnSession(browserSessionID, url string, mutate func(
 		// document request). Promote its marker-free URL to the session so
 		// currentpage describes the page the developer is actually viewing.
 		if url != "" {
-			cleanURL := stripFrameMarker(url)
+			cleanURL := inSessionURLForm(session.URL, stripFrameMarker(url))
 			if cleanURL != session.URL {
 				delete(pt.urlToSession, normalizeURL(session.URL))
 				session.URL = cleanURL
@@ -768,6 +768,34 @@ func frameIDFromURL(urlStr string) string {
 		return ""
 	}
 	return parsed.Query().Get(frameMarkerParam)
+}
+
+// inSessionURLForm expresses a telemetry URL in the same form as the session
+// URL it may replace. The two arrive in different forms: a session is created
+// from the proxied document request, whose URL is origin-form ("/app?x=1"),
+// while telemetry carries the browser's location.href, which is absolute
+// ("http://127.0.0.1:1234/app?x=1"). Compared as strings those never match, so
+// the first telemetry event of every page "promoted" an unchanged page from
+// "/app" to its absolute spelling — the session URL changed form mid-life, and
+// its urlToSession key moved to one no later document request can produce.
+//
+// When the session URL is origin-form, an absolute telemetry URL is reduced
+// to path + query (+ fragment, which is the route in a hash-routed SPA). A
+// session whose URL is already absolute keeps absolute telemetry URLs as is.
+func inSessionURLForm(sessionURL, telemetryURL string) string {
+	sess, err := url.Parse(sessionURL)
+	if err != nil || sess.Scheme != "" || sess.Host != "" {
+		return telemetryURL
+	}
+	tele, err := url.Parse(telemetryURL)
+	if err != nil || (tele.Scheme == "" && tele.Host == "") {
+		return telemetryURL
+	}
+	out := tele.RequestURI()
+	if tele.Fragment != "" {
+		out += "#" + tele.EscapedFragment()
+	}
+	return out
 }
 
 // stripFrameMarker returns urlStr with the content-frame marker removed.

@@ -27,7 +27,16 @@ type NotifyFunc func(ctx context.Context, method string, params any) error
 
 // ChannelSink bridges daemon StreamSink events to MCP channel notifications.
 // It extracts message/severity/location from LogEntry union types, sanitizes
-// meta keys, deduplicates within a configurable window, and filters by severity.
+// meta keys, and filters by event type and severity.
+//
+// It carries only what the incident pipeline does NOT: the browser→agent
+// conversation (panel messages, interactions, responsive handoffs) and the
+// event types that have no incident adapter (custom logs, info-level
+// diagnostics, transport failures with no HTTP status). Error-class events the
+// pipeline ingests (see pipelineOwned) are never forwarded raw from here — they
+// reach the agent once, as the incident digest, with the pipeline's dedup, flow
+// control, coalescing, forwarding-pause and alerts.push applied. Forwarding
+// them here as well was the parallel path the messaging-queue skill forbids.
 type ChannelSink struct {
 	cfg     *config.ChannelConfig
 	notify  NotifyFunc
@@ -67,6 +76,9 @@ func (s *ChannelSink) SetNowFunc(fn func() time.Time) {
 // HandleEntry processes a single LogEntry and emits a channel notification
 // if it passes severity filtering and deduplication.
 func (s *ChannelSink) HandleEntry(ctx context.Context, entry proxy.LogEntry) {
+	if pipelineOwned(entry) {
+		return
+	}
 	content, meta := extractChannelFields(entry)
 	if content == "" {
 		return
@@ -87,14 +99,24 @@ func (s *ChannelSink) HandleEntry(ctx context.Context, entry proxy.LogEntry) {
 		}
 	}
 
-	// Apply severity filter.
-	if !passesSeverityFilter(meta, s.cfg.GetSeverity()) {
+	// Apply severity filter — to machine-generated events only. A user action
+	// is stamped "info" for display, but it is not a log line with a level: it
+	// is the developer talking to the agent. Filtering it by severity meant the
+	// default threshold ("warning") dropped every panel message and
+	// interaction, so a default-config channel delivered no user actions at
+	// all. `events` (above) remains the selector for user actions.
+	if !isUserAction(entry.Type) && !passesSeverityFilter(meta, s.cfg.GetSeverity()) {
 		return
 	}
 
 	// Deduplicate. DedupeWindow == 0 means disabled.
 	// DefaultAgntConfig sets it to 2000, so 0 is always an explicit choice.
-	if s.cfg.DedupeWindow > 0 {
+	//
+	// Only machine-generated events are deduplicated (a `__devtool.log()` in a
+	// render loop, a repeating info diagnostic). A user action is never
+	// collapsed: sending the same panel message twice, or clicking the same
+	// element twice, is two deliberate actions and both are delivered.
+	if s.cfg.DedupeWindow > 0 && !isUserAction(entry.Type) {
 		w := time.Duration(s.cfg.DedupeWindow) * time.Millisecond
 		if s.isDuplicate(content, meta, w) {
 			return
@@ -118,6 +140,42 @@ func (s *ChannelSink) HandleEntry(ctx context.Context, entry proxy.LogEntry) {
 	// isolates per-session failures); log so a broken transport is diagnosable.
 	if err := s.notify(ctx, ChannelNotificationMethod, params); err != nil {
 		debug.Log("channel-sink", "channel notification delivery failed: %v", err)
+	}
+}
+
+// pipelineOwned reports whether the incident pipeline ingests this entry, in
+// which case the channel must not forward it raw. The three cases mirror the
+// daemon's proxy-side adapters exactly (fireToIncidentBus, hub_helpers.go):
+//
+//   - browser JS errors            → incident.FromFrontendError
+//   - HTTP responses with a 4xx/5xx → incident.FromHTTPEntry
+//   - non-info proxy diagnostics   → incident.FromProxyDiagnostic
+//
+// Everything else has no incident adapter and stays on the channel: an HTTP
+// entry that failed with no status (FromHTTPEntry ignores it), info-level
+// diagnostics (FromProxyDiagnostic drops them), custom logs, and every user
+// action.
+func pipelineOwned(entry proxy.LogEntry) bool {
+	switch entry.Type {
+	case proxy.LogTypeError:
+		return true
+	case proxy.LogTypeHTTP:
+		return entry.HTTP != nil && entry.HTTP.StatusCode >= 400
+	case proxy.LogTypeDiagnostic:
+		return entry.Diagnostic != nil && entry.Diagnostic.Level != proxy.DiagnosticInfo
+	default:
+		return false
+	}
+}
+
+// isUserAction reports whether the entry is something the developer did in the
+// browser, as opposed to something the page or proxy emitted on its own.
+func isUserAction(t proxy.LogEntryType) bool {
+	switch t {
+	case proxy.LogTypePanelMessage, proxy.LogTypeInteraction, proxy.LogTypeResponsiveRequest:
+		return true
+	default:
+		return false
 	}
 }
 

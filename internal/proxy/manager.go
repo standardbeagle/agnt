@@ -246,22 +246,30 @@ func (pm *ProxyManager) stopProxies(ctx context.Context, toStop []string) ([]str
 		close(done)
 	}()
 
+	var ctxErr error
 	select {
 	case <-done:
 		// All proxies stopped
 	case <-ctx.Done():
-		// Context cancelled, return what we have
-		if len(errs) > 0 {
-			errs = append(errs, ctx.Err())
-		} else {
-			return stoppedIDs, ctx.Err()
-		}
+		// Do not wait for the stragglers: a Stop that does not honour ctx
+		// would turn a bounded shutdown into a hang. Their results are
+		// appended under mu, so the snapshot below is race-free without
+		// waiting, and a proxy still stopping is simply not reported stopped.
+		ctxErr = ctx.Err()
 	}
 
-	if len(errs) > 0 {
-		return stoppedIDs, errors.Join(errs...)
+	mu.Lock()
+	stopped := append([]string(nil), stoppedIDs...)
+	allErrs := append([]error(nil), errs...)
+	mu.Unlock()
+
+	if ctxErr != nil {
+		allErrs = append(allErrs, ctxErr)
 	}
-	return stoppedIDs, nil
+	if len(allErrs) > 0 {
+		return stopped, errors.Join(allErrs...)
+	}
+	return stopped, nil
 }
 
 // StopAll stops all running proxies and removes them from the registry.
@@ -281,10 +289,13 @@ func (pm *ProxyManager) StopAll(ctx context.Context) ([]string, error) {
 // This is used for session-scoped cleanup when a client disconnects.
 // Returns the list of stopped proxy IDs.
 func (pm *ProxyManager) StopByProjectPath(ctx context.Context, projectPath string) ([]string, error) {
+	// Normalized on both sides, as tunnel.Manager.StopByProjectPath does: a
+	// trailing-slash difference must not leave a project's proxies running.
+	normalizedPath := pathutil.NormalizeTrailingSlash(projectPath)
 	var toStop []string
 	pm.proxies.Range(func(key, value any) bool {
 		proxy := value.(*ProxyServer)
-		if proxy.Path == projectPath {
+		if pathutil.NormalizeTrailingSlash(proxy.Path) == normalizedPath {
 			toStop = append(toStop, key.(string))
 		}
 		return true
@@ -305,17 +316,23 @@ func (pm *ProxyManager) Shutdown(ctx context.Context) error {
 
 		// Collect IDs to stop so we don't hold Range while stopping.
 		var toStop []string
+		var crashed []*ProxyServer
 		pm.proxies.Range(func(key, value any) bool {
 			proxy := value.(*ProxyServer)
 			if proxy.IsRunning() {
 				toStop = append(toStop, key.(string))
 			} else {
-				// Crashed or never-started proxies skip the Stop path but still
-				// own a page-tracker actor goroutine — release it here.
-				proxy.pageTracker.Stop()
+				crashed = append(crashed, proxy)
 			}
 			return true
 		})
+
+		// Crashed proxies skip the Stop path (it would report a spurious "not
+		// running") but still own a context, a health probe, possibly a named
+		// tunnel and live WebSocket connections — tear them down in full.
+		for _, proxy := range crashed {
+			proxy.teardown(ctx)
+		}
 
 		_, shutdownErr = pm.stopProxies(ctx, toStop)
 	})

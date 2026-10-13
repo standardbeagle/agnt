@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync"
 
+	xhtml "golang.org/x/net/html"
+
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/proxy/scripts"
 )
@@ -115,13 +117,12 @@ func PublicInstrumentationAssetCSPHash() string {
 	return cspSHA256(publicInstrumentationAssetBytes())
 }
 
-// cspSHA256 formats body's sha256 as a CSP hash source ("sha256-<b64>"), the
-// single spelling both pinned-script populations on the public plane use: the
-// RolePublic bundle and each authored-revision script body (§6a addScript). The
-// digest is over the EXACT bytes the browser hashes — the served asset bytes for
-// the bundle, and the string assigned to script.textContent for an authored body
-// (variant-engine.js) — so a byte of drift on either side fails closed by
-// refusing the script rather than silently widening the policy.
+// cspSHA256 formats body's sha256 as a CSP hash source ("sha256-<b64>"). The
+// one script the public plane pins is the RolePublic bundle, and the digest is
+// over the EXACT served asset bytes — the bytes the browser hashes — so a byte
+// of drift fails closed by refusing the script rather than silently widening
+// the policy. (There is no second population: authored script is refused at
+// publish and at load, INV-14.)
 func cspSHA256(body []byte) string {
 	sum := sha256.Sum256(body)
 	return "sha256-" + base64.StdEncoding.EncodeToString(sum[:])
@@ -582,4 +583,148 @@ func InjectContentRuntime(body []byte, proxyID, frameID, authCfgJS string) []byt
 		return spliceInto(body, at, tag)
 	}
 	return spliceInto(body, 0, tag)
+}
+
+// utf8BOM is the byte-order mark a document may open with. Nothing may be
+// inserted ahead of it.
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
+// injectPublicBundleFirst prepares a PROXIED UPSTREAM document for the public
+// publish plane: it splices the RolePublic bundle tag in as the FIRST thing the
+// document's head runs, and removes every upstream
+// <meta http-equiv="Content-Security-Policy">. It is the body half of what
+// serveProxiedArtifact does; the header half is PublicHandler.writeHeaders.
+//
+// Why first, and why not instrumentationInsertOffset. The dev insertion point is
+// "before the first literal </head>", i.e. AFTER everything the upstream put in
+// its head. On the public plane that loses the mandatory disclosure indicator
+// (INV-14) to ordinary upstream markup:
+//
+//   - an upstream meta CSP with a strict script-src is enforced IN ADDITION to
+//     the header policy and refuses a bundle that loads after it;
+//   - a "</head>" inside a comment or a <template> swallows the tag;
+//   - the search is case-sensitive, so <HTML><HEAD> matches nothing and the tag
+//     is prepended ahead of the doctype, putting the page in quirks mode.
+//
+// Here the document is read with the HTML tokenizer — the same state machine a
+// browser runs, so comments, raw-text elements, and attribute quoting are judged
+// the way the browser will judge them, case-insensitively — and the tag goes
+// immediately after <head> (or, when the head is implied, after <html> or the
+// doctype, where the parser opens the head for it). Being first is the robust
+// half: a blocking script that precedes a meta CSP is already running when the
+// parser reaches the policy.
+//
+// Why the meta CSP is STRIPPED rather than the document refused. INV-11/INV-12
+// are a wholesale replace: the upstream's Content-Security-Policy header is
+// deleted and ours set, never merged. A meta policy is the same upstream policy
+// by another transport, and leaving it would merge it back in — it could still
+// refuse the bundle's same-origin fetch of walkthrough.json (connect-src) even
+// with the bundle running. Stripping only ever REMOVES an upstream restriction
+// that the header policy already supersedes; it adds no source to our policy, so
+// §14 (no CSP widening) holds, and it decodes nothing, so §17 holds. Refusing
+// would make every site that ships a meta CSP unpublishable for no gain in
+// safety. Each strip is logged.
+func injectPublicBundleFirst(body []byte, assetPath, integrity string) []byte {
+	tag := []byte(`<script src="` + assetPath + `" integrity="` + integrity + `" crossorigin="anonymous"></script>`)
+	insertAt, strip := scanPublicDocument(body)
+	if len(strip) > 0 {
+		debug.Log("publish", "public plane: removed %d upstream <meta http-equiv=Content-Security-Policy> tag(s) from a proxied document — the response header policy replaces the upstream policy wholesale (INV-11/INV-12)", len(strip))
+	}
+	out := make([]byte, 0, len(body)+len(tag))
+	out = append(out, body[:insertAt]...)
+	out = append(out, tag...)
+	at := insertAt
+	for _, r := range strip {
+		// scanPublicDocument guarantees every range starts at or after insertAt
+		// and that ranges are ordered and disjoint; the guard keeps a violated
+		// premise from panicking or duplicating bytes.
+		if r[0] < at || r[1] > len(body) {
+			continue
+		}
+		out = append(out, body[at:r[0]]...)
+		at = r[1]
+	}
+	return append(out, body[at:]...)
+}
+
+// scanPublicDocument tokenizes an upstream document once and reports where the
+// public bundle tag belongs and which byte ranges hold a meta CSP to remove.
+//
+// insertAt is the end of the last "prolog" construct — BOM, doctype, <html>,
+// <head> — before anything else. A comment or whitespace does not end the
+// prolog; any other tag or non-blank text does, because from there the browser
+// has already opened (or implied) the head and the tag must precede it. So the
+// result is never ahead of a doctype that the browser honours, and never inside
+// a comment, a <template>, or a raw-text element.
+func scanPublicDocument(body []byte) (insertAt int, strip [][2]int) {
+	off := 0
+	if bytes.HasPrefix(body, utf8BOM) {
+		off = len(utf8BOM)
+		insertAt = off
+	}
+	z := xhtml.NewTokenizer(bytes.NewReader(body[off:]))
+	prolog := true
+	for {
+		tt := z.Next()
+		start := off
+		off += len(z.Raw())
+		switch tt {
+		case xhtml.ErrorToken:
+			return insertAt, strip
+		case xhtml.DoctypeToken:
+			if prolog {
+				insertAt = off
+			}
+		case xhtml.CommentToken:
+			// Neither ends the prolog nor moves the insertion point.
+		case xhtml.TextToken:
+			if prolog && len(bytes.TrimSpace(body[start:off])) > 0 {
+				prolog = false
+			}
+		case xhtml.EndTagToken:
+			prolog = false
+		case xhtml.StartTagToken, xhtml.SelfClosingTagToken:
+			name, hasAttr := z.TagName()
+			switch string(name) {
+			case "html":
+				if prolog {
+					insertAt = off
+				}
+			case "head":
+				if prolog {
+					insertAt = off
+					prolog = false
+				}
+			case "meta":
+				prolog = false
+				if hasAttr && metaIsCSP(z) {
+					strip = append(strip, [2]int{start, off})
+				}
+			default:
+				prolog = false
+			}
+		}
+	}
+}
+
+// metaIsCSP reports whether the <meta> tag the tokenizer is positioned on is a
+// policy delivery: http-equiv naming Content-Security-Policy (or its
+// Report-Only sibling, which browsers ignore in a meta but which has no
+// business surviving a wholesale replace either). The comparison is on the
+// tokenizer's attribute-decoded value, ASCII case-insensitively, so an entity-
+// or case-spelled name is not a way round it (§3: reject equivalent spellings).
+func metaIsCSP(z *xhtml.Tokenizer) bool {
+	found := false
+	for {
+		key, val, more := z.TagAttr()
+		if string(key) == "http-equiv" {
+			switch strings.ToLower(strings.TrimSpace(string(val))) {
+			case "content-security-policy", "content-security-policy-report-only":
+				found = true
+			}
+		}
+		if !more {
+			return found
+		}
+	}
 }

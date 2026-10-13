@@ -62,6 +62,7 @@ func NewAuditSummarizer(config AuditSummarizerConfig) *AuditSummarizer {
 		LLMProvider:  config.LLMProvider,
 		APIKey:       config.APIKey,
 		Model:        config.Model,
+		MaxTokens:    summaryMaxTokens,
 		SystemPrompt: buildAuditSystemPrompt(),
 	}
 

@@ -166,15 +166,7 @@ func detectGo(path string) *Project {
 		// Detect frontend package manager
 		frontendPath := filepath.Join(path, "frontend")
 		if fileExists(frontendPath) {
-			if fileExists(filepath.Join(frontendPath, "pnpm-lock.yaml")) {
-				proj.Metadata["frontend_package_manager"] = "pnpm"
-			} else if fileExists(filepath.Join(frontendPath, "yarn.lock")) {
-				proj.Metadata["frontend_package_manager"] = "yarn"
-			} else if fileExists(filepath.Join(frontendPath, "bun.lockb")) {
-				proj.Metadata["frontend_package_manager"] = "bun"
-			} else {
-				proj.Metadata["frontend_package_manager"] = "npm"
-			}
+			proj.Metadata["frontend_package_manager"] = detectPackageManager(frontendPath)
 		}
 	}
 
@@ -305,7 +297,9 @@ func detectPackageManager(path string) string {
 	if fileExists(filepath.Join(path, "yarn.lock")) {
 		return "yarn"
 	}
-	if fileExists(filepath.Join(path, "bun.lockb")) {
+	// Bun writes the text lockfile bun.lock by default since 1.2; bun.lockb is
+	// the older binary form. Either one means bun.
+	if fileExists(filepath.Join(path, "bun.lock")) || fileExists(filepath.Join(path, "bun.lockb")) {
 		return "bun"
 	}
 	// Default to npm

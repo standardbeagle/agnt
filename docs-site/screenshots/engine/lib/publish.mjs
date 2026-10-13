@@ -9,9 +9,16 @@
 //   docs-site/static/img/<dir>-demo.webp     — 8fps 720-wide looping animation
 //
 // The source is checked FIRST: a missing webm or a missing ffmpeg throws before
-// anything is written. Every artifact is staged in a temp dir and moved into
-// place only after all renders succeed, so a mid-run ffmpeg failure never
-// leaves a partial poster/webp behind and a re-run overwrites deterministically.
+// anything is written. Every artifact — the captions included — is staged in a
+// temp dir and installed only after all renders succeed, so a mid-run ffmpeg
+// failure never leaves a partial poster/webp behind and a re-run overwrites
+// deterministically.
+//
+// The install itself is all-or-nothing (installSet): each asset it replaces is
+// set aside first, and a failure part-way through puts every one back, so
+// docs-site never holds a new clip beside an old poster. A demo republished
+// WITHOUT captions has its previously published .vtt removed in that same set —
+// otherwise the old captions would keep playing over the new clip.
 //
 // Path construction and ffmpeg argv are pure; the filesystem and ffmpeg are
 // injected (`deps`) so the ordering guarantees are unit-testable without either.
@@ -86,8 +93,37 @@ const realDeps = {
   log: console,
 };
 
-// Publish one demo. Throws (writing nothing under docs-site) when the source is
-// missing, ffmpeg is unavailable, or a render fails.
+// Install a set of staged files as one unit. `installs` is [from, to] pairs;
+// `removals` is destinations that must not exist afterwards. Anything already at
+// a destination is moved into `backupDir` first. If any step throws, every file
+// this call placed is removed and every file it set aside is moved back, then
+// the error is rethrown — the destinations end as they started. `backupDir` is
+// the caller's temp dir, so the set-aside copies are cleaned up with it.
+export const installSet = (d, backupDir, installs, removals = []) => {
+  const placed = [];
+  const setAside = [];
+  const aside = (to) => {
+    if (!d.existsSync(to)) return;
+    const bak = path.join(backupDir, `replaced-${setAside.length}-${path.basename(to)}`);
+    d.move(to, bak);
+    setAside.push([bak, to]);
+  };
+  try {
+    for (const [from, to] of installs) {
+      aside(to);
+      d.move(from, to);
+      placed.push(to);
+    }
+    for (const to of removals) aside(to);
+  } catch (e) {
+    for (const to of placed.reverse()) d.rmTree(to);
+    for (const [bak, to] of setAside.reverse()) d.move(bak, to);
+    throw e;
+  }
+};
+
+// Publish one demo. Throws (leaving docs-site as it was) when the source is
+// missing, ffmpeg is unavailable, a render fails, or an install step fails.
 export const publishDemo = ({demoDir, docsSiteDir, dirName, specName}, deps = {}) => {
   const d = {...realDeps, ...deps};
   const p = publishPaths({demoDir, docsSiteDir, dirName, specName});
@@ -101,13 +137,19 @@ export const publishDemo = ({demoDir, docsSiteDir, dirName, specName}, deps = {}
     throw new Error('publish: ffmpeg not found on PATH (required for the poster and the animated webp)');
   }
 
+  const hasVtt = d.existsSync(p.srcVtt);
   const tmp = d.mkdtemp();
   try {
     const tmpWebm = path.join(tmp, dirName + '.webm');
     const tmpPoster = path.join(tmp, dirName + '-poster.webp');
     const tmpAnim = path.join(tmp, dirName + '-demo.webp');
 
+    const tmpVtt = path.join(tmp, dirName + '.vtt');
+
     d.copyFile(p.srcWebm, tmpWebm);
+    // .vtt sidecar: staged with the rest when present, so it is installed (or
+    // not) together with the clip it captions.
+    if (hasVtt) d.copyFile(p.srcVtt, tmpVtt);
     d.run(buildPosterArgs(p.srcWebm, tmpPoster));
     d.run(buildAnimArgs(p.srcWebm, tmpAnim));
     // A render that exits 0 without producing its file (a take shorter than the
@@ -119,19 +161,15 @@ export const publishDemo = ({demoDir, docsSiteDir, dirName, specName}, deps = {}
     // All renders succeeded — only now touch docs-site.
     d.mkdir(p.videoDir);
     d.mkdir(p.imgDir);
-    d.move(tmpWebm, p.destWebm);
-    d.move(tmpPoster, p.destPoster);
-    d.move(tmpAnim, p.destAnim);
+    const installs = [[tmpWebm, p.destWebm], [tmpPoster, p.destPoster], [tmpAnim, p.destAnim]];
+    if (hasVtt) installs.push([tmpVtt, p.destVtt]);
+    // A silent demo must not keep captions published by an earlier, narrated run.
+    installSet(d, tmp, installs, hasVtt ? [] : [p.destVtt]);
   } finally {
     d.rmTree(tmp);
   }
 
-  // .vtt sidecar: copied when present, skipped when the demo is silent.
-  let vtt = null;
-  if (d.existsSync(p.srcVtt)) {
-    d.copyFile(p.srcVtt, p.destVtt);
-    vtt = p.destVtt;
-  }
+  const vtt = hasVtt ? p.destVtt : null;
 
   const embed = embedSnippet(dirName);
   d.log.log(`demo-publish: ${dirName}`);

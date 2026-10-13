@@ -1,22 +1,34 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"io"
+	"strings"
 	"sync"
+	"unicode/utf8"
 
 	"github.com/standardbeagle/agnt/internal/overlay"
 )
 
 // LineEditor provides line editing for raw mode terminal input.
 // It handles cursor movement, history, and echoes through the overlay writer chain.
+//
+// The buffer holds runes and the cursor is a rune index: input arrives one
+// byte at a time, so multi-byte UTF-8 is reassembled in utf8Pending before it
+// reaches the buffer. Cursor motion on screen is measured in terminal cells
+// (CJK and emoji occupy two).
 type LineEditor struct {
 	mu      sync.Mutex
-	buf     []byte   // Current line buffer
-	cursor  int      // Cursor position within buf
+	buf     []rune   // Current line buffer
+	cursor  int      // Cursor position within buf (rune index)
 	hist    []string // Command history
 	histIdx int      // Current history index (-1 = current input)
 	saved   string   // Saved current input when browsing history
+
+	// utf8Pending holds the leading bytes of a multi-byte rune whose
+	// continuation bytes have not arrived yet (they may straddle reads).
+	utf8Pending []byte
 
 	prompt string    // Prompt string (e.g., "> ")
 	out    io.Writer // Output writer (overlay chain)
@@ -25,7 +37,23 @@ type LineEditor struct {
 	lines chan string   // Submitted lines
 	eof   chan struct{} // EOF signal (Ctrl+D)
 
+	// onInterrupt is called when Ctrl+C arrives while the editor is inactive
+	// (a turn is streaming). The terminal is in raw mode, so Ctrl+C is the
+	// byte 0x03 and never a SIGINT — without this hook a running turn could
+	// not be stopped from the keyboard at all.
+	onInterrupt func()
+
+	// ask is non-nil while Ask owns the editor: the next submitted line (or a
+	// Ctrl+C / Ctrl+D cancel) is delivered there instead of to lines.
+	ask chan askAnswer
+
 	escReader *overlay.EscapeSequenceReader
+}
+
+// askAnswer is one reply to LineEditor.Ask.
+type askAnswer struct {
+	line string
+	ok   bool
 }
 
 // NewLineEditor creates a line editor that echoes through the given writer.
@@ -85,12 +113,63 @@ func (le *LineEditor) redraw() {
 	// Clear line, write prompt + buffer, position cursor
 	fmt.Fprint(le.out, "\r\033[K")
 	fmt.Fprint(le.out, le.prompt)
-	le.out.Write(le.buf)
+	io.WriteString(le.out, string(le.buf))
 	// Move cursor to correct position if not at end
-	if le.cursor < len(le.buf) {
-		back := len(le.buf) - le.cursor
+	if back := cellWidth(le.buf[le.cursor:]); back > 0 {
 		fmt.Fprintf(le.out, "\033[%dD", back)
 	}
+}
+
+// cellWidth returns the number of terminal cells rs occupies.
+func cellWidth(rs []rune) int {
+	n := 0
+	for _, r := range rs {
+		n += overlay.RuneCells(r)
+	}
+	return n
+}
+
+// SetInterruptHandler installs the function called when Ctrl+C arrives while
+// the editor is inactive (i.e. while a turn is running). Pass nil to clear.
+func (le *LineEditor) SetInterruptHandler(fn func()) {
+	le.mu.Lock()
+	defer le.mu.Unlock()
+	le.onInterrupt = fn
+}
+
+// Ask shows prompt and returns the next line the user submits, temporarily
+// taking the editor over from the normal Lines() flow (and re-activating it if
+// a turn had it disabled). It is how a mid-turn question — an ACP permission
+// request — reaches the user in raw mode, where the input router is the only
+// reader of stdin and Enter is '\r', so a direct os.Stdin line read can never
+// complete. ok is false when the user cancels (Ctrl+C / Ctrl+D) or ctx ends.
+func (le *LineEditor) Ask(ctx context.Context, prompt string) (line string, ok bool) {
+	ch := make(chan askAnswer, 1)
+
+	le.mu.Lock()
+	if le.ask != nil {
+		// One question at a time; a second concurrent Ask cannot be shown.
+		le.mu.Unlock()
+		return "", false
+	}
+	prevPrompt, prevActive := le.prompt, le.active
+	prevBuf, prevCursor := le.buf, le.cursor
+	le.prompt, le.active, le.ask = prompt, true, ch
+	le.buf, le.cursor = nil, 0
+	le.redraw()
+	le.mu.Unlock()
+
+	var ans askAnswer
+	select {
+	case ans = <-ch:
+	case <-ctx.Done():
+	}
+
+	le.mu.Lock()
+	le.prompt, le.active, le.ask = prevPrompt, prevActive, nil
+	le.buf, le.cursor = prevBuf, prevCursor
+	le.mu.Unlock()
+	return ans.line, ans.ok
 }
 
 // Feed processes a raw byte from the input router.
@@ -98,6 +177,26 @@ func (le *LineEditor) redraw() {
 func (le *LineEditor) Feed(b byte) {
 	le.mu.Lock()
 	if !le.active {
+		interrupt := le.onInterrupt
+		le.mu.Unlock()
+		// Ctrl+C during a turn: the editor ignores everything else while
+		// inactive, but this one byte is the only keyboard interrupt there is.
+		if b == 0x03 && interrupt != nil {
+			interrupt()
+		}
+		return
+	}
+
+	// Reassemble multi-byte UTF-8. A lead/continuation byte never starts an
+	// escape sequence, so it bypasses the escape reader unless one is already
+	// mid-sequence (X10 mouse reports carry arbitrary bytes). An ASCII byte
+	// cannot continue a multi-byte rune: it discards a broken prefix and is
+	// then handled as itself below.
+	if len(le.utf8Pending) > 0 && b < 0x80 {
+		le.utf8Pending = le.utf8Pending[:0]
+	}
+	if !le.escReader.IsPending() && b >= 0x80 {
+		le.feedUTF8(b)
 		le.mu.Unlock()
 		return
 	}
@@ -111,6 +210,33 @@ func (le *LineEditor) Feed(b byte) {
 	le.mu.Unlock()
 
 	le.FeedKey(key)
+}
+
+// feedUTF8 accumulates one non-ASCII byte of a multi-byte rune and inserts the
+// rune once it is complete. An invalid sequence is discarded whole — to the
+// end of the unit, never handed on as fresh input. Caller holds le.mu.
+func (le *LineEditor) feedUTF8(b byte) {
+	if len(le.utf8Pending) > 0 && utf8.RuneStart(b) {
+		// A new lead byte where a continuation was due: the old prefix is
+		// broken, start over with this one.
+		le.utf8Pending = le.utf8Pending[:0]
+	}
+	le.utf8Pending = append(le.utf8Pending, b)
+	if !utf8.FullRune(le.utf8Pending) {
+		if len(le.utf8Pending) >= utf8.UTFMax {
+			le.utf8Pending = le.utf8Pending[:0]
+		}
+		return
+	}
+	r, size := utf8.DecodeRune(le.utf8Pending)
+	le.utf8Pending = le.utf8Pending[:0]
+	if r == utf8.RuneError && size <= 1 {
+		return // stray continuation byte or invalid lead
+	}
+	// C1 controls (U+0080–U+009F) are not printable.
+	if r >= 0xa0 {
+		le.insertRune(r)
+	}
 }
 
 // FeedEscapeTimeout should be called when escape sequence times out.
@@ -166,16 +292,26 @@ func (le *LineEditor) feedByte(b byte) {
 	switch b {
 	case '\r', '\n': // Enter
 		line := string(le.buf)
-		le.addHistory(line)
 		le.buf = le.buf[:0]
 		le.cursor = 0
 		le.histIdx = -1
 		fmt.Fprint(le.out, "\r\n")
+		if le.ask != nil {
+			// An Ask reply: not history, not a REPL line.
+			le.answerAsk(askAnswer{line: line, ok: true})
+			return
+		}
+		le.addHistory(line)
 		le.mu.Unlock()
 		le.lines <- line
 		le.mu.Lock()
 
 	case 0x03: // Ctrl+C
+		if le.ask != nil {
+			fmt.Fprint(le.out, "^C\r\n")
+			le.answerAsk(askAnswer{})
+			return
+		}
 		if len(le.buf) > 0 {
 			// Clear current line
 			le.buf = le.buf[:0]
@@ -189,6 +325,11 @@ func (le *LineEditor) feedByte(b byte) {
 		}
 
 	case 0x04: // Ctrl+D
+		if le.ask != nil && len(le.buf) == 0 {
+			fmt.Fprint(le.out, "\r\n")
+			le.answerAsk(askAnswer{})
+			return
+		}
 		if len(le.buf) == 0 {
 			le.mu.Unlock()
 			select {
@@ -224,28 +365,41 @@ func (le *LineEditor) feedByte(b byte) {
 		le.redraw()
 
 	default:
+		// Printable ASCII. Non-ASCII runes arrive through feedUTF8.
 		if b >= 0x20 && b < 0x7f {
-			le.insertChar(b)
+			le.insertRune(rune(b))
 		}
 	}
 }
 
-func (le *LineEditor) insertChar(b byte) {
+// answerAsk delivers an Ask reply. The channel is buffered and Ask clears
+// le.ask before another reply can be produced, so this never blocks. Caller
+// holds le.mu.
+func (le *LineEditor) answerAsk(a askAnswer) {
+	select {
+	case le.ask <- a:
+	default:
+	}
+	// Stop accepting keys until Ask restores the previous state, so a second
+	// Enter cannot be read as another answer.
+	le.active = false
+}
+
+func (le *LineEditor) insertRune(r rune) {
 	if le.cursor == len(le.buf) {
 		// Append at end — simple echo
-		le.buf = append(le.buf, b)
+		le.buf = append(le.buf, r)
 		le.cursor++
-		le.out.Write([]byte{b})
+		io.WriteString(le.out, string(r))
 	} else {
 		// Insert in middle — splice and redraw remainder
 		le.buf = append(le.buf, 0)
 		copy(le.buf[le.cursor+1:], le.buf[le.cursor:])
-		le.buf[le.cursor] = b
+		le.buf[le.cursor] = r
 		le.cursor++
 		// Write from cursor to end, then move cursor back
-		le.out.Write(le.buf[le.cursor-1:])
-		back := len(le.buf) - le.cursor
-		if back > 0 {
+		io.WriteString(le.out, string(le.buf[le.cursor-1:]))
+		if back := cellWidth(le.buf[le.cursor:]); back > 0 {
 			fmt.Fprintf(le.out, "\033[%dD", back)
 		}
 	}
@@ -256,10 +410,11 @@ func (le *LineEditor) backspace() {
 		return
 	}
 	if le.cursor == len(le.buf) {
-		// Delete last char
+		// Delete last char, erasing every cell it occupied
+		w := overlay.RuneCells(le.buf[len(le.buf)-1])
 		le.buf = le.buf[:len(le.buf)-1]
 		le.cursor--
-		fmt.Fprint(le.out, "\b \b")
+		io.WriteString(le.out, strings.Repeat("\b", w)+strings.Repeat(" ", w)+strings.Repeat("\b", w))
 	} else {
 		// Delete in middle
 		copy(le.buf[le.cursor-1:], le.buf[le.cursor:])
@@ -299,27 +454,27 @@ func (le *LineEditor) deleteWord() {
 func (le *LineEditor) cursorLeft() {
 	if le.cursor > 0 {
 		le.cursor--
-		fmt.Fprint(le.out, "\033[D")
+		fmt.Fprintf(le.out, "\033[%dD", overlay.RuneCells(le.buf[le.cursor]))
 	}
 }
 
 func (le *LineEditor) cursorRight() {
 	if le.cursor < len(le.buf) {
+		fmt.Fprintf(le.out, "\033[%dC", overlay.RuneCells(le.buf[le.cursor]))
 		le.cursor++
-		fmt.Fprint(le.out, "\033[C")
 	}
 }
 
 func (le *LineEditor) cursorHome() {
 	if le.cursor > 0 {
-		fmt.Fprintf(le.out, "\033[%dD", le.cursor)
+		fmt.Fprintf(le.out, "\033[%dD", cellWidth(le.buf[:le.cursor]))
 		le.cursor = 0
 	}
 }
 
 func (le *LineEditor) cursorEnd() {
 	if le.cursor < len(le.buf) {
-		fmt.Fprintf(le.out, "\033[%dC", len(le.buf)-le.cursor)
+		fmt.Fprintf(le.out, "\033[%dC", cellWidth(le.buf[le.cursor:]))
 		le.cursor = len(le.buf)
 	}
 }
@@ -370,7 +525,7 @@ func (le *LineEditor) historyDown() {
 }
 
 func (le *LineEditor) setBuffer(s string) {
-	le.buf = []byte(s)
+	le.buf = []rune(s)
 	le.cursor = len(le.buf)
 	le.redraw()
 }

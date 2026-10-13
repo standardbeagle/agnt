@@ -7,8 +7,10 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"sync/atomic"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/httpcaps"
 	"github.com/standardbeagle/agnt/internal/overlay"
@@ -19,10 +21,30 @@ import (
 // REPL loop to deliver as --resume turns.
 type AIOverlay struct {
 	socketPath      string
-	messages        chan string
+	messages        chan aiOverlayMessage
 	server          *http.Server
 	listener        net.Listener
 	auditSummarizer *overlay.AuditSummarizer
+
+	// policy is the `.agnt.kdl` alerts filter chain for auto-generated error
+	// events — the same autoForwardPolicy the PTY overlay applies. Set once by
+	// configureAlerts before Start; the zero value forwards nothing.
+	policy autoForwardPolicy
+	// forwardPaused mirrors Overlay.forwardPaused: while set, auto-generated
+	// alerts are not queued for the agent. Explicit user actions still are.
+	forwardPaused atomic.Bool
+	// dropped counts messages lost because the queue was full, until the
+	// consumer collects the count with TakeDropped and reports it.
+	dropped atomic.Int64
+}
+
+// aiOverlayMessage is one message queued for delivery as a prompt turn.
+type aiOverlayMessage struct {
+	text string
+	// protected marks an explicit user action (panel message, sketch,
+	// `agnt session send`). Like AlertMatch.Protected on the PTY path, it is
+	// never deduped, capped, or held back by a forwarding pause.
+	protected bool
 }
 
 // newAIOverlay creates an AI overlay with a session-specific socket path.
@@ -36,9 +58,59 @@ func newAIOverlay(sessionCode string) *AIOverlay {
 
 	return &AIOverlay{
 		socketPath:      socketPath,
-		messages:        make(chan string, 64),
+		messages:        make(chan aiOverlayMessage, 64),
 		auditSummarizer: summarizer,
 	}
+}
+
+// configureAlerts loads the alerts filter chain for projectPath. It mirrors
+// setupAlertScanner's decisions on the PTY path: a config that fails to load
+// or has `alerts { enabled false }` forwards no auto-generated errors (the
+// load failure loudly — a broken config must not quietly change alert
+// behavior), and otherwise auto-forward follows `alerts.auto-forward`.
+// Call before Start.
+func (a *AIOverlay) configureAlerts(projectPath string) {
+	cfg, err := loadResolvedConfig(projectPath)
+	if err != nil {
+		notifyUser(overlay.LevelWarn, "alerts disabled: failed to load config for the alert filter: %v", err)
+		return
+	}
+	a.policy = alertPolicyFromConfig(cfg)
+}
+
+// alertPolicyFromConfig builds the auto-forward filter chain from a loaded
+// config. Pure, so the mapping is testable without a socket.
+func alertPolicyFromConfig(cfg *config.AgntConfig) autoForwardPolicy {
+	if cfg == nil {
+		cfg = config.DefaultAgntConfig()
+	}
+	if cfg.Alerts != nil && !cfg.Alerts.IsEnabled() {
+		return autoForwardPolicy{}
+	}
+	var af *config.AutoForwardConfig
+	var cascade []string
+	if cfg.Alerts != nil {
+		af = cfg.Alerts.AutoForward
+		if cfg.Alerts.OutageHold != nil {
+			cascade = cfg.Alerts.OutageHold.GetJSCascadePatterns()
+		}
+	}
+	return autoForwardPolicy{
+		enabled: af.IsEnabled(),
+		cfg:     af,
+		cascade: lowerCascadePatterns(cascade),
+	}
+}
+
+// SetForwardingPaused pauses/resumes queueing of auto-generated alerts.
+func (a *AIOverlay) SetForwardingPaused(paused bool) {
+	a.forwardPaused.Store(paused)
+}
+
+// TakeDropped returns the number of messages dropped on a full queue since the
+// last call, and resets the count.
+func (a *AIOverlay) TakeDropped() int {
+	return int(a.dropped.Swap(0))
 }
 
 // Start begins listening on the Unix socket.
@@ -47,12 +119,9 @@ func (a *AIOverlay) Start(ctx context.Context) error {
 		return fmt.Errorf("no socket path")
 	}
 
-	// Remove stale socket
-	if _, err := os.Stat(a.socketPath); err == nil {
-		os.Remove(a.socketPath)
-	}
-
-	listener, err := net.Listen("unix", a.socketPath)
+	// Same listener rules as the PTY overlay: per-user dir, liveness-probed
+	// stale removal, owner-only mode.
+	listener, err := listenOverlaySocket(a.socketPath)
 	if err != nil {
 		return fmt.Errorf("failed to create AI overlay socket: %w", err)
 	}
@@ -85,16 +154,18 @@ func (a *AIOverlay) Stop() {
 		defer cancel()
 		_ = a.server.Shutdown(ctx)
 	}
+	// Remove the socket only if this overlay listened on it; after a failed
+	// Start the path may belong to a live session.
 	if a.listener != nil {
 		a.listener.Close()
-	}
-	if a.socketPath != "" {
-		os.Remove(a.socketPath)
+		if a.socketPath != "" {
+			os.Remove(a.socketPath)
+		}
 	}
 }
 
 // Messages returns the channel that receives queued messages.
-func (a *AIOverlay) Messages() <-chan string {
+func (a *AIOverlay) Messages() <-chan aiOverlayMessage {
 	return a.messages
 }
 
@@ -125,7 +196,8 @@ func (a *AIOverlay) handleType(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if msg.Text != "" {
-		a.enqueue(msg.Text)
+		// /type is an explicit send (`agnt session send`, scheduled message).
+		a.enqueue(aiOverlayMessage{text: msg.Text, protected: true})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -144,21 +216,40 @@ func (a *AIOverlay) handleEvent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	text := formatProxyEventText(event, a.auditSummarizer)
-	if text != "" {
-		a.enqueue(text)
-	}
+	a.processProxyEvent(event)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
-// enqueue adds a message to the channel. Drops if the channel is full
-// (shouldn't happen with 64-buffer, but avoids blocking HTTP handlers).
-func (a *AIOverlay) enqueue(text string) {
+// processProxyEvent applies the alerts filter chain and queues what survives.
+// Auto-generated errors (browser_error / http_error) go through the shared
+// autoForwardPolicy and the forwarding pause, exactly as on the PTY path;
+// every other event is an explicit user action and is queued as protected.
+func (a *AIOverlay) processProxyEvent(event ProxyEvent) {
+	protected := !isAutoForwardEvent(event)
+	if !protected {
+		if _, ok := a.policy.admit(event); !ok {
+			return
+		}
+		if a.forwardPaused.Load() {
+			return
+		}
+	}
+	if text := formatProxyEventText(event, a.auditSummarizer); text != "" {
+		a.enqueue(aiOverlayMessage{text: text, protected: protected})
+	}
+}
+
+// enqueue adds a message to the channel without blocking the HTTP handler. A
+// full queue drops the message, counted in dropped so the consumer reports
+// the loss to the user and the agent (see acpAlertGate.Pull) rather than
+// leaving it in the debug log alone.
+func (a *AIOverlay) enqueue(m aiOverlayMessage) {
 	select {
-	case a.messages <- text:
+	case a.messages <- m:
 	default:
+		a.dropped.Add(1)
 		debug.Warn("overlay", "AI overlay message queue full, dropping message")
 	}
 }

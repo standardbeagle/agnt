@@ -1,6 +1,8 @@
 package sshclient
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"net"
 	"strconv"
@@ -20,6 +22,10 @@ type Client struct {
 	// deliberately — do not hide behind an unexported field.
 	SSH *ssh.Client
 
+	// jumps are the ProxyJump clients this connection is tunnelled through,
+	// outermost first. Close closes them after SSH; nil for a direct dial.
+	jumps []*ssh.Client
+
 	stopKeepalive chan struct{}
 	dead          chan struct{}
 	// closeOnce guards stopKeepalive so a second Close (reconnect teardown
@@ -28,13 +34,25 @@ type Client struct {
 	closeOnce sync.Once
 }
 
-// Dial resolves alias against the ssh_config at configPath (DefaultConfigPath
-// if empty), verifies the host key against known_hosts (DefaultKnownHostsPath
-// if empty) via HostKeyCallback, builds the auth method chain, and performs
-// ProxyJump hops (if the resolved config has one) before establishing the
-// final connection. defaultUser is used when neither the alias nor ssh_config
-// supplies a User (e.g. the OS user invoking the command).
+// Dial is DialContext with a background context.
 func Dial(alias, configPath, knownHostsPath, defaultUser string, prompter Prompter) (*Client, error) {
+	return DialContext(context.Background(), alias, configPath, knownHostsPath, defaultUser, prompter)
+}
+
+// DialContext resolves alias against the ssh_config at configPath
+// (DefaultConfigPath if empty), verifies the host key against known_hosts
+// (DefaultKnownHostsPath if empty) via HostKeyCallback, builds the auth method
+// chain, and performs ProxyJump hops (if the resolved config has one) before
+// establishing the final connection. defaultUser is used when neither the
+// alias nor ssh_config supplies a User (e.g. the OS user invoking the command).
+//
+// Every step is bounded and cancellable. The TCP connect has its own timeout;
+// each SSH handshake (banner, key exchange, authentication), including the
+// ones tunnelled through jump hosts, must finish within the context's deadline
+// or, when ctx has none, within DefaultHandshakeTimeout. Cancelling ctx closes
+// the connection in progress, so a peer that accepts TCP and then goes silent
+// cannot hold the caller forever.
+func DialContext(ctx context.Context, alias, configPath, knownHostsPath, defaultUser string, prompter Prompter) (*Client, error) {
 	if configPath == "" {
 		configPath = DefaultConfigPath()
 	}
@@ -49,30 +67,65 @@ func Dial(alias, configPath, knownHostsPath, defaultUser string, prompter Prompt
 	if cfg.User == "" {
 		cfg.User = defaultUser
 	}
+	for _, w := range cfg.Warnings {
+		// Once per process: a reconnect dials again on every attempt.
+		if _, seen := printedConfigWarnings.LoadOrStore(w, struct{}{}); !seen {
+			fmt.Fprintf(prompter.Out, "sshclient: %s\n", w)
+		}
+	}
 
-	sshClient, err := dialWithJumps(cfg, configPath, knownHostsPath, defaultUser, prompter)
+	sshClient, jumps, err := dialChain(ctx, cfg, configPath, knownHostsPath, defaultUser, prompter)
 	if err != nil {
 		return nil, err
 	}
 
-	c := &Client{SSH: sshClient, stopKeepalive: make(chan struct{}), dead: make(chan struct{})}
+	c := &Client{SSH: sshClient, jumps: jumps, stopKeepalive: make(chan struct{}), dead: make(chan struct{})}
 	c.startKeepalive(15*time.Second, 5*time.Second, 3)
 	return c, nil
 }
 
-// dialWithJumps recursively dials through cfg.ProxyJump hops (if any),
-// resolving each hop independently from ssh_config, and finally reaches
-// cfg.HostName:cfg.Port.
-func dialWithJumps(cfg HostConfig, configPath, knownHostsPath, defaultUser string, prompter Prompter) (*ssh.Client, error) {
+// printedConfigWarnings records the ssh_config warnings already shown.
+var printedConfigWarnings sync.Map
+
+// DefaultHandshakeTimeout bounds one SSH handshake when the caller's context
+// carries no deadline. It is long because the handshake includes whatever the
+// user types: the host-key confirmation, a key passphrase, a password.
+// Unattended callers (reconnect) pass a context with a shorter deadline.
+const DefaultHandshakeTimeout = 2 * time.Minute
+
+// tcpConnectTimeout bounds the TCP connect alone.
+const tcpConnectTimeout = 15 * time.Second
+
+// dialWithJumps dials cfg through its ProxyJump hops and returns the final
+// client. The jump clients it opened stay open for as long as the returned
+// client is used; callers that need to close them use dialChain.
+func dialWithJumps(ctx context.Context, cfg HostConfig, configPath, knownHostsPath, defaultUser string, prompter Prompter) (*ssh.Client, error) {
+	client, _, err := dialChain(ctx, cfg, configPath, knownHostsPath, defaultUser, prompter)
+	return client, err
+}
+
+// dialChain recursively dials through cfg.ProxyJump hops (if any), resolving
+// each hop independently from ssh_config, and finally reaches
+// cfg.HostName:cfg.Port. It returns the final client and the jump clients
+// carrying it, outermost first; on error every client it opened is closed.
+func dialChain(ctx context.Context, cfg HostConfig, configPath, knownHostsPath, defaultUser string, prompter Prompter) (_ *ssh.Client, jumps []*ssh.Client, err error) {
+	defer func() {
+		if err != nil {
+			closeClients(jumps)
+			jumps = nil
+		}
+	}()
+
 	target := net.JoinHostPort(cfg.HostName, strconv.Itoa(cfg.Port))
 
 	clientCfg, err := clientConfigFor(cfg, prompter, knownHostsPath)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	if cfg.ProxyJump == "" {
-		return ssh.Dial("tcp", target, clientCfg)
+		client, err := dialDirect(ctx, target, clientCfg)
+		return client, nil, err
 	}
 
 	hops := strings.Split(cfg.ProxyJump, ",")
@@ -84,7 +137,7 @@ func dialWithJumps(cfg HostConfig, configPath, knownHostsPath, defaultUser strin
 
 		hopCfg, err := ResolveHost(configPath, hopHost)
 		if err != nil {
-			return nil, fmt.Errorf("sshclient: resolving jump host %s: %w", hopHost, err)
+			return nil, jumps, fmt.Errorf("sshclient: resolving jump host %s: %w", hopHost, err)
 		}
 		if hopUser != "" {
 			hopCfg.User = hopUser
@@ -101,44 +154,115 @@ func dialWithJumps(cfg HostConfig, configPath, knownHostsPath, defaultUser strin
 
 		hopClientCfg, err := clientConfigFor(hopCfg, prompter, knownHostsPath)
 		if err != nil {
-			return nil, err
+			return nil, jumps, err
 		}
 		hopTarget := net.JoinHostPort(hopCfg.HostName, strconv.Itoa(hopCfg.Port))
 
 		if jumpClient == nil {
 			// First hop: direct TCP dial.
-			jumpClient, err = ssh.Dial("tcp", hopTarget, hopClientCfg)
+			jumpClient, err = dialDirect(ctx, hopTarget, hopClientCfg)
 			if err != nil {
-				return nil, fmt.Errorf("sshclient: dialing jump host %s: %w", hopTarget, err)
+				return nil, jumps, fmt.Errorf("sshclient: dialing jump host %s: %w", hopTarget, err)
 			}
+			jumps = append(jumps, jumpClient)
 			continue
 		}
 
 		// Subsequent hop: open a direct-tcpip channel through the
 		// previously-established jump client and use it as the
 		// transport for a fresh SSH handshake.
-		conn, err := jumpClient.Dial("tcp", hopTarget)
+		conn, err := jumpClient.DialContext(ctx, "tcp", hopTarget)
 		if err != nil {
-			return nil, fmt.Errorf("sshclient: opening direct-tcpip to hop %d (%s): %w", i, hopTarget, err)
+			return nil, jumps, fmt.Errorf("sshclient: opening direct-tcpip to hop %d (%s): %w", i, hopTarget, err)
 		}
-		ncc, chans, reqs, err := ssh.NewClientConn(conn, hopTarget, hopClientCfg)
+		jumpClient, err = handshake(ctx, conn, hopTarget, hopClientCfg)
 		if err != nil {
-			return nil, fmt.Errorf("sshclient: handshake with hop %d (%s): %w", i, hopTarget, err)
+			return nil, jumps, fmt.Errorf("sshclient: handshake with hop %d (%s): %w", i, hopTarget, err)
 		}
-		jumpClient = ssh.NewClient(ncc, chans, reqs)
+		jumps = append(jumps, jumpClient)
 	}
 
 	// Final hop: from the last jump client, open a direct-tcpip channel to
 	// the real target and handshake over it.
-	conn, err := jumpClient.Dial("tcp", target)
+	conn, err := jumpClient.DialContext(ctx, "tcp", target)
 	if err != nil {
-		return nil, fmt.Errorf("sshclient: opening direct-tcpip to target %s: %w", target, err)
+		return nil, jumps, fmt.Errorf("sshclient: opening direct-tcpip to target %s: %w", target, err)
 	}
-	ncc, chans, reqs, err := ssh.NewClientConn(conn, target, clientCfg)
+	client, err := handshake(ctx, conn, target, clientCfg)
 	if err != nil {
-		return nil, fmt.Errorf("sshclient: handshake with target %s: %w", target, err)
+		return nil, jumps, fmt.Errorf("sshclient: handshake with target %s: %w", target, err)
+	}
+	return client, jumps, nil
+}
+
+// dialDirect opens a TCP connection to addr and runs the SSH handshake on it.
+func dialDirect(ctx context.Context, addr string, cfg *ssh.ClientConfig) (*ssh.Client, error) {
+	dialer := net.Dialer{Timeout: tcpConnectTimeout}
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return nil, err
+	}
+	return handshake(ctx, conn, addr, cfg)
+}
+
+// handshake runs the SSH client handshake on conn, bounded by ctx.
+//
+// ssh.ClientConfig.Timeout covers only the TCP connect, and
+// ssh.NewClientConn reads the banner, key exchange and auth replies with no
+// deadline of its own: a peer that accepts the connection and then says
+// nothing blocks it forever. A watcher therefore closes conn when ctx is
+// cancelled or the handshake budget runs out, which is what unblocks
+// NewClientConn. It is closed rather than given a read deadline because a
+// direct-tcpip channel through a jump host does not support deadlines.
+//
+// conn is always consumed: owned by the returned client, or closed.
+func handshake(ctx context.Context, conn net.Conn, addr string, cfg *ssh.ClientConfig) (*ssh.Client, error) {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, DefaultHandshakeTimeout)
+		defer cancel()
+	}
+
+	finished := make(chan struct{})
+	watcherDone := make(chan struct{})
+	aborted := false // written by the watcher, read only after watcherDone
+	go func() {
+		defer close(watcherDone)
+		select {
+		case <-finished:
+		case <-ctx.Done():
+			aborted = true
+			conn.Close()
+		}
+	}()
+
+	ncc, chans, reqs, err := ssh.NewClientConn(conn, addr, cfg)
+	close(finished)
+	<-watcherDone
+
+	if aborted {
+		// The watcher closed conn. Whatever NewClientConn made of that, the
+		// connection is gone, so report why rather than a bare read error.
+		if err == nil {
+			ncc.Close()
+		}
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return nil, fmt.Errorf("ssh handshake with %s did not complete in time: %w", addr, ctx.Err())
+		}
+		return nil, ctx.Err()
+	}
+	if err != nil {
+		conn.Close()
+		return nil, err
 	}
 	return ssh.NewClient(ncc, chans, reqs), nil
+}
+
+func closeClients(clients []*ssh.Client) {
+	// Innermost first: each later client is tunnelled through the earlier ones.
+	for i := len(clients) - 1; i >= 0; i-- {
+		clients[i].Close()
+	}
 }
 
 func clientConfigFor(cfg HostConfig, prompter Prompter, knownHostsPath string) (*ssh.ClientConfig, error) {
@@ -150,7 +274,11 @@ func clientConfigFor(cfg HostConfig, prompter Prompter, knownHostsPath string) (
 		User:            cfg.User,
 		Auth:            BuildAuthMethods(cfg.IdentityFile, prompter),
 		HostKeyCallback: hkCallback,
-		Timeout:         15 * time.Second,
+		// Ask for the key types known_hosts already records for this host, so
+		// the callback is offered a key it can actually compare (see
+		// knownHostKeyAlgorithms). Nil keeps the library default.
+		HostKeyAlgorithms: knownHostKeyAlgorithms(knownHostsPath, net.JoinHostPort(cfg.HostName, strconv.Itoa(cfg.Port))),
+		Timeout:           tcpConnectTimeout,
 	}, nil
 }
 
@@ -184,7 +312,9 @@ func (c *Client) Close() error {
 	c.closeOnce.Do(func() {
 		close(c.stopKeepalive)
 	})
-	return c.SSH.Close()
+	err := c.SSH.Close()
+	closeClients(c.jumps)
+	return err
 }
 
 // Dead returns a channel that is closed when the keepalive detector

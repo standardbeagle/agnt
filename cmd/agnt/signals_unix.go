@@ -31,6 +31,60 @@ func reapSessionPGID(pgid int) {
 	_ = syscall.Kill(-pgid, syscall.SIGKILL)
 }
 
+// childExitGrace is how long each step of awaitChildExit's escalation waits
+// for the child to go before trying something stronger.
+const childExitGrace = 2 * time.Second
+
+// awaitChildExit blocks until the PTY output stream ends (done), which is how
+// a normal session finishes. If ctx is cancelled first (SIGINT/SIGTERM to
+// agnt), the shared pipeline has already forwarded one SIGINT to the child's
+// process group; an agent that ignores or merely debounces that signal would
+// otherwise leave agnt unkillable short of SIGKILL, since further signals to
+// agnt are absorbed by the already-cancelled context. So escalate, one grace
+// period per step: SIGTERM to the group, SIGKILL to the group, and finally
+// close the PTY master so the output copy ends even when something outside the
+// group still holds the slave open. Mirrors the Windows path, which kills and
+// waits 2s. Kept here (not run.go) for that file's line budget.
+func awaitChildExit(ctx context.Context, done <-chan struct{}, c *exec.Cmd, ptmx *os.File, grace time.Duration) {
+	select {
+	case <-done:
+		return
+	case <-ctx.Done():
+	}
+	exited := func() bool {
+		select {
+		case <-done:
+			return true
+		case <-time.After(grace):
+			return false
+		}
+	}
+	if exited() {
+		return
+	}
+	for _, sig := range []syscall.Signal{syscall.SIGTERM, syscall.SIGKILL} {
+		signalChildGroup(c, sig)
+		if exited() {
+			return
+		}
+	}
+	_ = ptmx.Close()
+	<-done
+}
+
+// signalChildGroup sends sig to the PTY child's process group, falling back
+// to the child alone when the group cannot be resolved.
+func signalChildGroup(c *exec.Cmd, sig syscall.Signal) {
+	if c == nil || c.Process == nil {
+		return
+	}
+	if pgid, err := syscall.Getpgid(c.Process.Pid); err == nil && pgid > 1 {
+		_ = syscall.Kill(-pgid, sig)
+		return
+	}
+	_ = c.Process.Signal(sig)
+}
+
 // watchResize blocks on SIGWINCH and forwards new dimensions to the
 // platform-agnostic resize handler. Unix uses signal-driven resize
 // (SIGWINCH); the Windows variant in run_windows.go polls because
@@ -58,9 +112,9 @@ func watchResize(ctx context.Context, done <-chan struct{}, handle *ptyHandle, r
 			if err := handle.Resize(w, ch); err != nil {
 				debug.Warn("run", "error resizing pty: %s", err)
 			}
-			if rt.activityMonitor != nil {
+			if am := rt.activityMon.Load(); am != nil {
 				// Keep the preview's virtual screen matched to the child PTY.
-				rt.activityMonitor.Resize(w, ch)
+				am.Resize(w, ch)
 			}
 			if rt.termOverlay != nil {
 				rt.termOverlay.SetSize(w, h)
@@ -107,20 +161,15 @@ func handleSIGCHLD(ctx context.Context, done <-chan struct{}, c *exec.Cmd, ptmx 
 			if c.Process == nil {
 				continue
 			}
-			// WNOWAIT makes this a non-destructive peek: it leaves the child
-			// in a waitable state so the exit path's c.Wait() (run.go) can
-			// still reap it. Without WNOWAIT, a normal child exit would be
-			// reaped here (WUNTRACED|WNOHANG reaps terminated children), then
-			// c.Wait() returns "no child processes" and classifyChildExit
-			// misreports a clean exit as an unexpected crash. We only need to
-			// observe the *stopped* state here (Ctrl+Z); the exited state is
-			// left for the main path.
-			var ws syscall.WaitStatus
-			pid, err := syscall.Wait4(c.Process.Pid, &ws, syscall.WUNTRACED|syscall.WNOHANG|syscall.WNOWAIT, nil)
-			if err != nil || pid <= 0 {
-				continue
-			}
-			if !ws.Stopped() {
+			// childStopped is a non-destructive peek (WNOWAIT): it leaves the
+			// child in a waitable state so the exit path's c.Wait() (run.go)
+			// can still reap it. A reaping wait here would collect a normal
+			// child exit, then c.Wait() returns "no child processes" and
+			// classifyChildExit misreports a clean exit as an unexpected
+			// crash. We only need to observe the *stopped* state here
+			// (Ctrl+Z); the exited state is left for the main path. The peek
+			// is per-OS because Linux's wait4 rejects WNOWAIT outright.
+			if !childStopped(c.Process.Pid) {
 				continue
 			}
 

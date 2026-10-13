@@ -39,17 +39,6 @@ type ProviderConfig struct {
 	// MaxTokens limits the response length
 	MaxTokens int `json:"max_tokens,omitempty"`
 
-	// Temperature controls randomness (0.0-1.0)
-	Temperature float64 `json:"temperature,omitempty"`
-
 	// BaseURL overrides the default API endpoint (for proxies/self-hosted)
 	BaseURL string `json:"base_url,omitempty"`
-}
-
-// DefaultProviderConfig returns sensible defaults for provider configuration.
-func DefaultProviderConfig() ProviderConfig {
-	return ProviderConfig{
-		MaxTokens:   1024,
-		Temperature: 0.7,
-	}
 }

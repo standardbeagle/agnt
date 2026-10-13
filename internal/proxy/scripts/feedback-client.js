@@ -79,14 +79,36 @@
     //     which browsers normalize to "//host"),
     //   - reject any scheme marker (a same-origin path never carries "://" or a
     //     "javascript:" / "data:" scheme).
+    //
+    // Those spelling checks are kept as a cheap first pass, but the decision is
+    // made on the RESOLVED URL: the string is parsed the way the request would
+    // parse it and must land on this page's own origin. A spelling list can
+    // never be complete — the URL parser discards tab, CR and LF anywhere in
+    // its input, so "/<TAB>/evil.example/c" passes every character test above
+    // and still resolves to https://evil.example/c. Whitespace and control
+    // characters have no place in a path this client is handed, so they are
+    // refused outright rather than normalized.
     function sameOriginPath(s) {
       if (typeof s !== 'string' || s.length === 0) return false;
       if (s.charAt(0) !== '/') return false;
+      for (var i = 0; i < s.length; i++) {
+        var code = s.charCodeAt(i);
+        if (code <= 0x20 || code === 0x7f || code === 0x5c /* backslash */) return false;
+      }
       var c1 = s.charAt(1);
-      if (c1 === '/' || c1 === '\\') return false;
+      if (c1 === '/') return false;
       if (s.indexOf('://') !== -1) return false;
       if (s.indexOf(':') !== -1 && s.indexOf(':') < s.indexOf('/', 1)) return false;
-      return true;
+      try {
+        var here = window.location;
+        var resolved = new URL(s, here.href);
+        // An opaque origin serializes as "null" on both sides; equal strings
+        // there prove nothing.
+        if (!resolved.origin || resolved.origin === 'null') return false;
+        return resolved.origin === here.origin;
+      } catch (e) {
+        return false; // unparseable, or no usable base: fail closed
+      }
     }
 
     // utf8Length is the encoded size the server will count. The caps are in

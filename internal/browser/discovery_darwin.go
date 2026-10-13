@@ -5,7 +5,6 @@ package browser
 import (
 	"os"
 	"path/filepath"
-	"sort"
 )
 
 // platformDiscoverer implements Discoverer for macOS.
@@ -50,13 +49,12 @@ func findPlaywrightChromium() string {
 	if err != nil {
 		return ""
 	}
-	pattern := filepath.Join(home, "Library", "Caches", "ms-playwright", "chromium-*", "chrome-mac", "Chromium.app", "Contents", "MacOS", "Chromium")
-	matches, err := filepath.Glob(pattern)
-	if err != nil || len(matches) == 0 {
-		return ""
-	}
-	sort.Strings(matches)
-	return matches[len(matches)-1]
+	base := filepath.Join(home, "Library", "Caches", "ms-playwright", "chromium-*", "chrome-mac*")
+	return newestPlaywrightChromium(
+		// Older Playwright ships Chromium.app; newer ships Chrome for Testing.
+		filepath.Join(base, "Chromium.app", "Contents", "MacOS", "Chromium"),
+		filepath.Join(base, "Google Chrome for Testing.app", "Contents", "MacOS", "Google Chrome for Testing"),
+	)
 }
 
 // fileExists checks if a file exists.

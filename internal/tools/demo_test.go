@@ -294,3 +294,74 @@ func TestDemoHandler_RecordManagedProcess(t *testing.T) {
 	require.NoError(t, stopErr)
 	assert.True(t, stopOut.Success, "proc stop should succeed for the managed recording")
 }
+
+// TestListDemos_NameIsTheDirectoryName: `name` in the listing is what every
+// other action takes. A demo whose demo.json names it differently used to be
+// listed under the spec name, which record/assemble/inspect/publish then could
+// not find.
+func TestListDemos_NameIsTheDirectoryName(t *testing.T) {
+	root := t.TempDir()
+	writeFixtureEngine(t, root, "vhs-spiral", `{"name":"spiral","segments":[{"id":"a","type":"cli"}]}`)
+	writeFixtureEngine(t, root, "same", `{"name":"same","segments":[]}`)
+	eng, err := resolveDemoEngine(root)
+	require.NoError(t, err)
+
+	demos, err := listDemos(eng.DemosDir)
+	require.NoError(t, err)
+	require.Len(t, demos, 2)
+	byName := map[string]DemoSummary{}
+	for _, d := range demos {
+		byName[d.Name] = d
+	}
+
+	spiral, ok := byName["vhs-spiral"]
+	require.True(t, ok, "the demo must be listed under its directory name, got %+v", demos)
+	assert.Equal(t, "spiral", spiral.DisplayName, "demo.json's name is reported separately")
+	_, listedBySpecName := byName["spiral"]
+	assert.False(t, listedBySpecName, "the spec name must not be handed back as `name`")
+	// Every listed name resolves to a real demo directory — the property the
+	// other actions depend on.
+	for name := range byName {
+		_, statErr := os.Stat(filepath.Join(eng.DemosDir, name, "demo.json"))
+		assert.NoError(t, statErr, "listed name %q is not a demo directory", name)
+	}
+	// Near miss: identical names carry no redundant display name.
+	assert.Equal(t, "", byName["same"].DisplayName)
+}
+
+func TestValidateDemoOnly(t *testing.T) {
+	accepted := []struct{ action, only string }{
+		{"record", ""}, {"assemble", ""}, {"publish", ""}, {"inspect", ""}, {"list", ""},
+		{"record", "card-intro"},
+		{"record", "card-intro,fix,attempt_1,seg.2"},
+		{"inspect", "fix"},
+	}
+	for _, c := range accepted {
+		assert.NoError(t, validateDemoOnly(c.action, c.only), "%s only=%q must be accepted", c.action, c.only)
+	}
+
+	refused := []struct{ action, only, want string }{
+		// No consumer: refused rather than accepted and ignored.
+		{"assemble", "fix", "not supported for this action"},
+		{"publish", "fix", "not supported for this action"},
+		{"list", "fix", "not supported for this action"},
+		// inspect takes exactly one id.
+		{"inspect", "a,b", "single segment id"},
+		// Shapes that are not segment ids never reach the engine's argv.
+		{"record", "fix,", "comma-separated list of segment ids"},
+		{"record", ",fix", "comma-separated list of segment ids"},
+		{"record", "fix --publish", "comma-separated list of segment ids"},
+		{"record", "-rf", "comma-separated list of segment ids"},
+		{"record", "a;rm -rf x", "comma-separated list of segment ids"},
+		{"record", "../x", "comma-separated list of segment ids"},
+		{"record", "a b", "comma-separated list of segment ids"},
+		{"inspect", "--assemble-only", "must be a segment id"},
+		{"inspect", "a&b", "must be a segment id"},
+	}
+	for _, c := range refused {
+		err := validateDemoOnly(c.action, c.only)
+		if assert.Error(t, err, "%s only=%q must be refused", c.action, c.only) {
+			assert.Contains(t, err.Error(), c.want, "%s only=%q", c.action, c.only)
+		}
+	}
+}

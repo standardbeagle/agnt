@@ -409,23 +409,7 @@ func (d *Daemon) startScriptWithRetry(
 	if e, ok := d.scriptRegistry.Get(stripProcessPrefix(processID), projectPath); ok {
 		scriptEntry = e
 	}
-	owner, _ := d.incidentProcessOwner.Load(processID)
-	lifetimeOwner := ownerAsIncidentResource(owner)
-	outputCB := func(_ string, line string) {
-		if scriptEntry != nil {
-			scriptEntry.AppendOutput(line)
-		}
-		d.eventHub.BroadcastProcessOutput(proxy.LogEntry{
-			Type: proxy.LogTypeProcessOutput,
-			ProcessOutput: &proxy.ProcessOutputEvent{
-				ProcessID: processID,
-				Stream:    "combined",
-				Line:      line,
-				Timestamp: time.Now(),
-			},
-		}, projectPath)
-		d.alertScanner.ProcessLineWithLifetime(line, processID, lifetimeOwner)
-	}
+	outputCB := d.processOutputCallback(processID, projectPath, scriptEntry)
 
 	// Start the process
 	result, err := d.hub.ProcessManager().StartOrReuse(ctx, process.ProcessConfig{
@@ -436,6 +420,9 @@ func (d *Daemon) startScriptWithRetry(
 		Args:           args,
 		Env:            env,
 		OutputCallback: outputCB,
+		// Only a RUN caller can ask for a stdin pipe; the mark makes every
+		// launch of that process — retry, restart — keep it.
+		EnableStdin: d.runStdinEnabled(processID),
 	})
 	if err != nil {
 		return nil, &StartupError{
@@ -544,6 +531,9 @@ func (d *Daemon) startScriptWithRetry(
 		Args:           args,
 		Env:            env,
 		OutputCallback: outputCB,
+		// Only a RUN caller can ask for a stdin pipe; the mark makes every
+		// launch of that process — retry, restart — keep it.
+		EnableStdin: d.runStdinEnabled(processID),
 	})
 	if err != nil {
 		return nil, &StartupError{
@@ -569,6 +559,31 @@ func (d *Daemon) startScriptWithRetry(
 		"successfully recovered from EADDRINUSE", 0)
 	d.watchProcessExit(proc)
 	return proc, nil
+}
+
+// processOutputCallback builds the per-line output callback every managed
+// process is started with: it appends to the script entry's history (when the
+// process has one), broadcasts the line to stream sinks, and feeds the alert
+// scanner. The incident owner is read once, here, so every alert the process
+// raises carries the owner of this lifetime — register the owner first.
+func (d *Daemon) processOutputCallback(processID, projectPath string, scriptEntry *script.Entry) func(string, string) {
+	owner, _ := d.incidentProcessOwner.Load(processID)
+	lifetimeOwner := ownerAsIncidentResource(owner)
+	return func(_ string, line string) {
+		if scriptEntry != nil {
+			scriptEntry.AppendOutput(line)
+		}
+		d.eventHub.BroadcastProcessOutput(proxy.LogEntry{
+			Type: proxy.LogTypeProcessOutput,
+			ProcessOutput: &proxy.ProcessOutputEvent{
+				ProcessID: processID,
+				Stream:    "combined",
+				Line:      line,
+				Timestamp: time.Now(),
+			},
+		}, projectPath)
+		d.alertScanner.ProcessLineWithLifetime(line, processID, lifetimeOwner)
+	}
 }
 
 // monitorStartupFailure watches process output for early startup failures.

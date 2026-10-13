@@ -113,7 +113,7 @@ func TestFormatIncidentsCompact_EveryRowHasIDAndNext(t *testing.T) {
 		incident.SourceBrowserJS, incident.SourceHTTP5xx, incident.SourceHTTP4xx,
 		incident.SourceTransportErr, incident.SourceProxyDiag, incident.SourceProcessAlert,
 		incident.SourceProcessOutput, incident.SourceProcessCrash, incident.SourceBuildFail,
-		incident.SourcePortConflict, incident.SourceShutdown, incident.SourceHookStopFail,
+		incident.SourceChaosSwallow, incident.SourceExternal,
 	} {
 		ev := incident.NewIncidentEvent(src, incident.SeverityError, "cat", "msg",
 			incident.Context{ProxyID: "dev", ProcessID: "web", Port: 3000, URL: "http://localhost:3000/"}, nil)

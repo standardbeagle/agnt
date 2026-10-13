@@ -10,8 +10,6 @@ import (
 	"os/exec"
 	"strings"
 	"time"
-
-	"github.com/creack/pty"
 )
 
 // AgentAdapter defines how to invoke a specific AI agent CLI.
@@ -379,38 +377,81 @@ func RunWithAdapter(ctx context.Context, config Config, prompt, inputContext, sy
 	return runWithPipe(execCtx, cmd, adapter, config, prompt, inputContext, systemPrompt)
 }
 
+// ptySession is a command running attached to a pseudo-terminal. The backend
+// is per-OS (startPTYCommand): creack/pty on Unix, ConPTY via go-pty on
+// Windows, where creack/pty only returns ErrUnsupported.
+type ptySession interface {
+	io.ReadWriter
+	// Wait blocks until the command exits.
+	Wait() error
+	// Close releases the pseudo-terminal. It must end a Read blocked on it,
+	// and is safe to call more than once.
+	Close() error
+}
+
+// PTY output drain bounds. ptyDrainGrace is how long the reader gets to reach
+// end-of-stream by itself once the command has exited; after that the
+// terminal is closed to force it. ptyDrainCeiling bounds the wait for the
+// reader to notice that close. Vars so tests can shorten them.
+var (
+	ptyDrainGrace   = 500 * time.Millisecond
+	ptyDrainCeiling = 5 * time.Second
+)
+
+// collectPTYOutput reads everything the session's command writes, waits for
+// the command to exit, and returns the output only once the reader has
+// finished. waitErr is the command's own exit error; err reports a failure to
+// collect.
+func collectPTYOutput(sess ptySession) (output string, waitErr, err error) {
+	// The buffer belongs to the copier goroutine until copied closes; nothing
+	// else may touch it before then.
+	var buf bytes.Buffer
+	copied := make(chan struct{})
+
+	go func() {
+		defer close(copied)
+		_, _ = io.Copy(&buf, sess)
+	}()
+
+	// Wait for command to complete
+	waitErr = sess.Wait()
+
+	// Completion barrier before reading the buffer. The old code waited
+	// 100ms and then read it regardless, racing the copier and truncating
+	// slow output. Normally the stream ends by itself once the child's side
+	// of the terminal closes; ConPTY, and a Unix child that left a descendant
+	// holding the slave open, need the terminal closed first.
+	select {
+	case <-copied:
+	case <-time.After(ptyDrainGrace):
+		_ = sess.Close()
+		select {
+		case <-copied:
+		case <-time.After(ptyDrainCeiling):
+			// The reader never returned, so the buffer is still its to
+			// write: report the failure rather than read it underneath.
+			return "", waitErr, fmt.Errorf("PTY output did not drain within %s of the command exiting", ptyDrainCeiling)
+		}
+	}
+	return buf.String(), waitErr, nil
+}
+
 func runWithPTY(ctx context.Context, cmd *exec.Cmd, adapter AgentAdapter, config Config, prompt, inputContext, systemPrompt string) (string, error) {
-	ptmx, err := pty.Start(cmd)
+	sess, err := startPTYCommand(ctx, cmd)
 	if err != nil {
 		return "", fmt.Errorf("failed to start PTY: %w", err)
 	}
-	defer ptmx.Close()
+	defer sess.Close()
 
 	// Write any stdin data if the adapter requires it
 	stdinData := adapter.StdinData(config, prompt, inputContext, systemPrompt)
 	if stdinData != "" {
-		if _, err := ptmx.WriteString(stdinData); err != nil {
+		if _, err := io.WriteString(sess, stdinData); err != nil {
 			return "", fmt.Errorf("failed to write to PTY: %w", err)
 		}
 	}
 
-	// Read all output from PTY
-	var output bytes.Buffer
-	done := make(chan error, 1)
-
-	go func() {
-		_, err := io.Copy(&output, ptmx)
-		done <- err
-	}()
-
-	// Wait for command to complete
-	waitErr := cmd.Wait()
-
-	// Wait for output reading to complete (with timeout for cleanup)
-	select {
-	case <-done:
-	case <-time.After(100 * time.Millisecond):
-	}
+	raw, waitErr, collectErr := collectPTYOutput(sess)
 
 	// Check for context timeout
 	if ctx.Err() == context.DeadlineExceeded {
@@ -423,8 +464,11 @@ func runWithPTY(ctx context.Context, cmd *exec.Cmd, adapter AgentAdapter, config
 		}
 		return "", fmt.Errorf("command failed: %w", waitErr)
 	}
+	if collectErr != nil {
+		return "", collectErr
+	}
 
-	return adapter.ParseOutput(output.String()), nil
+	return adapter.ParseOutput(raw), nil
 }
 
 func runWithPipe(ctx context.Context, cmd *exec.Cmd, adapter AgentAdapter, config Config, prompt, inputContext, systemPrompt string) (string, error) {
@@ -433,6 +477,10 @@ func runWithPipe(ctx context.Context, cmd *exec.Cmd, adapter AgentAdapter, confi
 	if stdinData != "" {
 		cmd.Stdin = strings.NewReader(stdinData)
 	}
+
+	// On Windows, start an npm shim's target directly so the prompt argument
+	// is not routed through cmd.exe.
+	bypassBatchShim(cmd)
 
 	// Capture output
 	var stdout, stderr bytes.Buffer

@@ -60,44 +60,6 @@ func ListListeningPorts(ctx context.Context) []PortOwner {
 	return out
 }
 
-// detectPortsForPID finds listening TCP ports for a given PID using netstat.
-func detectPortsForPID(ctx context.Context, pid int) []int {
-	cmd := exec.CommandContext(ctx, "netstat", "-ano")
-	output, err := cmd.Output()
-	if err != nil {
-		return nil
-	}
-
-	pidStr := strconv.Itoa(pid)
-	seen := make(map[int]struct{})
-	var ports []int
-
-	for _, line := range strings.Split(string(output), "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "TCP") || !strings.Contains(line, "LISTENING") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 5 || fields[4] != pidStr {
-			continue
-		}
-		localAddr := fields[1]
-		idx := strings.LastIndex(localAddr, ":")
-		if idx == -1 {
-			continue
-		}
-		port, err := strconv.Atoi(localAddr[idx+1:])
-		if err != nil || port <= 0 || port >= 65536 {
-			continue
-		}
-		if _, dup := seen[port]; !dup {
-			seen[port] = struct{}{}
-			ports = append(ports, port)
-		}
-	}
-	return ports
-}
-
 // ProcessNameByPID returns the executable name (e.g. "node.exe") of the process
 // with the given PID, or "" when the PID is invalid, gone, or not queryable —
 // a protected system process refuses even the limited-information handle.

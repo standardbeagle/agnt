@@ -199,7 +199,10 @@ func (d *Daemon) hubHandleSessionHostCreate(conn *hubpkg.Connection, cmd *hubpro
 // Gated: routes through resolveProjectScope like SESSION LIST (spec §2.2
 // invariant 12).
 func (d *Daemon) hubHandleSessionHostList(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	filter, _ := unmarshalCommand[protocol.DirectoryFilter](cmd)
+	filter, err := unmarshalCommand[protocol.DirectoryFilter](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid filter JSON: %v", err))
+	}
 	projectPath, global, err := d.resolveProjectScope(filter, conn.SessionCode())
 	if err != nil {
 		return d.writeScopeErr(conn, err, "session_code")

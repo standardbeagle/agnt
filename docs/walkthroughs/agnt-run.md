@@ -21,10 +21,11 @@ throws a runtime error in the browser, nothing in plain MCP can interrupt the
 agent to tell it. `agnt run` solves this structurally by owning the terminal:
 
 ```
-Browser → Proxy → HTTP POST → Overlay (port 19191) → PTY stdin → AI Tool
+Browser → Proxy → HTTP POST → Overlay (per-session Unix socket) → PTY stdin → AI Tool
 ```
 
-The overlay listens on port 19191 for WebSocket connections from the proxy,
+The overlay listens on a per-session Unix-domain socket (no TCP port) for
+connections from the proxy,
 turns the browser event into text, and injects it as if you had typed it. The
 agent sees it as part of the conversation — no polling, no "check the errors
 tool," no lost context.
@@ -56,7 +57,7 @@ takes over the screen.
 ### 2. Let browser events flow in
 
 Once a proxy is running for your project, any error it captures is POSTed to the
-overlay on 19191 and injected as synthetic stdin. You don't call anything. A
+overlay socket and injected as synthetic stdin. You don't call anything. A
 JavaScript exception, a failed fetch, a console error — it shows up in the
 agent's input stream and it can react immediately, with the surrounding
 conversation still in context.
@@ -133,9 +134,9 @@ contradictory, or before trusting the daemon's view for a risky operation.
 
 ## Gotchas
 
-- **Port 19191 is the overlay's inbound event port.** If something else holds it,
-  browser-event injection won't reach the agent. It's reserved for
-  proxy→overlay WebSocket connections.
+- **The overlay has no TCP port.** Each session listens on its own Unix-domain
+  socket in a per-user directory. If the overlay fails to start, no endpoint is
+  registered and browser-event injection won't reach the agent.
 - **The palette is not a shell.** `:`/`/` filters agnt overlay commands. Typing a
   shell command there won't run it.
 - **Containment only covers descendants of the PTY child.** Anything that

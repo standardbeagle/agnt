@@ -66,14 +66,14 @@ on edit. This is the path to reach for when you want a link to hand someone; the
 
 ```sh
 agnt publish serve --dir ./walkthroughs
-agnt publish serve --dir ./walkthroughs --addr :9000
+agnt publish serve --dir ./walkthroughs --addr 127.0.0.1:9000
 agnt publish serve --dir ./walkthroughs --tunnel cloudflare
 ```
 
 | Flag | Default | Meaning |
 |------|---------|---------|
 | `--dir` | *(required)* | directory of `*.json` walkthroughs to publish |
-| `--addr` | `:8899` | local listen address for the public plane |
+| `--addr` | `127.0.0.1:8899` | local listen address for the public plane. Loopback by default; reach it from elsewhere with `--tunnel`. An address with no host (`:9000`) or `0.0.0.0` binds **every** interface — LAN-reachable with no tunnel — and prints a warning |
 | `--tunnel` | *(none)* | expose it: `cloudflare` \| `ngrok` \| `tailscale` |
 | `--store` | per-folder dir under the user cache | share-store directory |
 | `--rotate-on-resume` | `yes` | on resume, when a prior run's token is unrecoverable: `yes` (rotate + reprint, old links die) \| `no` (keep old links working, don't reprint) \| `fail` (refuse to start) |
@@ -110,6 +110,45 @@ like a password.
 
 ### What will bite you
 
+- **One `serve` per folder.** A running `serve` holds an OS lock
+  (`serve.lock`) on its store; a second `serve` on the same `--dir` (or
+  `--store`) refuses to start and names the store. Each run keeps its own
+  in-memory copy of authoritative on-disk records, so two of them would
+  overwrite each other's feedback and rotate tokens out from under each other.
+  The lock is released by the OS when the process exits, so a crash leaves
+  nothing to clean up. Reading with `agnt publish feedback` while `serve` runs
+  is fine — that command opens the store read-only and writes nothing.
+- **Rate limits and tunnels.** Limits are per client address (§8, §11). Behind
+  a tunnel every viewer's TCP peer is the tunnel agent on loopback, so they
+  would all share one bucket. With `--tunnel`, `serve` instead keys on the
+  address its own tunnel reports — only once that tunnel is up, and only for
+  requests whose peer is loopback (the local tunnel agent). Anything else,
+  including a request that reaches a wide `--addr` bind directly, is keyed on
+  the TCP peer whatever headers it carries.
+
+  | `--tunnel` | Client address taken from |
+  |---|---|
+  | `cloudflare` | `CF-Connecting-IP`, which Cloudflare's edge sets and overwrites |
+  | `ngrok`, `tailscale` | the **rightmost** entry of `X-Forwarded-For` — the one the local agent appended. A viewer can send their own `X-Forwarded-For`; it lands to the *left* of that entry and is never read |
+
+  If the header is missing, or the value does not parse as an IP address, the
+  TCP peer is used; a malformed rightmost entry is not skipped in favour of the
+  entry before it.
+
+  **The `ngrok` / `tailscale` row is unverified against a live tunnel.** It
+  rests on how those agents are generally known to behave (local reverse
+  proxies that append `X-Forwarded-For`), not on a capture. If an agent sends
+  no header, viewers fall back to one shared per-client bucket; if it passes a
+  viewer's header through without appending, a viewer could choose their own
+  bucket key. In both cases the per-share aggregate bucket still bounds the
+  share.
+
+  **Stated residual: the daemon's `AGNT_PUBLIC_ADDR` listener always keys on the
+  TCP peer.** It starts no tunnel of its own, so it has no hop whose header it
+  can trust, and there is deliberately no "trusted proxy" setting. Behind a
+  tunnel or reverse proxy you run yourself, every viewer is that proxy's
+  address: they share one per-client bucket, and the per-share aggregate bucket
+  is the effective bound.
 - **One invalid `*.json` aborts the entire run and names the file.** Valid siblings
   are *not* published. This is deliberate and load-bearing, not strictness for its
   own sake: a publish pass ends by reconciling deletions, which **revokes** every
@@ -194,13 +233,17 @@ Each file is a `PublishedWalkthrough`:
 - `upstream` is **optional**. Present → that live origin is proxied (§9). Absent →
   a self-contained artifact.
 - `variantSet` is optional, and its ops may carry raw CSS/HTML from your authored
-  revision (INV-6 is retired). **`addScript` is refused at publish**, both a `code`
-  body and a `src` URL: a published walkthrough carries the mandatory disclosure
-  indicator, and an authored script running in the badge's own realm can defeat it
-  (INV-14; see §9a). Raw CSS/HTML is unaffected — it cannot hide the indicator
-  (CSP + closed shadow root, §9b).
+  revision (INV-6 is retired). **`addScript` is refused**, both a `code` body and
+  a `src` URL, at publish and when a stored share is loaded: a published
+  walkthrough carries the mandatory disclosure indicator, and an authored script
+  running in the badge's own realm can defeat it (INV-14; see §9a). Raw CSS/HTML
+  is unaffected — it cannot hide the indicator (CSP + closed shadow root, §9b).
 - Validation failures name the file. See the spec's limits table (§5) for the size
-  and selector-grammar bounds.
+  and selector-grammar bounds. Three bounds the spec table does not carry:
+  at most **256 ops per variant**, a whole artifact of at most **1 MiB**
+  (canonical JSON), and `setAttribute` names under `aria-*`/`data-*` limited to
+  128 bytes of `[A-Za-z0-9_.-]`. A `wait` step on `element-present` /
+  `element-visible` must name a selector.
 
 ---
 
@@ -312,7 +355,7 @@ serve` is running (same `PublicHandler`). Token is in the **path segment**
 |-------|---------|--------|
 | `GET /s/{token}` | GET, HEAD | Artifact HTML shell; loads only the `RolePublic` bundle |
 | `GET /s/{token}/variants.json` | GET, HEAD | Immutable published variant-set snapshot |
-| `GET /s/{token}/sub?u=…&d=…&sig=…` | GET, HEAD | One CSS/image/font subresource of a proxied upstream, fetched through the INV-13 guard. Serves **only** references the daemon minted for this share (HMAC-bound); anything else 404s without opening a socket |
+| `GET /s/{token}/sub?u=…&d=…&sig=…` | GET, HEAD | One CSS/image/font subresource of a proxied upstream, fetched through the INV-13 guard. Serves **only** references the daemon minted for this share **at its current revision** (HMAC-bound to share, revision, URL and depth); anything else — including a reference from before the share was edited — 404s without opening a socket |
 | `GET /s/{token}/walkthrough.json` | GET, HEAD | Immutable published walkthrough script |
 | `POST /s/{token}/feedback` | POST | Appends one anonymous feedback row (`application/json` only) |
 | `GET /__devtool/inject.<hash>.js` | GET | The content-addressed `RolePublic` bundle (the only permitted `/__devtool` path) |
@@ -323,13 +366,23 @@ serve` is running (same `PublicHandler`). Token is in the **path segment**
 - Wrong method on a valid route returns `405` with an `Allow` header (only after a
   valid token, so it is not an enumeration oracle).
 - Feedback content-type must be `application/json` (`415` otherwise); over-cap
-  body is `413`; rate-limited is `429`; otherwise-invalid is `422`.
+  body is `413`; rate-limited is `429`; otherwise-invalid is `422`; no feedback
+  store is `503`. The store check, a declared `Content-Length` over the cap, and
+  the rate limit are all decided **before** the body is read.
+- **`HEAD` on a proxied share makes no upstream request.** `HEAD /s/{token}`
+  returns the policy headers and `Content-Type`; `HEAD /s/{token}/sub?…`
+  returns the policy headers once the reference verifies. Neither carries
+  `Content-Length`, which is only knowable by fetching.
+- **Every request is rate-limited per client before the token is checked**
+  (2400/min, burst 4096 — a flood bound, far above any per-share budget), so
+  the `403`/`404` paths, the bundle asset, and token guessing are capped too.
+  Over it: `429`.
 
 ### Response headers (public plane, `writeHeaders`)
 
 | Header | Value |
 |--------|-------|
-| `Content-Security-Policy` | `default-src 'self'; script-src 'sha256-<bundle>' 'sha256-<authored-script>'…; style-src 'self' ['nonce-<n>' \| 'unsafe-inline']; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'` |
+| `Content-Security-Policy` | `default-src 'self'; script-src 'sha256-<bundle>'; style-src 'self' ['nonce-<n>' \| 'unsafe-inline']; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'; object-src 'none'` |
 | `X-Frame-Options` | `DENY` |
 | `Referrer-Policy` | `no-referrer` (token path never leaks to third-party subresource hosts) |
 | `X-Content-Type-Options` | `nosniff` |
@@ -345,20 +398,16 @@ document alone (INV-18, 2026-08-19) so the upstream's own inline styles apply.
 Every other response — JSON, feedback, refusals, subresources — is bare `'self'`.
 The fetch-governing directives never vary. Three details bite in practice:
 
-- **`script-src` carries hash sources only — `'self'` is deliberately absent.**
-  Source expressions are a union, so `'self'` would authorise every same-origin
-  script URL and make the bundle pin inert. The bundle is authorised by its hash
-  plus a matching `integrity=` attribute on its `<script src>`. Do not "restore"
-  `'self'`.
-- **`script-src` widens by one `'sha256-…'` per authored `addScript` body** in the
-  served revision, computed at publish time (`authoredScriptCSPHashes`). That is
-  the containment story for an authored body: it runs because its hash is pinned;
-  upstream or viewer script does not, because theirs is not. **Note (INV-14,
-  2026-08-18):** a **newly** published walkthrough can no longer carry any
-  `addScript` op — it is refused at publish (§9a) — so this widening now applies
-  only to revisions stored **before** that gate. The enumeration stays as the
-  correct behaviour for those, and the bundle hash source below is present on
-  every revision regardless.
+- **`script-src` is exactly one hash source — the bundle's — on every response.
+  `'self'` is deliberately absent.** Source expressions are a union, so `'self'`
+  would authorise every same-origin script URL and make the bundle pin inert.
+  The bundle is authorised by its hash plus a matching `integrity=` attribute on
+  its `<script src>`. Do not "restore" `'self'`.
+- **No revision widens `script-src`.** It used to gain one `'sha256-…'` per
+  authored `addScript` body in the served revision. That term is gone: authored
+  script is refused at publish and at load (INV-14, §9a), so there is nothing a
+  revision could be entitled to run, and the header code has no per-revision
+  input at all.
 - **The `style-src` nonce exists only on the self-contained path.** The proxied-
   upstream response emits no inline `<style>` of ours and therefore passes an
   empty nonce, so that response authorises **no** inline style at all — see §9.
@@ -376,7 +425,10 @@ the variant set, or the token, and it cannot read anything back.
 Every share whose walkthrough loads shows a **Feedback** button (top right) on
 both artifact paths. It opens a small form — a message, an optional 1–5 rating —
 and posts `{message, rating?, stepId?, at}` to `POST /s/{token}/feedback`; the
-step the visitor is on rides along as `stepId`. The form reports sending,
+step the visitor is on rides along as `stepId`. The widget offers 1–5; the
+**server accepts an integer rating 0–5** (the range the bundle's `submit` API
+validates), and refuses a submission that carries neither a non-blank message
+nor a rating (`422`). The form reports sending,
 success, and failure in place: a `429`, `413`, `503`, a revoked link (`404`), or
 a network error each tell the visitor what happened and keep their text for a
 retry.
@@ -391,14 +443,28 @@ the card with `Escape`.
 
 | Limit | Default | KDL key |
 |-------|---------|---------|
-| Feedback rate | 10 req/min per **(share, IP)** | `rate-per-minute` |
+| Feedback rate | 10 req/min per **(share, client)** | `rate-per-minute` |
 | Burst | 5 | `burst` |
+| Per-share aggregate | 6× the two rows above (60 req/min, burst 30), across all clients | *(derived; no key)* |
 | Max feedback body | 4096 bytes | `max-body-bytes` |
 | Retention (rows) | 500 rows per share, oldest evicted | `max-rows-per-share` |
 | Retention (age) | 90 days | `retention-days` |
 
-Retention is **500 rows OR 90 days, whichever comes first.** These limits are
-configurable and honored by the live limiter — see [`configuration.md`](configuration.md#public-walkthrough-feedback-internalconfigfeedbackgo-feedback-in-agntkdl).
+Retention is **500 rows OR 90 days, whichever comes first**, applied on load and
+on every read as well as on submission — so lowering either limit takes effect
+without waiting for new feedback. These limits are configurable and honored by
+the live limiter — see [`configuration.md`](configuration.md#public-walkthrough-feedback-internalconfigfeedbackgo-feedback-in-agntkdl).
+
+**What "client" means.** IPv4: the address. IPv6: the **/64** — one subscriber
+is routinely delegated a whole /64, so keying on the full address would give
+every rotated source address a fresh bucket. The address is the TCP peer unless
+`serve --tunnel` is resolving it from its own tunnel's header (§2). The per-client bucket is
+charged first, then the per-share aggregate: one client can draw only its own
+rate from the aggregate, so it takes more than six clients to exhaust a share.
+
+**Paging.** `publish feedback` pages by cursor. A cursor whose row has since
+been evicted is an **error** (restart from the first page), not a silent restart
+that would hand back rows you already have.
 
 ### Storage & restart
 
@@ -416,12 +482,11 @@ configurable and honored by the live limiter — see [`configuration.md`](config
 - **Feedback-store corruption fails loud but leaves publishing active.** If the
   feedback store fails to load, the daemon emits `feedback_store_load_failed`
   but still builds the public handler and starts the configured listener. Existing
-  shares remain available. Valid feedback POSTs are accepted (`202`) and dropped
-  because no persistence sink is attached, while control-plane feedback reads
-  return an empty result (`rows: []`, empty cursor, zero totals). If silent
-  feedback loss is unacceptable, operators must manually shut down the public
-  listener by unsetting `AGNT_PUBLIC_ADDR` and restarting the daemon until the
-  feedback store is repaired.
+  shares remain available. Feedback POSTs are **refused with `503 feedback
+  unavailable`** — no sink is attached, and the route does not acknowledge a
+  submission it cannot store; the widget tells the visitor and keeps their text.
+  Control-plane feedback reads return an empty result (`rows: []`, empty cursor,
+  zero totals) until the store is repaired and the daemon restarted.
 - **Owner-scoped read.** Read feedback only via the control plane:
   `publish {action: "feedback", id: "<share-id>"}`. Ownership is enforced
   daemon-side (a share from another project reports not-found — no cross-project
@@ -486,9 +551,20 @@ Four further limits, stated rather than discovered:
   references per document or stylesheet (the excess is left exactly as the
   upstream wrote it), and a nesting depth of 2 — document → CSS → font/image. A
   stylesheet reached at that depth still serves; only the chain stops.
-- **A daemon restart invalidates outstanding subresource URLs.** They 404, the
-  artifact revalidates on its next load, and the fresh document carries freshly
-  signed references — a repaint, not an error you need to act on.
+- **A daemon restart invalidates outstanding subresource URLs, and so does
+  editing the share.** Each reference is bound to the revision it was minted
+  for, so after an edit — in particular one that points the share at a different
+  upstream — the old revision's references 404. Either way the artifact
+  revalidates on its next load and the fresh document carries freshly signed
+  references — a repaint, not an error you need to act on.
+- **References are decoded the way a browser decodes them.** An attribute value
+  is read with the HTML attribute rule, so `?w=100&timestamp=5` stays exactly
+  that (the text rule would turn `&times` into `×`); a URL inside CSS is taken
+  verbatim. Only an attribute named exactly `src` / `href` is rewritten —
+  `data-src` is not.
+- **Any upstream `<meta http-equiv="Content-Security-Policy">` is removed.** The
+  response header policy replaces the upstream's policy wholesale (below); a
+  meta policy is the same policy by another transport.
 
 ### What else the proxied path does
 
@@ -518,7 +594,8 @@ Fetch bounds — each one **refuses**, never truncates or serves a partial:
 | Scheme | `https:` only |
 | Document size | 4 MiB (tighter than the dev plane's 16 MiB — this path is driven by anonymous requests) |
 | Redirect hops | 5, then fail closed |
-| Whole fetch (chain included) | 15s; 5s per TCP connect |
+| Whole fetch (chain included) | 15s; 5s per TCP connect; up to 3 of the host's guard-validated addresses tried per hop |
+| Concurrent upstream fetches, whole plane | 32; a request waits up to 5s for a slot, then `503` |
 | Upstream status | must be `200` |
 | Upstream content type | must be HTML — anything else is refused rather than relayed |
 
@@ -542,9 +619,11 @@ indistinguishable in that message (no existence oracle).
 Proxying a publisher-named origin makes the daemon fetch an arbitrary URL and hand
 back the bytes. Unconstrained, that is a relay into whatever network the daemon can
 see — your LAN, a CI runner's VPC, a cloud instance's metadata service. That fetch
-is therefore guarded (`internal/publish/ssrf.go`, spec §4a). It is also the *only*
-outbound fetch the public plane makes today — see the scope note below before
-assuming otherwise.
+is therefore guarded (`internal/publish/ssrf.go`, spec §4a). The public plane
+makes exactly two kinds of outbound fetch — the upstream document and the
+subresources that document names (`/s/{token}/sub`, §9) — and both go through
+the one guarded walk. See the scope note below before assuming it covers
+anything else.
 
 **Refused, loudly, before any socket opens:** loopback, RFC1918 (`10/8`,
 `172.16/12`, `192.168/16`), carrier-grade NAT (`100.64/10`), link-local
@@ -571,48 +650,46 @@ Three properties that make it hold rather than merely look right:
    `169.254.169.254` is refused at that hop; exceeding the hop cap fails closed.
 
 **Scope of the guard — read this before relying on it.** The guard covers the
-**upstream document fetch and its redirect walk, and nothing else.**
-`publish.CheckUpstreamOrigin` has exactly one production caller
-(`internal/proxy/public_routes.go`, the `serveArtifact` upstream branch). In
-particular it does **not** cover `addScript src`, because nothing fetches an
-`addScript src` at all — and so **`src` is refused at publish time**:
+**upstream document fetch, the subresource fetch, and the redirect walk of
+each — and nothing else.** `publish.CheckUpstreamOrigin` has exactly one
+production call site, inside `guardedUpstreamFetcher.walk`
+(`internal/proxy/public_routes.go`); `fetchDocument` (the `serveArtifact`
+upstream branch) and `fetchSubresource` (`serveSubresource`) are the two things
+that reach it, and each hop of either re-runs it. Nothing else on this plane
+fetches a URL: in particular there is no publish-time fetch of an `addScript src`
+— that op is refused outright (below), so there is no such URL to guard.
 
-- `Op.Validate` (`internal/publish/op.go`) **rejects** any `addScript` op
-  carrying `src`, with an error naming that publish-time fetching of `src` is not
-  implemented and telling you to inline the body in `code` instead. Publishing
-  such a file fails loudly; nothing about it reaches a browser. **The blast radius
-  is the whole run, not just that file:** decode+validation happens during the
-  directory load (`loadWalkthroughDir`, `cmd/agnt/publish_serve.go`), and one
-  rejected file aborts the entire load before any publish or reconcile — so a
-  single pre-existing on-disk walkthrough carrying `src` takes down the whole
-  `serve --dir` run and its valid siblings are not published either. This is the
-  invalid-file policy in §2 ("One invalid `*.json` aborts the entire run"), not a
-  separate rule: an aborted load is what keeps a partial set from reaching the
-  mass-revoking reconcile.
-- The variant engine's render-time refusal (`addScript: src must be inlined at
-  publish time; the renderer emits no <script src>`) is **kept as defence in
-  depth**, and it still covers any revision published before the publish-time
-  gate existed.
-- `authoredScriptCSPHashes` **skips** any op still carrying `src`, so such an op
-  contributes no `script-src` hash — for the same reason.
+**No authored script, anywhere (INV-14).** Since the operator decision of
+2026-08-18 (task `01M09KYHZ0CFAX2NVGMAQJ1WFW`, option (a)) a walkthrough may not
+carry an `addScript` op in either form, `code` or `src`. There is one refusal,
+with one message, and it is applied in three places:
 
-**Neither `addScript` form publishes on a public share.** Since the INV-14
-operator decision of 2026-08-18 (task `01M09KYHZ0CFAX2NVGMAQJ1WFW`, option (a)), a
-published walkthrough — which is exactly what the public plane serves, carrying
-the mandatory disclosure indicator (§9b) — is refused at publish if it carries
-**any** `addScript` op, `code` or `src`:
+| Where | What happens |
+|---|---|
+| **Publish** — `Op.Validate` (`internal/publish/op.go`), reached from `Store.Create` / `Store.PublishFile` through `PublishedWalkthrough.Validate` | The artifact is refused, naming that an authored script can defeat the disclosure and to remove the op. Under `serve` this is the invalid-file policy of §2: one such file aborts the whole run, valid siblings included, because an aborted load is what keeps a partial set from reaching the mass-revoking reconcile |
+| **Load** — `Store.load` (`internal/publish/share_store.go`) | A **live** stored share that carries the op fails the store load with the same reason, naming the record file to delete. This is the case of a share stored before the gate |
+| **Render** — `validateOp` in the public bundle's variant engine | The op is refused by name and nothing is rendered for it. The engine has no script primitive at all: it never creates a script element |
 
-- `PublishedWalkthrough.Validate` (`internal/publish/validate.go`) rejects the
-  whole artifact, naming that an authored script can defeat the disclosure
-  (INV-14) and to remove the op. The check runs at publish (create/edit) time
-  **only**; a revision stored before the gate is not re-validated on read
-  (`Store.load` verifies a checksum, not the op vocabulary), so existing shares
-  keep serving.
-- The `src` form was already refused one layer down at `Op.Validate`
-  (`internal/publish/op.go`) for a **different** reason — its publish-time fetch
-  is unimplemented (§6a, tracked as `01KYQJ9ARWQ0YMGWZ199B6SA3F`). On a public
-  share the reason a viewer never sees an authored script is now the disclosure,
-  not the missing fetch; both reasons refuse, they do not overlap by accident.
+**A share stored before 2026-08-18 that carries `addScript` is no longer
+served.** Until this was closed, publish refused the op but `Store.load` checked
+only a record's checksum, so such a share kept loading and kept being served
+with its script — pinned in `script-src` and run by the bundle. That was a live
+way round INV-14 for exactly the shares that predate it. Now the store **fails to
+load** while such a record is live: the daemon reports
+`publish_store_load_failed` naming the record (so no share is served until it is
+dealt with), and `agnt publish serve` refuses to start. Delete the named record
+file, or republish the walkthrough without the op, and restart. It is neither
+served with its script nor quietly served without it. A **revoked** record
+carrying the op is exempt — it is never served, and a tombstone cannot take the
+store down.
+
+The machinery that used to serve an admitted body is removed rather than left
+dormant: the per-revision script budget, the per-revision `script-src` hash, the
+`src`-specific "publish-time fetch is not implemented" refusal (it described a
+feature no input could reach), and the engine's `addScript` handler. The op name
+and its two fields are still *decoded*, for one reason: so an artifact carrying
+the op is refused by the INV-14 message rather than by a JSON "unknown field"
+error that says nothing about why.
 
 **Why refuse rather than harden the badge.** An authored `addScript` body runs in
 the **same realm** as the indicator, and three real-Chrome defeats were confirmed
@@ -621,10 +698,8 @@ the host id permanently silences the re-assert loop), re-assert-budget exhaustio
 and a `Node.prototype.appendChild` monkeypatch that hides the badge from first
 paint. Same-realm script beats same-realm script; the module cannot be hardened
 against it, so the disclosure's integrity is preserved by not admitting authored
-script onto a badge-mandatory share at all. The **bare variant-set** validator
-(`DecodeVariantSet`, for sets that are never served on their own) stays
-permissive — the boundary that refuses is the published walkthrough, because that
-is the artifact a viewer actually loads.
+script onto a badge-mandatory share at all. The refusal is on the op itself, so
+there is no permissive validator left for some other path to pick up.
 
 **What this is not:** an anti-phishing control. A publisher dressing up a
 legitimate public site is explicitly out of the threat model — the publisher holds
@@ -654,6 +729,17 @@ config key, no op, no query parameter, no feedback field, and no close
 affordance** — the module reads no input at all beyond the marker that tells it it
 is on the public plane. A disclosure that can be switched off protects exactly the
 viewers who need it least.
+
+**On a proxied share the bundle is the first thing in the document's head.** The
+daemon reads the upstream document with an HTML tokenizer and splices the bundle
+tag in immediately after `<head>` (or, when the head is implied, after `<html>`
+or the doctype — never before a doctype), and removes any upstream
+`<meta http-equiv="Content-Security-Policy">`. Both matter for the badge: a
+bundle inserted at the *end* of the head, where the dev proxy puts its own, is
+refused by an upstream meta CSP with a strict `script-src`, and is swallowed by
+a `</head>` inside a comment or `<template>` — either of which left the page
+rendering with no badge and no walkthrough. Being first means the bundle is
+already running when the parser reaches anything the upstream wrote.
 
 It mounts in a **closed shadow root** (page script holds no handle on it), pins
 itself to the top of the stacking order, and declares its `:host` geometry
@@ -736,7 +822,8 @@ On a suspected token leak or abuse:
    past revoke.
 2. **Observe abuse.** `publish {action: "feedback", id, ...}` returns `total`
    (stored rows) and `dropped` (cumulative rate-limit-shed count). A climbing
-   `dropped` is the signal that the per-(share, IP) limiter is throttling a
+   `dropped` is the signal that the per-(share, client) limiter — or the
+   per-share aggregate behind it — is throttling a
    flood — the abuse is being shed, not crashing anything (excess is `429`).
 3. **Correlate via hash prefix.** Logs and `status` output carry only
    `token_hash_prefix` (`hash[:8]`) — never the token. Match a log line to a share
@@ -745,9 +832,9 @@ On a suspected token leak or abuse:
    `publish_store_load_failed` and prevents the public handler/listener from
    starting. Feedback-store corruption emits `feedback_store_load_failed` but
    leaves existing shares and the configured listener active: feedback POSTs are
-   accepted and dropped, and control reads are empty. If you must prevent silent
-   feedback loss, manually unset `AGNT_PUBLIC_ADDR` and restart the daemon; repair
-   the feedback store and confirm it loads before restoring the listener.
+   refused with `503` (nothing is silently dropped — the visitor is told), and
+   control reads are empty. Repair the feedback store and restart the daemon to
+   restore feedback.
 5. **Kill the public surface entirely** by unsetting `AGNT_PUBLIC_ADDR` and
    restarting the daemon — the public listener is not stood up without it, while
    the control plane and dev proxy stay up. For a `serve` run, stop the process;
@@ -795,8 +882,23 @@ Whatever it binds, the listener is hardened unconditionally: transport +
 connection caps (`ReadHeaderTimeout 10s`, `ReadTimeout 30s`, `WriteTimeout 60s`,
 `IdleTimeout 120s`, `MaxHeaderBytes 1 MiB`, max **256** concurrent connections),
 the feedback body cap, and the `public-plane` request-rate caps (artifact `GET`
-per (share, IP) ⇒ `429`; per-origin outbound fetch ⇒ `503`). Values and the
+per (share, client) ⇒ `429`; per-origin outbound fetch ⇒ `503`). Values and the
 amplification rationale: [`configuration.md`](configuration.md#public-plane-block-request-rate-limits).
+
+Four further bounds are fixed in code (no KDL key):
+
+- **Per-share aggregate artifact bucket:** 8× the per-client artifact rate and
+  burst, across all clients of one share. Charged after the per-client bucket.
+- **Pre-token per-client cap:** 2400/min, burst 4096, on every request (§7).
+- **Concurrent upstream fetches:** 32 across the whole plane (§9).
+- **Outbound origin key:** scheme and host lower-cased, a trailing dot and the
+  scheme's default port dropped — `example.com`, `EXAMPLE.com.` and
+  `example.com:443` are one origin with one budget.
+
+**Not bounded:** there is no cache. Every `GET` of a live-upstream share is a
+fresh guarded fetch of the document (up to 4 MiB), and every subresource `GET`
+a fresh fetch of that subresource (up to 2 MiB). The caps above bound how often
+and how many at once; they do not make a repeat view cheap.
 
 `agnt publish serve` needs none of the env var: it binds `--addr` itself (§2),
 under the same transport/connection caps.

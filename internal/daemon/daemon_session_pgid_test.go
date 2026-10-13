@@ -152,12 +152,13 @@ func TestCleanupSessionResources_NoPGIDIsNoOp(t *testing.T) {
 }
 
 // TestSessionRegister_CarriesSessionJobHandle is the wire round-trip
-// guarantee for Slice C: the SessionJobHandle field must survive
-// client → protocol → hub handler → registry. On Unix (where this
-// test runs) the daemon-side killSessionJobObject path no-ops via the
-// platform stub, so this test asserts only the wire format — the
-// end-to-end kill behavior is exercised by the Windows-tagged
-// integration test in internal/platform/sessionjob_windows_test.go.
+// guarantee for the legacy SessionJobHandle field: a value an older
+// client sends must survive client → protocol → hub handler → registry,
+// because killSessionJobObject needs to see it to report it. Current
+// clients send 0, and the daemon never kills or closes anything by this
+// value on any platform — it logs a non-zero handle and ignores it. This
+// test asserts only the wire format. Job termination itself happens in
+// the owning `agnt run` process (internal/platform/sessionjob_windows.go).
 func TestSessionRegister_CarriesSessionJobHandle(t *testing.T) {
 	t.Parallel()
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
@@ -182,11 +183,10 @@ func TestSessionRegister_CarriesSessionJobHandle(t *testing.T) {
 	}
 }
 
-// TestCleanupSessionResources_NoJobHandleIsNoOp verifies that
-// cleanup does not panic when SessionJobHandle is zero — the Unix
-// path where the client never reports a job handle. This is the
-// default state for every non-Windows session and must remain a
-// no-op.
+// TestCleanupSessionResources_NoJobHandleIsNoOp verifies that cleanup
+// completes when SessionJobHandle is zero. That is what every current
+// client sends, on every platform: the field is a legacy wire field and
+// the daemon never terminates a job object.
 func TestCleanupSessionResources_NoJobHandleIsNoOp(t *testing.T) {
 	t.Parallel()
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)
@@ -209,11 +209,10 @@ func TestCleanupSessionResources_NoJobHandleIsNoOp(t *testing.T) {
 }
 
 // TestCleanupSessionResources_StaleJobHandleIsNoOpOnUnix verifies
-// that a stale or non-zero SessionJobHandle on Unix does not cause
-// cleanup to fail. The platform stub in sessionjob_other.go returns
-// nil unconditionally so even a garbage handle value must be safe.
-// This guards against accidentally calling Windows-specific APIs
-// from Unix code paths.
+// that a non-zero SessionJobHandle — which only an older client sends —
+// does not cause cleanup to fail. The daemon reports the value and
+// ignores it (killSessionJobObject); it calls no job-object API on any
+// platform, so a garbage handle is harmless.
 func TestCleanupSessionResources_StaleJobHandleIsNoOpOnUnix(t *testing.T) {
 	t.Parallel()
 	d := newCleanupTestDaemon(t, 10*time.Millisecond)

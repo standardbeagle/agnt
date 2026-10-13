@@ -398,6 +398,7 @@ func TestHubIntegration_ProcessWorkflow(t *testing.T) {
 	t.Run("RUN", func(t *testing.T) {
 		result, err := client.Run(protocol.RunConfig{
 			ID:      "test-echo",
+			Path:    t.TempDir(), // a managed process belongs to a project
 			Command: "echo",
 			Args:    []string{"hello"},
 			Raw:     true,
@@ -405,8 +406,10 @@ func TestHubIntegration_ProcessWorkflow(t *testing.T) {
 		if err != nil {
 			t.Fatalf("Run failed: %v", err)
 		}
-		if result["id"] != "test-echo" {
-			t.Errorf("Expected id=test-echo, got %v", result["id"])
+		// "id" is the derived, project-scoped process id; the short id the
+		// test asked for is its name part and still addresses the process.
+		if id, _ := result["id"].(string); stripProcessPrefix(id) != "test-echo" {
+			t.Errorf("Expected an id ending in :test-echo, got %v", result["id"])
 		}
 	})
 
@@ -426,8 +429,10 @@ func TestHubIntegration_ProcessWorkflow(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ProcStatus failed: %v", err)
 		}
-		if result["id"] != "test-echo" {
-			t.Errorf("Expected id=test-echo, got %v", result["id"])
+		// "id" is the derived, project-scoped process id; the short id the
+		// test asked for is its name part and still addresses the process.
+		if id, _ := result["id"].(string); stripProcessPrefix(id) != "test-echo" {
+			t.Errorf("Expected an id ending in :test-echo, got %v", result["id"])
 		}
 		t.Logf("Process state: %v", result["state"])
 	})
@@ -1745,7 +1750,8 @@ func TestHubIntegration_ProcListFilters(t *testing.T) {
 		found := false
 		for _, p := range procs {
 			proc := p.(map[string]interface{})
-			if proc["id"] == "proc-proj1" {
+			// PROC LIST reports the derived, project-scoped id.
+			if id, _ := proc["id"].(string); stripProcessPrefix(id) == "proc-proj1" {
 				found = true
 			}
 		}
@@ -1783,7 +1789,8 @@ func TestHubIntegration_ProcListFilters(t *testing.T) {
 		}
 		var sawProj1, sawProj2 bool
 		for _, p := range procs {
-			switch p.(map[string]interface{})["id"] {
+			id, _ := p.(map[string]interface{})["id"].(string)
+			switch stripProcessPrefix(id) { // derived id → the short id RUN was given
 			case "proc-proj1":
 				sawProj1 = true
 			case "proc-proj2":
@@ -2279,6 +2286,7 @@ func TestHubIntegration_ProcOutput_ErrorPaths(t *testing.T) {
 		// Start a process
 		_, err := client.Run(protocol.RunConfig{
 			ID:      "filter-test",
+			Path:    t.TempDir(), // a managed process belongs to a project
 			Command: "echo",
 			Args:    []string{"hello\nworld\ntest"},
 			Raw:     true,

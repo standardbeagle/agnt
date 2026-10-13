@@ -278,8 +278,9 @@ func TestPortForwardManager_EndToEnd(t *testing.T) {
 		require.NoError(t, err)
 		listenAddr, _ := result["listen_addr"].(string)
 		require.NotEmpty(t, listenAddr)
-		remotePort, err := listenAddrPort(listenAddr)
+		remoteTarget, err := listenAddrTarget(listenAddr)
 		require.NoError(t, err)
+		remotePort := remoteTarget.Port
 
 		// No artificial blocker needed: since this test drives both "remote"
 		// (the real proxy) and "local" (the forward manager) on the same

@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"compress/flate"
 	"compress/gzip"
+	"context"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -18,6 +20,10 @@ import (
 
 // modifyResponse rewrites URLs and injects JavaScript into HTML responses.
 func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
+	// The upstream answered (whatever the status): any outage the loading page
+	// was counting is over.
+	ps.noteUpstreamSuccess()
+
 	// Auth breakout: a content-frame request answered with a redirect to a
 	// matching identity provider must NOT be followed inside the iframe —
 	// the IdP (a foreign origin the proxy never touches) refuses framing.
@@ -139,7 +145,7 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 	resp.Body.Close()
 
 	// Rewrite absolute URLs in HTML content pointing to target back to proxy
-	modifiedBody := ps.rewriteURLsInBody(bodyBytes)
+	modifiedBody := ps.rewriteURLsInBodyFor(resp.Request, bodyBytes)
 
 	// Always-wrap model: a genuine top-level navigation (a real request, no
 	// frame marker, a full HTML document) is replaced by an outer chrome shell
@@ -380,7 +386,7 @@ func (ps *ProxyServer) rewriteLocationHeader(resp *http.Response) {
 		return
 	}
 
-	rewritten := ps.rewriteURL(location)
+	rewritten := ps.rewriteURLFor(resp.Request, location)
 	if rewritten != location {
 		resp.Header.Set("Location", rewritten)
 	}
@@ -441,8 +447,17 @@ func (ps *ProxyServer) rewriteCookieDomain(cookie string, targetHost string) str
 	return strings.Join(newParts, ";")
 }
 
-// rewriteURL rewrites a URL from the target server to the proxy server.
+// rewriteURL rewrites a URL from the target server to the proxy server, for
+// callers with no request in hand (see proxyOriginFor for what that implies).
 func (ps *ProxyServer) rewriteURL(rawURL string) string {
+	return ps.rewriteURLFor(nil, rawURL)
+}
+
+// rewriteURLFor rewrites a URL from the target server to the origin the
+// client of req reached the proxy on. req is the upstream request of the
+// response being rewritten (resp.Request); nil falls back to the proxy-wide
+// origin.
+func (ps *ProxyServer) rewriteURLFor(req *http.Request, rawURL string) string {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
 		return rawURL
@@ -461,15 +476,91 @@ func (ps *ProxyServer) rewriteURL(rawURL string) string {
 		return rawURL
 	}
 
-	// Rewrite to proxy URL
-	// Extract proxy host from ListenAddr
-	proxyHost := ps.getProxyHost()
-	proxyScheme := ps.getProxyScheme()
+	// Rewrite to the origin this client is on
+	proxyScheme, proxyHost := ps.proxyOriginFor(req)
 
 	parsed.Scheme = proxyScheme
 	parsed.Host = proxyHost
 
 	return parsed.String()
+}
+
+// proxyOriginFor returns the scheme and host a rewritten URL should carry for
+// the client behind req: the origin that client reached the proxy on.
+//
+// One proxy answers on several origins at once — its loopback listener, a
+// tailnet or LAN address, a tunnel's public hostname — and a URL rewritten to
+// the wrong one sends the browser somewhere else. Rewriting everything to the
+// proxy-wide value did exactly that: with a tunnel up, a developer on
+// http://localhost:<port> was redirected out to the public hostname (through
+// Cloudflare Access, for a named tunnel), and on a tailnet or LAN bind a
+// remote browser was redirected to http://localhost:<port> — its own machine.
+//
+// req is the upstream request (resp.Request). It carries what the Rewrite
+// hook recorded about the inbound one: the listener it arrived on (context),
+// and the Host and scheme the client used (X-Forwarded-Host/-Proto, which
+// Rewrite sets itself after ReverseProxy has dropped any the client sent).
+//
+//   - Arrived through the named tunnel's ingress, or addressed to the bound
+//     public URL's host (a quick tunnel shares the proxy's own listener and
+//     is told apart only by the Host it forwards): the public URL.
+//   - Addressed to one of the listener's own authorities (see
+//     isOwnListenerAuthority): that authority, with the scheme the listener
+//     served.
+//   - Anything else, or no request: the proxy-wide origin (public URL if
+//     bound, else http://localhost:<port>), as before.
+//
+// The client-supplied Host is only ever echoed back when it names this
+// listener's own port on a loopback name, an IP literal or one of this node's
+// tailnet names — never an arbitrary hostname — and only into that client's
+// own response.
+func (ps *ProxyServer) proxyOriginFor(req *http.Request) (scheme, host string) {
+	scheme, host = ps.getProxyScheme(), ps.getProxyHost()
+	if req == nil {
+		return scheme, host
+	}
+
+	var public *url.URL
+	if raw := ps.GetPublicURL(); raw != "" {
+		if parsed, err := url.Parse(raw); err == nil && parsed.Host != "" && parsed.Scheme != "" {
+			public = parsed
+		}
+	}
+	if tunnelled, _ := req.Context().Value(tunnelledKey{}).(bool); tunnelled && public != nil {
+		return public.Scheme, public.Host
+	}
+
+	inboundHost := req.Header.Get("X-Forwarded-Host")
+	if inboundHost == "" {
+		return scheme, host
+	}
+	if public != nil && strings.EqualFold(inboundHost, public.Host) {
+		return public.Scheme, public.Host
+	}
+	if ps.isOwnListenerAuthority(req.Context(), inboundHost) {
+		inboundScheme := "http"
+		if req.Header.Get("X-Forwarded-Proto") == "https" {
+			inboundScheme = "https"
+		}
+		return inboundScheme, inboundHost
+	}
+	return scheme, host
+}
+
+// isOwnListenerAuthority reports whether authority (a Host header value)
+// names this proxy's own listener: the bound port, on a loopback name, a
+// literal IP address, or — for a tailnet bind — one of this node's tailnet
+// names. Any other hostname is not recognised, so it is never echoed into a
+// rewritten URL.
+func (ps *ProxyServer) isOwnListenerAuthority(ctx context.Context, authority string) bool {
+	hostname, port, err := net.SplitHostPort(authority)
+	if err != nil || port != strconv.Itoa(ps.BoundPort()) {
+		return false
+	}
+	if isLoopbackAuthority(authority) || net.ParseIP(hostname) != nil {
+		return true
+	}
+	return ps.boundToTailnet() && ps.isTailnetAuthority(ctx, authority)
 }
 
 // getProxyHost returns the host:port for the proxy server.
@@ -527,6 +618,12 @@ var urlBearingAttrPatterns = []*regexp.Regexp{
 // reference to plaintext http:// — only the http:// variant respects the
 // configured proxy scheme (e.g. upgraded to https behind a tunnel).
 func (ps *ProxyServer) rewriteURLsInBody(body []byte) []byte {
+	return ps.rewriteURLsInBodyFor(nil, body)
+}
+
+// rewriteURLsInBodyFor is rewriteURLsInBody for the client behind req, the
+// upstream request of the response being rewritten (see proxyOriginFor).
+func (ps *ProxyServer) rewriteURLsInBodyFor(req *http.Request, body []byte) []byte {
 	// Guard against nil TargetURL (can happen in tests with partial setup)
 	if ps.TargetURL == nil {
 		return body
@@ -543,8 +640,7 @@ func (ps *ProxyServer) rewriteURLsInBody(body []byte) []byte {
 		return body
 	}
 
-	proxyHost := ps.getProxyHost()
-	proxyScheme := ps.getProxyScheme()
+	proxyScheme, proxyHost := ps.proxyOriginFor(req)
 
 	targetHTTP := "http://" + targetHost
 	targetHTTPS := "https://" + targetHost

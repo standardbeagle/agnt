@@ -108,6 +108,10 @@ The incident pipeline's existing components map directly:
   lanes added).
 - `ActivityDetector` → the AvailabilityGate base signal (already exists, already
   wired to `PingEmitter.ForceFlushCoalesce` on idle).
+  *(Note, 2026-10: `PingEmitter.ForceFlushCoalesce` and the daemon-side
+  activity gate were since removed. PTY activity-deferral now lives in the
+  overlay's own queue; the coalescer bounds delay with `MaxWait` instead —
+  `internal/incident/coalesce.go`, `ping.go`.)*
 - `Coalescer` / `FlowController` → per-type coalesce + rate limit.
 - `PingEmitter` → `DigestEmitter`: payload becomes a per-lane summary; add the
   timer-driven heartbeat (see below).

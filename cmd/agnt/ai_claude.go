@@ -309,25 +309,33 @@ func runAiClaudeInteractive(ctx context.Context) error {
 	// Daemon integration
 	var aiOverlay *AIOverlay
 	var daemonHandle *daemonSessionHandle
-	var msgCh <-chan string
+	var gate *acpAlertGate
+	var pauseForwarding func(bool)
 
 	if !claudeNoSession {
 		code := claudeSessionCode
 		if code == "" {
 			code = generateSessionCode("ai-claude")
 		}
+		projectPath, _ := os.Getwd()
 
-		// Start AI overlay server
+		// Start AI overlay server. Its events go through the alerts filter
+		// chain and then the same dedup/batch gate `agnt acp` uses, so a
+		// burst of browser errors becomes one turn, not one paid turn each.
 		aiOverlay = newAIOverlay(code)
+		aiOverlay.configureAlerts(projectPath)
 		if err := aiOverlay.Start(ctx); err != nil {
 			fmt.Fprintf(os.Stderr, "[agnt] overlay start failed: %v\n", err)
+			// No listener: do not hand the daemon an endpoint nothing answers.
+			aiOverlay = nil
 		} else {
 			defer aiOverlay.Stop()
-			msgCh = aiOverlay.Messages()
+			gate = newACPAlertGate(aiOverlay.Messages())
+			gate.overflow = aiOverlay.TakeDropped
+			go gate.Run(ctx)
 		}
 
 		// Register daemon session (triggers .agnt.kdl autostart)
-		projectPath, _ := os.Getwd()
 		daemonSocketPath := getSocketPath(rootCmd)
 		overlayEndpoint := ""
 		if aiOverlay != nil {
@@ -346,6 +354,17 @@ func runAiClaudeInteractive(ctx context.Context) error {
 
 		// Wait for registration to complete before building system prompt
 		daemonHandle.WaitRegistered(5 * time.Second)
+
+		// Ctrl+Up/Down forwarding pause, same two halves as the PTY path:
+		// stop queueing auto-generated alerts here and tell the daemon to
+		// hold its incident pings for this session.
+		handle, ov := daemonHandle, aiOverlay
+		pauseForwarding = func(paused bool) {
+			if ov != nil {
+				ov.SetForwardingPaused(paused)
+			}
+			handle.SetForwarding(paused)
+		}
 	}
 
 	// Build system prompt AFTER daemon registration so it includes runtime
@@ -354,13 +373,15 @@ func runAiClaudeInteractive(ctx context.Context) error {
 	applyAgntSystemPrompt(opts, true)
 
 	if useOverlay {
-		return runAiClaudeOverlay(ctx, opts, daemonHandle, msgCh)
+		return runAiClaudeOverlay(ctx, opts, daemonHandle, gate, pauseForwarding)
 	}
-	return runAiClaudeLegacy(ctx, opts, daemonHandle, msgCh)
+	return runAiClaudeLegacy(ctx, opts, daemonHandle, gate)
 }
 
 // runAiClaudeLegacy is the original cooked-mode REPL (--no-overlay or non-terminal).
-func runAiClaudeLegacy(ctx context.Context, opts *claude.AgentOptions, daemonHandle *daemonSessionHandle, msgCh <-chan string) error {
+// Injected messages arrive through gate (nil without daemon integration, in
+// which case its Ready channel is nil and that select case never fires).
+func runAiClaudeLegacy(ctx context.Context, opts *claude.AgentOptions, daemonHandle *daemonSessionHandle, gate *acpAlertGate) error {
 	var sessionID string
 	interactive := !claudeRawOutput
 
@@ -393,53 +414,34 @@ func runAiClaudeLegacy(ctx context.Context, opts *claude.AgentOptions, daemonHan
 		var prompt string
 		var fromMessage bool
 
-		if msgCh != nil {
-			select {
-			case line, ok := <-stdinCh:
-				if !ok {
-					fmt.Fprintln(os.Stderr)
-					return nil
-				}
-				line = strings.TrimSpace(line)
-				if line == "" {
-					continue
-				}
-				if line == "/exit" || line == "/quit" {
-					return nil
-				}
-				prompt = line
-			case msg, ok := <-msgCh:
-				if !ok {
-					// Channel closed: disable this case (nil channel blocks
-					// forever) instead of hot-spinning on empty receives.
-					msgCh = nil
-					continue
-				}
-				fmt.Fprint(os.Stderr, "\r\033[K")
-				fmt.Fprintf(os.Stderr, "[message] %s\n", msg)
-				prompt = msg
-				fromMessage = true
-			case <-ctx.Done():
-				return ctx.Err()
+		select {
+		case line, ok := <-stdinCh:
+			if !ok {
+				fmt.Fprintln(os.Stderr)
+				return nil
 			}
-		} else {
-			select {
-			case line, ok := <-stdinCh:
-				if !ok {
-					fmt.Fprintln(os.Stderr)
-					return nil
-				}
-				line = strings.TrimSpace(line)
-				if line == "" {
-					continue
-				}
-				if line == "/exit" || line == "/quit" {
-					return nil
-				}
-				prompt = line
-			case <-ctx.Done():
-				return ctx.Err()
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
 			}
+			if line == "/exit" || line == "/quit" {
+				return nil
+			}
+			prompt = line
+		case <-gate.Ready():
+			// Idle between turns: pull the coalesced, deduped batch and run
+			// it as one turn. Messages that arrived during the previous turn
+			// are already batched here.
+			msg, ok := gate.Pull()
+			if !ok {
+				continue
+			}
+			fmt.Fprint(os.Stderr, "\r\033[K")
+			fmt.Fprintf(os.Stderr, "[message] %s\n", msg)
+			prompt = msg
+			fromMessage = true
+		case <-ctx.Done():
+			return ctx.Err()
 		}
 
 		if sessionID != "" {
@@ -470,45 +472,14 @@ func runAiClaudeLegacy(ctx context.Context, opts *claude.AgentOptions, daemonHan
 		if interactive {
 			fmt.Fprintln(os.Stderr)
 		}
-
-		// Drain queued messages
-		if msgCh != nil {
-			for {
-				select {
-				case msg, ok := <-msgCh:
-					if !ok {
-						goto nextPrompt
-					}
-					fmt.Fprintf(os.Stderr, "[queued message] %s\n", msg)
-					opts.Resume = sessionID
-					if interactive {
-						spin = newStderrSpinner("Processing message...", os.Stderr)
-					}
-					sid, err := runClaudeQuery(ctx, msg, opts, interactive, spin)
-					if err != nil {
-						if spin != nil {
-							spin.Stop()
-						}
-						fmt.Fprintf(os.Stderr, "Error: %v\n", err)
-						continue
-					}
-					if sid != "" {
-						sessionID = sid
-					}
-					if interactive {
-						fmt.Fprintln(os.Stderr)
-					}
-				default:
-					goto nextPrompt
-				}
-			}
-		nextPrompt:
-		}
+		// Messages queued during the turn are not drained here one turn
+		// apiece: the gate has batched them and signals Ready, which the
+		// select above picks up as a single follow-up turn.
 	}
 }
 
 // runAiClaudeOverlay runs the REPL with full overlay support (raw mode, status bar, menus).
-func runAiClaudeOverlay(ctx context.Context, opts *claude.AgentOptions, daemonHandle *daemonSessionHandle, msgCh <-chan string) error {
+func runAiClaudeOverlay(ctx context.Context, opts *claude.AgentOptions, daemonHandle *daemonSessionHandle, gate *acpAlertGate, pauseForwarding func(bool)) error {
 	var sessionID string
 
 	// Get terminal size
@@ -579,6 +550,10 @@ func runAiClaudeOverlay(ctx context.Context, opts *claude.AgentOptions, daemonHa
 	statusFetcher.Start(ctx)
 	defer statusFetcher.Stop()
 
+	if pauseForwarding != nil {
+		inputRouter.SetForwardingToggle(pauseForwarding)
+	}
+
 	// SIGWINCH handler
 	sizeCh := make(chan os.Signal, 1)
 	signal.Notify(sizeCh, syscall.SIGWINCH)
@@ -648,9 +623,16 @@ func runAiClaudeOverlay(ctx context.Context, opts *claude.AgentOptions, daemonHa
 		case <-lineEditor.EOF():
 			goto cleanup
 
-		// msgCh may be nil (no AI overlay): receiving on a nil channel blocks
-		// forever, which is exactly "case never fires" — no guard needed.
-		case msg := <-msgCh:
+		// A nil gate (no AI overlay) has a nil Ready channel: receiving on it
+		// blocks forever, which is exactly "case never fires".
+		case <-gate.Ready():
+			// Idle between turns: pull the coalesced, deduped batch and run
+			// it as one turn. Messages that arrived during the previous turn
+			// are already batched here.
+			msg, ok := gate.Pull()
+			if !ok {
+				continue
+			}
 			fmt.Fprintf(rawWriter, "\r\033[K[message] %s\n", msg)
 			prompt = msg
 			fromMessage = true
@@ -663,9 +645,6 @@ func runAiClaudeOverlay(ctx context.Context, opts *claude.AgentOptions, daemonHa
 			opts.Resume = sessionID
 		}
 
-		// Disable line editor during streaming
-		lineEditor.SetActive(false)
-
 		// Show spinner
 		var spin *stderrSpinner
 		label := "Starting..."
@@ -674,12 +653,29 @@ func runAiClaudeOverlay(ctx context.Context, opts *claude.AgentOptions, daemonHa
 		}
 		spin = newStderrSpinner(label, rawWriter)
 
-		sid, err := runClaudeQueryWith(ctx, prompt, opts, true, spin, rawWriter, rawWriter)
-		if err != nil {
+		// Per-turn context: the terminal is in raw mode, so Ctrl+C is the
+		// byte 0x03 rather than a SIGINT. The line editor hands it to this
+		// handler while it is inactive, cancelling the turn (and the claude
+		// subprocess behind the iterator) without ending the REPL.
+		turnCtx, cancelTurn := context.WithCancel(ctx)
+		lineEditor.SetInterruptHandler(cancelTurn)
+
+		// Disable line editor during streaming
+		lineEditor.SetActive(false)
+
+		sid, err := runClaudeQueryWith(turnCtx, prompt, opts, true, spin, rawWriter, rawWriter)
+		interrupted := turnCtx.Err() != nil && ctx.Err() == nil
+		lineEditor.SetInterruptHandler(nil)
+		cancelTurn()
+		if err != nil || interrupted {
 			if spin != nil {
 				spin.Stop()
 			}
-			fmt.Fprintf(rawWriter, "Error: %v\n", err)
+			if interrupted {
+				fmt.Fprint(rawWriter, "\r\033[K(interrupted)\n")
+			} else {
+				fmt.Fprintf(rawWriter, "Error: %v\n", err)
+			}
 			lineEditor.SetActive(true)
 			lineEditor.ShowPrompt()
 			continue
@@ -690,36 +686,8 @@ func runAiClaudeOverlay(ctx context.Context, opts *claude.AgentOptions, daemonHa
 
 		fmt.Fprintln(rawWriter)
 
-		// Drain queued messages
-		if msgCh != nil {
-			draining := true
-			for draining {
-				select {
-				case msg, ok := <-msgCh:
-					if !ok {
-						draining = false
-						break
-					}
-					fmt.Fprintf(rawWriter, "[queued message] %s\n", msg)
-					opts.Resume = sessionID
-					spin = newStderrSpinner("Processing message...", rawWriter)
-					sid, err := runClaudeQueryWith(ctx, msg, opts, true, spin, rawWriter, rawWriter)
-					if err != nil {
-						if spin != nil {
-							spin.Stop()
-						}
-						fmt.Fprintf(rawWriter, "Error: %v\n", err)
-						continue
-					}
-					if sid != "" {
-						sessionID = sid
-					}
-					fmt.Fprintln(rawWriter)
-				default:
-					draining = false
-				}
-			}
-		}
+		// Messages queued during the turn are batched by the gate; its Ready
+		// signal is picked up by the select above as one follow-up turn.
 
 		// Re-enable line editor and show prompt
 		lineEditor.SetActive(true)

@@ -266,8 +266,8 @@ func TestTopologicalSort_SimpleChain(t *testing.T) {
 	// c -> b -> a
 	scripts := map[string]*ScriptConfig{
 		"a": {Run: "echo a"},
-		"b": {Run: "echo b", DependsOn: DependsOnList{{Name: "a", Timeout: DefaultDependencyTimeout}}},
-		"c": {Run: "echo c", DependsOn: DependsOnList{{Name: "b", Timeout: DefaultDependencyTimeout}}},
+		"b": {Run: "echo b", DependsOn: DependsOnList{{Name: "a", Timeout: 0}}},
+		"c": {Run: "echo c", DependsOn: DependsOnList{{Name: "b", Timeout: 0}}},
 	}
 
 	layers, err := TopologicalSort(scripts)
@@ -287,11 +287,11 @@ func TestTopologicalSort_Diamond(t *testing.T) {
 	//     d
 	scripts := map[string]*ScriptConfig{
 		"a": {Run: "echo a"},
-		"b": {Run: "echo b", DependsOn: DependsOnList{{Name: "a", Timeout: DefaultDependencyTimeout}}},
-		"c": {Run: "echo c", DependsOn: DependsOnList{{Name: "a", Timeout: DefaultDependencyTimeout}}},
+		"b": {Run: "echo b", DependsOn: DependsOnList{{Name: "a", Timeout: 0}}},
+		"c": {Run: "echo c", DependsOn: DependsOnList{{Name: "a", Timeout: 0}}},
 		"d": {Run: "echo d", DependsOn: DependsOnList{
-			{Name: "b", Timeout: DefaultDependencyTimeout},
-			{Name: "c", Timeout: DefaultDependencyTimeout},
+			{Name: "b", Timeout: 0},
+			{Name: "c", Timeout: 0},
 		}},
 	}
 
@@ -326,9 +326,9 @@ func TestTopologicalSort_ParallelRoots(t *testing.T) {
 
 func TestTopologicalSort_Cycle(t *testing.T) {
 	scripts := map[string]*ScriptConfig{
-		"a": {Run: "echo a", DependsOn: DependsOnList{{Name: "b", Timeout: DefaultDependencyTimeout}}},
-		"b": {Run: "echo b", DependsOn: DependsOnList{{Name: "c", Timeout: DefaultDependencyTimeout}}},
-		"c": {Run: "echo c", DependsOn: DependsOnList{{Name: "a", Timeout: DefaultDependencyTimeout}}},
+		"a": {Run: "echo a", DependsOn: DependsOnList{{Name: "b", Timeout: 0}}},
+		"b": {Run: "echo b", DependsOn: DependsOnList{{Name: "c", Timeout: 0}}},
+		"c": {Run: "echo c", DependsOn: DependsOnList{{Name: "a", Timeout: 0}}},
 	}
 
 	_, err := TopologicalSort(scripts)
@@ -338,7 +338,7 @@ func TestTopologicalSort_Cycle(t *testing.T) {
 
 func TestTopologicalSort_UnknownDependency(t *testing.T) {
 	scripts := map[string]*ScriptConfig{
-		"a": {Run: "echo a", DependsOn: DependsOnList{{Name: "nonexistent", Timeout: DefaultDependencyTimeout}}},
+		"a": {Run: "echo a", DependsOn: DependsOnList{{Name: "nonexistent", Timeout: 0}}},
 	}
 
 	_, err := TopologicalSort(scripts)

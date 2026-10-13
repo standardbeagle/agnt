@@ -114,10 +114,43 @@ func (ps *ProxyServer) getConnAttempts() []ConnAttempt {
 	return result
 }
 
+// noteUpstreamFailure records an upstream transport failure for the loading
+// page's budget. It opens an outage when none is open — or when the last
+// failure is older than maxLoadingWait: nobody was waiting on that outage any
+// more, so the next visitor gets a fresh budget instead of an instant give-up.
+func (ps *ProxyServer) noteUpstreamFailure(now time.Time) {
+	last := ps.lastUpstreamFailure.Swap(now.UnixNano())
+	if ps.outageStart.Load() == 0 || now.Sub(time.Unix(0, last)) > maxLoadingWait {
+		ps.outageStart.Store(now.UnixNano())
+	}
+}
+
+// noteUpstreamSuccess closes the current outage: the upstream answered.
+func (ps *ProxyServer) noteUpstreamSuccess() {
+	if ps.outageStart.Load() != 0 {
+		ps.outageStart.Store(0)
+	}
+}
+
+// outageSince returns when the current outage began; now when none is open.
+func (ps *ProxyServer) outageSince(now time.Time) time.Time {
+	if start := ps.outageStart.Load(); start != 0 {
+		return time.Unix(0, start)
+	}
+	return now
+}
+
 // serveLoadingPage writes the loading page HTML as an HTTP response.
 // After maxLoadingWait, it shows a permanent error page instead of auto-refreshing.
+//
+// The budget runs from the first failure of the CURRENT outage, not from proxy
+// start. Measured from start, every dev-server restart after the proxy's first
+// minute got the non-refreshing error page straight away — the one case the
+// auto-refreshing page exists for.
 func (ps *ProxyServer) serveLoadingPage(w http.ResponseWriter, _ *http.Request, targetURL string) {
-	elapsed := time.Since(ps.startTime)
+	now := time.Now()
+	since := ps.outageSince(now)
+	elapsed := now.Sub(since)
 
 	if elapsed > maxLoadingWait {
 		ps.serveErrorPage(w, targetURL, elapsed)
@@ -127,7 +160,7 @@ func (ps *ProxyServer) serveLoadingPage(w http.ResponseWriter, _ *http.Request, 
 	mins := int(elapsed.Minutes())
 	secs := int(elapsed.Seconds()) % 60
 	timerStr := fmt.Sprintf("%02d:%02d", mins, secs)
-	startUnix := ps.startTime.Unix()
+	startUnix := since.Unix()
 
 	// Build connection history HTML
 	historyHTML := ""
@@ -150,7 +183,8 @@ func (ps *ProxyServer) serveLoadingPage(w http.ResponseWriter, _ *http.Request, 
 	w.Write([]byte(page))
 }
 
-// errorPageHTML is shown when the upstream server hasn't started after maxLoadingWait.
+// errorPageHTML is shown when the upstream server has been unreachable for
+// longer than maxLoadingWait.
 const errorPageHTML = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -186,19 +220,20 @@ border:none;border-radius:6px;font-size:.95rem;cursor:pointer;text-decoration:no
 <h1>Server not responding</h1>
 <div class="target">%s</div>
 <div class="msg">
-The upstream server at this address did not become reachable after %s.<br><br>
+The upstream server at this address has been unreachable for %s.<br><br>
 Check that:<br>
 &bull; The server process is running<br>
 &bull; It is listening on the expected port<br>
 &bull; There are no startup errors in the process output
 </div>
 <a class="retry" href="javascript:location.reload()">Retry</a>
-<div class="elapsed">Proxy has been waiting since startup (%s ago)</div>
+<div class="elapsed">First failed request of this outage: %s ago</div>
 </div>
 </body>
 </html>`
 
-// serveErrorPage writes a permanent error page when the upstream never started.
+// serveErrorPage writes the non-refreshing error page for an outage that has
+// outlasted maxLoadingWait. elapsed is the age of that outage.
 func (ps *ProxyServer) serveErrorPage(w http.ResponseWriter, targetURL string, elapsed time.Duration) {
 	mins := int(elapsed.Minutes())
 	secs := int(elapsed.Seconds()) % 60

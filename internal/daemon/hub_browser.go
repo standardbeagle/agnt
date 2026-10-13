@@ -205,7 +205,10 @@ func (d *Daemon) hubHandleBrowserStatus(conn *hubpkg.Connection, cmd *hubproto.C
 
 func (d *Daemon) hubHandleBrowserList(conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	// Parse filter from command data
-	dirFilter, _ := unmarshalCommand[protocol.DirectoryFilter](cmd)
+	dirFilter, err := unmarshalCommand[protocol.DirectoryFilter](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid filter JSON: %v", err))
+	}
 
 	// Route through the mandatory session-scope chokepoint (see
 	// resolveProjectScope). A non-global query with no resolvable project

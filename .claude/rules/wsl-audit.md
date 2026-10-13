@@ -33,7 +33,6 @@ The Windows-side fallbacks are gated, not always-on: they shell out (~50-150 ms)
 
 ## Deferred
 
-- `detectPortsForPID` (`portdetect_unix.go`) has no `netstat.exe` branch. Low priority: callers pass PIDs we manage, which are Linux-side.
 - Native-Windows `agnt ssh` (`01KXDMG7KG02MH91W2KXWHZAYA`) and `agnt attach` (ConPTY relay, `01KXDMGBMJB61WXA5YDHB8CY40`) are loud stubs; WSL is the workaround. The daemon-socket forward (`internal/sshclient/forward_listen.go`) is a Unix-domain socket on every platform, Windows included, because its only consumers are daemon clients and those dial AF_UNIX; only the control socket is a named pipe.
 
 ## Accepted escape hatches (do not "fix")

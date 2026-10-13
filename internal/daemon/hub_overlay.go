@@ -41,8 +41,12 @@ func (d *Daemon) hubHandleOverlayForwarding(conn *hubpkg.Connection, cmd *hubpro
 	if sessionCode == "" {
 		// Progressive disclosure: OVERLAY FORWARDING pauses/resumes one session's
 		// agent-inbound push, so it needs a session — but return the sessions to
-		// pick from in the same round trip rather than a bare error.
-		return d.writeScopeErr(conn, errNoSessionScope, "session_code")
+		// pick from in the same round trip rather than a bare error. The verb
+		// takes no session selector, so the hint must not tell the caller to
+		// pass one: the only way to name the session is to send the command on
+		// a connection bound to it.
+		return d.writeScopeErrHint(conn, errNoSessionScope,
+			"OVERLAY FORWARDING acts on the session its connection is bound to; send it from one of these sessions (SESSION ATTACH <directory> binds a connection)")
 	}
 	// Anything that isn't exactly "true" used to mean "resume": a typo, or a
 	// caller sending "1", silently un-paused agent-inbound push.

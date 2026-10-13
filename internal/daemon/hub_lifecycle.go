@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -72,13 +73,19 @@ func (d *Daemon) hubHandleStopAll(ctx context.Context, conn *hubpkg.Connection, 
 }
 
 // hubHandleRestartAll handles the RESTART-ALL command.
-// Stops all resources and restarts them with the same configuration.
-
+//
+// It restarts, in place, every running process and proxy in scope, each
+// through the same helper its single-resource verb uses (restartProcess,
+// restartProxy). A restarted resource therefore keeps what it was launched
+// with — env, working directory, auto-restart registration, bound port, public
+// URL, TLS setting, overlay binding, incident owner, persisted state. Tunnels
+// and browser sessions are left running: a proxy comes back on the same port,
+// so what points at it keeps working.
 func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	debug.Log("daemon", "RESTART-ALL: args=%v", cmd.Args)
 
-	// Same scope chokepoint as STOP-ALL: snapshot/restart only the resolved
-	// project's resources; explicit global:true restarts every project's.
+	// Same scope chokepoint as STOP-ALL: restart only the resolved project's
+	// resources; explicit global:true restarts every project's.
 	filter, err := unmarshalCommand[protocol.DirectoryFilter](cmd)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid RESTART-ALL filter JSON: %v", err))
@@ -88,134 +95,69 @@ func (d *Daemon) hubHandleRestartAll(ctx context.Context, conn *hubpkg.Connectio
 		return d.writeScopeErr(conn, err, "session_code")
 	}
 
-	// Capture running resources before stop, scoped to the resolved project.
-	var runningProcs []*goprocess.ManagedProcess
-	var runningProxies []*proxy.ProxyServer
+	var procs []*goprocess.ManagedProcess
+	var proxies []*proxy.ProxyServer
 	if global {
-		runningProcs = d.hub.ProcessManager().List()
-		runningProxies = d.proxym.ListScoped(scope.Unscoped("RESTART-ALL global: restart every proxy"))
+		procs = d.hub.ProcessManager().List()
+		proxies = d.proxym.ListScoped(scope.Unscoped("RESTART-ALL global: restart every proxy"))
 	} else {
-		runningProcs = procsForProject(d.hub.ProcessManager().List(), projectPath)
-		runningProxies = d.proxym.ListScoped(scope.Project(projectPath))
+		procs = procsForProject(d.hub.ProcessManager().List(), projectPath)
+		proxies = d.proxym.ListScoped(scope.Project(projectPath))
 	}
 
-	// Build restart manifests from running resources
-	type procManifest struct {
-		ID          string
-		Command     string
-		Args        []string
-		ProjectPath string
-		WorkingDir  string
-	}
-	type proxyManifest struct {
-		ID            string
-		TargetURL     string
-		Port          int
-		MaxLogSize    int
-		ProjectPath   string
-		BindAddress   string
-		AllowExternal bool
-		NamedTunnel   *proxy.NamedTunnelConfig
-	}
+	var procsTotal, procsRestarted, procsFailed int
+	var proxyTotal, proxyRestarted, proxyFailed int
 
-	var procsToRestart []procManifest
-	var proxiesToRestart []proxyManifest
-
-	for _, p := range runningProcs {
-		if p.State().String() == "running" {
-			procsToRestart = append(procsToRestart, procManifest{
-				ID:          p.ID,
-				Command:     p.Command,
-				Args:        p.Args,
-				ProjectPath: p.ProjectPath,
-				WorkingDir:  p.WorkingDir,
-			})
-			// Mark this stop as daemon-initiated so the health.OutageClassifier
-			// biases the imminent outage toward Rebuild rather than Crash.
-			d.healthTracker.MarkDaemonInitiatedStop(p.ID)
+	for _, p := range procs {
+		if p.State().String() != "running" {
+			continue
 		}
-	}
-
-	for _, p := range runningProxies {
-		if p.IsRunning() {
-			proxiesToRestart = append(proxiesToRestart, proxyManifest{
-				ID:            p.ID,
-				TargetURL:     p.TargetURL.String(),
-				Port:          0, // Will use auto-port
-				MaxLogSize:    int(p.Logger().Stats().MaxSize),
-				ProjectPath:   p.Path,
-				BindAddress:   p.BindAddress,
-				AllowExternal: p.AllowExternal,
-				NamedTunnel:   p.NamedTunnelConfig(),
-			})
-		}
-	}
-
-	// Stop the snapshotted resources (global daemon-wide, or project-scoped).
-	if global {
-		d.StopAllResources(ctx)
-	} else {
-		d.StopProjectResources(ctx, projectPath)
-	}
-
-	// Wait a moment for cleanup
-	time.Sleep(100 * time.Millisecond)
-
-	// Restart processes
-	var procsRestarted, procsFailed int
-	var proxyRestarted, proxyFailed int
-
-	for _, pm := range procsToRestart {
-		// Use startScriptWithRetry for EADDRINUSE recovery
-		_, startupErr := d.startScriptWithRetry(ctx, pm.ID, pm.ProjectPath, pm.WorkingDir, pm.Command, pm.Args, nil, nil, false)
-		if startupErr != nil {
-			debug.Error("daemon", "Failed to restart process %s: %v", pm.ID, startupErr)
-			d.startupErrorStore.Add(&StartupLogEntry{
-				ProcessID: pm.ID,
+		procsTotal++
+		if _, restartErr := d.restartProcess(ctx, p, conn.SessionCode()); restartErr != nil {
+			debug.Error("daemon", "Failed to restart process %s: %v", p.ID, restartErr)
+			entry := &StartupLogEntry{
+				ProcessID: p.ID,
 				Level:     "error",
 				EventType: "restart_failed",
-				Message:   fmt.Sprintf("RESTART-ALL: failed to restart: %s", startupErr.Message),
-				Output:    startupErr.Output,
-				Port:      startupErr.Port,
+				Message:   fmt.Sprintf("RESTART-ALL: failed to restart: %v", restartErr),
 				Timestamp: time.Now(),
-			})
+			}
+			var startupErr *StartupError
+			if errors.As(restartErr, &startupErr) {
+				entry.Output = startupErr.Output
+				entry.Port = startupErr.Port
+			}
+			d.startupErrorStore.Add(entry)
 			procsFailed++
-		} else {
-			procsRestarted++
+			continue
 		}
+		procsRestarted++
 	}
 
-	// Restart proxies
-	for _, pm := range proxiesToRestart {
-		proxyServer, err := d.proxym.Create(ctx, proxy.ProxyConfig{
-			ID:            pm.ID,
-			TargetURL:     pm.TargetURL,
-			ListenPort:    pm.Port,
-			MaxLogSize:    pm.MaxLogSize,
-			Path:          pm.ProjectPath,
-			BindAddress:   pm.BindAddress,
-			AllowExternal: pm.AllowExternal,
-			NamedTunnel:   pm.NamedTunnel,
-		})
-		if err != nil {
-			debug.Error("daemon", "Failed to restart proxy %s: %v", pm.ID, err)
-			d.recordStartupEntry(pm.ID, "", "error", "proxy_restart_failed",
-				fmt.Sprintf("RESTART-ALL: failed to restart proxy: %v", err), 0)
-			proxyFailed++
-		} else {
-			d.wireProxyLogger(proxyServer)
-			proxyRestarted++
+	for _, p := range proxies {
+		if !p.IsRunning() {
+			continue
 		}
+		proxyTotal++
+		if _, restartErr := d.restartProxy(ctx, p, conn.SessionCode()); restartErr != nil {
+			debug.Error("daemon", "Failed to restart proxy %s: %v", p.ID, restartErr)
+			d.recordStartupEntry(p.ID, "", "error", "proxy_restart_failed",
+				fmt.Sprintf("RESTART-ALL: failed to restart proxy: %v", restartErr), 0)
+			proxyFailed++
+			continue
+		}
+		proxyRestarted++
 	}
 
 	resp := map[string]interface{}{
-		"success":             true,
+		// Not a success when something that was running did not come back.
+		"success":             procsFailed == 0 && proxyFailed == 0,
 		"processes_restarted": procsRestarted,
 		"processes_failed":    procsFailed,
 		"proxies_restarted":   proxyRestarted,
 		"proxies_failed":      proxyFailed,
 		"message": fmt.Sprintf("Restarted %d/%d processes, %d/%d proxies",
-			procsRestarted, len(procsToRestart), proxyRestarted, len(proxiesToRestart)),
+			procsRestarted, procsTotal, proxyRestarted, proxyTotal),
 	}
 
 	data, _ := json.Marshal(resp)

@@ -3,11 +3,10 @@ package tools
 import (
 	"context"
 	"fmt"
-	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
+	"github.com/standardbeagle/agnt/internal/pathutil"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/go-sdk/mcp"
 )
@@ -33,7 +32,7 @@ func RegisterErrorQueueTool(server *mcp.Server, dt *DaemonTools) {
 		Name: "error_queue",
 		Description: `Add an external CI/CD or infrastructure failure to agnt's unified error queue.
 
-Use this when a failure came from GitHub Actions, Buildkite, deploy logs, a hosted service, or any source outside agnt's proxy/process monitors. The entry appears in get_incidents.
+Use this when a failure came from GitHub Actions, Buildkite, deploy logs, a hosted service, or any source outside agnt's proxy/process monitors. The entry appears in get_incidents (source "external") for every session working on that project, and in proc snapshot.
 
 Examples:
   error_queue {message: "GitHub Actions build failed: go test ./...", source: "github-actions", category: "ci"}
@@ -89,15 +88,20 @@ func (dt *DaemonTools) makeErrorQueueHandler() func(context.Context, *mcp.CallTo
 	}
 }
 
+// resolveQueueProjectPath resolves the project the report belongs to through
+// the same chain every other tool uses (getProjectPath: AGNT_PROJECT_PATH, then
+// cwd) and in the same normalised form, so the entry matches the scoped
+// queries that look for it. A raw os.Getwd() ignored AGNT_PROJECT_PATH and, on
+// a case-insensitive filesystem, never compared equal to the normalised scope.
 func resolveQueueProjectPath(path string) (string, error) {
 	if path == "" {
-		cwd, err := os.Getwd()
-		if err != nil {
-			return "", err
+		resolved := getProjectPath()
+		if resolved == "" {
+			return "", fmt.Errorf("cannot resolve a project path: pass project_path")
 		}
-		return cwd, nil
+		return resolved, nil
 	}
-	return filepath.Abs(path)
+	return pathutil.NormalizeProjectPath(path), nil
 }
 
 func normalizeQueueSeverity(s string) string {

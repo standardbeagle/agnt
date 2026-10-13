@@ -19,65 +19,6 @@ import (
 	"github.com/standardbeagle/agnt/internal/platform"
 )
 
-// detectPortsForPID finds listening TCP ports for a given PID using
-// /proc/net/tcp on Linux or lsof on macOS.
-func detectPortsForPID(ctx context.Context, pid int) []int {
-	if runtime.GOOS == "linux" {
-		return detectPortsForPIDProc(pid)
-	}
-	return detectPortsForPIDLsof(ctx, pid)
-}
-
-// detectPortsForPIDProc reads /proc/net/tcp{,6} to find listening sockets,
-// then checks /proc/<pid>/fd/ to see which belong to the target PID.
-func detectPortsForPIDProc(pid int) []int {
-	// Collect all listening sockets: inode -> port
-	inodePorts := make(map[string]int)
-	for _, path := range []string{"/proc/net/tcp", "/proc/net/tcp6"} {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		for _, line := range strings.Split(string(data), "\n")[1:] {
-			inode, port, ok := parseProcNetTCPLine(line)
-			if !ok {
-				continue
-			}
-			inodePorts[inode] = port
-		}
-	}
-	if len(inodePorts) == 0 {
-		return nil
-	}
-
-	// Check which inodes belong to our PID
-	fdDir := filepath.Join("/proc", strconv.Itoa(pid), "fd")
-	fds, err := os.ReadDir(fdDir)
-	if err != nil {
-		return nil
-	}
-
-	seen := make(map[int]struct{})
-	var ports []int
-	for _, fd := range fds {
-		link, err := os.Readlink(filepath.Join(fdDir, fd.Name()))
-		if err != nil {
-			continue
-		}
-		if !strings.HasPrefix(link, "socket:[") {
-			continue
-		}
-		inode := link[8 : len(link)-1]
-		if port, ok := inodePorts[inode]; ok {
-			if _, dup := seen[port]; !dup {
-				seen[port] = struct{}{}
-				ports = append(ports, port)
-			}
-		}
-	}
-	return ports
-}
-
 // parseProcNetTCPLine parses a single /proc/net/tcp{,6} data row (the header
 // line must be stripped by the caller) and returns the listening socket's
 // inode and local port. ok is false for any non-listening, malformed, or
@@ -122,27 +63,6 @@ func parseProcNetTCPLine(line string) (inode string, port int, ok bool) {
 		return "", 0, false
 	}
 	return fields[9], p, true
-}
-
-// detectPortsForPIDLsof uses lsof to find listening ports for a process.
-// Used on macOS where /proc is not available.
-func detectPortsForPIDLsof(ctx context.Context, pid int) []int {
-	cmd := exec.CommandContext(ctx, "lsof", "-iTCP", "-sTCP:LISTEN", "-p", strconv.Itoa(pid), "-n", "-P")
-	output, err := cmd.Output()
-	if err != nil {
-		return nil
-	}
-
-	var ports []int
-	portRe := regexp.MustCompile(`:(\d+)\s+\(LISTEN\)`)
-	for _, line := range strings.Split(string(output), "\n") {
-		if matches := portRe.FindStringSubmatch(line); len(matches) > 1 {
-			if port, err := strconv.Atoi(matches[1]); err == nil && port > 0 && port < 65536 {
-				ports = append(ports, port)
-			}
-		}
-	}
-	return ports
 }
 
 // FindPIDsByPort returns PIDs of processes listening on the given TCP port.
@@ -691,23 +611,45 @@ func sortPortOwners(owners []PortOwner) {
 	sort.Slice(owners, func(i, j int) bool { return owners[i].Port < owners[j].Port })
 }
 
-// findPIDsByPortLsof uses lsof to find PIDs on macOS.
+// lsofListenerArgs is the lsof invocation that lists the PIDs LISTENING on a
+// TCP port, and nothing else.
+//
+// The earlier form, `lsof -ti :PORT`, selects every process holding any
+// internet socket whose local OR remote port is PORT: a browser with a tab
+// open on localhost:3000, or any app connected out to some host's :8080.
+// Those PIDs were then reported as port blockers and, under auto-kill, killed.
+// `-iTCP:PORT -sTCP:LISTEN` narrows to listening TCP sockets, and `-a` is what
+// makes the two selections AND together; lsof ORs them without it.
+func lsofListenerArgs(port int) []string {
+	return []string{"-nP", "-a", fmt.Sprintf("-iTCP:%d", port), "-sTCP:LISTEN", "-t"}
+}
+
+// findPIDsByPortLsof uses lsof to find the PIDs listening on port on macOS.
 func findPIDsByPortLsof(ctx context.Context, port int) []int {
-	cmd := exec.CommandContext(ctx, "lsof", "-ti", fmt.Sprintf(":%d", port))
+	cmd := exec.CommandContext(ctx, "lsof", lsofListenerArgs(port)...)
 	output, err := cmd.Output()
 	if err != nil {
 		return nil
 	}
-	text := strings.TrimSpace(string(output))
-	if text == "" {
-		return nil
-	}
+	return parseLsofPIDs(output)
+}
+
+// parseLsofPIDs parses `lsof -t` output: one PID per line, de-duplicated (a
+// process listening on both the IPv4 and IPv6 wildcard is listed once per
+// socket by some lsof builds).
+func parseLsofPIDs(output []byte) []int {
 	var pids []int
-	for _, line := range strings.Split(text, "\n") {
-		line = strings.TrimSpace(line)
-		if pid, err := strconv.Atoi(line); err == nil && pid > 0 {
-			pids = append(pids, pid)
+	seen := make(map[int]struct{})
+	for _, line := range strings.Split(string(output), "\n") {
+		pid, err := strconv.Atoi(strings.TrimSpace(line))
+		if err != nil || pid <= 0 {
+			continue
 		}
+		if _, dup := seen[pid]; dup {
+			continue
+		}
+		seen[pid] = struct{}{}
+		pids = append(pids, pid)
 	}
 	return pids
 }

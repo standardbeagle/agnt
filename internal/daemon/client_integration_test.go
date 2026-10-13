@@ -348,8 +348,9 @@ func TestSessionBasedCleanup(t *testing.T) {
 
 	if len(procsList) > 0 {
 		proc := procsList[0].(map[string]interface{})
-		if proc["id"] != "proc2" {
-			t.Errorf("Expected proc2 to survive, got %v", proc["id"])
+		// RUN ids are derived from the project the process runs in.
+		if want := makeProcessID(normalizePath(project2), "proc2"); proc["id"] != want {
+			t.Errorf("Expected %s to survive, got %v", want, proc["id"])
 		}
 	}
 

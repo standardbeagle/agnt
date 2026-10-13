@@ -108,13 +108,31 @@ Uses a background daemon for persistent state across connections:
 Available tools:
 - detect: Detect project type and available scripts
 - run: Run scripts or raw commands (background/foreground modes)
-- proc: Manage processes (status, output, stop, list, cleanup_port)
-- proxy: Reverse proxy with traffic logging and JS instrumentation
+- proc: Manage processes (status, output, find, stop, restart, list, run, run_group, wait, snapshot, cleanup_port, ...)
+- proxy: Reverse proxy with traffic logging and JS instrumentation (start, exec, navigate, resize, toast, chaos, ...)
 - proxylog: Query proxy traffic logs
-- currentpage: View active page sessions
-- get_incidents: Unified incident view across processes and proxies
+- tunnel: Expose a proxy through cloudflare/ngrok/tailscale
+- currentpage: Inspect the current page (framework triage, layout diagnosis, sessions)
+- get_incidents: The error/incident surface across processes and proxies — pull this when pinged
+- error_queue: Queue an external (CI/deploy) failure so it appears in get_incidents
+- diagnose: Dead-click triage or composite layout diagnosis in one call
+- verify_change: Recheck the session's recorded findings after a change
+- release_qa: Release gate — verify the changed flow, then one broad audit
 - responsive_audit: Responsive design audits across multiple viewport sizes
+- api_audit: API efficiency audit (waterfall, N+1, duplicate, chatty-load)
+- loading_audit: Loading-UX audit (spinner cascade, fragmentation)
 - snapshot: Visual regression testing (baseline/compare screenshots)
+- browser: Launch and manage a real browser against a URL or proxy
+- automation: Headless browser sessions (screenshot, navigate, evaluate)
+- replaytest: Record and replay deterministic browser replay-tests (Pro)
+- walkthrough: Live in-browser walkthrough step list
+- publish: Public walkthrough shares (create/status/list/revoke/rotate/feedback)
+- demo: Narrated demo-video authoring (repo-checkout capability)
+- devauth: Dev OIDC personas
+- session: List agent sessions and send or schedule messages to them
+- store: Scoped key/value store
+- watch: Get the agnt monitor command for streaming events
+- channel_reply: Message the developer's browser overlay (channel mode only)
 - daemon: Manage the background daemon service`,
 	}
 
@@ -179,23 +197,27 @@ Available tools:
 	// Register walkthrough tool (live-demo step list; daemon mode only).
 	tools.RegisterWalkthroughTool(server, dt)
 
-	// Subscribe an always-on incident-digest sink so the unified inbox's
-	// periodic digest reaches the agent via MCP Log notifications, independent
-	// of channel mode. Rides the STREAM-EVENTS transport.
-	digestCancel := dt.StartIncidentDigestSink(server)
-	defer digestCancel()
-
-	// Resolve working directory once — used for both channel sink scoping and
-	// session registration so both operate on the same project path.
+	// Resolve working directory once — used for digest/channel sink scoping and
+	// session registration so all three operate on the same project path.
 	cwd, cwdErr := os.Getwd()
 	if cwdErr != nil {
 		cwd = "."
 	}
 
+	// Subscribe an always-on incident-digest sink so the unified inbox's
+	// periodic digest reaches the agent via MCP Log notifications, independent
+	// of channel mode. Rides the STREAM-EVENTS transport, scoped to this
+	// project so another project's digests never reach this agent. With channel
+	// mode on the digest is delivered as a channel event instead of a log
+	// notification — one transport per digest, never both.
+	digestCancel := dt.StartIncidentDigestSink(server, cwd, agntCfg.Channel)
+	defer digestCancel()
+
 	// When channel mode is active, subscribe a ChannelSink to the daemon's
-	// event stream. Events that pass severity/type filtering and deduplication
-	// are forwarded as notifications/claude/channel notifications to all
-	// connected MCP sessions. Project path scopes the subscription so two
+	// event stream. Non-error events (panel messages, interactions, responsive
+	// handoffs, custom logs) that pass type/severity filtering are forwarded as
+	// notifications/claude/channel notifications to all connected MCP
+	// sessions; errors arrive through the digest sink above. Project path scopes the subscription so two
 	// simultaneous MCP clients don't receive each other's proxy events.
 	channelCancel := dt.StartChannelSink(server, agntCfg.Channel, cwd)
 	defer channelCancel()

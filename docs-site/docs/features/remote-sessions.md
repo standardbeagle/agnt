@@ -82,7 +82,7 @@ agnt monitor
 Remote reverse-proxy ports are forwarded to loopback automatically — the same
 port number is preferred, and a replacement is chosen and reported if it is
 occupied. `--status` prints the active mappings. Forwards are rebuilt from
-remote state after a reconnect. The overlay port (`19191`) is not forwarded.
+remote state after a reconnect. The overlay is a per-session Unix-domain socket on the remote host and is not forwarded.
 
 ### Push files to a live session
 

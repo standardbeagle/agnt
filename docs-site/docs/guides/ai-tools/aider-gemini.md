@@ -50,7 +50,7 @@ When you run this command, agnt does the following:
 The data flow looks like this:
 
 ```
-Browser --> Proxy --> HTTP POST --> Overlay (port 19191) --> PTY stdin --> AI Agent
+Browser --> Proxy --> HTTP POST --> Overlay (per-session Unix socket) --> PTY stdin --> AI Agent
 ```
 
 The agent receives browser events as regular text input -- no special protocol support needed.

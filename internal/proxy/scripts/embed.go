@@ -442,8 +442,11 @@ var moduleOrder = []moduleEntry{
 // them only ever do real work in the content frame. The modules below are
 // safe: api.js either doesn't touch them, references them as plain values
 // (`mutations: mutations`), or guards them (`wireframe ? … : fallback`,
-// `window.__devtool_snapshot || {…}`), and core.js pre-installs a
-// __devtool_diagnostics fallback. session/palette/toast/responsive(-mode)
+// `window.__devtool_snapshot || {…}`, `diagnostics` only when it carries a
+// real method). core.js exports its transport diagnostics on a separate
+// global (__devtool_transport_diag), so __devtool_diagnostics is absent — not
+// substituted — where diagnostics.js is excluded, and api.js falls back to
+// its "not loaded" stubs. session/palette/toast/responsive(-mode)
 // stay shared deliberately: session feeds page-session tracking from every
 // frame, palette + toast are user surfaces in both frames, and the indicator
 // toggles window.__devtool_responsive in its own (shell) window.

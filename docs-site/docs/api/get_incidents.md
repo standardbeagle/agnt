@@ -40,7 +40,7 @@ get_incidents {since: "5m", detail: "full"}
 | `tag` | string | No | - | Note stored with a pin, returned on the pinned item |
 | `severity` | string[] | No | all | Filter by band: `critical`, `error`, `warning`, `info` |
 | `since` | string | No | beginning | Cursor from a prior pull (RFC3339 timestamp) **or** a duration like `5m` |
-| `sources` | string[] | No | all | Filter by signal source: `browser_js`, `http_5xx`, `http_4xx`, `transport_err`, `proxy_diag`, `process_alert`, `process_crash`, `build_fail`, `port_conflict`, `shutdown`, `hook_stop_failure` |
+| `sources` | string[] | No | all | Filter by signal source: `browser_js`, `http_5xx`, `http_4xx`, `transport_err`, `proxy_diag`, `process_alert`, `process_crash`, `build_fail`, `chaos_swallowed_error`, `external` |
 | `fingerprints` | string[] | No | - | Retrieve specific incidents by fingerprint |
 | `proxy_id` | string | No | - | Filter to a specific proxy |
 | `process_id` | string | No | - | Filter to a specific process |

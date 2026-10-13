@@ -23,7 +23,15 @@
   var sketch = window.__devtool_sketch;
   var design = window.__devtool_design;
   var walkthrough = window.__devtool_walkthrough;
+  // window.__devtool_diagnostics is diagnostics.js (CSS visual debugging) and
+  // nothing else; it is absent from bundles that do not ship that module (the
+  // chrome shell). Test for a real method rather than mere truthiness, so a
+  // frame without the module reports "not loaded" instead of handing back an
+  // object whose methods are undefined.
   var diagnostics = window.__devtool_diagnostics;
+  if (!diagnostics || typeof diagnostics.outlineAll !== 'function') { diagnostics = null; }
+  // Transport (WebSocket) diagnostics from core.js — a separate API.
+  var transportDiag = window.__devtool_transport_diag;
   var session = window.__devtool_session;
   var store = window.__devtool_store;
   var content = window.__devtool_content;
@@ -44,6 +52,15 @@
   function indicatorNotLoaded() {
     return { error: 'indicator not loaded in this frame' };
   }
+
+  // Earlier modules register onto window.__devtool before this one runs:
+  // frames.js (role / frameId / FRAME_PARAM) and the audit modules, which hang
+  // auditAnimations / auditDesign / auditAPIEfficiency / highlight and the
+  // findingSelectors registry off window.__devtool.audit. This module replaces
+  // the object, so whatever was there is captured here and carried forward
+  // below — otherwise the documented __devtool.audit.* entry points vanish the
+  // moment the bundle finishes loading.
+  var priorDevtool = window.__devtool;
 
   // Main DevTool API
   window.__devtool = {
@@ -339,6 +356,17 @@
       clear: function() { return { error: 'Diagnostics not loaded' }; },
       clearAll: function() { return { error: 'Diagnostics not loaded' }; },
       list: function() { return { error: 'Diagnostics not loaded' }; }
+    },
+
+    // ========================================================================
+    // TRANSPORT DIAGNOSTICS (control WebSocket history / reconnect)
+    // ========================================================================
+
+    transport: transportDiag || {
+      getHistory: function() { return { error: 'Transport diagnostics not loaded' }; },
+      getRecent: function() { return { error: 'Transport diagnostics not loaded' }; },
+      getConnectionState: function() { return { error: 'Transport diagnostics not loaded' }; },
+      reconnect: function() { return { error: 'Transport diagnostics not loaded' }; }
     },
 
     // ========================================================================
@@ -1067,6 +1095,18 @@
       isOpen: function() { return false; }
     }
   };
+
+  // Carry forward every earlier registration this literal does not define
+  // itself. A key defined above always wins; nothing registered before is
+  // dropped.
+  if (priorDevtool && typeof priorDevtool === 'object') {
+    for (var priorKey in priorDevtool) {
+      if (Object.prototype.hasOwnProperty.call(priorDevtool, priorKey) &&
+          !Object.prototype.hasOwnProperty.call(window.__devtool, priorKey)) {
+        window.__devtool[priorKey] = priorDevtool[priorKey];
+      }
+    }
+  }
 
   console.log('[DevTool] API available at window.__devtool');
   console.log('[DevTool] Usage:');

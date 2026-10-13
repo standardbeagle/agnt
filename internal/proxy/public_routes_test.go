@@ -2,6 +2,8 @@ package proxy
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -380,9 +382,11 @@ func TestArtifactJSONShape(t *testing.T) {
 	}
 }
 
-// authoredScriptRevision is a revision whose variant set carries publisher
-// script (§6a addScript), the input INV-12's per-revision hash pin is computed
-// from.
+// authoredScriptRevision is a revision whose variant set carries an addScript
+// op. No publish path produces one and Store.load refuses a stored one
+// (INV-14), so a verifier that hands this to the handler is simulating BOTH of
+// those gates failing: the tests that use it pin that the handler would still
+// authorise nothing — script-src has no per-revision term to widen.
 func authoredScriptRevision(codes ...string) *publish.PublishedWalkthrough {
 	rev := sampleWalkthrough()
 	ops := make([]publish.Op, 0, len(codes))
@@ -412,48 +416,44 @@ func artifactScriptSrc(t *testing.T, h *PublicHandler) string {
 	return ""
 }
 
-// TestAuthoredScriptHashPinnedInScriptSrc is the INV-12 widening: the artifact
-// CSP gains exactly one 'sha256-…' per authored script body in the served
-// revision, so publisher script executes — while a byte-different (foreign)
-// inline script, whose hash is absent, stays refused. Hashes are over the exact
-// bytes the renderer assigns to script.textContent (variant-engine.js
-// addScript), so the browser's inline-hash check matches.
-func TestAuthoredScriptHashPinnedInScriptSrc(t *testing.T) {
+// TestScriptSrcIsTheBundleHashAloneWhateverTheRevisionCarries pins the end
+// state of INV-12 after INV-14: script-src is exactly the RolePublic bundle hash
+// on the artifact, for every revision. It used to gain one 'sha256-…' per
+// addScript body — which is what let a revision stored before the publish gate
+// run its script. There is no such term now, so even a revision that reaches the
+// handler carrying addScript (both earlier gates bypassed) authorises no script
+// of its own.
+func TestScriptSrcIsTheBundleHashAloneWhateverTheRevisionCarries(t *testing.T) {
 	const authored = "window.__demo_variant=1;"
-	const foreign = "window.__evil=1;"
+	const second = "window.__other=1;"
 
-	h := NewPublicHandler(&fakeVerifier{token: validToken, rev: authoredScriptRevision(authored), id: "share-1"}, nil, 0)
-	scriptSrc := artifactScriptSrc(t, h)
+	plainHandler := newTestHandler(nil)
+	// Literal shape: one hash source, the bundle's, and nothing else.
+	want := "script-src '" + plainHandler.cspHash + "'"
+	if !strings.HasPrefix(plainHandler.cspHash, "sha256-") {
+		t.Fatalf("premise broken: the bundle hash is not a sha256 source: %q", plainHandler.cspHash)
+	}
+	if plain := artifactScriptSrc(t, plainHandler); plain != want {
+		t.Fatalf("script-less revision: script-src = %q, want %q", plain, want)
+	}
 
-	authoredHash := cspSHA256([]byte(authored))
-	if !strings.Contains(scriptSrc, "'"+authoredHash+"'") {
-		t.Fatalf("authored script hash %q missing from script-src: %q", authoredHash, scriptSrc)
-	}
-	if foreignHash := cspSHA256([]byte(foreign)); strings.Contains(scriptSrc, foreignHash) {
-		t.Fatalf("foreign script hash must not be pinned: %q", scriptSrc)
-	}
-	// The bundle pin survives the widening, and no shortcut source is admitted.
-	if !strings.Contains(scriptSrc, "'"+h.cspHash+"'") {
-		t.Fatalf("bundle hash dropped from script-src: %q", scriptSrc)
-	}
-	for _, forbidden := range []string{"'unsafe-inline'", "'unsafe-eval'", "'self'", "http", "*"} {
-		if strings.Contains(scriptSrc, forbidden) {
-			t.Fatalf("script-src admitted forbidden source %q: %q", forbidden, scriptSrc)
+	for name, rev := range map[string]*publish.PublishedWalkthrough{
+		"one addScript body":   authoredScriptRevision(authored),
+		"two addScript bodies": authoredScriptRevision(authored, second, authored),
+	} {
+		h := NewPublicHandler(&fakeVerifier{token: validToken, rev: rev, id: "share-1"}, nil, 0)
+		scriptSrc := artifactScriptSrc(t, h)
+		if scriptSrc != want {
+			t.Fatalf("%s: script-src = %q, want exactly %q — a revision's addScript body must not be authorised", name, scriptSrc, want)
 		}
-	}
-
-	// A revision with NO authored script pins the bundle hash alone: the
-	// widening is per-revision, not a blanket relaxation.
-	plain := artifactScriptSrc(t, newTestHandler(nil))
-	if plain != "script-src '"+h.cspHash+"'" {
-		t.Fatalf("script-less revision widened script-src: %q", plain)
-	}
-
-	// Two authored bodies → two hashes; a repeated body is pinned once.
-	multi := NewPublicHandler(&fakeVerifier{token: validToken, rev: authoredScriptRevision(authored, foreign, authored), id: "share-1"}, nil, 0)
-	multiSrc := artifactScriptSrc(t, multi)
-	if got := strings.Count(multiSrc, "sha256-"); got != 3 {
-		t.Fatalf("want bundle + 2 deduped authored hashes (3), got %d: %q", got, multiSrc)
+		for _, body := range []string{authored, second} {
+			if hash := cspSHA256([]byte(body)); strings.Contains(scriptSrc, hash) {
+				t.Fatalf("%s: the authored body's hash %q was pinned in script-src: %q", name, hash, scriptSrc)
+			}
+		}
+		if got := strings.Count(scriptSrc, "sha256-"); got != 1 {
+			t.Fatalf("%s: script-src carries %d hash sources, want 1 (the bundle): %q", name, got, scriptSrc)
+		}
 	}
 }
 
@@ -495,10 +495,10 @@ func TestUpstreamShareNeverFallsBackToSelfContainedShell(t *testing.T) {
 	}
 }
 
-// TestHostileUpstreamCSPCannotSurviveWidening re-asserts INV-11/INV-12 with the
-// authored-hash widening in place: an upstream CSP is DELETED wholesale (both
-// enforcing and report-only) and agnt's is SET — never merged — so an upstream
-// 'unsafe-inline'/host source cannot ride along beside the authored hashes.
+// TestHostileUpstreamCSPCannotSurviveWidening re-asserts INV-11/INV-12: an
+// upstream CSP is DELETED wholesale (both enforcing and report-only) and agnt's
+// is SET — never merged — so an upstream 'unsafe-inline'/host source cannot ride
+// along beside the bundle hash, even on a revision carrying addScript.
 func TestHostileUpstreamCSPCannotSurviveWidening(t *testing.T) {
 	const authored = "window.__demo_variant=1;"
 	h := NewPublicHandler(&fakeVerifier{token: validToken, rev: authoredScriptRevision(authored), id: "share-1"}, nil, 0)
@@ -506,7 +506,7 @@ func TestHostileUpstreamCSPCannotSurviveWidening(t *testing.T) {
 	hostile := http.Header{}
 	hostile.Set("Content-Security-Policy", "script-src 'unsafe-inline' 'unsafe-eval' https://evil.example; default-src *")
 	hostile.Set("Content-Security-Policy-Report-Only", "default-src *")
-	h.writeHeaders(hostile, kindArtifact, "n0nce", cspSHA256([]byte(authored)))
+	h.writeHeaders(hostile, kindArtifact, "n0nce")
 
 	csp := hostile.Get("Content-Security-Policy")
 	if len(hostile.Values("Content-Security-Policy")) != 1 {
@@ -520,8 +520,11 @@ func TestHostileUpstreamCSPCannotSurviveWidening(t *testing.T) {
 	if hostile.Get("Content-Security-Policy-Report-Only") != "" {
 		t.Fatalf("report-only CSP not deleted wholesale")
 	}
-	if !strings.Contains(csp, "'"+cspSHA256([]byte(authored))+"'") {
-		t.Fatalf("authored hash missing after wholesale replace: %q", csp)
+	if got := mustCSPDirective(t, csp, "script-src"); got != "'"+h.cspHash+"'" {
+		t.Fatalf("script-src after the wholesale replace = %q, want the bundle hash alone", got)
+	}
+	if strings.Contains(csp, cspSHA256([]byte(authored))) {
+		t.Fatalf("the revision's addScript body was authorised: %q", csp)
 	}
 }
 
@@ -615,8 +618,9 @@ func TestUpstreamShareServesProxiedDocument(t *testing.T) {
 
 // TestProxiedArtifactAppliesWholesaleCSP is INV-11/INV-12 on the PROXIED path,
 // which is the path that actually has a hostile upstream. The served CSP is
-// agnt's alone, script-src stays hash-only and gains the authored-revision
-// hashes, and none of the upstream's directives, cookies, or CORS grants survive.
+// agnt's alone, script-src is the bundle hash and nothing else (not even for a
+// revision carrying addScript), and none of the upstream's directives, cookies,
+// or CORS grants survive.
 func TestProxiedArtifactAppliesWholesaleCSP(t *testing.T) {
 	const authored = "window.__demo_variant=1;"
 	rev := authoredScriptRevision(authored)
@@ -651,8 +655,11 @@ func TestProxiedArtifactAppliesWholesaleCSP(t *testing.T) {
 	if strings.Contains(csp, "unsafe-eval") || strings.Contains(csp, "unsafe-hashes") {
 		t.Fatalf("public CSP admitted an unsafe-eval/unsafe-hashes source: %q", csp)
 	}
-	if !strings.Contains(csp, "'"+h.cspHash+"'") || !strings.Contains(csp, "'"+cspSHA256([]byte(authored))+"'") {
-		t.Fatalf("proxied CSP must pin bundle + authored hashes: %q", csp)
+	if len(scriptSrcSources) != 1 || scriptSrcSources[0] != "'"+h.cspHash+"'" {
+		t.Fatalf("proxied script-src must be the bundle hash alone, got %q", scriptSrcSources)
+	}
+	if strings.Contains(csp, cspSHA256([]byte(authored))) {
+		t.Fatalf("the revision's addScript body was authorised on the proxied path: %q", csp)
 	}
 	if w.Header().Get("Content-Security-Policy-Report-Only") != "" {
 		t.Fatalf("report-only CSP present on proxied response")
@@ -670,7 +677,7 @@ func TestProxiedArtifactAppliesWholesaleCSP(t *testing.T) {
 	}
 	// The upstream's inline script survives as BYTES (we pass the document
 	// through) but is not authorised: its hash is absent from script-src, which
-	// is the whole containment story now INV-6 is retired.
+	// is the whole containment story for markup now INV-6 is retired.
 	if h := cspSHA256([]byte("window.__evil=1")); strings.Contains(csp, h) {
 		t.Fatalf("upstream inline script hash was pinned: %q", csp)
 	}
@@ -771,7 +778,7 @@ func TestUpstreamFetchFailureIsLoudAndLeaksNothing(t *testing.T) {
 	// And the correlation handle a log IS allowed to carry is the hash prefix,
 	// never the token (INV-9).
 	scrubbed := publish.ScrubSharePath(sharePrefix + validToken)
-	if strings.Contains(scrubbed, validToken) || scrubbed != sharePrefix+publish.HashPrefix(validToken) {
+	if strings.Contains(scrubbed, validToken) || scrubbed != sharePrefix+hashPrefixOf(validToken) {
 		t.Fatalf("share path scrub is not hash[:8]: %q", scrubbed)
 	}
 }
@@ -1375,4 +1382,12 @@ func TestDemoIndicatorDoesNotWidenPublicCSP(t *testing.T) {
 		t.Fatalf("proxied CSP must be a single wholesale-set header, got %d", n)
 	}
 	assertPublicCSPUnchanged(t, up, proxied.Header().Get("Content-Security-Policy"), styleExtraUpstreamInline)
+}
+
+// hashPrefixOf is the first 8 hex characters of sha256(token) — the only
+// token-derived value a log may carry (INV-9). Computed here, independently of
+// the scrubber, so the assertion does not compare the scrubber with itself.
+func hashPrefixOf(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])[:8]
 }

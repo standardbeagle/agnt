@@ -100,7 +100,7 @@ window.addEventListener('unhandledrejection', function(event) {
 });
 ```
 
-These handlers send error data to the proxy via a WebSocket connection to `/__devtool_metrics` on the same host. The WebSocket reconnects automatically (up to 5 attempts) if the connection drops.
+These handlers send error data to the proxy via a WebSocket connection to `/__devtool_metrics` on the same host. The WebSocket reconnects automatically if the connection drops, with no attempt limit: the delay doubles from 1s (1s, 2s, 4s, ...) and is capped at 30s, and a reconnect is attempted immediately when the browser comes back online or the tab becomes visible again.
 
 **Stage 3: Storage.** The proxy's `TrafficLogger` stores errors in a circular buffer (1000 entries by default). Entries are typed -- `error`, `http`, `diagnostic`, `custom` -- and timestamped. The buffer overwrites the oldest entries when full, so recent errors are always available without unbounded memory growth.
 

@@ -78,6 +78,7 @@ func (n *namedTunnel) stop() {
 
 // startNamedTunnel opens a dedicated loopback ingress listener serving the
 // proxy's handler behind the Access guard, then points cloudflared at it.
+// handler is the proxy's mux WITHOUT the request-rate cap; it is applied here.
 //
 // The ingress is separate from the proxy's own listener on purpose: every
 // request that arrives through the tunnel passes the guard by construction,
@@ -88,6 +89,23 @@ func (n *namedTunnel) stop() {
 // Failures are reported as proxy diagnostics; the proxy keeps serving
 // locally without the tunnel.
 func (ps *ProxyServer) startNamedTunnel(ctx context.Context, handler http.Handler) {
+	setup := ps.namedTunnelSetup
+	name := setup.cfg.Tunnel.Hostname
+	handler = ps.namedTunnelIngressHandler(handler)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		ps.logNamedTunnel(DiagnosticError, "named_tunnel_failed",
+			fmt.Sprintf("named tunnel %s: opening ingress listener: %v", name, err))
+		return
+	}
+	ps.serveNamedTunnel(ctx, ln, handler)
+}
+
+// namedTunnelIngressHandler wraps the proxy's mux (without its request-rate
+// cap) in everything a request arriving through the named tunnel must pass:
+// the rate cap, then the Access guard, then the tunnelled mark.
+func (ps *ProxyServer) namedTunnelIngressHandler(handler http.Handler) http.Handler {
 	setup := ps.namedTunnelSetup
 	name := setup.cfg.Tunnel.Hostname
 
@@ -102,13 +120,17 @@ func (ps *ProxyServer) startNamedTunnel(ctx context.Context, handler http.Handle
 		ps.logNamedTunnel(DiagnosticWarning, "named_tunnel_unauthenticated",
 			fmt.Sprintf("named tunnel %s is public with no Access check (allow-unauthenticated)", name))
 	}
+	// The rate cap goes OUTSIDE the Access guard, so a refused request is
+	// counted too. Inside it, a flood of requests with no (or a forged) token
+	// cost a JWT parse and possibly an RSA verify each and never met the cap.
+	return ps.rateLimited(handler)
+}
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		ps.logNamedTunnel(DiagnosticError, "named_tunnel_failed",
-			fmt.Sprintf("named tunnel %s: opening ingress listener: %v", name, err))
-		return
-	}
+// serveNamedTunnel serves handler on the ingress listener and runs cloudflared
+// against it.
+func (ps *ProxyServer) serveNamedTunnel(ctx context.Context, ln net.Listener, handler http.Handler) {
+	setup := ps.namedTunnelSetup
+	name := setup.cfg.Tunnel.Hostname
 	caps := httpcaps.Streaming()
 	ingress := caps.Apply(&http.Server{
 		Handler:     handler,

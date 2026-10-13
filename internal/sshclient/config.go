@@ -40,6 +40,11 @@ type HostConfig struct {
 	// "bastion,jump2:2222" — comma-separated jump hosts, OpenSSH's own
 	// multi-hop syntax "[user@]host[:port]" per hop. Empty means no jump.
 	ProxyJump string
+	// Warnings lists ssh_config constructs this parser read past without
+	// applying (Include, Match, options placed before the first Host). The
+	// file may configure the host in a way this client does not see; Dial
+	// prints them.
+	Warnings []string
 }
 
 // hostBlock is one "Host <pattern>" section as parsed, prior to resolution
@@ -60,6 +65,24 @@ type hostBlock struct {
 // of scope per the minimal-code-ladder: this codebase needs a handful of
 // directives, not a general-purpose config engine.
 func ParseSSHConfig(r io.Reader) ([]hostBlock, error) {
+	blocks, _, err := parseSSHConfig(r)
+	return blocks, err
+}
+
+// parseSSHConfig is ParseSSHConfig plus the list of constructs it skipped.
+// OpenSSH would have applied each of them, so a skipped one can be the reason
+// a host resolves to the wrong address or user; they are reported, once per
+// kind, rather than dropped without a word.
+func parseSSHConfig(r io.Reader) ([]hostBlock, []string, error) {
+	var warnings []string
+	warned := map[string]bool{}
+	warn := func(kind, msg string) {
+		if !warned[kind] {
+			warned[kind] = true
+			warnings = append(warnings, msg)
+		}
+	}
+	inMatch := false
 	var blocks []hostBlock
 	var cur *hostBlock
 
@@ -74,7 +97,23 @@ func ParseSSHConfig(r io.Reader) ([]hostBlock, error) {
 			continue
 		}
 		lowerKey := strings.ToLower(key)
+		switch lowerKey {
+		case "include":
+			warn("include", fmt.Sprintf("ssh_config: Include %s is not followed; hosts defined in included files are not seen", val))
+			continue
+		case "match":
+			// A Match block's options must not leak into the Host block
+			// above it, so everything up to the next Host is skipped.
+			warn("match", "ssh_config: Match blocks are not supported and were skipped")
+			if cur != nil {
+				blocks = append(blocks, *cur)
+				cur = nil
+			}
+			inMatch = true
+			continue
+		}
 		if lowerKey == "host" {
+			inMatch = false
 			if cur != nil {
 				blocks = append(blocks, *cur)
 			}
@@ -86,8 +125,15 @@ func ParseSSHConfig(r io.Reader) ([]hostBlock, error) {
 			continue
 		}
 		if cur == nil {
-			// Directive before any Host block — not supported (no global
-			// defaults section in this minimal parser); ignore.
+			// Inside a skipped Match block, or before any Host block. The
+			// latter are OpenSSH's global defaults, which this minimal parser
+			// has no section for.
+			if !inMatch {
+				switch lowerKey {
+				case "hostname", "user", "port", "identityfile", "proxyjump":
+					warn("global", "ssh_config: options before the first Host block are not applied; move them under `Host *`")
+				}
+			}
 			continue
 		}
 		switch lowerKey {
@@ -103,9 +149,9 @@ func ParseSSHConfig(r io.Reader) ([]hostBlock, error) {
 		blocks = append(blocks, *cur)
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("sshclient: reading ssh_config: %w", err)
+		return nil, nil, fmt.Errorf("sshclient: reading ssh_config: %w", err)
 	}
-	return blocks, nil
+	return blocks, warnings, nil
 }
 
 // splitDirective splits a "Key value" or "Key=value" ssh_config line into
@@ -161,12 +207,12 @@ func ResolveHost(configPath, alias string) (HostConfig, error) {
 // ResolveHostFromReader is ResolveHost taking an io.Reader directly, for
 // testability without touching the filesystem.
 func ResolveHostFromReader(r io.Reader, alias string) (HostConfig, error) {
-	blocks, err := ParseSSHConfig(r)
+	blocks, warnings, err := parseSSHConfig(r)
 	if err != nil {
 		return HostConfig{}, err
 	}
 
-	cfg := HostConfig{Host: alias, Port: 22}
+	cfg := HostConfig{Host: alias, Port: 22, Warnings: warnings}
 	for _, b := range blocks {
 		if !matchesAnyPattern(b.patterns, alias) {
 			continue

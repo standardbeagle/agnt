@@ -3,11 +3,25 @@
 package platform
 
 import (
+	"errors"
 	"fmt"
+	"sync"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
+
+// ErrForeignJobHandle is returned by KillSessionJobObject for a handle value
+// this process did not get from CreateSessionJobObject.
+var ErrForeignJobHandle = errors.New("job handle was not created by this process")
+
+// ownedSessionJobs records the job handles this process created and still
+// holds. A Windows handle value is an index into ONE process's handle table:
+// the same number in another process names an unrelated object (a pipe, a
+// file, another job). KillSessionJobObject therefore acts only on values found
+// here, so a number that arrived over IPC can never terminate or close
+// something this process owns under the same index.
+var ownedSessionJobs sync.Map // windows.Handle -> struct{}
 
 // CreateSessionJobObject creates a Windows Job Object configured with
 // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE. All processes subsequently assigned
@@ -22,15 +36,11 @@ import (
 // including grandchild dev servers the coding agent backgrounded via a
 // non-interactive shell.
 //
-// The returned handle is an opaque kernel handle. Callers that want to
-// ship the handle across processes (e.g. from `agnt run` to the daemon
-// via the SESSION REGISTER verb) MUST convert it with
-// uint64(handle) and pass it as SessionJobHandle in
-// SessionRegisterConfig. Handle values are per-process on Windows —
-// shipping it to a different process is a best-effort hint, not a
-// guarantee. The authoritative kill still happens from within the
-// original process via the JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE flag when
-// the handle is finally closed.
+// The returned handle is valid in THIS process only. Never send its value
+// to another process: there the same number names an unrelated object.
+// The kill happens here, either through KillSessionJobObject or through
+// JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE when the handle is released
+// (ReleaseSessionJobObject, or process exit).
 func CreateSessionJobObject() (windows.Handle, error) {
 	job, err := windows.CreateJobObject(nil, nil)
 	if err != nil {
@@ -56,7 +66,19 @@ func CreateSessionJobObject() (windows.Handle, error) {
 		return 0, fmt.Errorf("SetInformationJobObject: %w", err)
 	}
 
+	ownedSessionJobs.Store(job, struct{}{})
 	return job, nil
+}
+
+// ReleaseSessionJobObject closes a job handle from CreateSessionJobObject
+// without an explicit terminate; JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE still
+// ends the assigned processes once the last handle is gone. A handle this
+// process did not create (or already released) is left alone.
+func ReleaseSessionJobObject(job windows.Handle) error {
+	if _, owned := ownedSessionJobs.LoadAndDelete(job); !owned {
+		return nil
+	}
+	return windows.CloseHandle(job)
 }
 
 // AssignProcessToSessionJob assigns the given process handle to a job
@@ -91,20 +113,23 @@ func AssignPIDToSessionJob(job windows.Handle, pid int) error {
 }
 
 // KillSessionJobObject terminates every process in the job with exit
-// code 1 via TerminateJobObject, then closes the handle. Idempotent:
-// passing 0 is a no-op; a handle that is already closed returns an
-// error from TerminateJobObject which we still surface to the caller
-// so logs record it, but CloseHandle is still attempted.
+// code 1 via TerminateJobObject, then closes the handle. Passing 0 is a
+// no-op. A second call for the same handle returns ErrForeignJobHandle,
+// as does any value this process did not get from CreateSessionJobObject:
+// such a value is never terminated and never closed (see ownedSessionJobs).
 //
-// The handle argument is typed as uintptr so cross-platform callers
-// (e.g. internal/daemon) can invoke this without importing
-// golang.org/x/sys/windows. The stub in sessionjob_other.go has the
-// same signature and does nothing on non-Windows.
+// The handle argument is typed as uintptr so cross-platform callers can
+// invoke this without importing golang.org/x/sys/windows. The stub in
+// sessionjob_other.go has the same signature and does nothing on
+// non-Windows.
 func KillSessionJobObject(handle uintptr) error {
 	if handle == 0 {
 		return nil
 	}
 	h := windows.Handle(handle)
+	if _, owned := ownedSessionJobs.LoadAndDelete(h); !owned {
+		return fmt.Errorf("job 0x%x: %w", handle, ErrForeignJobHandle)
+	}
 
 	// TerminateJobObject with exit code 1 kills every assigned process
 	// (and their descendants) immediately. This is the equivalent of

@@ -1,5 +1,10 @@
 // Session Management API for DevTool
-// Allows browser-based interaction with agnt run sessions
+// Allows browser-based interaction with agnt run sessions.
+//
+// Scoped by the server to the project this proxy belongs to: a session code or
+// task id from another project is answered "not found", and with no session
+// running for the project every call rejects. Refused on an untrusted
+// connection (for example one that arrived through an unauthenticated tunnel).
 
 (function() {
   'use strict';
@@ -76,8 +81,11 @@
   // Session API
   var session = {
     /**
-     * List active sessions
-     * @param {boolean} [global=false] - If true, list sessions from all directories
+     * List the sessions running in this proxy's project. The server pins the
+     * scope to that project; the page cannot widen it.
+     * @param {boolean} [global=false] - Kept for callers that pass it. `true`
+     *   is refused by the server (the promise rejects): there is no
+     *   cross-project listing from the browser.
      * @returns {Promise<Object>} - Sessions list with count
      */
     list: function(global) {
@@ -137,8 +145,9 @@
     },
 
     /**
-     * List scheduled tasks
-     * @param {boolean} [global=false] - If true, list tasks from all directories
+     * List the scheduled tasks of this proxy's project.
+     * @param {boolean} [global=false] - Kept for callers that pass it. `true`
+     *   is refused by the server (the promise rejects).
      * @returns {Promise<Object>} - Tasks list with count
      */
     tasks: function(global) {

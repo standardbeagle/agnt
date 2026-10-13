@@ -170,6 +170,17 @@ func (r *InputRouter) EndModalCapture() {
 	r.modalInput.Store(nil)
 }
 
+// SetInput sets the reader Run consumes instead of os.Stdin. Call before Run.
+//
+// Run's producer goroutine blocks in Read and is not interrupted by Stop, so a
+// router reading os.Stdin directly leaves a reader behind that keeps taking
+// keystrokes after the router is gone. A caller that starts more than one
+// router in a process (the first-run setup → relaunch flow) must pass a reader
+// it can end — one whose Read returns once the router is stopped.
+func (r *InputRouter) SetInput(in io.Reader) {
+	r.input = in
+}
+
 // NewInputRouter creates a new InputRouter.
 func NewInputRouter(ptmx PtyReadWriter, overlay *Overlay) *InputRouter {
 	return &InputRouter{

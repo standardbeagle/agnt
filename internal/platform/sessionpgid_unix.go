@@ -169,9 +169,11 @@ func waitForPGIDDrain(pgid, killSelfPID int, budget time.Duration) error {
 // empty after SIGKILL), orphan scanning (to find sessions whose leaders
 // are gone but children still live), and tests.
 //
-// On WSL2 the same /proc layout applies, so no special-casing is needed.
-// On platforms without /proc this falls back to best-effort:
-// Getpgid(pid) on every pid in Scan() output.
+// The PIDs come from Scan(): /proc on Linux and WSL2, sysctl kern.proc.all
+// on macOS. Each PID's group is read from /proc/<pid>/stat where that
+// exists and from Getpgid otherwise (macOS). On a Unix with no Scan
+// implementation (process_scan_other.go) the enumeration fails and this
+// returns nil, the "failed" value described below.
 //
 // Nil means the enumeration FAILED. A live group with no members returns a
 // non-nil, zero-length slice. That distinction is load-bearing and tested

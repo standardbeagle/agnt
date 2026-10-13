@@ -18,8 +18,10 @@ import (
 // handing this list back on a scope failure never crosses the per-session
 // isolation boundary (numbered contract 1, .claude/rules/daemon-architecture.md).
 //
-// The MCP daemon connection is not session-bound, so a caller with no attached
-// session legitimately owns every local session; the list is therefore the
+// A connection is session-bound only once it has sent SESSION REGISTER or
+// SESSION ATTACH (the MCP tools attach by cwd on first use, when a session
+// exists there). A caller that reaches this point has no bound session and
+// legitimately owns every local session; the list is therefore the
 // global active set rather than a project-scoped slice — there is no project to
 // scope to at the point this is called.
 func (d *Daemon) sessionCandidates() []protocol.SessionCandidate {

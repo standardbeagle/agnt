@@ -143,7 +143,14 @@ func runSSH(cmd *cobra.Command, args []string) error {
 			forwarding.renderStatus()
 		},
 		Dial: func(ctx context.Context) (*sshclient.Client, error) {
-			return sshclient.Dial(host, "", "", defaultUser, prompter)
+			// ctx is the reconnect context: Ctrl-C during RECONNECTING
+			// cancels it, and DialContext closes the connection in progress.
+			// The deadline bounds one unattended attempt, so a host that
+			// accepts TCP and then stalls costs one backoff step, not the
+			// session.
+			dialCtx, cancel := context.WithTimeout(ctx, sshReconnectDialTimeout)
+			defer cancel()
+			return sshclient.DialContext(dialCtx, host, "", "", defaultUser, prompter)
 		},
 		Attach: func(ctx context.Context, c *sshclient.Client) (*sshclient.PTYSession, error) {
 			return reattachRemoteSession(host, c, attachName, remotePath, size, allowCreate)
@@ -152,6 +159,10 @@ func runSSH(cmd *cobra.Command, args []string) error {
 
 	return runSSHRelayLoop(cmd.Context(), host, remotePath, attachName, client, session, forwarding, control, reconnector)
 }
+
+// sshReconnectDialTimeout bounds one reconnect attempt end to end: TCP
+// connect, every ProxyJump hop, key exchange and authentication.
+const sshReconnectDialTimeout = 45 * time.Second
 
 func localSSHUser(getenv func(string) string) string {
 	if user := getenv("USER"); user != "" {

@@ -4,13 +4,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
+	"time"
 
+	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
 
 	"github.com/standardbeagle/agnt/internal/protocol"
 	hubpkg "github.com/standardbeagle/go-cli-server/hub"
 	goprocess "github.com/standardbeagle/go-cli-server/process"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
+	"github.com/standardbeagle/go-cli-server/script"
 )
 
 func (d *Daemon) registerAgntCommands() error {
@@ -56,14 +60,14 @@ func (d *Daemon) registerAgntCommands() error {
 		return fmt.Errorf("PROC command is not registered")
 	}
 
-	// RUN/RUN-JSON commands customize the shared hub's default handlers to add
-	// atomic auto-restart registration. Hub's handler returns "id" but tools
-	// expect "process_id", and auto-restart must be registered before the
-	// response so there's no race with fast-crashing processes.
-	if err := replaceDefault("RUN", "Start a process with auto-restart", d.hubHandleRun); err != nil {
+	// RUN/RUN-JSON commands replace the shared hub's default handlers: agnt
+	// starts the process through the same path as PROC RUN's inline mode
+	// (see hubHandleRun). RUN never registers auto-restart — that is
+	// `auto-restart` in .agnt.kdl or PROC AUTORESTART.
+	if err := replaceDefault("RUN", "Start a process", d.hubHandleRun); err != nil {
 		return err
 	}
-	if err := replaceDefault("RUN-JSON", "Start a process with auto-restart (JSON config)", d.hubHandleRun); err != nil {
+	if err := replaceDefault("RUN-JSON", "Start a process (JSON config)", d.hubHandleRun); err != nil {
 		return err
 	}
 
@@ -86,9 +90,17 @@ func (d *Daemon) registerAgntCommands() error {
 				return err
 			}
 		}
+		// Take the default handler too. Every sub-verb above is agnt's own, so
+		// what is left for the shared hub's default is the unknown and the
+		// missing action, which it answers with a structured error sent as a
+		// JSON (success) frame. hubHandleProc refuses both through
+		// writeStructuredErr, as an ERR frame the client sees as an error.
+		if err := d.hub.ReplaceCommandHandler("PROC", d.hubHandleProc); err != nil {
+			return fmt.Errorf("replace PROC default handler: %w", err)
+		}
 	}
 
-	// DETECT command
+	// SCOPE command
 	if err := register(hubpkg.CommandDefinition{
 		Verb:        protocol.VerbScope,
 		SubVerbs:    []string{protocol.SubVerbResolve},
@@ -327,7 +339,7 @@ func (d *Daemon) registerAgntCommands() error {
 	// RESTART-ALL command
 	if err := register(hubpkg.CommandDefinition{
 		Verb:        "RESTART-ALL",
-		Description: "Restart all processes and proxies using .agnt.kdl config",
+		Description: "Restart running processes and proxies in place, keeping their launch settings",
 		Handler:     d.hubHandleRestartAll,
 	}); err != nil {
 		return err
@@ -378,13 +390,6 @@ func containsHubSubVerb(values []string, needle string) bool {
 	return false
 }
 
-// agntRunConfig extends the hub's RunConfig with agnt-specific fields.
-// Extra fields are ignored by the hub's JSON unmarshaling but parsed here.
-type agntRunConfig struct {
-	hubproto.RunConfig
-	NoAutoRestart bool `json:"no_auto_restart,omitempty"`
-}
-
 // Run modes on the wire (RunConfig.Mode, PROC RUN `mode`). Empty means background.
 const (
 	runModeBackground    = "background"
@@ -431,79 +436,228 @@ func awaitForegroundRun(ctx context.Context, proc *goprocess.ManagedProcess, mod
 	return nil
 }
 
-// hubHandleRun handles RUN and RUN-JSON commands (overrides Hub's built-in).
-// Returns "process_id" (matching what daemon_tools.go expects) and honours
-// RunConfig.Mode: background returns once the process is registered, the
-// foreground modes return when it exits.
+// runLaunch marks a process started by the top-level RUN verb. Read by
+// startScriptWithRetry (stdin, on every launch of the process including a
+// restart) and by config reconcile (a RUN process is not declared in
+// .agnt.kdl, so the config has no opinion on whether it should be running).
+// Not user-visible. Stored by hubHandleRun, retired with scriptConfigs.
+type runLaunch struct {
+	// stdin is RunConfig.EnableStdin: the process gets a stdin pipe that
+	// PROC STDIN writes to.
+	stdin bool
+}
 
+// runStdinEnabled reports whether processID was started by RUN with a stdin
+// pipe requested.
+func (d *Daemon) runStdinEnabled(processID string) bool {
+	if v, ok := d.runLaunches.Load(processID); ok {
+		return v.(runLaunch).stdin
+	}
+	return false
+}
+
+// runProcessName turns the id a RUN caller supplied into the script name the
+// process is registered under. The caller normally sends a short name ("dev",
+// "proc-12345"); a caller that sends back the derived id an earlier RUN
+// returned for this project means the same process, so the project prefix is
+// dropped rather than nested. An empty id gets a generated name.
+func runProcessName(id, projectPath string) string {
+	if id == "" {
+		return fmt.Sprintf("proc-%d", time.Now().UnixNano()%100000)
+	}
+	return strings.TrimPrefix(id, makeProcessID(projectPath, ""))
+}
+
+// runReply is the RUN reply for proc. "id" and "process_id" are the process's
+// derived id, usable verbatim in every PROC verb; "name" is the short name it
+// was started under, which resolves from the same project.
+func runReply(proc *goprocess.ManagedProcess, name string, reused, cleaned bool) map[string]interface{} {
+	resp := map[string]interface{}{
+		"id":         proc.ID,
+		"process_id": proc.ID,
+		"name":       name,
+		"pid":        proc.PID(),
+		"state":      proc.State().String(),
+		"reused":     reused,
+		"cleaned":    cleaned,
+		"command":    proc.Command,
+	}
+	if proc.IsDone() {
+		resp["exit_code"] = proc.ExitCode()
+	}
+	return resp
+}
+
+// hubHandleRun handles RUN and RUN-JSON commands (overrides Hub's built-in).
+//
+// RUN is PROC RUN's inline mode for an ad-hoc command line: the process is
+// started through StartProcessWithDeps → StartScriptExplicit → StartScript,
+// so it gets a script-registry entry, pre-flight port cleanup and EADDRINUSE
+// recovery, URL detection, an incident owner, and session cleanup like every
+// other managed process. Its id is therefore the derived
+// makeProcessID(project, <id>) form, not the bare id the caller sent.
+//
+// What RUN keeps of its own:
+//
+//   - reuse: an id that is already running is returned as-is with
+//     reused:true — no second start, startup watch or exit watcher.
+//   - background mode replies as soon as the process exists; the startup
+//     watch (and any EADDRINUSE retry) continues on the daemon's context.
+//     An early exit is reported by the exit watcher, not by this reply.
+//   - enable_stdin (see runLaunch).
+//   - the foreground modes reply when the process exits, with exit_code,
+//     state, runtime and, for foreground-raw, the captured output.
 func (d *Daemon) hubHandleRun(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	cfg, err := unmarshalCommand[agntRunConfig](cmd)
+	// Fields this handler does not know (older clients send no_auto_restart;
+	// RUN never auto-restarts, so there is nothing for it to turn off) are
+	// ignored by the decoder.
+	cfg, err := unmarshalCommand[hubproto.RunConfig](cmd)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid JSON config")
 	}
 
-	if cfg.Command == "" && cfg.ScriptName == "" {
-		return conn.WriteMissingParam("RUN", "command", "command or script_name required")
+	// RUN launches a command line. It does not resolve script names — the
+	// client does (or uses PROC RUN from_config for a script in .agnt.kdl) —
+	// so a script_name with no command has nothing to start.
+	if cfg.Command == "" {
+		// A plain ERR, not conn.WriteMissingParam: the hub sends that one as a
+		// JSON (success) frame, so the caller would read a refused start as a
+		// successful one (see writeStructuredErr).
+		return conn.WriteErr(hubproto.ErrMissingParam, "RUN: command required (RUN does not resolve script_name; use PROC RUN from_config for a script declared in .agnt.kdl)")
 	}
 	if !validRunMode(cfg.Mode) {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("unknown mode %q, valid: background, foreground, foreground-raw", cfg.Mode))
 	}
 
-	// Store the project key in the daemon's normalized form (lowercased on
-	// Windows). Session cleanup stops processes by exact ProjectPath match
-	// against the session's normalized path, so a raw client casing would
-	// leave the process running after its last session ends.
+	// A managed process belongs to a project: the registry, session cleanup
+	// and the id itself are keyed by it. Explicit path, else the caller's
+	// session.
 	projectPath := cfg.Path
-	if projectPath != "" {
-		projectPath = normalizePath(projectPath)
+	if projectPath == "" {
+		projectPath = d.getSessionProjectPath(conn)
 	}
-
-	procCfg := goprocess.ProcessConfig{
-		ID:          cfg.ID,
-		ProjectPath: projectPath,
-		Command:     cfg.Command,
-		Args:        cfg.Args,
-		// Store-held secrets are consumed by NAME via env injection at spawn.
-		Env:         d.injectSecretEnv(cfg.Path, cfg.Env),
-		EnableStdin: cfg.EnableStdin,
+	if projectPath == "" {
+		return conn.WriteErr(hubproto.ErrMissingParam, "RUN: path required (or send it from a connection bound to a session)")
 	}
+	projectPath = normalizePath(projectPath)
 
-	result, err := d.hub.ProcessManager().StartOrReuse(ctx, procCfg)
-	if err != nil {
-		return conn.WriteInternalErr(err.Error())
-	}
+	name := runProcessName(cfg.ID, projectPath)
+	processID := makeProcessID(projectPath, name)
+	pm := d.hub.ProcessManager()
 
-	proc := result.Process
-
-	// Register process-death watcher so proc status / get_incidents surface
-	// the exit when this process dies. Skip if we reused an existing
-	// process — it already has a watcher from the original start.
-	if !result.Reused {
-		d.watchProcessExit(proc)
-	}
-
-	// Auto-restart is only active when explicitly enabled via .agnt.kdl
-	// `auto-restart true` or PROC AUTORESTART ENABLE. No longer auto-registered
-	// for background processes — users restart manually from the overlay.
-
-	response := map[string]interface{}{
-		"id":         proc.ID,
-		"process_id": proc.ID,
-		"pid":        proc.PID(),
-		"state":      proc.State().String(),
-		"reused":     result.Reused,
-		"cleaned":    result.Cleaned,
-		"command":    proc.Command,
-	}
-
-	if isForegroundRunMode(cfg.Mode) {
-		if err := awaitForegroundRun(ctx, proc, cfg.Mode, response); err != nil {
-			return conn.WriteErr(hubproto.ErrInternal, err.Error())
+	// Reuse: a live process under this id is the answer. Nothing is started,
+	// so nothing is watched twice.
+	prev, _ := pm.GetByPath(processID, projectPath)
+	if prev != nil {
+		if state := prev.State(); state == goprocess.StateRunning || state == goprocess.StateStarting {
+			data, _ := json.Marshal(runReply(prev, name, true, false))
+			return conn.WriteJSON(data)
 		}
 	}
 
-	data, _ := json.Marshal(response)
-	return conn.WriteJSON(data)
+	// The registry is a cache. An entry still marked running with no live
+	// process behind it would make StartScriptExplicit skip the launch as
+	// "already running".
+	if entry, ok := d.scriptRegistry.Get(name, projectPath); ok {
+		if state := entry.State(); state == script.StateRunning || state == script.StateStarting {
+			entry.CompareAndSwapState(state, script.StateStopped)
+		}
+	}
+
+	scriptCfg := &config.ScriptConfig{
+		Command: cfg.Command,
+		Args:    cfg.Args,
+		Env:     envSliceToMap(cfg.Env),
+	}
+	d.runLaunches.Store(processID, runLaunch{stdin: cfg.EnableStdin})
+
+	// startedProc returns the process this RUN spawned: one registered under
+	// the id that is not the stopped instance found above, and that got as far
+	// as having a PID. The ProcessManager registers a process before it
+	// spawns it, so "registered" alone is too early to reply on, and a spawn
+	// that failed (command not found) never gets a PID at all.
+	startedProc := func() *goprocess.ManagedProcess {
+		cur, getErr := pm.GetByPath(processID, projectPath)
+		if getErr != nil || cur == prev || cur.PID() <= 0 {
+			return nil
+		}
+		return cur
+	}
+
+	if isForegroundRunMode(cfg.Mode) {
+		result := d.StartProcessWithDeps(withAutostartOwner(ctx, conn.SessionCode()), name, scriptCfg, projectPath, nil, 0)
+		proc := startedProc()
+		// StartScript reports any exit inside its startup window as a failed
+		// start. A foreground caller asked for exactly that exit: it gets the
+		// process's result, not the startup-window error.
+		if proc == nil || (result.Err != nil && !proc.IsDone()) {
+			if result.Err != nil {
+				return conn.WriteErr(hubproto.ErrInternal, result.Err.Error())
+			}
+			return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("process %q did not start", processID))
+		}
+		d.settleRunEntry(name, projectPath, proc)
+		resp := runReply(proc, name, false, prev != nil)
+		if err := awaitForegroundRun(ctx, proc, cfg.Mode, resp); err != nil {
+			return conn.WriteErr(hubproto.ErrInternal, err.Error())
+		}
+		data, _ := json.Marshal(resp)
+		return conn.WriteJSON(data)
+	}
+
+	// Background: the start runs on the daemon's context so the startup watch
+	// and EADDRINUSE recovery outlive this request, and the reply goes out as
+	// soon as the process exists.
+	done := make(chan error, 1)
+	launchCtx := withAutostartOwner(d.ctx, conn.SessionCode())
+	if !d.goTracked(func() {
+		result := d.StartProcessWithDeps(launchCtx, name, scriptCfg, projectPath, nil, 0)
+		if proc := startedProc(); proc != nil {
+			d.settleRunEntry(name, projectPath, proc)
+		}
+		done <- result.Err
+	}) {
+		return conn.WriteErr(hubproto.ErrShuttingDown, "daemon is shutting down")
+	}
+
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if proc := startedProc(); proc != nil {
+			data, _ := json.Marshal(runReply(proc, name, false, prev != nil))
+			return conn.WriteJSON(data)
+		}
+		select {
+		case startErr := <-done:
+			// The start finished. A process that exists — even one that has
+			// already exited — is a start; its fate is reported by the exit
+			// watcher. No process at all is a failed start.
+			if proc := startedProc(); proc != nil {
+				data, _ := json.Marshal(runReply(proc, name, false, prev != nil))
+				return conn.WriteJSON(data)
+			}
+			if startErr == nil {
+				startErr = fmt.Errorf("process %q did not start", processID)
+			}
+			return conn.WriteErr(hubproto.ErrInternal, startErr.Error())
+		case <-ctx.Done():
+			return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("stopped waiting for process %q to start: %v", processID, ctx.Err()))
+		case <-ticker.C:
+		}
+	}
+}
+
+// settleRunEntry corrects the script-registry entry of a RUN process that ran
+// to completion inside the startup watch. StartScriptExplicit marks any such
+// exit as a failed start; a one-shot command that exited 0 did not fail, and
+// the registry must not say it did.
+func (d *Daemon) settleRunEntry(name, projectPath string, proc *goprocess.ManagedProcess) {
+	if !proc.IsDone() || proc.ExitCode() != 0 {
+		return
+	}
+	if entry, ok := d.scriptRegistry.Get(name, projectPath); ok {
+		entry.CompareAndSwapState(script.StateFailed, script.StateStopped)
+	}
 }
 
 // hubHandleProc handles the PROC command (overrides Hub's built-in).

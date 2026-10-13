@@ -5,7 +5,6 @@ package browser
 import (
 	"os"
 	"path/filepath"
-	"sort"
 )
 
 // platformDiscoverer implements Discoverer for Windows.
@@ -68,13 +67,9 @@ func findPlaywrightChromium() string {
 	if localAppData == "" {
 		return ""
 	}
-	pattern := filepath.Join(localAppData, "ms-playwright", "chromium-*", "chrome-win", "chrome.exe")
-	matches, err := filepath.Glob(pattern)
-	if err != nil || len(matches) == 0 {
-		return ""
-	}
-	sort.Strings(matches)
-	return matches[len(matches)-1]
+	return newestPlaywrightChromium(
+		filepath.Join(localAppData, "ms-playwright", "chromium-*", "chrome-win*", "chrome.exe"),
+	)
 }
 
 // fileExists checks if a file exists.

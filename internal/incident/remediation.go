@@ -108,23 +108,13 @@ var routes = map[Source]route{
 		skill:    "kill-dev-processes",
 		context:  []string{"process_id"},
 	},
-	SourcePortConflict: {
-		primary:  toolCall{"proc", map[string]any{"action": "cleanup_port"}},
-		fallback: toolCall{"daemon", map[string]any{"action": "doctor"}},
-		skill:    "daemon-health-check",
-		context:  []string{"port"},
-	},
-	SourceShutdown: {
-		primary:  toolCall{"daemon", map[string]any{"action": "status"}},
-		fallback: toolCall{"daemon", map[string]any{"action": "startup_log"}},
-		skill:    "daemon-debug",
-	},
-	SourceHookStopFail: {
-		primary: toolCall{"get_incidents", map[string]any{
-			"severity": []string{"error", "critical"},
-			"since":    "5m",
-		}},
-		skill: "daemon-debug",
+	SourceExternal: {
+		// Reported from outside agnt (error_queue): there is no agnt-side
+		// resource to inspect, so the next step is the full reported text.
+		// The usual follow-up is reproducing the failure locally, which is the
+		// process skill's ground.
+		primary: toolCall{"get_incidents", map[string]any{"detail": "full"}},
+		skill:   "agnt-process-proxy",
 	},
 }
 

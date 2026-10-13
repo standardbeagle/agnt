@@ -158,6 +158,10 @@ func (b *MPSCBus) AddSession(sessionID string, mcpNotify MCPNotifyFn, channelNot
 		MCPNotifications: mcpNotify != nil,
 		ChannelEnabled:   channelNotify != nil,
 		PTYInjection:     ptyInject != nil,
+		// The digest carries each top incident's (truncated) summary so a
+		// transport that can show it — the channel — tells the agent what
+		// broke, not only how many things did.
+		IncludeSummary: true,
 	}
 	var pinger *PingEmitter
 	if mcpNotify != nil || channelNotify != nil || ptyInject != nil {

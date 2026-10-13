@@ -12,38 +12,65 @@ func countOccurrences(haystack, needle string) int {
 }
 
 // TestConnectionStateNotifiedOnEveryEdge guards the defect that made the
-// indicator status dot render grey on a live connection: core.js installs two
-// WebSocket wirings (the plain `connect` and `connectWithDiagnostics`, which
-// replaces it at init), and only the plain one fanned out the connected edge.
-// The handler that actually runs in production notified nobody, so the dot
-// kept whatever colour it had at creation time.
+// indicator status dot render grey on a live connection: core.js used to
+// install two WebSocket wirings (a plain `connect` and a diagnostics variant
+// that replaced it at init), and only the dead one fanned out the connected
+// edge. There is now exactly one wiring, so there is exactly one place for
+// that to go wrong.
 //
-// Every open/close/error handler in both wirings must call
-// notifyConnectionState().
+// Every open/close/error handler must call notifyConnectionState().
 func TestConnectionStateNotifiedOnEveryEdge(t *testing.T) {
 	if !strings.Contains(coreJS, "function notifyConnectionState()") {
 		t.Fatal("core.js must define notifyConnectionState()")
 	}
 
-	// Two wirings x three edges (open, close, error) = six notify sites.
-	const wantNotifies = 6
-	if got := countOccurrences(coreJS, "notifyConnectionState();"); got != wantNotifies {
-		t.Errorf("notifyConnectionState() called at %d sites, want %d (open/close/error in both connect() and connectWithDiagnostics())", got, wantNotifies)
+	if got := countOccurrences(coreJS, "function connect()"); got != 1 {
+		t.Fatalf("core.js defines connect() %d times, want exactly 1 wiring", got)
+	}
+	if strings.Contains(coreJS, "connectWithDiagnostics") {
+		t.Error("core.js must not reintroduce a second WebSocket wiring (connectWithDiagnostics)")
 	}
 
-	// The diagnostics wiring is the one installed at init (`connect =
-	// connectWithDiagnostics`), so assert its handlers specifically rather
-	// than trusting the aggregate count.
-	diagIdx := strings.Index(coreJS, "function connectWithDiagnostics()")
-	if diagIdx < 0 {
-		t.Fatal("connectWithDiagnostics not found in core.js")
+	// One wiring x three edges (open, close, error) = three notify sites.
+	const wantNotifies = 3
+	if got := countOccurrences(coreJS, "notifyConnectionState();"); got != wantNotifies {
+		t.Errorf("notifyConnectionState() called at %d sites, want %d (open/close/error in connect())", got, wantNotifies)
 	}
-	diagBody := coreJS[diagIdx:]
-	if got := countOccurrences(diagBody, "notifyConnectionState();"); got < 3 {
-		t.Errorf("connectWithDiagnostics notifies on %d edges, want 3 (open, close, error)", got)
+}
+
+// TestReconnectHasNoAttemptLimit is the always-on source guard for the
+// reconnect contract; the behaviour (backoff schedule, stale-socket close
+// ignored, online/visibility re-arm) is proven in the JS tier
+// (jstest/core-transport.test.js).
+func TestReconnectHasNoAttemptLimit(t *testing.T) {
+	if strings.Contains(coreJS, "MAX_RECONNECT_ATTEMPTS") {
+		t.Error("core.js must not cap reconnect attempts: an outage longer than the budget strands the page until reload")
 	}
-	if !strings.Contains(coreJS, "connect = connectWithDiagnostics;") {
-		t.Error("core.js is expected to install connectWithDiagnostics as the live connect(); update this test if that changes")
+	for _, want := range []string{
+		"RECONNECT_MAX_MS",
+		"if (sock !== ws) return;",
+		"addEventListener('online'",
+		"addEventListener('visibilitychange'",
+	} {
+		if !strings.Contains(coreJS, want) {
+			t.Errorf("core.js missing %q", want)
+		}
+	}
+}
+
+// TestTransportDiagnosticsHasItsOwnGlobal pins the split of the two
+// diagnostics APIs: core.js (transport history) must not export onto the
+// global diagnostics.js (CSS visual debugging) owns, or one overwrites the
+// other wherever both modules load.
+func TestTransportDiagnosticsHasItsOwnGlobal(t *testing.T) {
+	if strings.Contains(coreJS, "window.__devtool_diagnostics = ") || strings.Contains(coreJS, "!window.__devtool_diagnostics") {
+		t.Error("core.js must export transport diagnostics as window.__devtool_transport_diag, not window.__devtool_diagnostics")
+	}
+	if !strings.Contains(coreJS, "window.__devtool_transport_diag = {") {
+		t.Error("core.js must export window.__devtool_transport_diag")
+	}
+	if !strings.Contains(diagnosticsJS, "window.__devtool_diagnostics = {") {
+		t.Error("diagnostics.js is expected to own window.__devtool_diagnostics")
 	}
 }
 

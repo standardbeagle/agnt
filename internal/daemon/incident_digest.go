@@ -26,6 +26,11 @@ func (d *Daemon) broadcastIncidentDigest(level, projectPath string, payload inci
 		Custom: &proxy.CustomLog{
 			Level:   level,
 			Message: incident.CompactDigestText(payload),
+			// The structured ping rides along for consumers that can render
+			// more than the one-line text: with channel mode on, the MCP
+			// process delivers the digest as a channel event and lists the top
+			// incidents from this.
+			Data: map[string]interface{}{incident.DigestPayloadKey: payload},
 		},
 	}
 	// Stamp the digest with the owning session's project so project-scoped
@@ -98,8 +103,12 @@ func (d *Daemon) incidentSinkCallbacks(sessionCode string) (incident.MCPNotifyFn
 		}
 		return d.sendMessageToOverlay(s.OverlayPath, line)
 	}
-	// Top-level `channel` config drives MCP event forwarding, not incident
-	// pings. There is no production claude/channel callback in the daemon, and
-	// alerts.push deliberately exposes no inert channel bit.
+	// There is no daemon-side claude/channel callback: a channel notification
+	// can only be sent by the MCP process that owns the agent's connection. The
+	// digest this mcpNotify broadcasts is what that process delivers — as a
+	// channel event when channel mode is on, as an MCP log notification
+	// otherwise (tools.ForwardIncidentDigest) — so both transports sit behind
+	// the same pause / alerts.push gate above, and alerts.push needs no
+	// separate channel bit.
 	return mcpNotify, nil, ptyInject
 }

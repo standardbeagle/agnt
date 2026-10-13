@@ -1,11 +1,13 @@
 package proxy
 
 import (
-	"html"
+	"bytes"
 	"net/url"
 	"regexp"
 	"strconv"
 	"strings"
+
+	xhtml "golang.org/x/net/html"
 
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/publish"
@@ -55,20 +57,24 @@ const (
 	maxSubresourceDepth = 2
 )
 
-// Tag/attribute matchers. These are deliberately narrow: the rewriter replaces
-// an attribute VALUE with a percent-encoded same-origin path and never inserts
+// Tag matchers. These are deliberately narrow: the rewriter replaces an
+// attribute VALUE with a percent-encoded same-origin path and never inserts
 // markup, so the worst case of a mis-parse is a reference left un-rewritten
-// (today's behaviour) rather than injected content. A full HTML parse over
-// hostile input would be strictly more parser surface for that same outcome
-// (spec §3.3's reasoning, applied to the reference rewriter).
+// rather than injected content.
+//
+// WHICH tag to look at is a regexp; the attributes INSIDE a matched tag are read
+// by the x/net/html tokenizer (rewriteTagAttr). Two defects of the earlier
+// attribute regexps are why: `\bsrc\s*=` also matched data-src (and `\bhref`
+// data-href), spending the per-document reference cap on attributes no browser
+// loads; and the value was decoded with html.UnescapeString, which is the TEXT
+// decoding rule — it turns "&timestamp=" into "×tamp=" and "&region=" into
+// "®ion=", where the attribute rule a browser applies leaves both alone. The
+// tokenizer applies the attribute rule, so the URL the daemon signs and
+// fetches is the URL the browser would have requested.
 var (
 	linkTagRe  = regexp.MustCompile(`(?is)<link\b[^>]*>`)
 	imgTagRe   = regexp.MustCompile(`(?is)<img\b[^>]*>`)
 	styleTagRe = regexp.MustCompile(`(?is)(<style\b[^>]*>)(.*?)(</style>)`)
-
-	hrefAttrRe = regexp.MustCompile(`(?is)(\bhref\s*=\s*)("[^"]*"|'[^']*'|[^\s>]+)`)
-	srcAttrRe  = regexp.MustCompile(`(?is)(\bsrc\s*=\s*)("[^"]*"|'[^']*'|[^\s>]+)`)
-	relAttrRe  = regexp.MustCompile(`(?is)\brel\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)`)
 
 	cssURLRe    = regexp.MustCompile(`(?is)url\(\s*("[^"]*"|'[^']*'|[^)'"\s]*)\s*\)`)
 	cssImportRe = regexp.MustCompile(`(?is)(@import\s+)("[^"]*"|'[^']*')`)
@@ -80,7 +86,10 @@ type subresourceRewriter struct {
 	base    *url.URL
 	token   string
 	shareID string
-	signer  *publish.SubresourceSigner
+	// revision is the share's current content digest, bound into every MAC so a
+	// reference dies when the share is re-published (§16).
+	revision string
+	signer   *publish.SubresourceSigner
 	// depth is the depth of the references being MINTED (parent depth + 1).
 	depth   int
 	seen    map[string]string
@@ -89,10 +98,11 @@ type subresourceRewriter struct {
 
 // newSubresourceRewriter returns a rewriter for references found in a resource
 // fetched from baseURL, or ok=false when references must NOT be rewritten:
-// no signer (fail closed — an unsigned reference would be an unbound relay), an
-// unusable base, or a depth past the nesting cap.
-func newSubresourceRewriter(baseURL, token, shareID string, signer *publish.SubresourceSigner, depth int) (*subresourceRewriter, bool) {
-	if signer == nil || token == "" || shareID == "" {
+// no signer or no revision to bind (fail closed — an unsigned or unbound
+// reference would be an unbound relay), an unusable base, or a depth past the
+// nesting cap.
+func newSubresourceRewriter(baseURL, token, shareID, revision string, signer *publish.SubresourceSigner, depth int) (*subresourceRewriter, bool) {
+	if signer == nil || token == "" || shareID == "" || revision == "" {
 		return nil, false
 	}
 	if depth < 1 || depth > maxSubresourceDepth {
@@ -103,12 +113,13 @@ func newSubresourceRewriter(baseURL, token, shareID string, signer *publish.Subr
 		return nil, false
 	}
 	return &subresourceRewriter{
-		base:    base,
-		token:   token,
-		shareID: shareID,
-		signer:  signer,
-		depth:   depth,
-		seen:    make(map[string]string),
+		base:     base,
+		token:    token,
+		shareID:  shareID,
+		revision: revision,
+		signer:   signer,
+		depth:    depth,
+		seen:     make(map[string]string),
 	}, true
 }
 
@@ -118,8 +129,14 @@ func newSubresourceRewriter(baseURL, token, shareID string, signer *publish.Subr
 // Only https survives: that is what CheckUpstreamOrigin will demand at fetch
 // time anyway, and it means data:, blob:, http:, mailto:, and fragment-only
 // references are never turned into a daemon fetch.
+//
+// raw is the reference AS THE BROWSER WOULD READ IT, already decoded by the
+// caller for the context it came from: attribute-decoded for an HTML attribute
+// (the tokenizer does that), and verbatim for CSS, where character references
+// do not exist — an "&amp;" in a stylesheet is five literal characters. This
+// function decodes nothing, so it cannot decode twice or with the wrong rule.
 func (rw *subresourceRewriter) ref(raw string) (string, bool) {
-	raw = strings.TrimSpace(html.UnescapeString(raw))
+	raw = strings.TrimSpace(raw)
 	if raw == "" || strings.HasPrefix(raw, "#") {
 		return "", false
 	}
@@ -139,7 +156,7 @@ func (rw *subresourceRewriter) ref(raw string) (string, bool) {
 	q := url.Values{}
 	q.Set("u", abs)
 	q.Set("d", strconv.Itoa(rw.depth))
-	q.Set("sig", rw.signer.Sign(rw.shareID, abs, rw.depth))
+	q.Set("sig", rw.signer.Sign(rw.shareID, rw.revision, abs, rw.depth))
 	signed := sharePrefix + rw.token + subresourceSubPath + "?" + q.Encode()
 	rw.seen[abs] = signed
 	return signed, true
@@ -151,13 +168,10 @@ func (rw *subresourceRewriter) ref(raw string) (string, bool) {
 // all — is passed through byte-for-byte.
 func (rw *subresourceRewriter) rewriteDocument(body []byte) []byte {
 	out := linkTagRe.ReplaceAllFunc(body, func(tag []byte) []byte {
-		if !linkRelIsSubresource(string(tag)) {
-			return tag
-		}
-		return rw.rewriteAttr(tag, hrefAttrRe)
+		return rw.rewriteTagAttr(tag, "link", "href", linkRelIsSubresource)
 	})
 	out = imgTagRe.ReplaceAllFunc(out, func(tag []byte) []byte {
-		return rw.rewriteAttr(tag, srcAttrRe)
+		return rw.rewriteTagAttr(tag, "img", "src", nil)
 	})
 	out = styleTagRe.ReplaceAllFunc(out, func(block []byte) []byte {
 		m := styleTagRe.FindSubmatch(block)
@@ -204,23 +218,45 @@ func (rw *subresourceRewriter) rewriteCSS(css []byte) []byte {
 	return out
 }
 
-// rewriteAttr replaces one attribute's value inside a single tag.
-func (rw *subresourceRewriter) rewriteAttr(tag []byte, attr *regexp.Regexp) []byte {
-	return attr.ReplaceAllFunc(tag, func(m []byte) []byte {
-		g := attr.FindSubmatch(m)
-		if g == nil {
-			return m
+// rewriteTagAttr rewrites the attribute named attr on one tag, and only that
+// attribute: an exact (ASCII case-insensitive) name match, so data-src is not
+// src. The tag is read with the HTML tokenizer, which hands back each value
+// decoded by the ATTRIBUTE rule. admit, when non-nil, sees the tag's attributes
+// and can decline the tag.
+//
+// A tag the tokenizer does not read as exactly one complete start tag of the
+// expected element — the regexp cut it at a ">" inside a quoted value, say — is
+// returned untouched: an un-rewritten reference fails under CSP, which is the
+// safe direction. A tag with nothing to rewrite is likewise returned
+// byte-for-byte; only a tag that actually gains a signed reference is
+// re-serialized, and Token.String escapes every attribute value on the way out.
+func (rw *subresourceRewriter) rewriteTagAttr(tag []byte, element, attr string, admit func([]xhtml.Attribute) bool) []byte {
+	z := xhtml.NewTokenizer(bytes.NewReader(tag))
+	tt := z.Next()
+	if tt != xhtml.StartTagToken && tt != xhtml.SelfClosingTagToken {
+		return tag
+	}
+	tok := z.Token()
+	if tok.Data != element || z.Next() != xhtml.ErrorToken {
+		return tag
+	}
+	if admit != nil && !admit(tok.Attr) {
+		return tag
+	}
+	for i := range tok.Attr {
+		if tok.Attr[i].Namespace != "" || tok.Attr[i].Key != attr {
+			continue
 		}
-		signed, ok := rw.ref(unquoteAttr(string(g[2])))
+		// A browser honours the FIRST of duplicate attributes, so only that one
+		// is ever a reference.
+		signed, ok := rw.ref(tok.Attr[i].Val)
 		if !ok {
-			return m
+			return tag
 		}
-		// html.EscapeString because the signed path carries "&" between query
-		// parameters; an unescaped "&" in an HTML attribute is a parse hazard even
-		// where browsers tolerate it. The path itself is percent-encoded by
-		// url.Values.Encode, so it can carry no quote or angle bracket.
-		return []byte(string(g[1]) + `"` + html.EscapeString(signed) + `"`)
-	})
+		tok.Attr[i].Val = signed
+		return []byte(tok.String())
+	}
+	return tag
 }
 
 // logRefusals surfaces a cap refusal loudly rather than dropping it (INV-19:
@@ -245,19 +281,21 @@ func unquoteAttr(v string) string {
 	return v
 }
 
-// linkRelIsSubresource reports whether a <link> tag names a rel this route
-// serves. Only stylesheets and icons: a <link rel="preload" as="script"> or a
-// rel we do not recognise is left alone rather than speculatively proxied.
-func linkRelIsSubresource(tag string) bool {
-	m := relAttrRe.FindStringSubmatch(tag)
-	if m == nil {
-		return false
-	}
-	for _, tok := range strings.Fields(strings.ToLower(unquoteAttr(m[1]))) {
-		switch tok {
-		case "stylesheet", "icon", "apple-touch-icon", "mask-icon":
-			return true
+// linkRelIsSubresource reports whether a <link> tag's attributes name a rel this
+// route serves. Only stylesheets and icons: a <link rel="preload" as="script">
+// or a rel we do not recognise is left alone rather than speculatively proxied.
+func linkRelIsSubresource(attrs []xhtml.Attribute) bool {
+	for _, a := range attrs {
+		if a.Namespace != "" || a.Key != "rel" {
+			continue
 		}
+		for _, tok := range strings.Fields(strings.ToLower(a.Val)) {
+			switch tok {
+			case "stylesheet", "icon", "apple-touch-icon", "mask-icon":
+				return true
+			}
+		}
+		return false // first rel wins, as in the browser
 	}
 	return false
 }
@@ -266,8 +304,8 @@ func linkRelIsSubresource(tag string) bool {
 // rewriter that cannot be built (no signer) means NO rewriting: the document is
 // served exactly as it is today, with its subresources refused by CSP. That is a
 // degraded demo, never an unbound relay.
-func rewriteUpstreamDocumentRefs(body []byte, baseURL, token, shareID string, signer *publish.SubresourceSigner) []byte {
-	rw, ok := newSubresourceRewriter(baseURL, token, shareID, signer, 1)
+func rewriteUpstreamDocumentRefs(body []byte, baseURL, token, shareID, revision string, signer *publish.SubresourceSigner) []byte {
+	rw, ok := newSubresourceRewriter(baseURL, token, shareID, revision, signer, 1)
 	if !ok {
 		return body
 	}
@@ -277,10 +315,10 @@ func rewriteUpstreamDocumentRefs(body []byte, baseURL, token, shareID string, si
 // rewriteUpstreamCSSRefs rewrites a served stylesheet's own references one level
 // deeper. At the nesting cap the stylesheet is served unchanged and the refusal
 // is logged: the resource itself is fine, only the chain stops.
-func rewriteUpstreamCSSRefs(css []byte, baseURL, token, shareID string, signer *publish.SubresourceSigner, parentDepth int) []byte {
-	rw, ok := newSubresourceRewriter(baseURL, token, shareID, signer, parentDepth+1)
+func rewriteUpstreamCSSRefs(css []byte, baseURL, token, shareID, revision string, signer *publish.SubresourceSigner, parentDepth int) []byte {
+	rw, ok := newSubresourceRewriter(baseURL, token, shareID, revision, signer, parentDepth+1)
 	if !ok {
-		debug.Log("publish", "public plane: stylesheet at depth %d serves without nested rewriting — the nesting cap of %d stops the chain here", parentDepth, maxSubresourceDepth)
+		debug.Log("publish", "public plane: stylesheet at depth %d serves without nested rewriting — the nesting cap of %d stops the chain here (or no signer/revision is available to bind references to)", parentDepth, maxSubresourceDepth)
 		return css
 	}
 	return rw.rewriteCSS(css)

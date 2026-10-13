@@ -1,6 +1,8 @@
 package tools
 
 import (
+	"testing"
+
 	"github.com/standardbeagle/agnt/internal/finding"
 	"github.com/standardbeagle/agnt/internal/protocol"
 )
@@ -9,7 +11,13 @@ import (
 // (internal/agentbench/testdata/contract) must carry the SHIPPED compact
 // text — including every `next:` line — not hand-typed copies. These
 // wrappers expose the existing pure formatters over fixture-supplied
-// inputs. Additive export for the test harness; no behaviour change.
+// inputs.
+//
+// This is a cross-package TEST HARNESS, not production API: it is a plain .go
+// file (agentbench's tests import it, so it cannot be a _test.go file) fenced
+// by a testing.TB parameter on every entry point, per
+// .claude/rules/testing-conventions.md §2. Production code has no testing.TB to
+// pass, so it cannot call these.
 
 // BenchIncidentView is the minimal incident shape a contract fixture feeds
 // into the shipped get_incidents compact formatter.
@@ -27,7 +35,8 @@ type BenchIncidentView struct {
 
 // RenderIncidentsCompactForBench renders views through
 // formatIncidentsCompact, the shipped get_incidents compact renderer.
-func RenderIncidentsCompactForBench(views []BenchIncidentView) string {
+func RenderIncidentsCompactForBench(t testing.TB, views []BenchIncidentView) string {
+	t.Helper()
 	out := GetIncidentsOutput{PipelineEnabled: true}
 	for _, v := range views {
 		iv := incidentView{
@@ -58,24 +67,28 @@ func RenderIncidentsCompactForBench(views []BenchIncidentView) string {
 
 // RenderBufferAuditCompactForBench renders one API/loading audit payload
 // through formatBufferAuditCompact.
-func RenderBufferAuditCompactForBench(headline string, parsed map[string]any, proxyID, profile string) string {
+func RenderBufferAuditCompactForBench(t testing.TB, headline string, parsed map[string]any, proxyID, profile string) string {
+	t.Helper()
 	return formatBufferAuditCompact(headline, parsed, proxyID, profile)
 }
 
 // RenderResponsiveCompactForBench renders responsive_audit raw JSON through
 // renderResponsiveCompact.
-func RenderResponsiveCompactForBench(rawJSON []byte, profile string) (string, error) {
+func RenderResponsiveCompactForBench(t testing.TB, rawJSON []byte, profile string) (string, error) {
+	t.Helper()
 	return renderResponsiveCompact(rawJSON, profile)
 }
 
 // RenderDiagnoseLayoutCompactForBench renders diagnose kind=layout findings
 // through renderDiagnoseLayoutCompact.
-func RenderDiagnoseLayoutCompactForBench(proxyID string, findings []finding.Finding) string {
+func RenderDiagnoseLayoutCompactForBench(t testing.TB, proxyID string, findings []finding.Finding) string {
+	t.Helper()
 	return renderDiagnoseLayoutCompact(proxyID, findings, nil, "")
 }
 
 // RenderDiagnoseClickCompactForBench renders diagnose kind=click findings
 // through renderDiagnoseClickCompact.
-func RenderDiagnoseClickCompactForBench(proxyID, verdict string, findings []finding.Finding) string {
+func RenderDiagnoseClickCompactForBench(t testing.TB, proxyID, verdict string, findings []finding.Finding) string {
+	t.Helper()
 	return renderDiagnoseClickCompact(proxyID, verdict, findings, nil, "")
 }

@@ -1,4 +1,4 @@
-.PHONY: build release test test-unit test-integration test-browser test-e2e e2e-publish-browser test-chrome-e2e test-js test-isolated test-ssh test-ssh-coverage test-flake check-dirty-tree clean clean-zombies install install-local install-windows install-hooks run lint test-webapp mockagent generate generate-check vendor cross-compile cross-compile-check demo demo-publish demo-check demo-engine-test demo-mux-check demo-inspect-check demo-publish-check demo-assemble-check
+.PHONY: all vendor-check test-coverage bench fmt vet deps help build release test test-unit test-integration test-browser test-e2e e2e-publish-browser test-chrome-e2e test-js test-isolated test-ssh test-ssh-coverage test-flake check-dirty-tree clean clean-zombies install install-local install-windows install-hooks run lint test-webapp mockagent generate generate-check vendor cross-compile cross-compile-check demo demo-publish demo-check demo-engine-test demo-mux-check demo-inspect-check demo-publish-check demo-assemble-check
 
 # Binary names
 BINARY := devtool-mcp
@@ -7,15 +7,20 @@ AGENT_BINARY := agnt
 AGENT_DAEMON_BINARY := agnt-daemon
 LOCAL_BIN ?= $(HOME)/.local/bin
 
-# Default target
+# Default target: build, plus the agnt-daemon copy (`build` alone makes agnt
+# and devtool-mcp). agnt-daemon is what daemon auto-start execs, because a
+# sandbox can forbid a binary from forking itself. The legacy
+# devtool-mcp-daemon copy is made by the install targets only.
 all: build
+	@cp $(AGENT_BINARY) $(AGENT_DAEMON_BINARY)
 
 # Regenerate code-generated files. Currently just the __devtool API docs
 # catalog (internal/tools/apidocs_gen.go), sourced from JSDoc blocks in
 # internal/proxy/scripts/*.js via scripts/gen-apidocs.go.
 #
 # Run this any time you add / edit / rename a JSDoc block tagged @devtool.
-# CI enforces drift via TestAPIDocsNoDrift in internal/tools.
+# CI enforces drift via TestAPIDocsNoDrift in internal/tools, which the
+# full-suite job in .github/workflows/test-linux.yml runs.
 generate:
 	go run ./scripts/gen-apidocs.go \
 		-scripts internal/proxy/scripts \
@@ -30,9 +35,35 @@ generate-check:
 		-out internal/tools/apidocs_gen.go \
 	-check
 
-# Vendor dependencies
+# Vendor dependencies. vendor/ is a plain copy of the module versions in
+# go.mod: never edit a file under it. A fix to a vendored module goes
+# upstream and arrives here as a version bump.
 vendor:
 	go mod vendor
+
+# Guard for the rule above: fail if vendor/ is not exactly what `go mod vendor`
+# would write. Vendors into a temp directory and compares, so the working tree
+# is never touched. A hand-edited vendored file, or a go.mod bump that was not
+# re-vendored, fails here. Run by CI (test-linux.yml) and the release build.
+#
+# Files the repo's .gitignore excludes are dropped from the fresh copy before
+# comparing: `go mod vendor` writes vendor/cloud.google.com/go/go.work, the
+# root .gitignore ignores go.work, so a clean checkout never has it.
+vendor-check:
+	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
+	go mod vendor -o "$$tmp/vendor" || exit 1; \
+	( cd "$$tmp" && find vendor -type f ) | git check-ignore --stdin | \
+		while IFS= read -r f; do rm -f "$$tmp/$$f"; done; \
+	if diff -r vendor "$$tmp/vendor" > "$$tmp/diff" 2>&1; then \
+		echo "vendor-check passed: vendor/ matches go.mod"; \
+	else \
+		echo "FAIL: vendor/ differs from what go.mod resolves to:"; \
+		head -40 "$$tmp/diff"; \
+		echo "A patch must not live only in vendor/ (it never reaches go install"; \
+		echo "builds and the next go mod vendor drops it). Send it upstream and"; \
+		echo "bump the version, or run make vendor if go.mod changed."; \
+		exit 1; \
+	fi
 
 # Build both binaries (agnt is the source, devtool-mcp is a copy for MCP compatibility)
 # Version is defined in cmd/agnt/main.go and managed by scripts/release.sh
@@ -156,7 +187,7 @@ test-unit:
 
 # Run integration tests (requires external dependencies)
 test-integration:
-	go test -v -tags=integration ./...
+	go test -p 1 -v -tags=integration ./...
 
 # Run browser automation tests (requires Chrome)
 test-browser:
@@ -212,11 +243,11 @@ mockagent:
 
 # Run benchmarks
 bench:
-	go test -bench=. -benchmem ./...
+	go test -p 1 -bench=. -benchmem ./...
 
 # Clean build artifacts
 clean: clean-zombies
-	rm -f $(BINARY) $(AGENT_BINARY)
+	rm -f $(BINARY) $(AGENT_BINARY) $(AGENT_DAEMON_BINARY)
 	rm -f coverage.out coverage.html
 
 # Kill orphaned test daemon processes left behind by failed tests
@@ -274,9 +305,17 @@ install-local: build
 	fi; \
 	echo "Restart existing agnt sessions and MCP clients to load the new binary."
 
-# Cross-compile and install Windows binaries to Windows ~/.local/bin
-WINDOWS_BIN := /mnt/c/Users/andyb/.local/bin
+# Cross-compile and install Windows binaries to Windows ~/.local/bin (from WSL).
+# WINDOWS_BIN defaults to <Windows profile>/.local/bin, derived by asking
+# cmd.exe for %USERPROFILE%; override it on the command line otherwise:
+#   make install-windows WINDOWS_BIN=/mnt/c/Users/<you>/.local/bin
+WINDOWS_BIN ?= $(shell p="$$(cmd.exe /c 'echo %USERPROFILE%' 2>/dev/null | tr -d '\r')"; [ -n "$$p" ] && wslpath "$$p" 2>/dev/null | sed 's|$$|/.local/bin|')
 install-windows:
+	@if [ -z "$(WINDOWS_BIN)" ]; then \
+		echo "install-windows: could not find the Windows profile directory (not WSL?)."; \
+		echo "Set it explicitly: make install-windows WINDOWS_BIN=/mnt/c/Users/<you>/.local/bin"; \
+		exit 1; \
+	fi
 	GOOS=windows GOARCH=amd64 go build -o $(AGENT_BINARY).exe ./cmd/agnt/
 	@# Stop running Windows daemon before installing
 	@$(WINDOWS_BIN)/$(AGENT_BINARY).exe daemon stop 2>/dev/null || true
@@ -395,7 +434,9 @@ demo-assemble-check:
 # Show help
 help:
 	@echo "Available targets:"
+	@echo "  all              - build, plus the agnt-daemon copy"
 	@echo "  build            - Build agnt and devtool-mcp (copy of agnt)"
+	@echo "  vendor-check     - Fail if vendor/ differs from what go.mod resolves to"
 	@echo "  release          - Build production release with optimizations and version info"
 	@echo "  test             - Run all tests (excludes procisolation tag)"
 	@echo "  test-isolated    - Run procisolation tests inside unshare PID namespace (Linux)"
