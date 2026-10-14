@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"net/url"
@@ -162,6 +163,9 @@ func (t *URLTracker) scanLoop(ctx context.Context) {
 const (
 	maxScanBytes      = 8 * 1024 // Only scan first 8KB of output (startup phase)
 	maxURLsPerProcess = 5        // Max URLs to store per process
+	// maxScanLineOverrun bounds how far past maxScanBytes the scan may run to
+	// finish the line straddling the cap.
+	maxScanLineOverrun = 1024
 )
 
 // scanAllProcesses scans all running processes for URLs.
@@ -190,14 +194,33 @@ func (t *URLTracker) scanAllProcesses() {
 // (e.g. Vite 8: "Local: http://localhost:5173/" on stdout, deprecation
 // warnings on stderr). Scanning each stream independently removes the coupling.
 func scanStreamForURLs(buf []byte, scanned int, matchers []urlMatcher) (urls []string, newScanned int) {
-	scanEnd := len(buf)
-	if scanEnd > maxScanBytes {
-		scanEnd = maxScanBytes
-	}
-	if scanned >= scanEnd {
+	if scanned >= maxScanBytes {
 		return nil, scanned
 	}
-	return parseDevServerURLsWithMatchers(buf[scanned:scanEnd], matchers), scanEnd
+	scanEnd, newScanned := len(buf), len(buf)
+	if len(buf) > maxScanBytes && buf[maxScanBytes-1] != '\n' {
+		// The window must not end mid-line: a URL straddling the cap would
+		// register truncated ("http://localhost:51" for :5173). Finish the
+		// straddling line within a bounded overrun; a line that outruns it is
+		// discarded rather than scanned in part.
+		limit := min(len(buf), maxScanBytes+maxScanLineOverrun)
+		lastComplete := scanned + bytes.LastIndexByte(buf[scanned:maxScanBytes], '\n') + 1
+		switch i := bytes.IndexByte(buf[maxScanBytes:limit], '\n'); {
+		case i >= 0:
+			scanEnd, newScanned = maxScanBytes+i+1, maxScanBytes+i+1
+		case limit < maxScanBytes+maxScanLineOverrun:
+			// Still being written: scan the complete lines, revisit the rest.
+			scanEnd, newScanned = lastComplete, lastComplete
+		default:
+			scanEnd, newScanned = lastComplete, maxScanBytes
+		}
+	} else if len(buf) > maxScanBytes {
+		scanEnd, newScanned = maxScanBytes, maxScanBytes
+	}
+	if scanned >= scanEnd {
+		return nil, max(scanned, newScanned)
+	}
+	return parseDevServerURLsWithMatchers(buf[scanned:scanEnd], matchers), newScanned
 }
 
 // scanProcess scans a single process for dev server URLs.

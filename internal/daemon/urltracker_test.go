@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -583,5 +584,57 @@ func TestScanStreamForURLs_StdoutURLSurvivesStderrAdvance(t *testing.T) {
 	}
 	if outOff2 != len(stdoutURL) {
 		t.Fatalf("stdout offset should advance to %d, got %d", len(stdoutURL), outOff2)
+	}
+}
+
+// A URL line straddling the 8KB scan cap must register whole, never cut at
+// the cap. The split is the test: the line arrives first incomplete, then
+// finished.
+func TestScanStreamForURLs_URLStraddlingCapIsNotTruncated(t *testing.T) {
+	t.Parallel()
+	line := "  Local:   http://localhost:5173/\n"
+	pad := strings.Repeat("x", 79) + "\n"
+	var b strings.Builder
+	for b.Len()+len(pad) <= maxScanBytes-20 {
+		b.WriteString(pad)
+	}
+	b.WriteString(strings.Repeat("y", maxScanBytes-20-b.Len()) + "\n")
+	prefix := b.String() // ends 19 bytes before the cap
+	full := prefix + line
+
+	// Scan 1: the line is cut mid-URL past the cap and still being written.
+	partial := []byte(full[:maxScanBytes+3])
+	urls, off := scanStreamForURLs(partial, 0, nil)
+	if len(urls) != 0 {
+		t.Fatalf("an incomplete straddling line must not be scanned, got %v", urls)
+	}
+	if off != len(prefix) {
+		t.Fatalf("offset should stop at the last complete line (%d), got %d", len(prefix), off)
+	}
+
+	// Scan 2: the line is complete.
+	urls, off = scanStreamForURLs([]byte(full+"later output\n"), off, nil)
+	if len(urls) != 1 || urls[0] != "http://localhost:5173" {
+		t.Fatalf("want the whole URL, got %v", urls)
+	}
+	if off != len(full) {
+		t.Fatalf("offset should end after the straddling line (%d), got %d", len(full), off)
+	}
+	if more, _ := scanStreamForURLs([]byte(full+"http://localhost:9999/\n"), off, nil); len(more) != 0 {
+		t.Fatalf("output past the window must not be scanned, got %v", more)
+	}
+}
+
+// A straddling line longer than the overrun is discarded, not scanned in part.
+func TestScanStreamForURLs_OverlongStraddlingLineDiscarded(t *testing.T) {
+	t.Parallel()
+	buf := []byte(strings.Repeat("z", maxScanBytes-30) + "\n" +
+		strings.Repeat("q", 20) + "http://localhost:5173/" + strings.Repeat("q", 2*maxScanLineOverrun))
+	urls, off := scanStreamForURLs(buf, 0, nil)
+	if len(urls) != 0 {
+		t.Fatalf("an over-long straddling line must be discarded, got %v", urls)
+	}
+	if off < maxScanBytes {
+		t.Fatalf("the window should be finished, got offset %d", off)
 	}
 }
