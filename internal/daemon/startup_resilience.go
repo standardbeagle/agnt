@@ -171,6 +171,9 @@ func (d *Daemon) StartScript(ctx context.Context, cfg StartScriptConfig) (*Start
 		return nil, startupErr
 	}
 
+	// A deferred launch (runProcessAfterDeps) learns the exact lifetime it owns.
+	notifyLaunchCapture(ctx, proc)
+
 	// Register for auto-restart if enabled. When the process exits quickly
 	// (e.g. `exit 1`), startScriptWithRetry returns the already-failed proc.
 	// monitorProcess finds it via Get, receives from the already-closed
@@ -394,9 +397,14 @@ func (d *Daemon) startScriptWithRetry(
 	autoRestart bool,
 ) (*process.ManagedProcess, *StartupError) {
 
+	// Remember the env as configured, before secret injection: PROC RESTART
+	// relaunches from it, so a deleted secret is not carried forward and
+	// injected pairs do not pile up on every restart.
+	d.launchEnv.Store(processID, append([]string(nil), env...))
+
 	// Consume store-held secrets by NAME: agnt-managed processes get them as
 	// env vars at spawn, so the values never pass through the agent/channel.
-	env = d.injectSecretEnv(projectPath, env)
+	env = d.injectSecretEnv(projectPath, processID, env)
 
 	// A declined port cleanup means nothing on these ports is killed, here or in
 	// the EADDRINUSE recovery below. A held port is still reported, so the bind
@@ -431,6 +439,12 @@ func (d *Daemon) startScriptWithRetry(
 		scriptEntry = e
 	}
 	outputCB := d.processOutputCallback(processID, projectPath, scriptEntry)
+
+	// URL state is keyed by process id and survives a dead lifetime that is
+	// replaced in place, so a relaunch would inherit the old URLs (instant
+	// false readiness in monitorStartupFailure) and the exhausted scan offsets
+	// (its own URL never detected). Start each lifetime from a clean slate.
+	d.clearURLStateForLaunch(processID, projectPath)
 
 	// Start the process
 	result, err := d.hub.ProcessManager().StartOrReuse(ctx, process.ProcessConfig{
@@ -485,8 +499,11 @@ func (d *Daemon) startScriptWithRetry(
 		// first crash cycle — not a fatal failure. Return the failed proc so
 		// StartScript can register it with the auto-restarter. The auto-restarter
 		// calls proc.Done() (already closed) and immediately schedules the restart.
+		// The exit watcher still records this lifetime's death (exit info,
+		// crash incident, on-crash hook) — a crash cycle is not silent.
 		if autoRestart {
 			debug.Log("daemon", "auto-restart: treating quick exit of %s as first crash cycle", processID)
+			d.watchProcessExit(proc)
 			return proc, nil
 		}
 		// Process crashed during startup — still fire on-crash hook. proc.Done()
@@ -544,6 +561,7 @@ func (d *Daemon) startScriptWithRetry(
 	// Retry: Start the process again, with the same output callback as the
 	// first attempt — without it the recovered process is cut off from script
 	// history, output streaming, and alert classification.
+	d.clearURLStateForLaunch(processID, projectPath)
 	result, err = d.hub.ProcessManager().StartOrReuse(ctx, process.ProcessConfig{
 		ID:             processID,
 		ProjectPath:    projectPath,
@@ -572,6 +590,25 @@ func (d *Daemon) startScriptWithRetry(
 	retryErr := d.monitorStartupFailure(ctx, proc, expectedPort, monitorTimeout)
 	if retryErr != nil {
 		retryErr.Retried = true
+		// An EADDRINUSE seen in the output of a process that is still alive
+		// leaves it running and registered under this id, cut off from every
+		// owner. Stop it the way the first attempt's recovery does.
+		if proc.State() == process.StateRunning || proc.State() == process.StateStarting {
+			if err := d.hub.ProcessManager().StopProcess(ctx, proc); err != nil {
+				debug.Log("startup-resilience", "stop of failed EADDRINUSE retry %s failed: %v", processID, err)
+				d.recordStartupEntry(processID, stripProcessPrefix(processID), "warning", "stop_failed",
+					fmt.Sprintf("EADDRINUSE retry failed and the process could not be stopped: %v", err), retryErr.Port)
+			}
+		}
+		// Mirror the first attempt: the exit watcher records this death, and
+		// with auto-restart the failure is a crash cycle for the restarter.
+		d.watchProcessExit(proc)
+		if autoRestart {
+			// The caller sees no error on this path, so record it here.
+			d.recordStartupEntry(processID, stripProcessPrefix(processID), "warning", "eaddrinuse_retry_failed",
+				retryErr.Message, retryErr.Port)
+			return proc, nil
+		}
 		return nil, retryErr
 	}
 
@@ -605,6 +642,21 @@ func (d *Daemon) processOutputCallback(processID, projectPath string, scriptEntr
 		}, projectPath)
 		d.alertScanner.ProcessLineWithLifetime(line, processID, lifetimeOwner)
 	}
+}
+
+// clearURLStateForLaunch drops the URL tracker's per-id state ahead of a new
+// lifetime under processID. A live process under the id is left alone: the
+// launch will reuse it (StartOrReuse), and its URLs are still true.
+func (d *Daemon) clearURLStateForLaunch(processID, projectPath string) {
+	if d.urlTracker == nil {
+		return
+	}
+	if existing, err := d.hub.ProcessManager().GetByPath(processID, projectPath); err == nil {
+		if s := existing.State(); s == process.StateRunning || s == process.StateStarting {
+			return
+		}
+	}
+	d.urlTracker.ClearProcess(processID)
 }
 
 // monitorStartupFailure watches process output for early startup failures.

@@ -43,6 +43,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
+	goprocess "github.com/standardbeagle/go-cli-server/process"
 	"github.com/standardbeagle/go-cli-server/script"
 )
 
@@ -216,8 +217,12 @@ func (d *Daemon) runProcessAfterDeps(
 		return
 	}
 
-	// All deps ready — kick off the actual start.
-	if err := d.StartScriptExplicit(ctx, name, scriptCfg, projectPath, nil); err != nil {
+	// All deps ready — kick off the actual start. The capture hook records the
+	// exact process this launch started, so a late cancel stops that lifetime
+	// and never whatever else holds the id by then.
+	var started *goprocess.ManagedProcess
+	launchCtx := withLaunchCapture(ctx, func(p *goprocess.ManagedProcess) { started = p })
+	if err := d.StartScriptExplicit(launchCtx, name, scriptCfg, projectPath, nil); err != nil {
 		if ctx.Err() != nil {
 			return
 		}
@@ -231,26 +236,57 @@ func (d *Daemon) runProcessAfterDeps(
 		return
 	}
 
-	// The cancel landed while StartScriptExplicit was already launching:
-	// whoever cancelled (PROC STOP, session cleanup) looked for the process
-	// before it existed, so nothing else will stop it. Stop it here.
+	// The cancel landed while StartScriptExplicit was already launching.
 	if ctx.Err() != nil {
-		d.stopCancelledLaunch(processID, name)
+		// Superseded by a newer PROC RUN: that launch owns the process now
+		// (it reuses or replaces it), so stopping here would kill its work.
+		if entry.wasSuperseded() {
+			debug.Log("daemon", "PROC RUN %s superseded while launching; leaving the process to the replacement", name)
+			return
+		}
+		// An explicit cancel (PROC STOP, session cleanup) looked for the
+		// process before it existed, so nothing else will stop it. Stop
+		// exactly the lifetime this launch started.
+		if started != nil {
+			d.stopCancelledLaunch(started, name)
+		}
 		return
 	}
 	d.pendingProcs.RemoveExact(entry)
 }
 
+// launchCaptureKey carries a hook that StartScript calls with the process it
+// started, so a deferred launch knows the exact lifetime it owns.
+type launchCaptureKey struct{}
+
+func withLaunchCapture(ctx context.Context, fn func(*goprocess.ManagedProcess)) context.Context {
+	return context.WithValue(ctx, launchCaptureKey{}, fn)
+}
+
+func notifyLaunchCapture(ctx context.Context, proc *goprocess.ManagedProcess) {
+	if fn, ok := ctx.Value(launchCaptureKey{}).(func(*goprocess.ManagedProcess)); ok && fn != nil && proc != nil {
+		fn(proc)
+	}
+}
+
 // stopCancelledLaunch stops a process whose deferred launch was cancelled
 // after it had already started. Runs on the daemon context because the
-// launch context is, by definition, already done.
-func (d *Daemon) stopCancelledLaunch(processID, name string) {
+// launch context is, by definition, already done. proc is the exact lifetime
+// the launch started: if the id has since been taken by another lifetime,
+// that one is left alone, as is its auto-restart registration.
+func (d *Daemon) stopCancelledLaunch(proc *goprocess.ManagedProcess, name string) {
+	processID := proc.ID
+	pm := d.hub.ProcessManager()
+	if cur, err := pm.GetByPath(processID, proc.ProjectPath); err == nil && cur != proc {
+		debug.Log("daemon", "PROC RUN %s cancelled while launching; id now held by another lifetime, not stopping it", name)
+		return
+	}
 	if d.autoRestarter != nil {
 		d.autoRestarter.Unregister(processID)
 	}
 	stopCtx, cancel := context.WithTimeout(d.ctx, 5*time.Second)
 	defer cancel()
-	if err := d.hub.ProcessManager().Stop(stopCtx, processID); err != nil {
+	if err := pm.StopProcess(stopCtx, proc); err != nil {
 		d.recordStartupEntry(processID, name, "warning", "stop_failed",
 			fmt.Sprintf("PROC RUN %s was cancelled while launching and could not be stopped: %v", name, err), 0)
 		return

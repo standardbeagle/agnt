@@ -13,7 +13,9 @@ paths:
 |-------|---------|---------|--------|
 | `URLDetected` | URLTracker finds a URL in output | `handleURLDetected` | proxy to detected URL |
 | `ExplicitStart` | `autostartProxy`, non-script proxy | `handleExplicitStart` | proxy to explicit target |
-| `ScriptStopped` | process exits | `handleScriptStopped` | stop the script's proxies |
+| `ScriptStopped` | process removed (URL tracker), exits on its own with no restart to follow (`watchProcessExit`), auto-restart gives up or fails, `restartProcess` fails, reconcile finds it dead | `handleScriptStopped` | stop the script's proxies, unless a live replacement already runs under the id |
+
+A restart keeps the proxies: `watchProcessExit` skips the event while `restartPending` (PROC RESTART / RESTART-ALL) is set or auto-restart is registered, and the auto-restart monitor emits it itself when it stops restarting.
 | `FallbackPortCheck` | 30s after autostart (`scheduleFallbackPortChecks`) | `handleFallbackPortCheck` | proxy to `localhost:<fallback-port>` if nothing exists yet |
 
 Full channel → event dropped and recorded as `proxy_event_dropped` in the startup log. Reconciliation must still catch missing proxies.

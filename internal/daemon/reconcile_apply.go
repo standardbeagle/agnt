@@ -214,6 +214,7 @@ func (d *Daemon) stopReconcileScript(ctx context.Context, name, projectPath stri
 		d.scriptRegistry.Remove(name, projectPath)
 		d.scriptConfigs.Delete(processID)
 		d.portKillDeclined.Delete(processID)
+		d.launchEnv.Delete(processID)
 		d.runLaunches.Delete(processID)
 		return
 	}

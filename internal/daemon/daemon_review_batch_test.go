@@ -1,10 +1,19 @@
 package daemon
 
 import (
+	"context"
+	"fmt"
+	"net"
+	"net/http"
+	"os"
+	"path/filepath"
+	"runtime"
 	"testing"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
+	"github.com/standardbeagle/agnt/internal/store"
+	goprocess "github.com/standardbeagle/go-cli-server/process"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -19,6 +28,227 @@ func newReviewBatchDaemon(t *testing.T) *Daemon {
 		WriteTimeout:          2 * time.Second,
 		StartupMonitorTimeout: 150 * time.Millisecond,
 	})
+}
+
+func startupEvents(d *Daemon, processID, eventType string) []*StartupLogEntry {
+	var out []*StartupLogEntry
+	for _, e := range d.startupErrorStore.Query(StartupLogFilter{ProcessID: processID}) {
+		if e.EventType == eventType {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// A process that crashes inside the startup watch on every launch got one
+// auto-restart: the monitor relaunched with autoRestart=false, so the second
+// crash came back as a startup error and the monitor quit. It must instead go
+// through shouldRestart and the backoff until MaxRestarts gives up.
+func TestAutoRestart_FastCrasherReachesMaxRestarts(t *testing.T) {
+	d := newReviewBatchDaemon(t)
+	dir := normalizePath(shortTempDir(t))
+	id := makeProcessID(dir, "crasher")
+	cmd, args := failExec()
+
+	cfg := DefaultAutoRestartConfig()
+	cfg.Enabled = true
+	cfg.MaxRestarts = 3
+	cfg.RestartWindow = time.Minute
+	cfg.RestartDelay = 10 * time.Millisecond
+
+	_, err := d.StartScript(context.Background(), StartScriptConfig{
+		ProcessID:         id,
+		ProjectPath:       dir,
+		WorkingDir:        dir,
+		Command:           cmd,
+		Args:              args,
+		AutoRestart:       true,
+		AutoRestartConfig: &cfg,
+	})
+	require.NoError(t, err, "with auto-restart a quick exit is the first crash cycle")
+
+	require.Eventually(t, func() bool {
+		return len(startupEvents(d, id, "restart_gave_up")) > 0
+	}, 30*time.Second, 25*time.Millisecond, "a fast crasher must run out of restarts, not stop after one")
+
+	assert.Len(t, startupEvents(d, id, "restarted"), cfg.MaxRestarts,
+		"every allowed restart must happen")
+	assert.Empty(t, startupEvents(d, id, "restart_failed"),
+		"a crash in the startup watch is a crash cycle, not a failed restart")
+	assert.NotEmpty(t, startupEvents(d, id, "crash_loop_backoff"),
+		"rapid failures must go through the backoff")
+	assert.False(t, d.autoRestarter.IsRegistered(id), "the registration retires with the monitor")
+}
+
+// A relaunch under the same id inherited the previous lifetime's URLs (false
+// readiness in the startup watch) and its exhausted scan offsets (the new
+// lifetime's URL never detected).
+func TestStartScriptWithRetry_ClearsStaleURLState(t *testing.T) {
+	d := newReviewBatchDaemon(t)
+	dir := normalizePath(shortTempDir(t))
+	id := makeProcessID(dir, "web")
+	pm := d.hub.ProcessManager()
+
+	failCmd, failArgs := failExec()
+	dead, err := pm.StartCommand(context.Background(), goprocess.ProcessConfig{
+		ID: id, ProjectPath: dir, Command: failCmd, Args: failArgs,
+	})
+	require.NoError(t, err)
+	<-dead.Done()
+
+	// The dead lifetime announced a URL and used up its scan window.
+	d.urlTracker.mu.Lock()
+	d.urlTracker.urls[id] = []string{"http://localhost:5173/"}
+	d.urlTracker.seenURLs[id] = map[string]bool{"http://localhost:5173/": true}
+	d.urlTracker.scannedStdout[id] = maxScanBytes
+	d.urlTracker.scannedStderr[id] = maxScanBytes
+	d.urlTracker.mu.Unlock()
+
+	cmd, args := stayAliveExec()
+	proc, startupErr := d.startScriptWithRetry(context.Background(), id, dir, dir, cmd, args, nil, nil, false)
+	require.Nil(t, startupErr)
+	t.Cleanup(func() { _ = pm.StopProcess(context.Background(), proc) })
+	require.NotSame(t, dead, proc)
+
+	assert.Empty(t, d.urlTracker.GetURLs(id), "the new lifetime must not inherit the old URLs")
+	d.urlTracker.mu.RLock()
+	stdoutOff, stderrOff := d.urlTracker.scannedStdout[id], d.urlTracker.scannedStderr[id]
+	d.urlTracker.mu.RUnlock()
+	assert.Less(t, stdoutOff, maxScanBytes, "the stdout scan window must start over")
+	assert.Less(t, stderrOff, maxScanBytes, "the stderr scan window must start over")
+}
+
+// A live process under the id is reused by the launch, so its URL state is
+// still true and must be kept.
+func TestClearURLStateForLaunch_KeepsLiveProcessState(t *testing.T) {
+	d := newReviewBatchDaemon(t)
+	dir := normalizePath(shortTempDir(t))
+	id := makeProcessID(dir, "live")
+	cmd, args := stayAliveExec()
+	proc, err := d.hub.ProcessManager().StartCommand(context.Background(), goprocess.ProcessConfig{
+		ID: id, ProjectPath: dir, Command: cmd, Args: args,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.hub.ProcessManager().StopProcess(context.Background(), proc) })
+
+	d.urlTracker.mu.Lock()
+	d.urlTracker.urls[id] = []string{"http://localhost:5173/"}
+	d.urlTracker.mu.Unlock()
+
+	d.clearURLStateForLaunch(id, dir)
+	assert.Equal(t, []string{"http://localhost:5173/"}, d.urlTracker.GetURLs(id))
+}
+
+// PROC RESTART relaunched with proc.Env, which already held the injected
+// secrets: a deleted secret survived and every restart appended another copy.
+func TestRestartProcess_ReinjectsCurrentSecrets(t *testing.T) {
+	d := newReviewBatchDaemon(t)
+	dir := normalizePath(shortTempDir(t))
+	id := makeProcessID(dir, "api")
+	require.NoError(t, d.storem.Set(dir, store.ScopeGlobal, "", "API_KEY", "v1-secret-value",
+		map[string]any{store.MetaSecret: true}))
+
+	cmd, args := stayAliveExec()
+	proc, startupErr := d.startScriptWithRetry(context.Background(), id, dir, dir, cmd, args, []string{"BASE=1"}, nil, false)
+	require.Nil(t, startupErr)
+	assert.Equal(t, []string{"BASE=1", "API_KEY=v1-secret-value"}, proc.Env)
+
+	require.NoError(t, d.storem.Delete(dir, store.ScopeGlobal, "", "API_KEY"))
+
+	newProc, err := d.restartProcess(context.Background(), proc, "")
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.hub.ProcessManager().StopProcess(context.Background(), newProc) })
+	assert.Equal(t, []string{"BASE=1"}, newProc.Env,
+		"a deleted secret must not survive a restart, and nothing may be appended twice")
+}
+
+// A store read failure launched the process without its secrets and said so
+// only in the debug log.
+func TestInjectSecretEnv_StoreReadFailureIsVisible(t *testing.T) {
+	d := newReviewBatchDaemon(t)
+	dir := normalizePath(shortTempDir(t))
+	storeFile := filepath.Join(dir, store.StoreDir, store.ScopeGlobal, "global.json")
+	require.NoError(t, os.MkdirAll(filepath.Dir(storeFile), 0o755))
+	require.NoError(t, os.WriteFile(storeFile, []byte("{not json"), 0o644))
+
+	id := makeProcessID(dir, "api")
+	env := d.injectSecretEnv(dir, id, []string{"BASE=1"})
+	assert.Equal(t, []string{"BASE=1"}, env)
+
+	entries := startupEvents(d, id, "secret_injection_failed")
+	require.Len(t, entries, 1, "the failure must reach the startup log")
+	assert.Equal(t, "warning", entries[0].Level)
+}
+
+// An EADDRINUSE retry that failed while its process was still alive returned
+// without stopping it or watching its exit.
+func TestStartScriptWithRetry_FailedRetryStopsLiveProcess(t *testing.T) {
+	d := newReviewBatchDaemon(t)
+	dir := normalizePath(shortTempDir(t))
+	id := makeProcessID(dir, "binder")
+
+	l, err := net.Listen("tcp", "127.0.0.1:0")
+	require.NoError(t, err)
+	port := l.Addr().(*net.TCPAddr).Port
+	require.NoError(t, l.Close())
+
+	// Logs EADDRINUSE on stderr and stays alive — on both attempts.
+	var cmd string
+	var args []string
+	if runtime.GOOS == "windows" {
+		cmd, args = "cmd.exe", []string{"/c", fmt.Sprintf("echo Error: listen EADDRINUSE 127.0.0.1:%d 1>&2 & ping -n %d 127.0.0.1 >nul", port, stayAliveSeconds+1)}
+	} else {
+		cmd, args = "/bin/sh", []string{"-c", fmt.Sprintf("echo 'Error: listen EADDRINUSE 127.0.0.1:%d' >&2; sleep %d", port, stayAliveSeconds)}
+	}
+
+	proc, startupErr := d.startScriptWithRetry(context.Background(), id, dir, dir, cmd, args, nil, nil, false)
+	require.Nil(t, proc)
+	require.NotNil(t, startupErr)
+	assert.True(t, startupErr.Retried)
+	assert.Equal(t, "EADDRINUSE", startupErr.ErrorType)
+
+	cur, getErr := d.hub.ProcessManager().GetByPath(id, dir)
+	require.NoError(t, getErr, "the failed retry stays registered so its exit is on record")
+	require.Eventually(t, func() bool { return !cur.IsRunning() }, 10*time.Second, 25*time.Millisecond,
+		"a failed retry must not be left running")
+}
+
+// A superseded deferred launch is marked so it leaves the process to its
+// replacement; an explicit cancel is not.
+func TestPendingRegisterLaunch_DistinguishesSupersedeFromCancel(t *testing.T) {
+	tracker := NewPendingProcessTracker()
+	first := tracker.RegisterLaunch(PendingProcess{ProcessID: "api"}, []string{"db"}, func() {})
+	second := tracker.RegisterLaunch(PendingProcess{ProcessID: "api"}, []string{"db"}, func() {})
+	assert.True(t, first.wasSuperseded())
+	assert.False(t, second.wasSuperseded())
+
+	require.True(t, tracker.Cancel("api"))
+	assert.False(t, second.wasSuperseded(), "an explicit cancel is not a supersession")
+}
+
+// stopCancelledLaunch stopped by bare id, so it could kill a newer lifetime
+// that had taken the id. It must stop only the lifetime it was handed.
+func TestStopCancelledLaunch_StopsOnlyItsOwnLifetime(t *testing.T) {
+	d := newReviewBatchDaemon(t)
+	dir := normalizePath(shortTempDir(t))
+	id := makeProcessID(dir, "worker")
+	pm := d.hub.ProcessManager()
+	cmd, args := stayAliveExec()
+
+	old, err := pm.StartCommand(context.Background(), goprocess.ProcessConfig{ID: id, ProjectPath: dir, Command: cmd, Args: args})
+	require.NoError(t, err)
+	require.NoError(t, pm.StopProcess(context.Background(), old))
+	pm.RemoveByPath(id, dir)
+
+	replacement, err := pm.StartCommand(context.Background(), goprocess.ProcessConfig{ID: id, ProjectPath: dir, Command: cmd, Args: args})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = pm.StopProcess(context.Background(), replacement) })
+
+	d.stopCancelledLaunch(old, "worker")
+	assert.True(t, replacement.IsRunning(), "the replacement lifetime must survive")
+
+	d.stopCancelledLaunch(replacement, "worker")
+	require.Eventually(t, func() bool { return !replacement.IsRunning() }, 10*time.Second, 25*time.Millisecond)
 }
 
 // ApplyAlertsConfig runs on every session connect and AUTOSTART RECONCILE. It
@@ -76,4 +306,14 @@ func TestApplyAlertsConfig_IsPerProject(t *testing.T) {
 	d.retireProjectAlertsConfig(a)
 	assert.Same(t, d.holdBuffer.Load(), d.holdBufferForProject(a))
 	assert.True(t, d.retention(a).ClearOnBuildSuccess())
+}
+
+// Each delivery built a fresh transport whose idle keep-alive connection was
+// never closed.
+func TestScheduler_OverlayClientDoesNotPoolConnections(t *testing.T) {
+	s := NewScheduler(DefaultSchedulerConfig(), nil, nil)
+	client := s.createOverlayClient(filepath.Join(t.TempDir(), "overlay.sock"))
+	tr, ok := client.Transport.(*http.Transport)
+	require.True(t, ok)
+	assert.True(t, tr.DisableKeepAlives)
 }

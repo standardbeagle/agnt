@@ -569,10 +569,22 @@ func (d *Daemon) restartProcess(ctx context.Context, proc *goprocess.ManagedProc
 	pm := d.hub.ProcessManager()
 	processID := proc.ID
 
-	// Capture config before stopping
+	// The old lifetime's exit is part of this restart: keep the exit watcher
+	// from tearing down the script's proxies. A failed relaunch tears them
+	// down below instead.
+	d.restartPending.Store(processID, struct{}{})
+	defer d.restartPending.Delete(processID)
+
+	// Capture config before stopping. proc.Env is the env after secret
+	// injection; relaunching from it would replay deleted secrets and append a
+	// second copy of every injected pair. Use the env as launched, before
+	// injection — startScriptWithRetry injects the current secrets again.
 	command := proc.Command
 	args := proc.Args
 	env := proc.Env
+	if launched, ok := d.launchEnv.Load(processID); ok {
+		env = launched.([]string)
+	}
 	projectPath := proc.ProjectPath
 	workingDir := proc.WorkingDir
 
@@ -582,8 +594,7 @@ func (d *Daemon) restartProcess(ctx context.Context, proc *goprocess.ManagedProc
 	var prior autoRestartRegistration
 	wasAutoRestart := false
 	if d.autoRestarter != nil {
-		prior, wasAutoRestart = d.autoRestarter.Registration(processID)
-		d.autoRestarter.Unregister(processID)
+		prior, wasAutoRestart = d.autoRestarter.Take(processID)
 	}
 
 	// Stop the process if running
@@ -638,6 +649,9 @@ func (d *Daemon) restartProcess(ctx context.Context, proc *goprocess.ManagedProc
 	if startupErr != nil {
 		d.readySignaler.SignalFailed(processID, startupErr)
 		d.retireIncidentProcessOwner(processID)
+		// Nothing replaced the stopped process, so its proxies front a dead
+		// upstream.
+		d.emitScriptExited(processID)
 		return nil, startupErr
 	}
 	d.armReadiness(processID, expectedPorts)

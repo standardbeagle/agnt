@@ -178,7 +178,7 @@ func (d *Daemon) shimStartDevServer(ctx context.Context, req *protocol.ShimExecR
 		WorkingDir:  shimWorkingDir(req),
 		Command:     req.Command,
 		Args:        req.Args,
-		Env:         d.injectSecretEnv(req.ProjectPath, nil),
+		Env:         d.injectSecretEnv(req.ProjectPath, "", nil),
 	}
 	result, err := d.hub.ProcessManager().StartOrReuse(ctx, procCfg)
 	if err != nil {
@@ -220,7 +220,7 @@ func (d *Daemon) shimRunOneShot(ctx context.Context, req *protocol.ShimExecReque
 		WorkingDir:  workingDir,
 		Command:     req.Command,
 		Args:        req.Args,
-		Env:         d.injectSecretEnv(req.ProjectPath, nil),
+		Env:         d.injectSecretEnv(req.ProjectPath, "", nil),
 	}
 
 	var notes []string

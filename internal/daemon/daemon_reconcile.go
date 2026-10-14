@@ -67,13 +67,21 @@ func (d *Daemon) reconcileScriptStates(projectPath string) []*script.Entry {
 // and the drop is recorded in the startup log, where the agent and the session
 // log can see that the script's proxies were not cleaned up.
 func (d *Daemon) emitScriptStopped(scriptID string) {
+	d.sendScriptStopped(ProxyEvent{Type: ScriptStopped, ScriptID: scriptID})
+}
+
+// emitScriptExited is emitScriptStopped for a process that exited but is
+// still registered: its proxies go, its readiness stays (KeepReadiness).
+func (d *Daemon) emitScriptExited(scriptID string) {
+	d.sendScriptStopped(ProxyEvent{Type: ScriptStopped, ScriptID: scriptID, KeepReadiness: true})
+}
+
+func (d *Daemon) sendScriptStopped(ev ProxyEvent) {
+	scriptID := ev.ScriptID
 	select {
-	case d.proxyEvents <- ProxyEvent{
-		Type:     ScriptStopped,
-		ScriptID: scriptID,
-	}:
+	case d.proxyEvents <- ev:
 	default:
-		debug.Warn("daemon", "reconcile: proxy event channel full, dropping ScriptStopped for %s", scriptID)
+		debug.Warn("daemon", "proxy event channel full, dropping ScriptStopped for %s", scriptID)
 		if d.startupErrorStore != nil {
 			d.recordStartupEntry(scriptID, stripProcessPrefix(scriptID), "warning", "proxy_event_dropped",
 				fmt.Sprintf("proxy event channel full: script stopped event dropped for %s — proxies may not be cleaned up", scriptID), 0)

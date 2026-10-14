@@ -73,11 +73,11 @@ func TestInjectSecretEnv(t *testing.T) {
 	require.NoError(t, d.storem.Set(projectPath, store.ScopeGlobal, "", "NUM_KEY", 42,
 		map[string]any{store.MetaSecret: true}))
 
-	env := d.injectSecretEnv(projectPath, []string{"EXISTING=1"})
+	env := d.injectSecretEnv(projectPath, "", []string{"EXISTING=1"})
 	assert.Equal(t, []string{"EXISTING=1", "A_KEY=a-value-1234", "B_KEY=b-value-1234"}, env,
 		"only string-valued, env-named secrets are injected, sorted, after existing env")
 
 	// No project path or no entries: env passes through untouched.
-	assert.Equal(t, []string{"X=1"}, d.injectSecretEnv("", []string{"X=1"}))
-	assert.Equal(t, []string{"X=1"}, d.injectSecretEnv(t.TempDir(), []string{"X=1"}))
+	assert.Equal(t, []string{"X=1"}, d.injectSecretEnv("", "", []string{"X=1"}))
+	assert.Equal(t, []string{"X=1"}, d.injectSecretEnv(t.TempDir(), "", []string{"X=1"}))
 }

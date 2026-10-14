@@ -477,6 +477,7 @@ func (s *Scheduler) deliverTask(task *ScheduledTask) {
 
 	// Create HTTP client for overlay socket
 	client := s.createOverlayClient(session.OverlayPath)
+	defer client.CloseIdleConnections()
 
 	// Prepare the message payload
 	payload := map[string]interface{}{
@@ -570,10 +571,14 @@ func (s *Scheduler) handleDeliveryFailure(task *ScheduledTask, errMsg string) {
 }
 
 // createOverlayClient creates an HTTP client that connects via Unix socket.
+// Each delivery builds its own client for one request, so keep-alives are
+// off: a pooled idle connection would outlive the delivery (and its
+// transport) and leak one socket per delivered task.
 func (s *Scheduler) createOverlayClient(socketPath string) *http.Client {
 	return &http.Client{
 		Timeout: s.config.DeliveryTimeout,
 		Transport: &http.Transport{
+			DisableKeepAlives: true,
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 				var d net.Dialer
 				return d.DialContext(ctx, "unix", socketPath)

@@ -359,6 +359,7 @@ func (d *Daemon) registerAndStartScripts(ctx context.Context, cfg *config.AgntCo
 			d.scriptRegistry.Remove(entry.Name, projectPath)
 			d.scriptConfigs.Delete(entry.ProcessID)
 			d.portKillDeclined.Delete(entry.ProcessID)
+			d.launchEnv.Delete(entry.ProcessID)
 			d.runLaunches.Delete(entry.ProcessID)
 			if d.autoRestarter != nil {
 				d.autoRestarter.Unregister(entry.ProcessID)

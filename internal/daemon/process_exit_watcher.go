@@ -302,6 +302,15 @@ func (d *Daemon) watchProcessExit(proc *goprocess.ManagedProcess) {
 
 		d.processExitInfo.Set(info)
 
+		// A script that exits on its own stays in the process manager, so the
+		// URL tracker's removal path never fires ScriptStopped for it and its
+		// proxies kept fronting a dead upstream. Tear them down here unless a
+		// restart will follow: the auto-restart monitor decides for a registered
+		// process (and emits on give-up), restartProcess for a manual restart.
+		if !d.restartWillFollow(proc.ID) {
+			d.emitScriptExited(proc.ID)
+		}
+
 		// Only push an alert for real deaths. A clean exit (reason
 		// "stopped") is always either user-initiated or an expected
 		// short-lived script — pushing those as lifecycle entries
@@ -335,6 +344,15 @@ func (d *Daemon) watchProcessExit(proc *goprocess.ManagedProcess) {
 		debug.Log("daemon", "process %s exited: code=%d reason=%s uptime=%s",
 			proc.ID, info.ExitCode, info.Reason, info.Uptime)
 	})
+}
+
+// restartWillFollow reports whether a process's exit is about to be followed
+// by a relaunch under the same ID, so its proxies should be kept.
+func (d *Daemon) restartWillFollow(processID string) bool {
+	if _, ok := d.restartPending.Load(processID); ok {
+		return true
+	}
+	return d.autoRestarter != nil && d.autoRestarter.IsRegistered(processID)
 }
 
 // exitInfoToResponse merges a ProcessExitInfo into a response map used by

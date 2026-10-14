@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"fmt"
 	"sort"
 
 	"github.com/standardbeagle/agnt/internal/proxy"
@@ -31,12 +32,21 @@ func (d *Daemon) wireSecretSink(server *proxy.ProxyServer) {
 // by NAME without the value ever passing through the agent or the channel
 // event stream. Non-secret entries are never injected; non-string or
 // invalidly named secrets are skipped. Keys are sorted for determinism.
-func (d *Daemon) injectSecretEnv(projectPath string, env []string) []string {
+//
+// A store read failure launches the process without its secrets; that is
+// recorded in the startup log under processID (or project-scoped when
+// processID is empty) so the agent sees why the process lacks them.
+func (d *Daemon) injectSecretEnv(projectPath, processID string, env []string) []string {
 	if projectPath == "" || d.storem == nil {
 		return env
 	}
 	entries, err := d.storem.GetAll(projectPath, store.ScopeGlobal, "")
 	if err != nil {
+		if processID == "" {
+			processID = makeProcessID(projectPath, "secrets")
+		}
+		d.recordStartupEntry(processID, stripProcessPrefix(processID), "warning", "secret_injection_failed",
+			fmt.Sprintf("could not read the project's secrets from the store; the process starts without them: %v", err), 0)
 		return env
 	}
 	keys := make([]string, 0, len(entries))

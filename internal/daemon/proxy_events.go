@@ -474,7 +474,9 @@ func (d *Daemon) handleFallbackPortCheck(event ProxyEvent) {
 }
 
 // processIsLive reports whether the ProcessManager currently holds a running
-// or starting process under processID.
+// or starting process under processID. A running state is checked against the
+// OS: reconciliation emits ScriptStopped precisely for processes whose cached
+// state still says running after their PID died.
 func (d *Daemon) processIsLive(processID string) bool {
 	if d.hub == nil {
 		return false
@@ -483,8 +485,15 @@ func (d *Daemon) processIsLive(processID string) bool {
 	if err != nil {
 		return false
 	}
-	state := proc.State()
-	return state == process.StateRunning || state == process.StateStarting
+	switch proc.State() {
+	case process.StateStarting:
+		return true
+	case process.StateRunning:
+		pid := proc.PID()
+		return pid > 0 && pidAlive(pid)
+	default:
+		return false
+	}
 }
 
 // handleScriptStopped handles script stopped events.
@@ -504,7 +513,14 @@ func (d *Daemon) handleScriptStopped(event ProxyEvent) {
 	// replaced the process and re-armed its readiness by the time it lands.
 	// Every start path resets readiness itself; resetting again here would
 	// wipe the replacement's signal and strand its dependents.
-	if d.readySignaler != nil && !d.processIsLive(event.ScriptID) {
+	//
+	// The same goes for the proxies: a live replacement owns them now, and
+	// stopping them would cut its browser off until the next URL detection.
+	if d.processIsLive(event.ScriptID) {
+		debug.Log("daemon", "Script %s is running again; keeping its proxies", event.ScriptID)
+		return
+	}
+	if d.readySignaler != nil && !event.KeepReadiness {
 		d.readySignaler.Reset(event.ScriptID)
 	}
 

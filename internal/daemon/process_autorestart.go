@@ -240,15 +240,33 @@ func (r *ProcessAutoRestarter) removeIfCurrent(processID string, state *processR
 	r.mu.Unlock()
 }
 
-// Unregister disables auto-restart for a process.
+// Unregister disables auto-restart for a process. It removes whatever
+// registration the id holds: every caller is a stop intent for the process
+// under that id, so a registration made a moment earlier is meant to go too.
+// A caller that needs to put the registration back must use Take, which reads
+// and removes the same instance.
 func (r *ProcessAutoRestarter) Unregister(processID string) {
+	r.Take(processID)
+}
+
+// Take removes the registration for processID and returns what it held, in one
+// step. Reading with Registration and then calling Unregister could remove a
+// registration made between the two calls and hand back the older settings.
+func (r *ProcessAutoRestarter) Take(processID string) (autoRestartRegistration, bool) {
 	r.mu.Lock()
 	old := r.processes[processID]
 	delete(r.processes, processID)
 	r.mu.Unlock()
-	if old != nil {
-		old.monitorCancel()
+	if old == nil {
+		return autoRestartRegistration{}, false
 	}
+	old.monitorCancel()
+	return autoRestartRegistration{
+		Config:        old.config,
+		Env:           old.env,
+		ExpectedPorts: old.expectedPorts,
+		WorkingDir:    old.workingDir,
+	}, true
 }
 
 // IsRegistered checks if a process has auto-restart enabled.
@@ -423,6 +441,8 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string, myState *process
 			// The monitor exits here; drop the registration so IsRegistered
 			// never reports true with nothing watching.
 			r.removeIfCurrent(processID, myState)
+			// No restart follows, so the exit watcher left the proxies to us.
+			r.daemon.emitScriptExited(processID)
 			return
 		}
 
@@ -509,8 +529,14 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string, myState *process
 		// Restart with EADDRINUSE recovery (use startScriptWithRetry instead of StartScript
 		// to avoid re-registering for auto-restart, since we're already monitoring).
 		// No timeout — startup may take a long time (e.g., dotnet restore + compile).
+		//
+		// autoRestart=true: a crash inside the startup watch comes back as the
+		// exited proc, not an error, so the next iteration of this loop sees
+		// it die and runs it through shouldRestart and the backoff. With false,
+		// a fast crasher got exactly one restart and then the monitor quit,
+		// never reaching MaxRestarts, crash_loop_backoff or restart_gave_up.
 		r.daemon.readySignaler.Reset(processID)
-		proc, startupErr := r.daemon.startScriptWithRetry(r.ctx, processID, myState.projectPath, myState.workingDir, myState.command, myState.args, myState.env, myState.expectedPorts, false)
+		proc, startupErr := r.daemon.startScriptWithRetry(r.ctx, processID, myState.projectPath, myState.workingDir, myState.command, myState.args, myState.env, myState.expectedPorts, true)
 
 		if startupErr != nil {
 			debug.Error("daemon", "Failed to restart process %s: %v", processID, startupErr)
@@ -520,6 +546,7 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string, myState *process
 			// leaving the entry would make IsRegistered report true with
 			// nothing watching.
 			r.removeIfCurrent(processID, myState)
+			r.daemon.emitScriptExited(processID)
 
 			// Log restart failure to session log
 			r.daemon.startupErrorStore.Add(&StartupLogEntry{

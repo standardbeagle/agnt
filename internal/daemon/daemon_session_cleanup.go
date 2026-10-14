@@ -815,6 +815,7 @@ func (d *Daemon) doCleanupExact(sessionCode string, expected *Session, expectedP
 			d.scriptRegistry.Remove(entry.Name, projectPath)
 			d.scriptConfigs.Delete(entry.ProcessID)
 			d.portKillDeclined.Delete(entry.ProcessID)
+			d.launchEnv.Delete(entry.ProcessID)
 			d.runLaunches.Delete(entry.ProcessID)
 		}
 
@@ -888,6 +889,7 @@ func (d *Daemon) doCleanupExact(sessionCode string, expected *Session, expectedP
 				d.scriptRegistry.Remove(entry.Name, entry.ProjectPath)
 				d.scriptConfigs.Delete(pid)
 				d.portKillDeclined.Delete(pid)
+				d.launchEnv.Delete(pid)
 				d.runLaunches.Delete(pid)
 			}
 		}

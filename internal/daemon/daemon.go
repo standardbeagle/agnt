@@ -109,6 +109,12 @@ type ProxyEvent struct {
 	Config       *config.ProxyConfig
 	Path         string // Project path
 	OwnerSession string // immutable session owner captured at creation request
+	// KeepReadiness, on ScriptStopped, tears down the proxies but leaves the
+	// process's readiness as it is. Set when the process exited but is still
+	// registered (emitScriptExited): a one-shot prerequisite that exited 0 is
+	// ready for its dependents, and a failed relaunch has recorded a failure
+	// they must see, not a reset that leaves them waiting.
+	KeepReadiness bool
 }
 
 // DaemonConfig holds configuration for the daemon.
@@ -284,6 +290,17 @@ type Daemon struct {
 	// nothing on the process's ports while the mark is set. Not user-visible.
 	// Each StartScript call rewrites the mark; it is retired with scriptConfigs.
 	portKillDeclined sync.Map // processID -> struct{}
+	// launchEnv holds each process's env as launched, before secret injection
+	// (startScriptWithRetry writes it on every launch). Read by restartProcess
+	// (PROC RESTART / RESTART-ALL) so a relaunch re-injects the current
+	// secrets rather than replaying the last ones. Not user-visible; retired
+	// with portKillDeclined.
+	launchEnv sync.Map // processID -> []string
+	// restartPending marks processes that restartProcess (PROC RESTART /
+	// RESTART-ALL) is stopping in order to relaunch. The exit watcher reads it
+	// so the old lifetime's exit does not tear down the script's proxies.
+	// Written and deleted by restartProcess only; not user-visible.
+	restartPending sync.Map // processID -> struct{}
 	// runLaunches marks processes started by the top-level RUN verb (see
 	// runLaunch in hub_run.go). Not user-visible; retired with scriptConfigs.
 	runLaunches  sync.Map // processID -> runLaunch

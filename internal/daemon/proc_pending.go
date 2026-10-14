@@ -32,6 +32,7 @@ import (
 	"context"
 	"sort"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -103,7 +104,15 @@ type pendingEntry struct {
 	// cancel stops the wait goroutine that will launch this process. Nil for
 	// entries registered without one (tests, display-only entries).
 	cancel context.CancelFunc
+	// superseded is set when a newer RegisterLaunch for the same processID
+	// cancelled this one. The replacement owns the process from then on, so
+	// the superseded goroutine must not stop what it may have started.
+	superseded atomic.Bool
 }
+
+// wasSuperseded reports whether this launch was cancelled by a replacement
+// launch rather than by an explicit Cancel (PROC STOP, session cleanup).
+func (e *pendingEntry) wasSuperseded() bool { return e.superseded.Load() }
 
 // NewPendingProcessTracker returns a ready-to-use tracker.
 func NewPendingProcessTracker() *PendingProcessTracker {
@@ -162,6 +171,7 @@ func (t *PendingProcessTracker) RegisterLaunch(p PendingProcess, deps []string, 
 		cancel:    cancel,
 	}
 	if prev, ok := t.entries[p.ProcessID]; ok && prev.cancel != nil {
+		prev.superseded.Store(true)
 		prev.cancel()
 	}
 	t.entries[p.ProcessID] = entry
