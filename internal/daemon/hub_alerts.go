@@ -170,15 +170,6 @@ func (d *Daemon) hubHandleAlertsQuery(conn *hubpkg.Connection, cmd *hubproto.Com
 	return conn.WriteJSON(data)
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, v := range values {
-		if v != "" {
-			return v
-		}
-	}
-	return ""
-}
-
 func tagSuffix(tag string) string {
 	if tag == "" {
 		return ""

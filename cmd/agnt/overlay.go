@@ -761,17 +761,6 @@ func canonicalAutoForwardMessage(event ProxyEvent) string {
 	return ""
 }
 
-// matchesJSCascade reports whether canonical contains any configured
-// cascade pattern. Patterns are pre-lowercased; matching is case-
-// insensitive substring.
-func (o *Overlay) matchesJSCascade(canonical string) bool {
-	w := o.alertQueue.Load()
-	if w == nil {
-		return false
-	}
-	return matchesCascade(canonical, w.jsCascadePatterns)
-}
-
 // injectOrFallback routes a match through the canonical alert queue (dedup,
 // batch, activity-defer). When no scanner is wired — alerts disabled in
 // config (setupAlertScanner returns nil) or the pipeline goroutine has not
