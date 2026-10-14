@@ -47,22 +47,24 @@ func (m *Manager) Start(ctx context.Context, id string, config Config) (*Tunnel,
 
 	tunnel := New(config)
 
-	// Store before starting to prevent race
+	// Store before starting to prevent race. The entry is listed (its Info
+	// reports it starting) from here on, so it is counted from here on too:
+	// List and ActiveCount must agree during startup.
 	if _, loaded := m.tunnels.LoadOrStore(id, tunnel); loaded {
 		return nil, ErrTunnelExists
 	}
+	m.active.Add(1)
 
 	if err := tunnel.Start(ctx); err != nil {
-		m.tunnels.Delete(id)
+		m.tunnels.CompareAndDelete(id, tunnel)
+		m.active.Add(-1)
 		return nil, err
 	}
 
-	m.active.Add(1)
-
-	// Clean up when tunnel exits
+	// Clean up when tunnel exits. Retire this tunnel's own entry only.
 	go func() {
 		<-tunnel.Done()
-		m.tunnels.Delete(id)
+		m.tunnels.CompareAndDelete(id, tunnel)
 		m.active.Add(-1)
 	}()
 

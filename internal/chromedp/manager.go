@@ -228,7 +228,7 @@ func (m *SessionManager) Start(ctx context.Context, id string, config SessionCon
 		for {
 			cur := quota.active.Load()
 			if cur >= projectMax {
-				m.sessions.Delete(id)
+				m.sessions.CompareAndDelete(id, session)
 				return nil, fmt.Errorf(
 					"cannot start browser automation session %q: %w of %d for this project "+
 						"(each session is a full Chrome process using hundreds of MB). "+
@@ -251,7 +251,7 @@ func (m *SessionManager) Start(ctx context.Context, id string, config SessionCon
 	for {
 		cur := m.active.Load()
 		if cur >= max {
-			m.sessions.Delete(id)
+			m.sessions.CompareAndDelete(id, session)
 			releaseProject()
 			return nil, fmt.Errorf(
 				"cannot start browser automation session %q: %w of %d across all projects "+
@@ -266,7 +266,7 @@ func (m *SessionManager) Start(ctx context.Context, id string, config SessionCon
 	}
 
 	if err := m.startSession(ctx, session); err != nil {
-		m.sessions.Delete(id)
+		m.sessions.CompareAndDelete(id, session)
 		m.active.Add(-1) // release the reserved slot
 		releaseProject()
 		m.totalFailed.Add(1)
@@ -278,7 +278,7 @@ func (m *SessionManager) Start(ctx context.Context, id string, config SessionCon
 	// Clean up when session exits
 	go func() {
 		<-session.Done()
-		m.sessions.Delete(id)
+		m.sessions.CompareAndDelete(id, session)
 		m.active.Add(-1)
 		releaseProject()
 	}()

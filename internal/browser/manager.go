@@ -48,23 +48,26 @@ func (m *Manager) Start(ctx context.Context, id string, config Config) (*Browser
 
 	browser := New(config)
 
-	// Store before starting to prevent race
+	// Store before starting to prevent race. The entry is listed from here
+	// on, so it is counted from here on too: List and ActiveCount must agree
+	// during startup.
 	if _, loaded := m.browsers.LoadOrStore(id, browser); loaded {
 		return nil, ErrBrowserExists
 	}
+	m.active.Add(1)
 
 	if err := browser.Start(ctx); err != nil {
-		m.browsers.Delete(id)
+		m.browsers.CompareAndDelete(id, browser)
+		m.active.Add(-1)
 		return nil, err
 	}
 
-	m.active.Add(1)
 	m.totalStarted.Add(1)
 
-	// Clean up when browser exits
+	// Clean up when browser exits. Retire this browser's own entry only.
 	go func() {
 		<-browser.Done()
-		m.browsers.Delete(id)
+		m.browsers.CompareAndDelete(id, browser)
 		m.active.Add(-1)
 	}()
 
