@@ -67,6 +67,18 @@ var routes = map[Source]route{
 		skill:   "daemon-debug",
 		context: []string{"proxy_id", "process_id"},
 	},
+	SourceHTTP5xxUntrusted: {
+		primary: toolCall{"proxylog", map[string]any{
+			"types":        []string{"http"},
+			"status_codes": []int{500, 502, 503, 504},
+		}},
+		fallback: toolCall{"proc", map[string]any{
+			"action": "output",
+			"tail":   200,
+		}},
+		skill:   "daemon-debug",
+		context: []string{"proxy_id", "process_id"},
+	},
 	SourceHTTP4xx: {
 		primary: toolCall{"proxylog", map[string]any{
 			"types":        []string{"http"},

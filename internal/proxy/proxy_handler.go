@@ -603,7 +603,6 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 			// The body is partially consumed; forwarding it with the original
 			// Content-Length intact would leave the backend waiting for bytes
 			// that never come (hang). Fail the request instead.
-			reqBody = fmt.Sprintf("[request body not captured: read error: %v]", err)
 			ps.logger.LogHTTP(HTTPLogEntry{
 				ID:             reqID,
 				Timestamp:      startTime,
@@ -618,8 +617,12 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		reqBody = string(bodyBytes)
-		// Restore body for proxy
+		// Restore body for proxy. GetBody lets a transport retry replay it
+		// (TLSFallbackTransport's insecure retry after a certificate error).
 		r.Body = io.NopCloser(bytes.NewReader(bodyBytes))
+		r.GetBody = func() (io.ReadCloser, error) {
+			return io.NopCloser(bytes.NewReader(bodyBytes)), nil
+		}
 	}
 
 	// For WebSocket upgrades, proxy directly without response recording
@@ -675,6 +678,7 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		ResponseWriter: w,
 		statusCode:     http.StatusOK,
 		body:           &bytes.Buffer{},
+		reqID:          reqID,
 	}
 
 	// Wrap with chaos writers if needed
@@ -735,19 +739,30 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		ResponseHeaders: respHeaders,
 		ResponseBody:    respBody,
 		Duration:        duration,
+		Error:           recorder.proxyErr,
 	}
-	ps.logger.LogHTTP(httpEntry)
+	if recorder.clientCanceled {
+		httpEntry.StatusCode = StatusClientClosedRequest
+	}
+	// An error response becomes an incident whose text is the request's method
+	// and path, so the caller's trust is recorded with it: a visitor on a
+	// public tunnel chooses that path. Only error responses pay for the check.
+	isError := httpEntry.StatusCode >= 400 && httpEntry.StatusCode != StatusClientClosedRequest
+	if isError {
+		httpEntry.Untrusted = !ps.httpCallerTrusted(r)
+	}
+	ps.logger.LogFromConnection(LogEntry{Type: LogTypeHTTP, HTTP: &httpEntry}, httpEntry.Untrusted)
 
 	// Track page session
 	ps.pageTracker.TrackHTTPRequest(httpEntry)
 
 	// Auto-forward HTTP errors (5xx, 4xx) to overlay for PTY injection. The
-	// transaction is already in the traffic log (LogHTTP above), so overlay
-	// forwarding is supplementary — surface a failure to the debug log.
-	if ps.overlayNotifier.IsEnabled() && httpEntry.StatusCode >= 400 {
-		if err := ps.overlayNotifier.NotifyHTTPError(ps.ID, httpEntry); err != nil {
-			debug.Log("proxy", "failed to forward HTTP error to overlay: %v", err)
-		}
+	// transaction is already in the traffic log (above), so overlay forwarding
+	// is supplementary. It types the request's method and path into the
+	// agent's terminal, so — like a browser error frame — only for a trusted
+	// caller. The queue is non-blocking (see OverlayNotifier.EnqueueHTTPError).
+	if isError && !httpEntry.Untrusted && ps.overlayNotifier.IsEnabled() {
+		ps.overlayNotifier.EnqueueHTTPError(ps.ID, httpEntry)
 	}
 }
 
@@ -770,7 +785,20 @@ type responseRecorder struct {
 	body        *bytes.Buffer
 	wroteHeader bool
 	truncated   bool
+
+	// reqID is handleProxy's id for this request; errorHandler reuses it.
+	reqID string
+	// proxyErr and clientCanceled are set by errorHandler when the reverse
+	// proxy failed, so handleProxy's single log entry carries the outcome.
+	proxyErr       string
+	clientCanceled bool
 }
+
+// StatusClientClosedRequest is the status recorded for a request whose
+// client went away before the response completed (tab closed, navigation,
+// AbortController) — nginx's 499. It is not an upstream failure:
+// incident.FromHTTPEntry and the overlay forward both drop it.
+const StatusClientClosedRequest = 499
 
 func (rr *responseRecorder) WriteHeader(statusCode int) {
 	if !rr.wroteHeader {

@@ -18,6 +18,16 @@ import (
 	"github.com/standardbeagle/agnt/internal/debug"
 )
 
+// responseHasNoBody reports whether resp may not carry a body (RFC 9110 §6.4.1).
+func responseHasNoBody(resp *http.Response) bool {
+	if resp.Request != nil && resp.Request.Method == http.MethodHead {
+		return true
+	}
+	return (resp.StatusCode >= 100 && resp.StatusCode < 200) ||
+		resp.StatusCode == http.StatusNoContent ||
+		resp.StatusCode == http.StatusNotModified
+}
+
 // modifyResponse rewrites URLs and injects JavaScript into HTML responses.
 func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 	// The upstream answered (whatever the status): any outage the loading page
@@ -39,6 +49,14 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 
 	// Rewrite Set-Cookie headers for domain/path
 	ps.rewriteSetCookieHeaders(resp)
+
+	// No body to inject into: a HEAD response (its Content-Length describes
+	// the GET body it did not send), an informational 1xx, 204 No Content and
+	// 304 Not Modified. Injecting would give each a body it must not have and
+	// a Content-Length that contradicts the real resource.
+	if responseHasNoBody(resp) {
+		return nil
+	}
 
 	contentType := resp.Header.Get("Content-Type")
 	if !ShouldInject(contentType) {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gorilla/websocket"
 	"github.com/standardbeagle/agnt/internal/debug"
@@ -236,17 +237,42 @@ func (c *wsConnState) handleFrameActive(msg *wsMessage) {
 	c.ps.SetActiveFrame(msg.FrameID)
 }
 
+// Caps on the browser-supplied text of an error frame. The sender chooses
+// these strings (an untrusted visitor included), and each error is kept in the
+// traffic log and its page session, so they are cut at parse.
+const (
+	maxFrontendErrorFieldBytes = 4 * 1024  // message, source, error, URL
+	maxFrontendErrorStackBytes = 16 * 1024 // stack
+)
+
+// truncateUTF8 cuts s to at most max bytes without splitting a UTF-8
+// sequence, marking a cut with a trailing ellipsis (within max).
+func truncateUTF8(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	const mark = "…"
+	cut := max - len(mark)
+	if cut < 0 {
+		cut = 0
+	}
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + mark
+}
+
 func (c *wsConnState) handleError(msg *wsMessage) {
 	errEntry := FrontendError{
 		ID:        c.id,
 		Timestamp: c.timestamp,
-		Message:   getStringField(msg.Data, "message"),
-		Source:    getStringField(msg.Data, "source"),
+		Message:   truncateUTF8(getStringField(msg.Data, "message"), maxFrontendErrorFieldBytes),
+		Source:    truncateUTF8(getStringField(msg.Data, "source"), maxFrontendErrorFieldBytes),
 		LineNo:    getIntField(msg.Data, "lineno"),
 		ColNo:     getIntField(msg.Data, "colno"),
-		Error:     getStringField(msg.Data, "error"),
-		Stack:     getStringField(msg.Data, "stack"),
-		URL:       msg.URL,
+		Error:     truncateUTF8(getStringField(msg.Data, "error"), maxFrontendErrorFieldBytes),
+		Stack:     truncateUTF8(getStringField(msg.Data, "stack"), maxFrontendErrorStackBytes),
+		URL:       truncateUTF8(msg.URL, maxFrontendErrorFieldBytes),
 	}
 	errEntry.Untrusted = !c.trusted
 	c.record(LogEntry{Type: LogTypeError, FrameID: msg.FrameID, Error: &errEntry})
@@ -254,7 +280,8 @@ func (c *wsConnState) handleError(msg *wsMessage) {
 
 	// Auto-forward browser errors to overlay for PTY injection. The
 	// error is already in the traffic log (LogError above), so overlay
-	// forwarding is supplementary — surface a failure to the debug log.
+	// forwarding is supplementary. It is queued: a synchronous send held this
+	// connection's read loop for up to the notifier's 5s timeout.
 	//
 	// Only for a trusted connection. An error frame's text is whatever the
 	// sender says it is, and this forward types it into the agent's terminal.
@@ -262,9 +289,7 @@ func (c *wsConnState) handleError(msg *wsMessage) {
 	// diagnostic for that, since the visitor did nothing wrong and a public
 	// page would raise one per visitor.
 	if c.trusted && c.ps.overlayNotifier.IsEnabled() {
-		if err := c.ps.overlayNotifier.NotifyBrowserError(c.ps.ID, errEntry); err != nil {
-			debug.Log("proxy", "failed to forward browser error to overlay: %v", err)
-		}
+		c.ps.overlayNotifier.EnqueueBrowserError(c.ps.ID, errEntry)
 	}
 }
 

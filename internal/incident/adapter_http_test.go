@@ -84,3 +84,16 @@ func TestFromHTTPEntry_ReadinessSentinelIsNotAnIncident(t *testing.T) {
 		})
 	}
 }
+
+// A request the client abandoned (tab closed, AbortController) is recorded by
+// the proxy as 499. It is not a backend failure and must not become an
+// incident — before, the same request arrived as an error-severity http_5xx.
+func TestFromHTTPEntry_ClientClosedRequestIsNotAnIncident(t *testing.T) {
+	he := httpEntry("GET", "/api/slow", proxy.StatusClientClosedRequest)
+	he.Error = "context canceled"
+	_, ok := FromHTTPEntry(he, "dev")
+	assert.False(t, ok)
+
+	_, ok = FromHTTPEntry(httpEntry("GET", "/api/slow", 502), "dev")
+	assert.True(t, ok, "premise: a real 502 is still an incident")
+}

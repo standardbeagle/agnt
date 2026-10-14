@@ -9,11 +9,24 @@ import (
 
 // FromHTTPEntry converts a logged HTTP request/response into an IncidentEvent.
 // Returns (event, true) for 4xx/5xx responses; returns (zero, false) for 2xx/3xx
-// which do not warrant incidents.
+// and for a client-cancelled request (499), which do not warrant incidents.
+//
+// A request from an untrusted caller (he.Untrusted) is the visitor's choice of
+// method and path. Its 4xx is dropped: a visitor probing paths is not a fault
+// in the app, and each probe would otherwise be an incident. Its 5xx is still
+// an incident — the backend failed — but under SourceHTTP5xxUntrusted, as a
+// warning, with the text labelled; all of it stays in the traffic log.
 func FromHTTPEntry(he proxy.HTTPLogEntry, proxyID string) (IncidentEvent, bool) {
 	var src Source
 	var sev Severity
 	var statusClass string
+
+	// A client that went away (tab closed, navigation, AbortController) is
+	// not a backend failure; the proxy records it as 499 so it lands here
+	// instead of as an http_5xx error.
+	if he.StatusCode == proxy.StatusClientClosedRequest {
+		return IncidentEvent{}, false
+	}
 
 	switch {
 	case he.StatusCode >= 500:
@@ -26,6 +39,13 @@ func FromHTTPEntry(he proxy.HTTPLogEntry, proxyID string) (IncidentEvent, bool) 
 		statusClass = "4xx"
 	default:
 		return IncidentEvent{}, false
+	}
+	if he.Untrusted {
+		if src != SourceHTTP5xx {
+			return IncidentEvent{}, false
+		}
+		src = SourceHTTP5xxUntrusted
+		sev = SeverityWarning
 	}
 
 	// The readiness gate's own 503 is not a backend error to chase — it is agnt
@@ -46,6 +66,9 @@ func FromHTTPEntry(he proxy.HTTPLogEntry, proxyID string) (IncidentEvent, bool) 
 			body = body[:500]
 		}
 		msg += "\n" + body
+	}
+	if he.Untrusted {
+		msg = UntrustedLabel + msg
 	}
 
 	ev := NewIncidentEvent(

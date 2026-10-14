@@ -182,6 +182,7 @@ Source of truth: inbox = cache of the originating subsystem; bus = transient (dr
 6. **Blob store per-session, best-effort.** Oversized bytes spill into the destination session's store; `detail:"full"` hydrates only from that store. A `BlobRef` may resolve nil — fall back to `Summary`, never another session's store.
 7. **Pinger never blocks delivery** — non-blocking sends to every sink.
 8. **Push policy is project-isolated and live** — keyed by normalized project path, resolved per ping; one project's update never touches another's sinks or inbox.
+9. **Untrusted callers are labelled, not trusted.** An error response to a request `httpCallerTrusted` refuses is logged `Untrusted`; its 4xx is no incident, its 5xx is `http_5xx_untrusted` (warning, labelled), like `browser_js_untrusted`.
 
 Files: `envelope.go`, `fingerprint.go`, `adapter_{alert,browser,diag,http,proc}.go`, `dedup.go`, `inbox.go`, `coalesce.go`, `flow.go`, `ping.go`, `remediation.go`, `bus.go` (all `internal/incident/`); `internal/tools/get_incidents.go`; `internal/daemon/hub_incidents.go`.
 

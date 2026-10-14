@@ -600,7 +600,11 @@ func (d *Daemon) fireToIncidentBusForOwner(entry proxy.LogEntry, proxyID string,
 		if entry.HTTP.Chaos {
 			return
 		}
-		if ev, ok := incident.FromHTTPEntry(*entry.HTTP, proxyID); ok {
+		// As for browser errors below: either placement of the trust marker
+		// must reach the adapter.
+		he := *entry.HTTP
+		he.Untrusted = he.Untrusted || entry.Untrusted
+		if ev, ok := incident.FromHTTPEntry(he, proxyID); ok {
 			if d.stampIncidentOwner(&ev, &d.incidentProxyOwner, proxyID, owner) {
 				d.incidentBus.Publish(ev)
 			}

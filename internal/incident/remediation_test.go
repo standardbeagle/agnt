@@ -65,6 +65,7 @@ func repoRoot(t *testing.T) string {
 var allSources = []Source{
 	SourceBrowserJS,
 	SourceHTTP5xx,
+	SourceHTTP5xxUntrusted,
 	SourceHTTP4xx,
 	SourceTransportErr,
 	SourceProxyDiag,

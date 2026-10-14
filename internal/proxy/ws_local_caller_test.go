@@ -380,17 +380,24 @@ func TestErrorFrame_NotForwardedToOverlayForUntrustedCaller(t *testing.T) {
 	ps.OverlayNotifier().SetEndpoint(socketPath)
 	trusted, _ := newGateConn(t, ps, true)
 	dispatch(trusted, msg)
-	if len(oc.all()) != 1 {
-		t.Fatalf("premise broken: a trusted error frame must be forwarded to the overlay")
-	}
+	require.Eventually(t, func() bool { return len(oc.all()) == 1 }, 3*time.Second, 5*time.Millisecond,
+		"premise broken: a trusted error frame must be forwarded to the overlay")
 
 	ps = newGateProxy(t)
 	oc, socketPath = startOverlayCapture(t)
 	ps.OverlayNotifier().SetEndpoint(socketPath)
 	untrusted, _ := newGateConn(t, ps, false)
 	dispatch(untrusted, msg)
-	assert.Empty(t, oc.all(), "an untrusted error frame must not be forwarded to the overlay")
 	assert.Len(t, ps.Logger().Query(LogFilter{Types: []LogEntryType{LogTypeError}}), 1, "it is still logged as telemetry")
+
+	// The forward is queued and sent in order: once a trusted sentinel sent
+	// after it has arrived, a forwarded untrusted frame would have too.
+	sentinel, _ := newGateConn(t, ps, true)
+	dispatch(sentinel, &wsMessage{Type: "error", Data: map[string]interface{}{"message": "sentinel"}})
+	require.Eventually(t, func() bool { return len(oc.all()) >= 1 }, 3*time.Second, 5*time.Millisecond)
+	got := oc.all()
+	require.Len(t, got, 1, "an untrusted error frame must not be forwarded to the overlay")
+	assert.NotContains(t, got[0], agentInputMarker)
 }
 
 // The refusal toast is spaced out per connection: a burst of refused frames

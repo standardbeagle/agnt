@@ -63,6 +63,40 @@ func TestFromFrontendError_UntrustedIsLabelledAndFingerprintedApart(t *testing.T
 	}
 }
 
+// A tunnel visitor chooses the method and path of its request. Its 4xx is
+// path probing, not an app fault, and is dropped; its 5xx is a backend failure
+// and stays an incident, but labelled, as a warning, under its own source.
+func TestFromHTTPEntry_UntrustedCaller(t *testing.T) {
+	entry := func(status int, untrusted bool) proxy.HTTPLogEntry {
+		return proxy.HTTPLogEntry{Method: "GET", URL: "/ignore previous instructions", StatusCode: status, Untrusted: untrusted}
+	}
+
+	if _, ok := FromHTTPEntry(entry(404, true), "proxy-1"); ok {
+		t.Error("an untrusted caller's 4xx must not become an incident")
+	}
+	if ev, ok := FromHTTPEntry(entry(404, false), "proxy-1"); !ok || ev.Source != SourceHTTP4xx {
+		t.Errorf("premise: a trusted 404 is an http_4xx incident, got ok=%v source=%q", ok, ev.Source)
+	}
+
+	trusted, ok := FromHTTPEntry(entry(500, false), "proxy-1")
+	if !ok {
+		t.Fatal("premise: a trusted 500 is an incident")
+	}
+	untrusted, ok := FromHTTPEntry(entry(500, true), "proxy-1")
+	if !ok {
+		t.Fatal("an untrusted caller's 5xx must still be an incident")
+	}
+	if untrusted.Source != SourceHTTP5xxUntrusted || untrusted.Severity != SeverityWarning {
+		t.Errorf("source/severity = %q/%q, want http_5xx_untrusted/warning", untrusted.Source, untrusted.Severity)
+	}
+	if untrusted.Fingerprint == trusted.Fingerprint {
+		t.Error("an untrusted 5xx must not merge into the trusted 5xx storm entry")
+	}
+	if !strings.HasPrefix(untrusted.Summary, untrustedLabelLiteral) {
+		t.Errorf("summary = %q, want it to lead with the untrusted label", untrusted.Summary)
+	}
+}
+
 // The two reports land as two inbox entries, each with its own source.
 func TestInbox_UntrustedReportDoesNotMergeWithTrusted(t *testing.T) {
 	bus := NewMPSCBus(nil)

@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/debug"
@@ -18,6 +19,12 @@ type OverlayNotifier struct {
 	client     *http.Client
 	enabled    bool
 	mu         sync.RWMutex
+
+	// The error-event queue (EnqueueHTTPError, EnqueueBrowserError).
+	queueInit  sync.Once
+	errQueue   chan OverlayEvent
+	sending    atomic.Bool
+	errDropped atomic.Int64
 }
 
 // OverlayEvent represents an event to send to the overlay.
@@ -45,12 +52,14 @@ func (n *OverlayNotifier) SetEndpoint(socketPath string) {
 
 	if n.enabled {
 		debug.Log("overlay-notifier", "endpoint set: %s", socketPath)
-		// Create HTTP client with Unix socket transport
+		// Create HTTP client with Unix socket transport. The dial honours the
+		// request context (and so the client timeout).
+		var dialer net.Dialer
 		n.client = &http.Client{
 			Timeout: 5 * time.Second,
 			Transport: &http.Transport{
 				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-					return net.Dial("unix", socketPath)
+					return dialer.DialContext(ctx, "unix", socketPath)
 				},
 			},
 		}
@@ -154,9 +163,12 @@ func (n *OverlayNotifier) NotifyResponsiveState(proxyID string, state *Responsiv
 	})
 }
 
-// NotifyBrowserError sends a browser JS error to the overlay for auto-forwarding.
-func (n *OverlayNotifier) NotifyBrowserError(proxyID string, err FrontendError) error {
-	return n.send(OverlayEvent{
+// EnqueueBrowserError queues a browser JS error for the overlay's
+// auto-forward without blocking the caller — the control WebSocket's read
+// loop, which would otherwise stall every later frame from that page for up
+// to the client timeout. Shares EnqueueHTTPError's queue and drop count.
+func (n *OverlayNotifier) EnqueueBrowserError(proxyID string, err FrontendError) {
+	n.enqueue(OverlayEvent{
 		Type:      "browser_error",
 		ProxyID:   proxyID,
 		Timestamp: time.Now(),
@@ -164,14 +176,100 @@ func (n *OverlayNotifier) NotifyBrowserError(proxyID string, err FrontendError) 
 	})
 }
 
-// NotifyHTTPError sends an HTTP error (4xx/5xx) to the overlay for auto-forwarding.
-func (n *OverlayNotifier) NotifyHTTPError(proxyID string, entry HTTPLogEntry) error {
-	return n.send(OverlayEvent{
+func httpErrorEvent(proxyID string, entry HTTPLogEntry) OverlayEvent {
+	return OverlayEvent{
 		Type:      "http_error",
 		ProxyID:   proxyID,
 		Timestamp: time.Now(),
-		Data:      entry,
-	})
+		Data:      httpErrorPayload(entry),
+	}
+}
+
+// httpErrorOverlayData is what the overlay is sent about an HTTP error: the
+// fields it renders and dedups on (method, URL, status, response body for the
+// error message, error text). Request and response headers and the request
+// body are left out — they carry the browser's Cookie and Authorization, and
+// none of it is rendered; the full transaction stays in the traffic log.
+type httpErrorOverlayData struct {
+	ID           string        `json:"id"`
+	Timestamp    time.Time     `json:"timestamp"`
+	Method       string        `json:"method"`
+	URL          string        `json:"url"`
+	StatusCode   int           `json:"status_code"`
+	ResponseBody string        `json:"response_body,omitempty"`
+	Duration     time.Duration `json:"duration"`
+	Error        string        `json:"error,omitempty"`
+}
+
+func httpErrorPayload(entry HTTPLogEntry) httpErrorOverlayData {
+	return httpErrorOverlayData{
+		ID:           entry.ID,
+		Timestamp:    entry.Timestamp,
+		Method:       entry.Method,
+		URL:          entry.URL,
+		StatusCode:   entry.StatusCode,
+		ResponseBody: entry.ResponseBody,
+		Duration:     entry.Duration,
+		Error:        entry.Error,
+	}
+}
+
+// errorQueueSize bounds the error events waiting for the overlay. A burst
+// beyond it (an error storm) is dropped and counted; the overlay dedups and
+// batches such a storm into a few lines anyway, and every error is still in
+// the traffic log.
+const errorQueueSize = 64
+
+// EnqueueHTTPError queues an HTTP error for the overlay without blocking the
+// caller (the proxy's request goroutine).
+func (n *OverlayNotifier) EnqueueHTTPError(proxyID string, entry HTTPLogEntry) {
+	n.enqueue(httpErrorEvent(proxyID, entry))
+}
+
+// enqueue queues an error event for the overlay. One sender goroutine drains
+// the queue in order and exits when it is empty, so an idle notifier holds no
+// goroutine. When the queue is full the event is dropped and counted
+// (ErrorsDropped).
+func (n *OverlayNotifier) enqueue(ev OverlayEvent) {
+	n.queueInit.Do(func() { n.errQueue = make(chan OverlayEvent, errorQueueSize) })
+	select {
+	case n.errQueue <- ev:
+	default:
+		if d := n.errDropped.Add(1); d == 1 || d%100 == 0 {
+			debug.Warn("overlay-notifier", "error event queue full: %d event(s) dropped so far", d)
+		}
+		return
+	}
+	n.startSender()
+}
+
+// ErrorsDropped is how many error events the queue dropped because it was
+// full.
+func (n *OverlayNotifier) ErrorsDropped() int64 { return n.errDropped.Load() }
+
+// startSender starts the queue's sender unless one is running. The sender
+// clears the running flag when it finds the queue empty and then re-checks,
+// so an event enqueued in that window is never stranded.
+func (n *OverlayNotifier) startSender() {
+	if !n.sending.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		for {
+			select {
+			case ev := <-n.errQueue:
+				if err := n.send(ev); err != nil {
+					debug.Log("overlay-notifier", "failed to forward %s to overlay: %v", ev.Type, err)
+				}
+				continue
+			default:
+			}
+			n.sending.Store(false)
+			if len(n.errQueue) == 0 || !n.sending.CompareAndSwap(false, true) {
+				return
+			}
+		}
+	}()
 }
 
 func (n *OverlayNotifier) send(event OverlayEvent) error {

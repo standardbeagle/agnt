@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"strings"
@@ -178,10 +179,23 @@ func (t *TLSFallbackTransport) RoundTrip(req *http.Request) (*http.Response, err
 		t.onSkipped(err)
 	}
 
-	// Clone request so the body can be replayed (bodies are one-shot).
-	// For retries, the body was already read by the first attempt only if
-	// there was one — GET/HEAD have no body, POST retries are best-effort.
-	return t.insecure.RoundTrip(req)
+	// Retry without verification. The failed RoundTrip has closed the
+	// request body, so a request with one is retried only when it can be
+	// replayed (GetBody); otherwise this request fails with the certificate
+	// error, and the bypass, now active, serves the next one.
+	retry := req
+	if req.Body != nil && req.Body != http.NoBody {
+		if req.GetBody == nil {
+			return nil, fmt.Errorf("TLS verification bypass enabled, but this request's body cannot be replayed; retry the request: %w", err)
+		}
+		body, gerr := req.GetBody()
+		if gerr != nil {
+			return nil, fmt.Errorf("TLS verification bypass enabled, but replaying the request body failed (%v): %w", gerr, err)
+		}
+		retry = req.Clone(req.Context())
+		retry.Body = body
+	}
+	return t.insecure.RoundTrip(retry)
 }
 
 // isCertError reports whether err (or any wrapped error) is a TLS certificate

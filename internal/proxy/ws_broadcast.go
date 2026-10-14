@@ -233,7 +233,7 @@ func (ps *ProxyServer) BroadcastToolEvent(name, action, detail string) int {
 	return ps.broadcastTrusted(messageBytes)
 }
 
-// BroadcastProxyDiagnostic sends a diagnostic event to all connected browser clients.
+// BroadcastProxyDiagnostic sends a diagnostic event to the trusted browser clients.
 // This allows the browser to receive server-side proxy errors for debugging.
 // Returns the number of clients that received the diagnostic.
 func (ps *ProxyServer) BroadcastProxyDiagnostic(diag *ProxyDiagnostic) int {
@@ -255,7 +255,10 @@ func (ps *ProxyServer) BroadcastProxyDiagnostic(diag *ProxyDiagnostic) int {
 		return 0
 	}
 
-	sentCount := ps.broadcastRaw(messageBytes)
+	// A diagnostic carries the target URL, raw upstream errors and request
+	// paths: operator material, so trusted connections only (a visitor on a
+	// public tunnel is a connected client too).
+	sentCount := ps.broadcastTrusted(messageBytes)
 	debug.Log("proxy", "BroadcastProxyDiagnostic: sent to %d clients: %s - %s", sentCount, diag.Event, diag.Message)
 	return sentCount
 }

@@ -192,6 +192,42 @@ func (ps *ProxyServer) controlCallerTrusted(r *http.Request) bool {
 //     already read the project and type into the terminal. Out of scope, as
 //     it is for every loopback listener.
 func (ps *ProxyServer) isLocalControlCaller(r *http.Request) bool {
+	return ps.isLocalCaller(r, true)
+}
+
+// httpCallerTrusted is controlCallerTrusted for an ordinary proxied HTTP
+// request, decided per request: whether what that request chose (its method
+// and path) may be typed into the agent's terminal by the HTTP-error
+// auto-forward. The rules are controlCallerTrusted's, with one difference in
+// the local-caller rule: a browser sends no Origin on a same-origin GET or a
+// navigation, so an absent Origin is accepted there; a present one must still
+// be the proxy's own loopback origin (sameLoopbackOrigin). On top of that, a
+// request the browser itself labels cross-site (Sec-Fetch-Site) is never
+// trusted: a page on another site the developer visits can make the browser
+// request any path on the proxy, but cannot remove that label.
+func (ps *ProxyServer) httpCallerTrusted(r *http.Request) bool {
+	if strings.EqualFold(r.Header.Get("Sec-Fetch-Site"), "cross-site") {
+		return false
+	}
+	if _, ok := AccessIdentityFrom(r.Context()); ok {
+		return true
+	}
+	if tunnelled, _ := r.Context().Value(tunnelledKey{}).(bool); tunnelled {
+		return false
+	}
+	if ps.isLocalCaller(r, false) {
+		return true
+	}
+	if origin := r.Header.Get("Origin"); origin != "" && isLoopbackAuthority(r.Host) && !sameLoopbackOrigin(r) {
+		return false // a loopback-addressed request from a foreign page
+	}
+	caller := ps.devOIDCCaller(r)
+	return caller.Local || caller.TailnetLogin != ""
+}
+
+// isLocalCaller is the local-caller rule (see isLocalControlCaller). With
+// requireOrigin false, an absent Origin passes (c); a present one must match.
+func (ps *ProxyServer) isLocalCaller(r *http.Request, requireOrigin bool) bool {
 	if !ps.localRuleAppliesToPublicURL() {
 		return false // (e)
 	}
@@ -206,7 +242,7 @@ func (ps *ProxyServer) isLocalControlCaller(r *http.Request) bool {
 	if err != nil || port != strconv.Itoa(ps.BoundPort()) || !isLoopbackAuthority(r.Host) {
 		return false // (b)
 	}
-	if !sameLoopbackOrigin(r) {
+	if (requireOrigin || r.Header.Get("Origin") != "") && !sameLoopbackOrigin(r) {
 		return false // (c)
 	}
 	return !hasReverseProxyFingerprint(r) // (d)
@@ -214,11 +250,23 @@ func (ps *ProxyServer) isLocalControlCaller(r *http.Request) bool {
 
 // errorHandler handles proxy errors.
 func (ps *ProxyServer) errorHandler(w http.ResponseWriter, r *http.Request, err error) {
-	seq := ps.requestSeq.Add(1)
-	reqID := fmt.Sprintf("req-%d", seq)
+	// Through handleProxy the request already has an id; the diagnostic uses
+	// it so it points at the request's one HTTP entry.
+	rec, _ := w.(*responseRecorder)
+	var reqID string
+	if rec != nil && rec.reqID != "" {
+		reqID = rec.reqID
+	} else {
+		reqID = fmt.Sprintf("req-%d", ps.requestSeq.Add(1))
+	}
 	timestamp := time.Now()
 
 	errStr := err.Error()
+
+	// r is the reverse proxy's outbound request, whose URL is the absolute
+	// target URL — ScrubSharePath only recognises a path, so scrub the
+	// request URI (path and query), as handleProxy does for the inbound one.
+	scrubbedPath := publish.ScrubSharePath(r.URL.RequestURI())
 
 	// Distinguish downstream (client) cancellation from upstream transport failure.
 	// A client disconnect (tab close, navigation, AbortController) surfaces here as
@@ -242,14 +290,30 @@ func (ps *ProxyServer) errorHandler(w http.ResponseWriter, r *http.Request, err 
 		ps.FlushConnections()
 	}
 
-	ps.logger.LogHTTP(HTTPLogEntry{
-		ID:         reqID,
-		Timestamp:  timestamp,
-		Method:     r.Method,
-		URL:        publish.ScrubSharePath(r.URL.String()),
-		StatusCode: http.StatusBadGateway,
-		Error:      errStr,
-	})
+	// One HTTP entry per request. Through handleProxy, w is its recorder and
+	// handleProxy logs the transaction after ServeHTTP returns — logging here
+	// too recorded the request twice under two ids. So hand the outcome to the
+	// recorder; only a request that reached the reverse proxy some other way
+	// (a WebSocket upgrade) is logged here. A client that went away is
+	// recorded as 499, not 502: it is not an upstream failure, and a 5xx would
+	// become an error-severity incident (incident.FromHTTPEntry drops 499).
+	logStatus := http.StatusBadGateway
+	if isClientCanceled {
+		logStatus = StatusClientClosedRequest
+	}
+	if rec != nil {
+		rec.proxyErr = errStr
+		rec.clientCanceled = isClientCanceled
+	} else {
+		ps.logger.LogHTTP(HTTPLogEntry{
+			ID:         reqID,
+			Timestamp:  timestamp,
+			Method:     r.Method,
+			URL:        scrubbedPath,
+			StatusCode: logStatus,
+			Error:      errStr,
+		})
+	}
 
 	// Provide helpful error message based on error type
 	var userMsg string
@@ -295,7 +359,7 @@ func (ps *ProxyServer) errorHandler(w http.ResponseWriter, r *http.Request, err 
 		Message:   userMsg,
 		RequestID: reqID,
 		Method:    r.Method,
-		URL:       r.URL.String(),
+		URL:       scrubbedPath,
 		Target:    ps.TargetURL.String(),
 		Data: map[string]any{
 			"raw_error":    errStr,

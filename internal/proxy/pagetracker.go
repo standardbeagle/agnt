@@ -17,6 +17,13 @@ const (
 	// 10KB of captured body). Unbounded growth let a long-lived SPA tab
 	// accumulate every resource request forever.
 	MaxResourcesPerSession = 500
+	// MaxErrorsPerSession bounds per-session frontend errors. Error frames are
+	// accepted from untrusted connections too (as telemetry), so without a cap
+	// one tab could grow its session without limit.
+	MaxErrorsPerSession = 100
+	// MaxNavigationsPerSession bounds the per-tab navigation history (each
+	// entry carries up to 10KB of captured request and response body).
+	MaxNavigationsPerSession = 100
 )
 
 // appendBounded appends an item to a slice while maintaining a maximum length.
@@ -271,7 +278,7 @@ func (pt *PageTracker) trackOnSession(browserSessionID, url string, mutate func(
 // browserSessionID is the unique ID from the browser tab's sessionStorage.
 func (pt *PageTracker) TrackError(err FrontendError, browserSessionID string, frameID ...string) {
 	pt.trackOnSession(browserSessionID, err.URL, func(session *PageSession) {
-		session.Errors = append(session.Errors, err)
+		session.Errors = appendBounded(session.Errors, err, MaxErrorsPerSession)
 	}, frameID...)
 }
 
@@ -428,7 +435,7 @@ func (pt *PageTracker) createOrUpdatePageSession(entry HTTPLogEntry, browserSess
 		session.URL = cleanURL
 		session.LastActivity = now
 		session.DocumentRequest = &entry
-		session.Navigations = append(session.Navigations, entry)
+		session.Navigations = appendBounded(session.Navigations, entry, MaxNavigationsPerSession)
 		session.Resources = make([]HTTPLogEntry, 0)
 		pt.urlToSession[normURL] = sessionID
 		if frameID != "" {

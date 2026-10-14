@@ -135,6 +135,11 @@ type HTTPLogEntry struct {
 	// it as a pending fault; if no app-side error follows in the window it is
 	// raised as a swallowed-error incident.
 	ChaosSwallowWatch bool `json:"chaos_swallow_watch,omitempty"`
+	// Untrusted marks an error response (status >= 400) to a request that
+	// httpCallerTrusted refused: a visitor on an unauthenticated tunnel chose
+	// its method and path. Mirrors LogEntry.Untrusted. Not computed for
+	// successful responses, which never become incidents.
+	Untrusted bool `json:"untrusted,omitempty"`
 }
 
 // FrontendError represents a JavaScript error from the frontend.

@@ -27,13 +27,18 @@ const (
 	SourceBrowserJSUntrusted Source = "browser_js_untrusted"
 	SourceHTTP5xx            Source = "http_5xx"
 	SourceHTTP4xx            Source = "http_4xx"
-	SourceTransportErr       Source = "transport_err"
-	SourceProxyDiag          Source = "proxy_diag"
-	SourceProcessAlert       Source = "process_alert"
-	SourceProcessOutput      Source = "process_output"
-	SourceProcessCrash       Source = "process_crash"
-	SourceBuildFail          Source = "build_fail"
-	SourceChaosSwallow       Source = "chaos_swallowed_error"
+	// SourceHTTP5xxUntrusted is a 5xx answer to a request from a caller the
+	// proxy does not trust (proxy.HTTPLogEntry.Untrusted): a visitor on an
+	// unauthenticated tunnel chose its method and path. A source of its own
+	// for the same reasons as SourceBrowserJSUntrusted.
+	SourceHTTP5xxUntrusted Source = "http_5xx_untrusted"
+	SourceTransportErr     Source = "transport_err"
+	SourceProxyDiag        Source = "proxy_diag"
+	SourceProcessAlert     Source = "process_alert"
+	SourceProcessOutput    Source = "process_output"
+	SourceProcessCrash     Source = "process_crash"
+	SourceBuildFail        Source = "build_fail"
+	SourceChaosSwallow     Source = "chaos_swallowed_error"
 	// SourceExternal is a failure reported from outside agnt's own monitors
 	// (CI, deploy logs, a hosted service) through the error_queue tool.
 	SourceExternal Source = "external"
