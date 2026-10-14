@@ -18,6 +18,13 @@
     var hasGetBoundingClientRect = true; // Test on first use
     var ELEMENT_NODE = (typeof Node !== 'undefined' && Node.ELEMENT_NODE) || 1;
 
+    // MAX_ANCESTOR_WALK bounds every walk up the DOM. A DOM is a finite tree,
+    // so this only guards a pathological page; it is set above any real
+    // nesting depth (Chrome's HTML parser stops nesting at 512). A walk that
+    // does hit it has not seen the whole ancestry and must say so rather than
+    // answer as if it had.
+    var MAX_ANCESTOR_WALK = 1024;
+
     // Error logging
     function logError(context, error) {
       try {
@@ -72,9 +79,9 @@
         var path = [];
         var current = element;
         var depth = 0;
-        var MAX_DEPTH = 50; // Prevent infinite loops
+        var reachedRoot = false;
 
-        while (current && current.nodeType === ELEMENT_NODE && depth < MAX_DEPTH) {
+        while (current && current.nodeType === ELEMENT_NODE && depth < MAX_ANCESTOR_WALK) {
           try {
             var selector = '';
 
@@ -125,6 +132,7 @@
               if (current.parentNode && current.parentNode.nodeType === ELEMENT_NODE) {
                 current = current.parentNode;
               } else {
+                reachedRoot = true;
                 break;
               }
             } catch (e) {
@@ -138,7 +146,23 @@
           }
         }
 
-        return path.join(' > ');
+        var selectorPath = path.join(' > ');
+        // A path cut short of the root is relative: it can match other
+        // elements, or none. Keep it only if it still names this element
+        // alone.
+        if (!reachedRoot) {
+          try {
+            var hits = hasQuerySelector ? document.querySelectorAll(selectorPath) : [];
+            if (hits.length !== 1 || hits[0] !== element) {
+              logError('generateSelector_incomplete', new Error('ancestor walk stopped after ' + depth + ' levels'));
+              return '';
+            }
+          } catch (e) {
+            logError('generateSelector_incomplete', e);
+            return '';
+          }
+        }
+        return selectorPath;
 
       } catch (e) {
         logError('generateSelector_failed', e);
@@ -398,12 +422,16 @@
       try {
         var parent = element.parentElement;
         var depth = 0;
-        var MAX_DEPTH = 50;
 
-        while (parent && parent !== document.documentElement && depth < MAX_DEPTH) {
+        while (parent && parent !== document.documentElement) {
+          if (depth >= MAX_ANCESTOR_WALK) {
+            // Unknown, not the root: the walk did not reach it.
+            logError('getStackingContext_incomplete', new Error('ancestor walk stopped after ' + depth + ' levels'));
+            return null;
+          }
           try {
             var computed = window.getComputedStyle(parent);
-            if (!computed) break;
+            if (!computed) return null;
 
             if (stackingContextTriggers(computed, isFlexOrGridItem(parent)).length > 0) {
               return parent;
@@ -414,7 +442,7 @@
 
           } catch (e) {
             logError('stacking_context_iteration_failed', e);
-            break;
+            return null;
           }
         }
 
@@ -438,8 +466,13 @@
       try {
         var parent = element.parentElement;
         var depth = 0;
-        var MAX_DEPTH = 50;
-        while (parent && parent !== document.documentElement && depth < MAX_DEPTH) {
+        while (parent && parent !== document.documentElement) {
+          if (depth >= MAX_ANCESTOR_WALK) {
+            // The chain above here is unknown; do not end it with :root as
+            // if it were complete.
+            chain.push({ selector: null, truncated: true, triggers: [{ property: 'unknown', value: 'ancestor walk stopped after ' + depth + ' levels' }] });
+            return chain;
+          }
           try {
             var computed = window.getComputedStyle(parent);
             var triggers = stackingContextTriggers(computed, isFlexOrGridItem(parent));
@@ -468,9 +501,15 @@
         // Check if element or any ancestor matches devtool patterns
         var current = element;
         var depth = 0;
-        var MAX_DEPTH = 50;
 
-        while (current && current.nodeType === ELEMENT_NODE && depth < MAX_DEPTH) {
+        while (current && current.nodeType === ELEMENT_NODE) {
+          if (depth >= MAX_ANCESTOR_WALK) {
+            // Not every ancestor was checked, so the answer is unknown.
+            // false keeps the element in audits: wrongly auditing agnt's UI
+            // is the lesser error than silently hiding a page element.
+            logError('isDevtoolElement_incomplete', new Error('ancestor walk stopped after ' + depth + ' levels'));
+            return false;
+          }
           try {
             // Check ID prefix
             if (current.id && typeof current.id === 'string') {
