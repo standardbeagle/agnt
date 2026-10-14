@@ -127,6 +127,7 @@ func (a *AIOverlay) Start(ctx context.Context) error {
 	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/type", a.handleType)
+	mux.HandleFunc("/inject", a.handleInject)
 	mux.HandleFunc("/event", a.handleEvent)
 	mux.HandleFunc("/health", a.handleHealth)
 
@@ -200,6 +201,17 @@ func (a *AIOverlay) handleType(w http.ResponseWriter, r *http.Request) {
 		a.enqueue(aiOverlayMessage{text: msg.Text, protected: true})
 	}
 
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// handleInject receives the daemon's plain-text sends (see Overlay.handleInject).
+func (a *AIOverlay) handleInject(w http.ResponseWriter, r *http.Request) {
+	text, ok := readInjectBody(w, r)
+	if !ok {
+		return
+	}
+	a.enqueue(aiOverlayMessage{text: text, protected: true})
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }

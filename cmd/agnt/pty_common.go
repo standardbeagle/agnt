@@ -75,6 +75,46 @@ type daemonSessionHandle struct {
 	portConflicts    []portConflictInfo
 	portsCleared     []portConflictInfo
 	projectPath      string
+
+	// Activity and preview broadcasts are called from the PTY output path, so
+	// they hand off to these instead of waiting on a daemon round trip.
+	activitySend latestSender
+	previewSend  latestSender
+}
+
+// latestSender runs sends one at a time off the caller's goroutine, keeping
+// only the newest pending one: a slow receiver gets the current state, in
+// order, instead of a backlog. The zero value is ready to use.
+type latestSender struct {
+	mu      sync.Mutex
+	pending func()
+	running bool
+}
+
+// Send queues f, replacing any send not yet started, and returns at once.
+func (s *latestSender) Send(f func()) {
+	s.mu.Lock()
+	s.pending = f
+	if s.running {
+		s.mu.Unlock()
+		return
+	}
+	s.running = true
+	s.mu.Unlock()
+	go func() {
+		for {
+			s.mu.Lock()
+			next := s.pending
+			s.pending = nil
+			if next == nil {
+				s.running = false
+				s.mu.Unlock()
+				return
+			}
+			s.mu.Unlock()
+			next()
+		}
+	}()
 }
 
 // adoptClient hands the registration goroutine's client to the handle. It
@@ -159,13 +199,19 @@ func (h *daemonSessionHandle) IsConnected() bool {
 	return c != nil && c.IsConnected()
 }
 
-// BroadcastActivity sends activity state to the daemon.
+// BroadcastActivity sends activity state to the daemon without blocking the
+// caller (the PTY write path).
 func (h *daemonSessionHandle) BroadcastActivity(active bool) {
-	if h.IsConnected() {
-		if c := h.currentClient(); c != nil {
-			_ = c.BroadcastActivity(active)
-		}
+	if h == nil {
+		return
 	}
+	h.activitySend.Send(func() {
+		if h.IsConnected() {
+			if c := h.currentClient(); c != nil {
+				_ = c.BroadcastActivity(active)
+			}
+		}
+	})
 }
 
 // SetForwarding tells the daemon to pause/resume agent-inbound push (incident
@@ -179,13 +225,19 @@ func (h *daemonSessionHandle) SetForwarding(paused bool) {
 	}
 }
 
-// BroadcastOutputPreview sends output preview lines to the daemon.
+// BroadcastOutputPreview sends output preview lines to the daemon without
+// blocking the caller; a newer preview supersedes one not yet sent.
 func (h *daemonSessionHandle) BroadcastOutputPreview(lines []string, throbber string) {
-	if h.IsConnected() {
-		if c := h.currentClient(); c != nil {
-			_ = c.BroadcastOutputPreview(lines, throbber)
-		}
+	if h == nil {
+		return
 	}
+	h.previewSend.Send(func() {
+		if h.IsConnected() {
+			if c := h.currentClient(); c != nil {
+				_ = c.BroadcastOutputPreview(lines, throbber)
+			}
+		}
+	})
 }
 
 // daemonSessionConfig contains configuration for daemon session registration.
@@ -1827,6 +1879,9 @@ func runOverlayPipeline(
 
 		activityMonitor := overlay.NewActivityMonitor(outputDest, activityCfg)
 		rt.activityMon.Store(activityMonitor)
+		if rt.netOverlay != nil {
+			rt.netOverlay.SetInputProbe(activityMonitor.CursorRowsContain)
+		}
 		_, _ = io.Copy(io.MultiWriter(newActivityPulse(outputPulse), activityMonitor), handle.Backend)
 		close(rt.done)
 	}()

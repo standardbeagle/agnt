@@ -157,7 +157,8 @@ type AlertScanner struct {
 	stopped       atomic.Bool
 	stopCh        chan struct{}
 	flushRetries  int
-	maxRetries    int
+	deferredSince time.Time     // when the current batch was first deferred; zero when not deferring
+	maxDeferral   time.Duration // longest a batch waits for a busy agent to go idle
 	retryInterval time.Duration
 	maxPending    int // overload-throttle high-water mark for pending
 	suppressed    int // alerts dropped by the throttle since last flush
@@ -234,7 +235,7 @@ func NewAlertScanner(cfg AlertScannerConfig) *AlertScanner {
 		dedupeWindow:  dedupeWindow,
 		dedupe:        make(map[string]time.Time),
 		stopCh:        make(chan struct{}),
-		maxRetries:    5,
+		maxDeferral:   maxActivityDeferral,
 		retryInterval: retryInterval,
 		maxPending:    maxPending,
 		clockNow:      time.Now,

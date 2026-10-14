@@ -200,7 +200,7 @@ func TestAlertScanner_PatternFloodDuringActivity(t *testing.T) {
 
 // TestAlertScanner_RetryIntervalRespected verifies that while the activity
 // state remains Active, the scanner schedules exactly one retry per flush
-// call (up to maxRetries=5). Each FireAll advances one retry cycle.
+// call. Each FireAll advances one retry cycle.
 func TestAlertScanner_RetryIntervalRespected(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
@@ -327,9 +327,8 @@ func TestAlertScanner_BatchWindowGrouping(t *testing.T) {
 // ---- Test 4: ActivityDeferralCancelOnIdle ----------------------------------
 
 // TestAlertScanner_ActivityDeferralCancelOnIdle verifies the full deferral
-// lifecycle: lines arrive while Active, retries exhaust up to maxRetries
-// without delivery, then activity transitions to Idle and the next retry
-// delivers the pending batch.
+// lifecycle: lines arrive while Active, retries run without delivery, then
+// activity transitions to Idle and the next retry delivers the pending batch.
 func TestAlertScanner_ActivityDeferralCancelOnIdle(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 
@@ -363,9 +362,9 @@ func TestAlertScanner_ActivityDeferralCancelOnIdle(t *testing.T) {
 
 	scanner.ProcessLine("panic: runtime error deferred", "app")
 
-	// Fire batch timer + 4 retries while still active.
-	// maxRetries = 5, so 5 fires should all defer.
-	for i := 0; i < 5; i++ {
+	// Fire the batch timer and many retries while still active. A retry count
+	// used to give up after five and deliver into the busy agent.
+	for i := 0; i < 20; i++ {
 		fts.FireAll()
 		// Brief yield to allow flush goroutine (it runs inline in AfterFunc) to complete.
 		time.Sleep(2 * time.Millisecond)
@@ -374,7 +373,7 @@ func TestAlertScanner_ActivityDeferralCancelOnIdle(t *testing.T) {
 	mu.Lock()
 	countBefore := len(received)
 	mu.Unlock()
-	assert.Equal(t, 0, countBefore, "no delivery before idle; maxRetries not yet exhausted or still active")
+	assert.Equal(t, 0, countBefore, "no delivery while the agent is still active")
 
 	// Transition to idle; fire the remaining retry.
 	active.Store(false)
@@ -389,6 +388,50 @@ func TestAlertScanner_ActivityDeferralCancelOnIdle(t *testing.T) {
 	mu.Lock()
 	assert.Greater(t, len(received), 0, "pending alerts flushed on idle")
 	mu.Unlock()
+}
+
+// An agent whose output never pauses still hears about errors: after
+// maxDeferral the batch is delivered even though it is active.
+func TestAlertScanner_DeferralCeilingDeliversToNeverIdleAgent(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+
+	fts := &fakeTimerSet{}
+	defer fts.drainTimers()
+
+	var mu sync.Mutex
+	var received []*AlertBatch
+	scanner := NewAlertScanner(AlertScannerConfig{
+		BatchWindow:   1 * time.Millisecond,
+		DedupeWindow:  10 * time.Minute,
+		RetryInterval: 1 * time.Millisecond,
+		ActivityState: func() ActivityState { return ActivityActive },
+		OnAlert: func(b *AlertBatch) {
+			mu.Lock()
+			received = append(received, b)
+			mu.Unlock()
+		},
+	})
+	scanner.afterFunc = fts.afterFunc
+	var now atomic.Int64
+	now.Store(time.Now().UnixNano())
+	scanner.clockNow = func() time.Time { return time.Unix(0, now.Load()) }
+	defer scanner.Stop()
+
+	scanner.ProcessLine("panic: never idle", "app")
+	fts.FireAll() // first defer starts the clock
+	now.Add(int64(maxActivityDeferral - time.Second))
+	fts.FireAll()
+	mu.Lock()
+	require.Empty(t, received, "still inside the deferral ceiling")
+	mu.Unlock()
+
+	now.Add(int64(2 * time.Second))
+	fts.FireAll()
+	require.Eventually(t, func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return len(received) == 1
+	}, 2*time.Second, 5*time.Millisecond, "past the ceiling the batch is delivered")
 }
 
 // ---- Test 5: ConcurrentLineFlood -------------------------------------------

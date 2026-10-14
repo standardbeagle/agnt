@@ -42,6 +42,14 @@ type Overlay struct {
 	mu              sync.RWMutex
 	auditSummarizer *overlay.AuditSummarizer
 	activityCh      chan struct{} // Signaled when output activity is detected
+	// injectMu serializes whole injections (text plus its Enter retries), so
+	// two senders cannot interleave text or submit each other's message.
+	injectMu sync.Mutex
+	// inputProbe reports whether the agent's screen still shows a typed
+	// message near the cursor (ActivityMonitor.CursorRowsContain). The Enter
+	// retries use it to stop once the message left the input box, even when
+	// the agent works silently. Nil until the PTY output monitor exists.
+	inputProbe atomic.Pointer[func(tail string) (found, ok bool)]
 
 	// Auto-forward state for browser/proxy errors. atomic.Pointer because
 	// SetAutoForwardConfig runs on the pipeline goroutine while HTTP handler
@@ -279,6 +287,7 @@ func (o *Overlay) Start(ctx context.Context) error {
 	mux.HandleFunc("/ws", o.handleWebSocket)
 	mux.HandleFunc("/health", o.handleHealth)
 	mux.HandleFunc("/type", o.handleType)
+	mux.HandleFunc("/inject", o.handleInject)
 	mux.HandleFunc("/key", o.handleKey)
 	mux.HandleFunc("/event", o.handleEvent)
 	mux.HandleFunc("/toast", o.handleToast)
@@ -424,10 +433,60 @@ func (o *Overlay) handleType(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	o.typeText(msg)
+	// Accept, then type. With Enter, typeText waits several seconds for the
+	// agent to react; a sender with a shorter timeout (the scheduler's 5s
+	// delivery) would count that as a failure and retype the message.
+	go o.typeText(msg)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// maxInjectBody caps a plain-text /inject message.
+const maxInjectBody = 64 << 10
+
+// handleInject receives a plain-text message from the daemon (`agnt session
+// send`, the browser's session send, and the incident pipeline's PTY hint) and
+// queues it as an explicit send: activity-deferred, never throttled or deduped.
+func (o *Overlay) handleInject(w http.ResponseWriter, r *http.Request) {
+	text, ok := readInjectBody(w, r)
+	if !ok {
+		return
+	}
+	o.injectOrFallback(&overlay.AlertMatch{
+		Pattern: &overlay.AlertPattern{
+			ID:       "user:session_send",
+			Severity: overlay.AlertSeverityInfo,
+			Category: "user",
+		},
+		Line:         text,
+		ScriptID:     "session",
+		Source:       overlay.AlertSourceUser,
+		RenderedText: text,
+		Protected:    true,
+	})
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// readInjectBody reads and validates an /inject request body, writing the
+// error response itself when it returns false.
+func readInjectBody(w http.ResponseWriter, r *http.Request) (string, bool) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return "", false
+	}
+	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxInjectBody))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+		return "", false
+	}
+	text := strings.TrimSpace(string(body))
+	if text == "" {
+		http.Error(w, "empty message", http.StatusBadRequest)
+		return "", false
+	}
+	return text, true
 }
 
 func (o *Overlay) handleKey(w http.ResponseWriter, r *http.Request) {
@@ -930,6 +989,9 @@ func (o *Overlay) typeText(msg TypeMessage) {
 	// sanitizeInjectedText. Every injection path funnels through here.
 	msg.Text = sanitizeInjectedText(msg.Text)
 
+	o.injectMu.Lock()
+	defer o.injectMu.Unlock()
+
 	if msg.Instant {
 		// Send full text as single write - large buffer triggers paste detection
 		// in terminal input handlers without needing bracketed paste escape sequences.
@@ -937,9 +999,8 @@ func (o *Overlay) typeText(msg TypeMessage) {
 
 		if msg.Enter {
 			// Progressive enter key timing to ensure agent accepts the message.
-			// Send enters at 100ms, 200ms, then 500ms intervals until activity is detected.
 			// This handles different AI agent input processing speeds.
-			o.sendEntersUntilActivity()
+			o.sendEntersUntilActivity(msg.Text)
 		}
 	} else {
 		// Simulate typing character by character
@@ -955,17 +1016,78 @@ func (o *Overlay) typeText(msg TypeMessage) {
 			o.sleep(100 * time.Millisecond)
 
 			// Progressive enter key timing to ensure agent accepts the message.
-			o.sendEntersUntilActivity()
+			o.sendEntersUntilActivity(msg.Text)
 		}
 	}
 }
 
-// sendEntersUntilActivity sends enter keys until the agent starts producing
-// output. Sends the first Enter immediately, waits for the text echo to
-// settle, then retries with increasing delays. Max 4 enters total.
-func (o *Overlay) sendEntersUntilActivity() {
-	// Send the first Enter immediately — this must always happen
-	// regardless of any activity signals from the text echo.
+// SetInputProbe installs the check sendEntersUntilActivity uses to see
+// whether a typed message is still waiting in the agent's input box.
+func (o *Overlay) SetInputProbe(fn func(tail string) (found, ok bool)) {
+	if fn == nil {
+		o.inputProbe.Store(nil)
+		return
+	}
+	o.inputProbe.Store(&fn)
+}
+
+// inputTailRunes is how much of a message's end the input probe looks for.
+const inputTailRunes = 12
+
+// messageTail returns the last inputTailRunes letters and digits of text.
+func messageTail(text string) string {
+	r := []rune(overlay.AlnumOnly(text))
+	if len(r) > inputTailRunes {
+		r = r[len(r)-inputTailRunes:]
+	}
+	return string(r)
+}
+
+// inputShows asks the probe whether tail is still near the cursor. ok is
+// false without a probe or when the probe cannot tell.
+func (o *Overlay) inputShows(tail string) (found, ok bool) {
+	p := o.inputProbe.Load()
+	if p == nil {
+		return false, false
+	}
+	return (*p)(tail)
+}
+
+// inputEchoWait bounds how long sendEntersUntilActivity waits for the typed
+// text to appear on screen before its first Enter.
+const inputEchoWait = 300 * time.Millisecond
+
+// sendEntersUntilActivity sends enter keys until the agent accepts text.
+// Sends the first Enter, waits for the echo to settle, then retries with
+// increasing delays. Max 4 enters total.
+//
+// Output after the settle window means the agent is responding. Silence is
+// not a refusal, though: an agent can accept a message and work without
+// printing. So when the screen showed the message in the input box before the
+// first Enter, a retry is sent only while it still does. When it never showed
+// (no screen, or the agent folded a paste into a placeholder), silence is all
+// there is to go on and every retry is sent.
+func (o *Overlay) sendEntersUntilActivity(text string) {
+	tail := messageTail(text)
+	shown := false
+	for waited := time.Duration(0); ; waited += 20 * time.Millisecond {
+		found, ok := o.inputShows(tail)
+		if !ok || found || waited >= inputEchoWait {
+			shown = ok && found
+			break
+		}
+		o.sleep(20 * time.Millisecond)
+	}
+	accepted := func() bool {
+		if !shown {
+			return false
+		}
+		found, ok := o.inputShows(tail)
+		return ok && !found
+	}
+
+	// Send the first Enter — this must always happen regardless of any
+	// activity signals from the text echo.
 	o.writeTopty("\r")
 
 	// Wait for the text + first Enter echo to settle through the PTY
@@ -999,10 +1121,16 @@ drained:
 	}
 
 	for _, delay := range retryDelays {
+		if accepted() {
+			return // The message left the input box
+		}
 		select {
 		case <-o.activityCh:
 			return // Agent is responding — message was accepted
 		case <-o.after(delay):
+			if accepted() {
+				return
+			}
 			o.writeTopty("\r")
 		}
 	}

@@ -66,6 +66,10 @@ func (s *AlertScanner) enqueue(b *AlertBatch) {
 	}
 }
 
+// maxActivityDeferral is how long a batch waits for a busy agent to go idle
+// before it is delivered anyway.
+const maxActivityDeferral = 2 * time.Minute
+
 // flush delivers the current batch of alerts.
 func (s *AlertScanner) flush() {
 	if s.stopped.Load() {
@@ -74,27 +78,37 @@ func (s *AlertScanner) flush() {
 
 	s.mu.Lock()
 
-	// If AI is active, defer the flush (up to maxRetries)
-	if s.actState != nil && s.actState() == ActivityActive && s.flushRetries < s.maxRetries {
-		s.flushRetries++
-		s.batchTimer = s.afterFunc(s.retryInterval, func() {
-			s.flush()
-		})
-		s.mu.Unlock()
-		return
-	}
-
-	if len(s.pending) == 0 {
-		s.batchTimer = nil
-		s.batchDeadline = time.Time{}
-		s.flushRetries = 0
-		s.mu.Unlock()
-		return
+	// While the agent is working, typing a batch into its input would land
+	// mid-response, so the flush waits for it to go idle. The wait is not cut
+	// short by a retry count — five 2s retries delivered into any task longer
+	// than ten seconds — only by maxDeferral, so an agent whose output never
+	// pauses still hears about errors eventually. The overload throttle bounds
+	// what accumulates meanwhile.
+	if s.actState != nil && s.actState() == ActivityActive {
+		now := s.clockNow()
+		if s.deferredSince.IsZero() {
+			s.deferredSince = now
+		}
+		if now.Sub(s.deferredSince) < s.maxDeferral {
+			s.flushRetries++
+			s.batchTimer = s.afterFunc(s.retryInterval, func() {
+				s.flush()
+			})
+			s.mu.Unlock()
+			return
+		}
 	}
 
 	s.batchTimer = nil
 	s.batchDeadline = time.Time{}
 	s.flushRetries = 0
+	s.deferredSince = time.Time{}
+
+	if len(s.pending) == 0 {
+		s.mu.Unlock()
+		return
+	}
+
 	byScript, suppressed := s.drainPendingLocked()
 	s.mu.Unlock()
 

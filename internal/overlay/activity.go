@@ -53,6 +53,13 @@ type ActivityMonitor struct {
 	previewPending  atomic.Bool // Whether a debounced send is pending
 	doneShown       bool        // Append the done marker to the snapshot while idle (guarded by previewMu)
 
+	// Snapshot hand-off to onOutputPreview (sendPreviewLocked →
+	// deliverPreviews): the newest undelivered snapshot, and whether the
+	// sender goroutine is running.
+	previewOutMu   sync.Mutex
+	previewOut     []string
+	previewSending bool
+
 	// Line assembly for the per-line alert tap (onOutputLine). Independent of
 	// the screen snapshot: the tap wants logical, LF-terminated lines, not a
 	// wrapped screen grid. currentLine buffers the in-flight line; the CR/LF
@@ -398,6 +405,46 @@ func (am *ActivityMonitor) screenTail() []string {
 	return out
 }
 
+// CursorRowsContain reports whether the cursor's row, together with the two
+// rows above it, shows tail. Only letters and digits are compared, because
+// input boxes add borders, padding and wrapping that differ between agents. A
+// message still waiting in the agent's input box shows there; one the agent
+// accepted is gone from it.
+//
+// ok is false when the answer is unknown: the monitor feeds its screen only
+// when a preview or line callback is configured, and a tail with too few
+// letters and digits to compare matches too much.
+func (am *ActivityMonitor) CursorRowsContain(tail string) (found, ok bool) {
+	want := AlnumOnly(tail)
+	if len([]rune(want)) < minCursorMatchRunes || (am.onOutputPreview == nil && am.onOutputLine == nil) {
+		return false, false
+	}
+	am.screen.Lock()
+	cols, _ := am.screen.Size()
+	cur := am.screen.Cursor()
+	var sb strings.Builder
+	for y := max(cur.Y-2, 0); y <= cur.Y; y++ {
+		for x := 0; x < cols; x++ {
+			sb.WriteRune(am.screen.Cell(x, y).Char)
+		}
+	}
+	am.screen.Unlock()
+	return strings.Contains(AlnumOnly(sb.String()), want), true
+}
+
+// minCursorMatchRunes is the shortest tail CursorRowsContain will judge.
+const minCursorMatchRunes = 4
+
+// AlnumOnly keeps only the letters and digits of s.
+func AlnumOnly(s string) string {
+	return strings.Map(func(r rune) rune {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) {
+			return r
+		}
+		return -1
+	}, s)
+}
+
 // RenderScreen returns the child's screen as an absolute ANSI repaint. The
 // virtual screen is fed every byte the child writes — including while the
 // overlay has the gate frozen and those bytes are reaching no terminal — so it
@@ -480,8 +527,35 @@ func (am *ActivityMonitor) sendPreviewLocked() {
 
 	am.previewLastSent = time.Now()
 
-	// Call callback outside lock to prevent deadlock
-	go am.onOutputPreview(lines, "")
+	// The callback runs outside the lock (it may call back into the monitor)
+	// and off the writer's goroutine. One goroutine per snapshot let an older
+	// snapshot land after a newer one; one sender delivering only the newest
+	// keeps the order and drops snapshots that were already stale.
+	am.previewOutMu.Lock()
+	am.previewOut = lines
+	start := !am.previewSending
+	am.previewSending = true
+	am.previewOutMu.Unlock()
+	if start {
+		go am.deliverPreviews()
+	}
+}
+
+// deliverPreviews hands the newest snapshot to onOutputPreview until none is
+// waiting.
+func (am *ActivityMonitor) deliverPreviews() {
+	for {
+		am.previewOutMu.Lock()
+		lines := am.previewOut
+		am.previewOut = nil
+		if lines == nil {
+			am.previewSending = false
+			am.previewOutMu.Unlock()
+			return
+		}
+		am.previewOutMu.Unlock()
+		am.onOutputPreview(lines, "")
+	}
 }
 
 // setState changes the activity state and notifies the callback.

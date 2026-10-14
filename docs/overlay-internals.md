@@ -145,6 +145,8 @@ One goroutine in the process reads `os.Stdin`: the pump in `cmd/agnt/stdin_pump.
 The browser → agent channel is a per-session Unix-domain socket, on every platform — there is no TCP listener. `listenOverlaySocket` (`cmd/agnt/overlay.go`) is the only place either overlay server (`Overlay`, `AIOverlay`) gets its listener:
 
 - Sockets live in a per-user directory (`/tmp/agnt-overlay-<uid>/`, `%TEMP%\agnt-overlay-<user>\`), created `0700` and refused if it is a symlink or owned by someone else. Session codes repeat across users, so the directory is what keeps two users' `claude-1` apart.
-- The socket is `chmod 0600`: anything that can connect can type into the agent (`/type`, `/key`).
+- The socket is `chmod 0600`: anything that can connect can type into the agent (`/type`, `/inject`, `/key`). `/inject` takes the daemon's plain-text sends (`agnt session send`, the browser's session send, the incident pipeline's PTY hint) and queues them as protected messages; `/type` answers before its Enter retries finish.
+- Injections are serialized (`injectMu`): one message's text and Enter retries finish before the next starts. After the first Enter, a retry is sent only while the agent stays silent and, when the screen showed the typed text before that Enter, only while it still shows it near the cursor (`ActivityMonitor.CursorRowsContain`). An agent that accepts a message and works silently gets no stray Enters.
+- Alert batches wait while the agent is active and are typed once it goes idle. An agent whose output never pauses gets the batch after `maxActivityDeferral` (2 minutes); the overload throttle bounds what piles up meanwhile.
 - An existing socket is unlinked only when nothing answers on it. A live one (a second run with the same `--session`) is an error.
 - A session whose overlay failed to start registers an empty endpoint with the daemon (`Overlay.Endpoint`).
