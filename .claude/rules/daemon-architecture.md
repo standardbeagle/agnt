@@ -166,7 +166,7 @@ Browser-debug surfaces with an explicit `proxy_id` (`proxy exec`, `responsive_au
 
 ## Incident Pipeline
 
-`internal/incident/` is the always-on agent alert path: `Signal sources → Bus → Dedup/Coalesce/FlowControl → Inbox → Pinger → digest sink / PTY sink`. `alerts.push` picks sinks (`mcp-notifications`, `pty-injection`); `alerts.incident-pipeline` is parse-only.
+`internal/incident/` is the always-on agent alert path: `Signal sources → Bus → Dedup/Coalesce/FlowControl → Inbox → Pinger → digest sink / PTY sink`. `alerts.push` picks sinks (`mcp-notifications`, `pty-injection`); `alerts.incident-pipeline` is parse-only and declaring it produces a no-effect config warning.
 
 The pinger has two wired sinks (`incidentSinkCallbacks`, `incident_digest.go`), both gated per ping on forwarding-pause and `alerts.push`: the PTY sink injects a one-line hint through the session's overlay, and the digest sink broadcasts an `incident_digest` stream entry scoped to the session's project. The MCP process that owns the agent's connection turns that entry into exactly one notification (`tools.ForwardIncidentDigest`, from `StartIncidentDigestSink`): a `notifications/claude/channel` event when channel mode is on — with the top unread incidents listed from the attached `PingPayload` — and an MCP log notification otherwise. There is no daemon-side channel callback (the pinger's `ChannelNotifyFn` slot is nil) and no separate channel bit in `alerts.push`. `ChannelSink` (`internal/tools/channel_sink.go`) is not a pinger sink: it forwards only the proxy events the pipeline does not ingest (user actions, custom logs, info diagnostics, status-less transport failures) and drops the ones it does (`pipelineOwned`).
 

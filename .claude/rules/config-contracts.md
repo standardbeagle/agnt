@@ -27,6 +27,7 @@ These predate the rule and are in users' files, so removing the field would make
 | Key | File | Warning carried by |
 |-----|------|--------------------|
 | `proxies.<n>.websocket`, `ai.skill`, `ai.env` | `.agnt.kdl` | `AgntConfig.Warnings` → `surfaceConfigWarnings` → startup log (`config_warning`) |
+| `alerts.auto-forward.debounce`, `alerts.incident-pipeline` | `.agnt.kdl` | `AgntConfig.Warnings` (as above) |
 | `version`, `languages { … }` | global `config.kdl` | `Config.Warnings` (the daemon start path must log them; `debug.Log` alone does not count) |
 
 They are not in the default template or `docs/configuration.md`. Do not add a key to this list: a new key gets a consumer or is rejected at parse time. Detection is by presence in the document (`inspectAgntDocument`, `agnt_validate.go`), not by value, so `websocket false` warns too.
@@ -35,7 +36,7 @@ They are not in the default template or `docs/configuration.md`. Do not add a ke
 
 `agnt_validate.go` runs inside `ParseAgntConfig`:
 
-- **Closed sets** fail with the accepted values listed: `project.port-conflict`, `alerts.preset`. A consumer `switch` over such a value still needs a safe `default`.
+- **Closed sets** fail with the accepted values listed: `project.port-conflict`, `alerts.preset`, `alerts.auto-forward.sources` (`browser`, `http`) and `.severity` (`error`, `warning`; `warn` kept as an alias because it loaded before the check existed). A consumer `switch` over such a value still needs a safe `default`.
 - **Number shape** is checked on the raw document, because kdl-go truncates a float into an `int` field without an error: `scripts.<n>.ports`, `proxies.<n>.listen-port` / `port` / `fallback-port` / `max-log-size`, `automation.max-sessions`. Ports are range-checked too.
 - **Custom unmarshalers skip kdl-go's unknown-property check.** `depends-on` rejects any property but `timeout` itself, and a negative timeout.
 

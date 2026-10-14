@@ -597,7 +597,8 @@ alerts {
 (consumed by the MCP/agent adapter) and does not type into PTY stdin.
 `universal` emits that digest once and also injects one compact PTY line. The
 legacy `incident-pipeline` key is accepted for compatibility but ignored because
-the incident pipeline is always active.
+the incident pipeline is always active; declaring it produces a no-effect config
+warning.
 
 The top-level `channel { ... }` block configures MCP event forwarding; it is not
 an incident-pinger sink. `alerts.push` therefore has no `channel` key, and the
@@ -948,9 +949,10 @@ definitions in `internal/config/agnt.go` carry the full comments.
 | `dedupe-window` | `60` | Seconds a duplicate alert is suppressed. |
 | `patterns { <id> { pattern severity } }` | none | Custom patterns: a regex and `error`, `warning` or `info`. |
 | `disable` | none | Built-in pattern ids to turn off. |
-| `auto-forward { enabled sources debounce severity }` | on, `"browser" "http"`, `10`, `"error"` | Forwarding of browser and proxy errors to the agent; `debounce` is in seconds. |
+| `auto-forward { enabled sources severity }` | on, `"browser" "http"`, `"error"` | Forwarding of browser and proxy errors to the agent. `sources` accepts only `browser` and `http`; `severity` only `error` (5xx only) or `warning` (4xx too). Any other value fails the config load. |
+| `auto-forward { debounce }` | — | Deprecated, no effect: nothing reads it (forwarded errors are deduplicated and batched by the alert queue). Accepted so existing files load; declaring it adds a config warning to the startup log. |
 | `outage-hold { enabled window-ms transport-err-threshold transport-err-window-ms recovery-debounce-ms js-cascade-patterns }` | on, `3000`, `1`, `1000`, `500`, built-in list | Holds transport-cascade errors while a dev server restarts. |
-| `incident-pipeline` | — | Accepted and ignored; see *Alert Push Channels*. |
+| `incident-pipeline` | — | Deprecated, no effect; see *Alert Push Channels*. Declaring it adds a config warning to the startup log. |
 
 ### `channel`
 

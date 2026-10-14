@@ -15,7 +15,8 @@ import (
 // Two things the unmarshaller cannot do on its own:
 //
 //   - Closed sets. A string field accepts any string, and the consumers of
-//     `project.port-conflict` and `alerts.preset` treat a value they do not
+//     `project.port-conflict`, `alerts.preset` and `alerts.auto-forward`'s
+//     `sources` / `severity` treat a value they do not
 //     know as "none of my cases", so a typo changed behaviour without a word.
 //   - Number shape. kdl-go truncates a float into an int field with no error
 //     (`ports 3000.7` became 3000), and an int field has no range. Those are
@@ -31,8 +32,32 @@ var validPortConflictPolicies = []string{"prompt", "auto-kill", "skip", "fail"}
 // validAlertPresets is the closed set for `alerts.preset` (PresetPushConfig).
 var validAlertPresets = []string{"claude-code", "universal"}
 
+// validAutoForwardSources is the closed set for `alerts.auto-forward.sources`
+// (AutoForwardConfig.ShouldForwardSource; autoForwardSource in cmd/agnt
+// classifies every event as one of these).
+var validAutoForwardSources = []string{"browser", "http"}
+
+// validAutoForwardSeverities is the closed set for
+// `alerts.auto-forward.severity` (autoForwardPolicy in cmd/agnt). "warn" is
+// accepted as an alias: it always behaved as "warning" (only "error" is
+// special-cased), so rejecting it would fail configs that load today.
+var validAutoForwardSeverities = []string{"error", "warning", "warn"}
+
 // validateAgntEnums rejects values outside the closed sets above.
 func validateAgntEnums(cfg *AgntConfig) error {
+	if cfg.Alerts != nil && cfg.Alerts.AutoForward != nil {
+		af := cfg.Alerts.AutoForward
+		for _, s := range af.Sources {
+			if !containsString(validAutoForwardSources, s) {
+				return fmt.Errorf("alerts.auto-forward: unknown source %q (accepted: %s)",
+					s, strings.Join(validAutoForwardSources, ", "))
+			}
+		}
+		if af.Severity != "" && !containsString(validAutoForwardSeverities, af.Severity) {
+			return fmt.Errorf("alerts.auto-forward: unknown severity %q (accepted: %s)",
+				af.Severity, strings.Join(validAutoForwardSeverities, ", "))
+		}
+	}
 	if cfg.Project != nil && cfg.Project.PortConflict != "" {
 		if !containsString(validPortConflictPolicies, cfg.Project.PortConflict) {
 			return fmt.Errorf("project: unknown port-conflict %q (accepted: %s)",
@@ -115,6 +140,15 @@ func inspectAgntDocument(data string) (warnings []string, err error) {
 		case "automation":
 			if err := checkIntNodes(top.Children, automationIntRules, "automation"); err != nil {
 				return nil, err
+			}
+		case "alerts":
+			if hasChild(top, "incident-pipeline") {
+				warnings = append(warnings, "alerts.incident-pipeline has no effect: it is deprecated and the incident pipeline is always active")
+			}
+			for _, c := range top.Children {
+				if nodeName(c) == "auto-forward" && hasChild(c, "debounce") {
+					warnings = append(warnings, "alerts.auto-forward.debounce has no effect: nothing reads it; forwarded errors are deduplicated and batched by the alert queue")
+				}
 			}
 		case "ai":
 			if hasChild(top, "skill") {

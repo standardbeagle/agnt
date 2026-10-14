@@ -707,8 +707,8 @@ type AlertsConfig struct {
 	// DeprecatedIncidentPipeline is accepted but ignored. The incident pipeline
 	// is now the unconditional delivery path, so this flag no longer gates
 	// anything. Retained only so existing .agnt.kdl files carrying
-	// `alerts { incident-pipeline ... }` still parse; setting it logs a
-	// deprecation notice at load (see ParseAgntConfig).
+	// `alerts { incident-pipeline ... }` still parse; declaring it adds a
+	// no-effect warning to AgntConfig.Warnings (inspectAgntDocument).
 	DeprecatedIncidentPipeline bool `kdl:"incident-pipeline"`
 
 	// Retention configures when the daemon retires stale errors from the
@@ -840,7 +840,10 @@ type AutoForwardConfig struct {
 	// Sources specifies which error sources to forward. Default: ["browser", "http"].
 	Sources []string `kdl:"sources"`
 
-	// Debounce is the minimum seconds between forwarded errors. Default: 10.
+	// Debounce is accepted but has no effect: nothing reads it (forwarded
+	// errors go through the alert queue's dedup/batching instead). Retained so
+	// existing .agnt.kdl files still parse; declaring it adds a no-effect
+	// warning to AgntConfig.Warnings (inspectAgntDocument).
 	Debounce int `kdl:"debounce"`
 
 	// Severity is the minimum severity to forward: "error" or "warning". Default: "error".
@@ -863,7 +866,8 @@ func (c *AutoForwardConfig) GetSources() []string {
 	return c.Sources
 }
 
-// GetDebounceSeconds returns the debounce interval (defaults to 10).
+// GetDebounceSeconds returns the declared debounce interval (defaults to 10).
+// Deprecated: nothing consumes it; see AutoForwardConfig.Debounce.
 func (c *AutoForwardConfig) GetDebounceSeconds() int {
 	if c == nil || c.Debounce <= 0 {
 		return 10
@@ -1252,12 +1256,6 @@ func ParseAgntConfig(data string) (*AgntConfig, error) {
 		return nil, err
 	}
 
-	// Deprecation notice: the incident pipeline is now unconditional; the
-	// `incident-pipeline` flag is accepted for back-compat but does nothing.
-	if cfg.Alerts != nil && cfg.Alerts.DeprecatedIncidentPipeline {
-		debug.Log("config", "WARNING: alerts.incident-pipeline is deprecated and ignored — the incident pipeline is always active")
-	}
-
 	debug.Log("config", "ParseAgntConfig: parsed %d scripts, %d proxies", len(cfg.Scripts), len(cfg.Proxies))
 	return cfg, nil
 }
@@ -1606,7 +1604,6 @@ proxies {
 //     // auto-forward {
 //     //     enabled true
 //     //     sources "browser" "http"
-//     //     debounce 10
 //     //     severity "error"
 //     // }
 //

@@ -90,6 +90,10 @@ func TestParseAgntConfig_RejectsInvalidValues(t *testing.T) {
 			[]string{"scripts.dev.ports", "between 1 and 65535"}},
 		{"max-sessions fractional", "automation {\n    max-sessions 2.9\n}\n",
 			[]string{"automation.max-sessions", "whole number"}},
+		{"auto-forward source typo", "alerts {\n    auto-forward {\n        sources \"browser\" \"htttp\"\n    }\n}\n",
+			[]string{"auto-forward", "htttp", "browser, http"}},
+		{"auto-forward severity typo", "alerts {\n    auto-forward {\n        severity \"errror\"\n    }\n}\n",
+			[]string{"auto-forward", "errror", "error, warning"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -110,6 +114,10 @@ func TestParseAgntConfig_AcceptsValidValues(t *testing.T) {
 	for _, preset := range validAlertPresets {
 		_, err := ParseAgntConfig("alerts {\n    preset \"" + preset + "\"\n}\n")
 		assert.NoError(t, err, preset)
+	}
+	for _, sev := range validAutoForwardSeverities {
+		_, err := ParseAgntConfig("alerts {\n    auto-forward {\n        sources \"browser\" \"http\"\n        severity \"" + sev + "\"\n    }\n}\n")
+		assert.NoError(t, err, sev)
 	}
 
 	cfg, err := ParseAgntConfig("scripts {\n    dev {\n        run \"x\"\n        ports 3000 3001\n    }\n}\n" +
@@ -136,6 +144,21 @@ func TestParseAgntConfig_WarnsOnKeysWithNoEffect(t *testing.T) {
 	assert.Contains(t, joined, "ai.env has no effect")
 
 	clean, err := ParseAgntConfig("proxies {\n    dev {\n        url \"http://localhost:1\"\n    }\n}\n")
+	require.NoError(t, err)
+	assert.Empty(t, clean.Warnings)
+}
+
+// alerts.auto-forward.debounce had no consumer, and alerts.incident-pipeline's
+// deprecation reached only debug.Log. Both must reach cfg.Warnings, by presence.
+func TestParseAgntConfig_WarnsOnDeadAlertsKeys(t *testing.T) {
+	cfg, err := ParseAgntConfig("alerts {\n    incident-pipeline false\n    auto-forward {\n        debounce 30\n    }\n}\n")
+	require.NoError(t, err)
+	require.Len(t, cfg.Warnings, 2, "%v", cfg.Warnings)
+	joined := strings.Join(cfg.Warnings, "\n")
+	assert.Contains(t, joined, "alerts.auto-forward.debounce has no effect")
+	assert.Contains(t, joined, "alerts.incident-pipeline has no effect")
+
+	clean, err := ParseAgntConfig("alerts {\n    auto-forward {\n        severity \"warning\"\n    }\n}\n")
 	require.NoError(t, err)
 	assert.Empty(t, clean.Warnings)
 }
