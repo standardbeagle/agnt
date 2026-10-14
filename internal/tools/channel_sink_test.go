@@ -447,6 +447,7 @@ func TestSeverityRank(t *testing.T) {
 		{"info", 2},
 		{"warning", 3},
 		{"error", 4},
+		{"warn", 3}, // custom-log level; alias of "warning"
 		{"unknown", 0},
 	}
 	for _, tt := range tests {
@@ -552,5 +553,42 @@ func TestChannelSink_Integration_InMemory(t *testing.T) {
 	}
 	if result.Meta["severity"] != "error" {
 		t.Errorf("meta[severity] = %q, want %q", result.Meta["severity"], "error")
+	}
+}
+
+// A __devtool.log warn carries Level "warn", not "warning". It ranked 0 (as
+// trace) and was dropped at every threshold above trace, including the default.
+func TestChannelSink_CustomWarnPassesWarningAndInfoThresholds(t *testing.T) {
+	for _, threshold := range []string{"debug", "info", "warning"} {
+		t.Run(threshold, func(t *testing.T) {
+			var calls []capturedNotification
+			notify, mu := fakeNotify(&calls)
+			cfg := enabledChannelConfig()
+			cfg.Severity = threshold
+			sink := NewChannelSink(cfg, notify)
+			sink.HandleEntry(context.Background(), proxy.LogEntry{
+				Type:   proxy.LogTypeCustom,
+				Custom: &proxy.CustomLog{Level: "warn", Message: "cart total is negative"},
+			})
+			mu.Lock()
+			defer mu.Unlock()
+			if len(calls) != 1 {
+				t.Fatalf("threshold %q: custom warn delivered %d times, want 1", threshold, len(calls))
+			}
+		})
+	}
+	// And still below an error threshold.
+	var calls []capturedNotification
+	notify, mu := fakeNotify(&calls)
+	cfg := enabledChannelConfig()
+	cfg.Severity = "error"
+	NewChannelSink(cfg, notify).HandleEntry(context.Background(), proxy.LogEntry{
+		Type:   proxy.LogTypeCustom,
+		Custom: &proxy.CustomLog{Level: "warn", Message: "cart total is negative"},
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if len(calls) != 0 {
+		t.Fatalf("custom warn must not pass an error threshold, got %d", len(calls))
 	}
 }

@@ -299,8 +299,8 @@ func (dt *DaemonTools) ReplaytestLogClient() (replaytestLogClient, error) {
 // events the incident pipeline ingests are not forwarded here (ChannelSink
 // drops them); they arrive through StartIncidentDigestSink instead. Returns a cancel
 // function to stop the sink. No-op and returns nil if channel is not enabled.
-// projectPath scopes the subscription to proxies for that project directory;
-// pass "" to receive events from all proxies (legacy behavior).
+// projectPath scopes the subscription to proxies for that project directory
+// (never global; see ChannelSinkFilter); "" falls back to getProjectPath().
 func (dt *DaemonTools) StartChannelSink(server *mcp.Server, cfg *config.ChannelConfig, projectPath string) context.CancelFunc {
 	if cfg == nil || !cfg.IsEnabled() {
 		return func() {}
@@ -321,15 +321,7 @@ func (dt *DaemonTools) StartChannelSink(server *mcp.Server, cfg *config.ChannelC
 
 	sink := NewChannelSink(cfg, notify)
 
-	// Build filter from config: include only event types the channel cares about,
-	// and scope to the current project's proxies so two simultaneous MCP clients
-	// don't cross-contaminate each other's event streams.
-	filter := protocol.StreamEventFilter{
-		ProjectPath: projectPath,
-	}
-	if events := cfg.GetEvents(); len(events) > 0 {
-		filter.Types = events
-	}
+	filter := ChannelSinkFilter(cfg, projectPath)
 
 	go func() {
 		for {
@@ -355,6 +347,29 @@ func (dt *DaemonTools) StartChannelSink(server *mcp.Server, cfg *config.ChannelC
 	}()
 
 	return cancel
+}
+
+// ChannelSinkFilter builds the STREAM-EVENTS filter for the channel sink: the
+// event types the channel cares about, scoped to this MCP process's project so
+// two simultaneous MCP clients don't receive each other's browser events.
+// Global is pinned to an explicit false (as in IncidentDigestFilter): an omitted
+// global falls back to the project's `scope.default-global`, which would widen
+// the subscription to every project's proxies. Empty projectPath falls back to
+// getProjectPath().
+func ChannelSinkFilter(cfg *config.ChannelConfig, projectPath string) protocol.StreamEventFilter {
+	if projectPath == "" {
+		projectPath = getProjectPath()
+	}
+	filter := protocol.StreamEventFilter{
+		ProjectPath:    projectPath,
+		GlobalOverride: protocol.Bool(false),
+	}
+	if cfg != nil {
+		if events := cfg.GetEvents(); len(events) > 0 {
+			filter.Types = events
+		}
+	}
+	return filter
 }
 
 // IncidentDigestFilter builds the STREAM-EVENTS filter for the digest sink.

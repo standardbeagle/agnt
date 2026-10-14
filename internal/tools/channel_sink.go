@@ -341,8 +341,13 @@ func passesSeverityFilter(meta map[string]string, threshold string) bool {
 	return severityRank(entrySev) >= severityRank(threshold)
 }
 
-// severityRank returns the numeric rank of a severity level.
+// severityRank returns the numeric rank of a severity level. "warn" (the level
+// custom logs use, proxy.CustomLog.Level) is an alias of "warning"; without it
+// a __devtool.log warn ranked 0 and was dropped at every threshold above trace.
 func severityRank(s string) int {
+	if s == "warn" {
+		s = "warning"
+	}
 	for i, v := range severityOrder {
 		if v == s {
 			return i

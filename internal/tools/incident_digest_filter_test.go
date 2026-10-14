@@ -39,3 +39,29 @@ func TestIncidentDigestFilter_AlwaysScopedNeverGlobal(t *testing.T) {
 		})
 	}
 }
+
+// The channel sink subscribes with the project directory, but an omitted global
+// falls back to the project's scope.default-global, which widened it to every
+// project's browser events. Global must be an explicit false.
+func TestChannelSinkFilter_ScopedNeverGlobal(t *testing.T) {
+	f := ChannelSinkFilter(nil, "/proj/a")
+	if f.Global {
+		t.Fatal("channel filter must not set the legacy Global flag")
+	}
+	if global, explicit := f.GlobalSetting(); global || !explicit {
+		t.Fatalf("global must be an explicit false; got global=%v explicit=%v", global, explicit)
+	}
+	if f.ProjectPath != "/proj/a" {
+		t.Fatalf("ProjectPath = %q, want /proj/a", f.ProjectPath)
+	}
+	wire, err := json.Marshal(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(wire), `"global":false`) {
+		t.Fatalf("wire form must carry global:false, got %s", wire)
+	}
+	if f := ChannelSinkFilter(nil, ""); f.ProjectPath == "" {
+		t.Fatal("empty projectPath must fall back to getProjectPath(), not subscribe unscoped")
+	}
+}
