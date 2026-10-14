@@ -4,9 +4,29 @@ PTY overlay UI components: command palette, ports/orphans panel, startup splash,
 animated indicator, output protection chain. CLAUDE.md points here; routing
 invariants that matter most are repeated in CLAUDE.md's gotchas.
 
+## Panel Navigation
+
+Ctrl+→ / Ctrl+← from the agent's screen opens the panel view on the **overview**, which is the hub every other panel is reached from. Tab order is fixed by type (`panelRank`, `internal/overlay/overlay.go`): overview, summary, scripts, proxies, config, log — panels created later (a script started after the first open, the config editor) slot into their type's place instead of after the log.
+
+| Key | Overview | Any other panel |
+|---|---|---|
+| Esc | close the panel view | back to the overview |
+| q | close the panel view | close the panel view |
+| Tab / → / Ctrl+→ | next panel | next panel |
+| Shift+Tab / ← / Ctrl+← | close (no panel before it) | previous panel |
+| ↑↓ j k, Home/End g G | move the script highlight | scroll (PgUp/PgDn by page) |
+| Enter, 1-9 | open the highlighted / Nth script | 1-9 open the Nth script |
+| x | — | close a stopped/failed script panel |
+
+The 1-9 numbers are printed beside each overview script row and follow the script list, never panel-creation order. The overview list shows 8 rows and scrolls with the highlight. The footer lists only the keys that work on the active panel.
+
+The panel view is live: every status update (the 2s tick, and the immediate refresh after a palette or a/s/r command) rebuilds the tabs and repaints. The repaint is a frame diff, so an unchanged status writes nothing. Proxy tabs come and go with the proxies; the tab you are viewing going away drops you on the overview. A disconnected status never removes tabs. The daemon drops its 4s ports/orphans cache after every port kill or orphan reap (`invalidatePortsCache`), so the refresh after `kill-port` or `kill-orphans` is a fresh scan.
+
+Notifications are painted on the main screen, which a panel view covers, so while a panel is open the newest live notification replaces the footer hints (`OverviewActions.Toast`) until it expires. Without that, a failed a/s/r or palette command, or the config editor's "Esc again to discard" warning, could expire unseen.
+
 ## Overview Command Palette
 
-Overview panel command input (`:` or `/`) = **filterable command palette**, not blind shell box. Type to filter `paletteCommands` (`internal/overlay/command_palette.go`); ↑/↓ move highlight; Enter runs highlighted command with trailing token as argument; Tab completes name; Esc cancels.
+Overview panel command input (`:` or `/`) = **filterable command palette**, not blind shell box. Type to filter `paletteCommands` (`internal/overlay/command_palette.go`); ↑/↓ move highlight; Enter runs highlighted command with trailing token as argument; Tab completes name; Esc cancels. The palette is anchored to the bottom of the overview with its rows reserved before the sections draw (list capped at `maxPaletteRows`, scrolled to the highlight), so a crowded overview cannot push it off screen.
 
 **Routing invariant**: `handleMenuKey` (`internal/overlay/input.go`) routes ALL keys to `handleCommandInput` *first* when `commandInput` active. Must stay above global menu switch — else Enter/↑/↓/q/x/1-9 stolen by panel navigation (original bug: Enter selected script instead of running typed command).
 

@@ -47,6 +47,16 @@ func (d *Daemon) cachedPortsData(ctx context.Context) ([]config.PortOwner, map[i
 	return portsCache.owners, portsCache.managed, portsCache.orphans
 }
 
+// invalidatePortsCache drops the cached inventory. Called after anything that
+// kills a port holder or an orphan group: the overview refreshes straight
+// after the command, and a cache still holding the pre-kill scan made the
+// killed entries look alive for up to portsCacheTTL.
+func invalidatePortsCache() {
+	portsCache.mu.Lock()
+	portsCache.at = time.Time{}
+	portsCache.mu.Unlock()
+}
+
 // systemProcNames are OS/infra daemons whose listening ports are noise in a
 // dev overview. Port-whisperer hides "system apps" by default; this is the
 // equivalent denylist. Databases (postgres/mysql/redis/mongo) and docker are
@@ -212,6 +222,7 @@ func (d *Daemon) hubHandlePortsCleanOrphans(ctx context.Context, conn *hubpkg.Co
 		return d.writeScopeErr(conn, err, "session_code")
 	}
 	reaped, failed := d.reapOrphans(projectPath)
+	invalidatePortsCache()
 
 	data, _ := json.Marshal(map[string]interface{}{
 		"reaped_count": len(reaped),

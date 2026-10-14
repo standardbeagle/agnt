@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"iter"
+	"math"
 	"os"
 	"strconv"
 	"strings"
@@ -425,24 +426,19 @@ func (r *InputRouter) handleMenuKey(key string) {
 		return
 	}
 
-	// Handle "Escape+X" keys (when Escape is followed quickly by another key)
-	if strings.HasPrefix(key, "Escape+") {
-		// Treat as Escape - close the panel view
-		r.stopPanelRefresh()
-		r.overlay.hideMenu()
+	// "Escape+X" is Escape followed quickly by another key (Alt+X); read it
+	// as Escape.
+	if key == "Escape" || strings.HasPrefix(key, "Escape+") {
+		r.panelBack()
 		return
 	}
 
 	switch key {
-	case "Escape":
-		r.exitPanelMode()
-		return
-
-	case "Ctrl+Right", "\t": // Ctrl+Right or Tab: next panel
+	case "Ctrl+Right", "Right", "\t": // next panel
 		r.handlePanelNav(1)
 		return
 
-	case "Ctrl+Left", "Shift+Tab": // Ctrl+Left or Shift+Tab: previous panel
+	case "Ctrl+Left", "Left", "Shift+Tab": // previous panel; from overview, close
 		r.handlePanelNav(-1)
 		return
 
@@ -452,50 +448,47 @@ func (r *InputRouter) handleMenuKey(key string) {
 		}
 		return
 
-	case "Up", "k": // Up arrow or vim style
+	case "Up", "k":
 		if r.isOverviewWithScripts() {
-			if r.overlay.overviewSelectedIdx > 0 {
-				r.overlay.overviewSelectedIdx--
-				r.overlay.draw()
-			}
+			r.moveOverviewSelection(-1)
 			return
 		}
-		// Scroll up in panel content
-		if r.overlay.panelIndex >= 0 && r.overlay.panelIndex < len(r.overlay.panelItems) {
-			panel := &r.overlay.panelItems[r.overlay.panelIndex]
-			if panel.ScrollOffset < panel.ContentLines()-1 {
-				panel.ScrollOffset++
-				r.overlay.draw()
-			}
-		}
+		r.scrollPanel(1)
 		return
 
-	case "Down", "j": // Down arrow or vim style
+	case "Down", "j":
 		if r.isOverviewWithScripts() {
-			r.overlay.statusMu.RLock()
-			scriptCount := len(r.overlay.status.Scripts)
-			r.overlay.statusMu.RUnlock()
-			if r.overlay.overviewSelectedIdx < scriptCount-1 {
-				r.overlay.overviewSelectedIdx++
-				r.overlay.draw()
-			}
+			r.moveOverviewSelection(1)
 			return
 		}
-		// Scroll down in panel content (toward bottom)
-		if r.overlay.panelIndex >= 0 && r.overlay.panelIndex < len(r.overlay.panelItems) {
-			panel := &r.overlay.panelItems[r.overlay.panelIndex]
-			if panel.ScrollOffset > 0 {
-				panel.ScrollOffset--
-				r.overlay.draw()
-			}
+		r.scrollPanel(-1)
+		return
+
+	case "PageUp":
+		r.scrollPanel(r.pageLines())
+		return
+
+	case "PageDown":
+		r.scrollPanel(-r.pageLines())
+		return
+
+	case "Home", "g":
+		if r.isOverviewWithScripts() {
+			r.moveOverviewSelection(-math.MaxInt32)
+			return
 		}
+		r.scrollPanel(math.MaxInt32)
 		return
 
-	case "Left": // Plain left arrow goes back a panel
-		r.handlePanelNav(-1)
+	case "End", "G":
+		if r.isOverviewWithScripts() {
+			r.moveOverviewSelection(math.MaxInt32)
+			return
+		}
+		r.scrollPanel(-math.MaxInt32)
 		return
 
-	case "q": // Quick close
+	case "q": // close the panel view from anywhere
 		r.exitPanelMode()
 		return
 
@@ -504,25 +497,18 @@ func (r *InputRouter) handleMenuKey(key string) {
 		return
 	}
 
-	// 1-9: jump to the Nth process panel
+	// 1-9: open the Nth script, numbered as the overview lists them.
 	if len(key) == 1 && key[0] >= '1' && key[0] <= '9' {
-		processNum := int(key[0] - '0')
-		procIdx := 0
-		for i, p := range r.overlay.panelItems {
-			if p.Type == "process" {
-				procIdx++
-				if procIdx == processNum {
-					r.overlay.panelIndex = i
-					panel := &r.overlay.panelItems[i]
-					if r.outputFetcher != nil {
-						r.fetchScriptOutput(panel)
-						r.startPanelRefresh(panel.ID)
-					}
-					r.overlay.renderer.ClearScreen()
-					r.overlay.draw()
-					return
-				}
-			}
+		n := int(key[0] - '1')
+		r.overlay.statusMu.RLock()
+		var name string
+		if n < len(r.overlay.status.Scripts) {
+			name = r.overlay.status.Scripts[n].Name
+		}
+		r.overlay.statusMu.RUnlock()
+		if name != "" {
+			r.overlay.overviewSelectedIdx = n
+			r.openScriptPanel(name)
 		}
 		return
 	}
@@ -568,6 +554,76 @@ func (r *InputRouter) exitPanelMode() {
 	r.overlay.hideMenu()
 }
 
+// panelBack is Escape: from a panel opened off the overview it returns to the
+// overview, and from the overview it closes the panel view. Escape closing
+// everything from three panels deep left no way back to the overview short
+// of tabbing through every panel in between.
+// Must be called with overlay.mu held.
+func (r *InputRouter) panelBack() {
+	if !r.overlay.panelMode || r.overlay.panelIndex == 0 {
+		r.exitPanelMode()
+		return
+	}
+	r.stopPanelRefresh()
+	r.overlay.panelIndex = 0
+	r.overlay.draw()
+}
+
+// moveOverviewSelection moves the overview script highlight by delta, clamped
+// to the script list. Must be called with overlay.mu held.
+func (r *InputRouter) moveOverviewSelection(delta int) {
+	r.overlay.statusMu.RLock()
+	n := len(r.overlay.status.Scripts)
+	r.overlay.statusMu.RUnlock()
+	idx := max(0, min(n-1, r.overlay.overviewSelectedIdx+delta))
+	if idx != r.overlay.overviewSelectedIdx {
+		r.overlay.overviewSelectedIdx = idx
+		r.overlay.draw()
+	}
+}
+
+// scrollPanel scrolls the active panel's content. Positive delta moves toward
+// older lines; ScrollOffset counts lines up from the bottom.
+// Must be called with overlay.mu held.
+func (r *InputRouter) scrollPanel(delta int) {
+	if r.overlay.panelIndex < 0 || r.overlay.panelIndex >= len(r.overlay.panelItems) {
+		return
+	}
+	panel := &r.overlay.panelItems[r.overlay.panelIndex]
+	if panel.Type == "overview" {
+		return
+	}
+	off := max(0, min(panel.ContentLines()-1, panel.ScrollOffset+delta))
+	if off != panel.ScrollOffset {
+		panel.ScrollOffset = off
+		r.overlay.draw()
+	}
+}
+
+// pageLines is the PageUp/PageDown step: the panel body less a line of
+// overlap so the reader keeps their place.
+func (r *InputRouter) pageLines() int {
+	return max(1, r.overlay.height-8)
+}
+
+// openScriptPanel focuses the process panel for the named script and starts
+// its output refresh. Must be called with overlay.mu held.
+func (r *InputRouter) openScriptPanel(name string) {
+	for i, p := range r.overlay.panelItems {
+		if p.Type == "process" && p.ID == name {
+			r.overlay.panelIndex = i
+			panel := &r.overlay.panelItems[i]
+			if r.outputFetcher != nil {
+				r.fetchScriptOutput(panel)
+				r.startPanelRefresh(panel.ID)
+			}
+			r.overlay.renderer.ClearScreen()
+			r.overlay.draw()
+			return
+		}
+	}
+}
+
 // isOverviewWithScripts returns true if the overlay is in panel mode on the
 // overview panel and there are scripts to select.
 // Must be called with overlay.mu held.
@@ -601,66 +657,35 @@ func (r *InputRouter) selectedScript() *ScriptInfo {
 // overviewEnter navigates to the panel for the selected script.
 // Must be called with overlay.mu held.
 func (r *InputRouter) overviewEnter() {
-	script := r.selectedScript()
-	if script == nil {
-		return
-	}
-	// Find the panel matching this script name
-	for i, p := range r.overlay.panelItems {
-		if p.Type == "process" && p.ID == script.Name {
-			r.overlay.panelIndex = i
-			panel := &r.overlay.panelItems[i]
-			if r.outputFetcher != nil {
-				r.fetchScriptOutput(panel)
-				r.startPanelRefresh(panel.ID)
-			}
-			r.overlay.renderer.ClearScreen()
-			r.overlay.draw()
-			return
-		}
+	if script := r.selectedScript(); script != nil {
+		r.openScriptPanel(script.Name)
 	}
 }
 
 // overviewStopScript stops the selected script via the daemon.
 // Must be called with overlay.mu held.
 func (r *InputRouter) overviewStopScript() {
-	if r.scriptController == nil {
-		return
-	}
-	script := r.selectedScript()
-	if script == nil {
-		return
-	}
-	name := script.Name
-	r.overlay.mu.Unlock()
-	if err := r.scriptController.StopScript(name); err != nil {
-		debug.Log("overlay", "StopScript %q failed: %v", name, err)
-	}
-	r.overlay.mu.Lock()
-	r.overlay.draw()
+	r.overviewScriptAction("stop", func(c ScriptController, name string) error { return c.StopScript(name) })
 }
 
 // overviewRestartScript restarts the selected script via the daemon.
 // Must be called with overlay.mu held.
 func (r *InputRouter) overviewRestartScript() {
-	if r.scriptController == nil {
-		return
-	}
-	script := r.selectedScript()
-	if script == nil {
-		return
-	}
-	name := script.Name
-	r.overlay.mu.Unlock()
-	if err := r.scriptController.RestartScript(name); err != nil {
-		debug.Log("overlay", "RestartScript %q failed: %v", name, err)
-	}
-	r.overlay.mu.Lock()
-	r.overlay.draw()
+	r.overviewScriptAction("restart", func(c ScriptController, name string) error { return c.RestartScript(name) })
 }
 
 // overviewStartScript starts the selected stopped script via the daemon.
+// Must be called with overlay.mu held.
 func (r *InputRouter) overviewStartScript() {
+	r.overviewScriptAction("start", func(c ScriptController, name string) error { return c.StartScript(name) })
+}
+
+// overviewScriptAction runs one a/s/r key against the selected script. The
+// call does network I/O, so the overlay lock is released around it. A failure
+// is reported the same way the palette's start/stop/restart report theirs: a
+// key that did nothing visible was indistinguishable from a key that worked.
+// Must be called with overlay.mu held.
+func (r *InputRouter) overviewScriptAction(verb string, fn func(ScriptController, string) error) {
 	if r.scriptController == nil {
 		return
 	}
@@ -670,8 +695,11 @@ func (r *InputRouter) overviewStartScript() {
 	}
 	name := script.Name
 	r.overlay.mu.Unlock()
-	if err := r.scriptController.StartScript(name); err != nil {
-		debug.Log("overlay", "StartScript %q failed: %v", name, err)
+	if err := fn(r.scriptController, name); err != nil {
+		r.overlay.Notify(Notification{Level: LevelError, Text: fmt.Sprintf("%s %s failed: %v", verb, name, err)})
+	}
+	if r.statusFetcher != nil {
+		r.statusFetcher.Refresh()
 	}
 	r.overlay.mu.Lock()
 	r.overlay.draw()
@@ -981,7 +1009,7 @@ func (r *InputRouter) dispatchPaletteCommand(c PaletteCommand, args string) {
 	case "run":
 		if args != "" {
 			if err := r.scriptController.RunCommand(args); err != nil {
-				debug.Log("overlay", "palette run %q failed: %v", args, err)
+				fail("run", err)
 			}
 		}
 	}
@@ -1249,8 +1277,9 @@ func forwardingHotkey(buf []byte) (paused bool, ok bool) {
 	return false, false
 }
 
-// enterPanelBrowse opens the overlay directly into panel mode, bypassing the
-// menu overview. Called when Ctrl+Arrow is pressed from the indicator state.
+// enterPanelBrowse opens the panel view on the overview. Called when
+// Ctrl+Arrow is pressed from the indicator state; either direction opens the
+// overview, the one screen every other panel is reached from.
 func (r *InputRouter) enterPanelBrowse(delta int) {
 	r.overlay.mu.Lock()
 	defer r.overlay.mu.Unlock()
@@ -1741,7 +1770,11 @@ var csiKeys = map[string]string{
 	"\x1b[D":    "Left",
 	"\x1b[H":    "Home",
 	"\x1b[F":    "End",
+	"\x1b[1~":   "Home",
+	"\x1b[4~":   "End",
 	"\x1b[3~":   "Delete",
+	"\x1b[5~":   "PageUp",
+	"\x1b[6~":   "PageDown",
 	"\x1b[Z":    "Shift+Tab",
 	"\x1b[1;5C": "Ctrl+Right",
 	"\x1b[1;5D": "Ctrl+Left",

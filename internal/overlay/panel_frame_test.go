@@ -70,7 +70,7 @@ func TestScriptNavigationPreservesPanel(t *testing.T) {
 	for _, key := range []string{"Down", "Up", "j", "k"} {
 		output.Reset()
 		router.handleMenuKey(key)
-		if strings.Contains(output.String(), ClearScreen) || strings.Contains(output.String(), "Ctrl+→ Panels") {
+		if strings.Contains(output.String(), ClearScreen) || strings.Contains(output.String(), "Tab Panels") {
 			t.Fatalf("key %q repainted the panel", key)
 		}
 	}

@@ -28,7 +28,7 @@ func TestCommandPaletteTypingPreservesPanel(t *testing.T) {
 		if strings.Contains(frame, ClearScreen) {
 			t.Fatalf("key %q cleared the screen", key)
 		}
-		if strings.Contains(frame, "Ctrl+→ Panels") {
+		if strings.Contains(frame, "Tab Panels") {
 			t.Fatalf("key %q redrew the panel footer", key)
 		}
 	}

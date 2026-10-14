@@ -6,6 +6,7 @@ package overlay
 import (
 	"io"
 	"os"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -480,11 +481,28 @@ func (o *Overlay) UpdateStatus(status Status) {
 	o.status.LastUpdate = time.Now()
 	o.statusMu.Unlock()
 
-	// Redraw indicator if visible and not paused
-	if o.showBar.Load() && o.State() == StateIndicator && !o.redrawPaused.Load() {
+	if o.redrawPaused.Load() {
+		return
+	}
+	switch o.State() {
+	case StateIndicator:
+		if o.showBar.Load() {
+			o.mu.Lock()
+			o.stopTransitionSpinnerLocked()
+			o.draw()
+			o.mu.Unlock()
+		}
+	case StateMenu:
+		// An open panel view shows live status too. It used to repaint only
+		// on a keypress, so the result of kill-orphans, a proxy stop or a
+		// script start appeared only after the user touched a key, and a
+		// started proxy got no tab until the view was reopened. The panel
+		// frame is diffed, so an unchanged status writes nothing.
 		o.mu.Lock()
-		o.stopTransitionSpinnerLocked()
-		o.draw()
+		if o.panelMode {
+			o.buildPanelItems()
+			o.draw()
+		}
 		o.mu.Unlock()
 	}
 }
@@ -599,6 +617,40 @@ func (o *Overlay) buildPanelItems() {
 		}
 	}
 
+	// Drop tabs for proxies that are gone. Only on a connected status: a
+	// daemon blip reports no proxies at all, and the tabs should outlive it.
+	if status.DaemonConnected == ConnectionConnected {
+		live := make(map[string]bool, len(status.Proxies))
+		for _, p := range status.Proxies {
+			live[p.ID] = true
+		}
+		active, removedBefore := o.panelIndex, 0
+		kept := o.panelItems[:0]
+		for i, p := range o.panelItems {
+			if p.Type == "proxy" && !live[p.ID] {
+				if i == active {
+					active = -1 // the viewed proxy stopped: back to the overview
+				} else if i < active {
+					removedBefore++
+				}
+				continue
+			}
+			kept = append(kept, p)
+		}
+		if active < 0 {
+			o.panelIndex = 0
+		} else {
+			o.panelIndex = active - removedBefore
+		}
+		o.panelItems = kept
+		existing = make(map[string]int, len(o.panelItems))
+		for i, p := range o.panelItems {
+			if p.ID != "" {
+				existing[p.ID] = i
+			}
+		}
+	}
+
 	// Add new proxies
 	for _, p := range status.Proxies {
 		if _, ok := existing[p.ID]; !ok {
@@ -642,6 +694,8 @@ func (o *Overlay) buildPanelItems() {
 	}
 	o.panelItems[logIdx].SetContent(formatStartupLog(status.StartupLog))
 
+	o.orderPanels()
+
 	// Clamp overview selection to script count
 	if n := len(status.Scripts); n > 0 {
 		if o.overviewSelectedIdx >= n {
@@ -649,6 +703,34 @@ func (o *Overlay) buildPanelItems() {
 		}
 	} else {
 		o.overviewSelectedIdx = 0
+	}
+}
+
+// panelRank fixes the tab order by panel type. Panels are appended as they
+// first appear, so without it a script started after the first open landed
+// after the log, and the config editor after that, and the order changed from
+// one session to the next.
+var panelRank = map[string]int{"overview": 0, "summary": 1, "process": 2, "proxy": 3, "config": 4, "log": 5}
+
+// orderPanels sorts panelItems into panelRank order, keeping same-type panels
+// in arrival order and panelIndex on the panel it pointed at.
+func (o *Overlay) orderPanels() {
+	var active *PanelItem
+	if o.panelIndex >= 0 && o.panelIndex < len(o.panelItems) {
+		p := o.panelItems[o.panelIndex]
+		active = &p
+	}
+	slices.SortStableFunc(o.panelItems, func(a, b PanelItem) int {
+		return panelRank[a.Type] - panelRank[b.Type]
+	})
+	if active == nil {
+		return
+	}
+	for i, p := range o.panelItems {
+		if p.Type == active.Type && p.ID == active.ID {
+			o.panelIndex = i
+			return
+		}
 	}
 }
 
@@ -825,7 +907,9 @@ func (o *Overlay) draw() {
 		if idx >= len(o.panelItems) {
 			idx = len(o.panelItems) - 1
 		}
-		o.renderer.DrawPanelView(o.panelItems, idx, status, o.overviewSelectedIdx, o.commandInput, o.commandBuffer, o.commandSelectedIdx, o.showAllPorts, o.overviewActionsLocked())
+		actions := o.overviewActionsLocked()
+		actions.Toast = o.panelToastLocked()
+		o.renderer.DrawPanelView(o.panelItems, idx, status, o.overviewSelectedIdx, o.commandInput, o.commandBuffer, o.commandSelectedIdx, o.showAllPorts, actions)
 	}
 
 	// The status bar is the single global element shared by every visible
@@ -876,6 +960,11 @@ type OverviewActions struct {
 	// read from the Overlay directly so the renderer keeps taking a snapshot
 	// instead of reaching into live state under the draw lock.
 	ConfigEditor *ConfigEditor
+
+	// Toast is the newest active notification, shown in place of the key
+	// hints on the panel footer: the notification stack itself is painted
+	// only on the main screen, which a panel view covers.
+	Toast *NotificationView
 }
 
 // overviewActionsLocked snapshots the overview action state. Must be called

@@ -241,8 +241,22 @@ func (o *Overlay) HasNotifications() bool {
 	return o.notifications.len() > 0
 }
 
+// repaintNotifications redraws whichever screen shows notifications: the
+// stack above the status bar, or the footer of an open panel view. Without
+// the panel case, a message raised by a key pressed inside a panel (a failed
+// palette command, the config editor's unsaved-changes warning) could expire
+// before anyone saw it.
 func (o *Overlay) repaintNotifications() {
-	if !o.showBar.Load() || o.State() != StateIndicator || o.redrawPaused.Load() {
+	if o.redrawPaused.Load() {
+		return
+	}
+	switch o.State() {
+	case StateIndicator:
+		if !o.showBar.Load() {
+			return
+		}
+	case StateMenu:
+	default:
 		return
 	}
 	o.mu.Lock()
@@ -258,6 +272,23 @@ func (o *Overlay) drawNotificationsLocked() {
 	}
 	views, next := o.notifications.snapshot(time.Now())
 	o.notifyRows = o.renderer.DrawNotifications(views, o.notifyRows)
+	o.armNotifyTimerLocked(next)
+}
+
+// panelToastLocked returns the newest active notification for the panel
+// footer, or nil, and arms the timer that clears it. Must hold o.mu.
+func (o *Overlay) panelToastLocked() *NotificationView {
+	views, next := o.notifications.snapshot(time.Now())
+	o.armNotifyTimerLocked(next)
+	if len(views) == 0 {
+		return nil
+	}
+	return &views[len(views)-1]
+}
+
+// armNotifyTimerLocked schedules a repaint for the earliest pending expiry.
+// Must hold o.mu.
+func (o *Overlay) armNotifyTimerLocked(next time.Time) {
 	if o.notifyTimer != nil {
 		o.notifyTimer.Stop()
 		o.notifyTimer = nil

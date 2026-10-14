@@ -196,6 +196,7 @@ func managedTreeChecker(pm *goprocess.ProcessManager) func(pid int) bool {
 // vendoredPortLookupIsBroad) the kill does not go through it at all: exactly
 // the listener PIDs this scan returned are signalled.
 func killPortHoldersGuarded(ctx context.Context, pm *goprocess.ProcessManager, port int) (killed, protected []int, err error) {
+	defer invalidatePortsCache()
 	return killPortHolders(ctx, port, portKillOps{
 		listeners:   config.FindPIDsByPortTagged,
 		self:        os.Getpid(),

@@ -897,31 +897,19 @@ func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Sta
 	// bottom row (r.height) for the global status bar drawn by DrawIndicator.
 	footerRow := r.height - 1
 	r.moveTo(footerRow, 1)
-	r.write(BgBrightBlack + FgWhite)
 	var hint string
-	if active.Type == "overview" {
-		// Build the overview hint contextually: script actions only when a
-		// script is selected, summarize only when configured, reconnect only
-		// when disconnected.
-		parts := []string{}
-		if len(status.Scripts) > 0 {
-			parts = append(parts, "↑↓ Select", "Enter Open", "a/s/r Script", ": Cmd")
+	if t := actions.Toast; t != nil {
+		// A live notification takes the footer: the stack it would otherwise
+		// appear in is on the main screen, under this view.
+		glyph, style := notificationStyle(t.Level)
+		hint = " " + glyph + " " + t.Text
+		if t.Count > 1 {
+			hint += fmt.Sprintf(" (×%d)", t.Count)
 		}
-		if actions.SummarizeEnabled {
-			parts = append(parts, "m Summarize")
-		}
-		if status.DaemonConnected != ConnectionConnected {
-			parts = append(parts, "c Reconnect")
-		}
-		parts = append(parts, "Ctrl+→ Panels", "Esc Exit")
-		hint = fmt.Sprintf(" %s  (%d/%d) ", strings.Join(parts, "  "), activeIndex+1, len(panels))
-	} else if active.Type == "config" {
-		// The editor swallows every key it can use, so its hint lists what it
-		// does with them rather than the panel-browser bindings that no longer
-		// apply while typing.
-		hint = fmt.Sprintf(" ^S Save  Esc Close  ↑↓←→ Move  (%d/%d) ", activeIndex+1, len(panels))
+		r.write(style)
 	} else {
-		hint = fmt.Sprintf(" Tab Navigate  ↑↓ Scroll  1-9 Jump  x Close stopped  Esc Exit  (%d/%d) ", activeIndex+1, len(panels))
+		r.write(BgBrightBlack + FgWhite)
+		hint = " " + strings.Join(panelHints(active, status, actions), "  ") + fmt.Sprintf("  (%d/%d) ", activeIndex+1, len(panels))
 	}
 	hint = r.padRight(r.truncateANSI(hint, r.width), r.width)
 	r.write(hint)
@@ -935,17 +923,65 @@ func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Sta
 	r.flushBuffer(buf)
 }
 
-// drawPanelTabBar draws the horizontal tab bar showing all panels.
+// panelHints lists the keys that do something on the active panel, most
+// used first, so truncation on a narrow terminal drops the rarest. Each
+// panel offers only what works there: an "x" hint on a running script, or
+// "1-9" with no scripts to jump to, advertises a key that does nothing.
+func panelHints(active PanelItem, status Status, actions OverviewActions) []string {
+	switch active.Type {
+	case "overview":
+		var parts []string
+		if n := len(status.Scripts); n > 0 {
+			open := "⏎ Open"
+			if n > 1 {
+				open = fmt.Sprintf("⏎/1-%d Open", min(n, 9))
+			}
+			parts = append(parts, "↑↓ Select", open, "a/s/r Script")
+		}
+		parts = append(parts, ": Cmds")
+		if actions.SummarizeEnabled {
+			parts = append(parts, "m Summarize")
+		}
+		if status.DaemonConnected != ConnectionConnected {
+			parts = append(parts, "c Reconnect")
+		}
+		return append(parts, "Tab Panels", "Esc Close")
+	case "config":
+		// The editor swallows every key it can use, so its hint lists what it
+		// does with them rather than the panel-browser bindings that no longer
+		// apply while typing.
+		return []string{"^S Save", "Esc Close", "↑↓←→ Move"}
+	}
+	parts := []string{"↑↓ Scroll", "Tab Panels"}
+	if n := len(status.Scripts); n > 0 {
+		parts = append(parts, fmt.Sprintf("1-%d Script", min(n, 9)))
+	}
+	if active.Type == "process" && active.IsDone() {
+		parts = append(parts, "x Close")
+	}
+	return append(parts, "Esc Overview", "q Quit")
+}
+
+// drawPanelTabBar draws the horizontal tab bar showing all panels. When the
+// tabs do not fit, it shows a window around the active tab with ‹ › marking
+// the panels scrolled off either side, so the active tab is always visible.
 func (r *Renderer) drawPanelTabBar(panels []PanelItem, activeIndex int) {
 	// Row 1: Tab bar with panel labels
 	r.moveTo(1, 1)
 	r.write(ClearLine)
 
+	first, last := tabWindow(panels, activeIndex, r.width)
+
 	// Build tab bar fitting within screen width
 	var tabBar strings.Builder
-	tabBar.WriteString(" ")
+	if first > 0 {
+		tabBar.WriteString(FgBrightBlack + "‹" + Reset)
+	} else {
+		tabBar.WriteString(" ")
+	}
 
-	for i, panel := range panels {
+	for i := first; i <= last; i++ {
+		panel := panels[i]
 		label := panel.Label
 
 		// Choose tab style based on type
@@ -974,9 +1010,12 @@ func (r *Renderer) drawPanelTabBar(panels []PanelItem, activeIndex int) {
 		}
 
 		// Tab separator
-		if i < len(panels)-1 {
+		if i < last {
 			tabBar.WriteString(FgBrightBlack + "│" + Reset)
 		}
+	}
+	if last < len(panels)-1 {
+		tabBar.WriteString(FgBrightBlack + " ›" + Reset)
 	}
 
 	r.write(tabBar.String())
@@ -994,6 +1033,34 @@ func (r *Renderer) drawPanelTabBar(panels []PanelItem, activeIndex int) {
 			r.write(gradientProxy.fromFg + "─" + Reset)
 		}
 	}
+}
+
+// tabWindow returns the first and last panel indexes whose tabs fit in width,
+// always including activeIndex. A tab is " label " plus a one-cell separator;
+// two cells are held back for the ‹ › overflow markers.
+func tabWindow(panels []PanelItem, activeIndex, width int) (first, last int) {
+	cell := func(i int) int { return len([]rune(panels[i].Label)) + 3 }
+	total := 1
+	for i := range panels {
+		total += cell(i)
+	}
+	if total <= width {
+		return 0, len(panels) - 1
+	}
+	budget := width - 3
+	first, last = activeIndex, activeIndex
+	used := cell(activeIndex)
+	// Grow right first so the panels ahead of the cursor stay in view, then
+	// fill what is left from the left.
+	for last+1 < len(panels) && used+cell(last+1) <= budget {
+		last++
+		used += cell(last)
+	}
+	for first > 0 && used+cell(first-1) <= budget {
+		first--
+		used += cell(first)
+	}
+	return first, last
 }
 
 // overviewSpinner returns the braille spinner frame for the given tick index.
@@ -1078,10 +1145,26 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 	row := startRow
 	spinner := overviewSpinner(actions.SpinnerFrame)
 
-	// Silent-failure notice banner (dismissable) — most prominent, at the top.
-	row = r.drawNoticeBanner(row, col, width, startRow+maxRows, status.Notices)
+	// The actions line and the command palette are anchored to the bottom of
+	// the panel and their rows are reserved before any section draws. Drawn
+	// after the sections instead, a busy overview pushed the palette below
+	// the panel: typing went into a box nobody could see.
+	showActions := actions.SummarizeEnabled || actions.Summarizing || actions.SummaryErr != ""
+	var paletteMatches []PaletteCommand
+	reserve := 0
+	if showActions {
+		reserve += 2 // blank + actions line
+	}
+	paletteRows := 0
+	if commandInput {
+		paletteMatches, _, _ = filterPaletteCommands(commandBuffer)
+		paletteRows = min(max(len(paletteMatches), 1), maxPaletteRows)
+		reserve += 3 + paletteRows // blank + title + input + list
+	}
+	bottom := max(startRow, startRow+maxRows-reserve)
 
-	bottom := startRow + maxRows
+	// Silent-failure notice banner (dismissable) — most prominent, at the top.
+	row = r.drawNoticeBanner(row, col, width, bottom, status.Notices)
 
 	// Connection status + at-a-glance summary strip, drawn as one aligned
 	// header line: state on the left, resource tallies on the right.
@@ -1176,8 +1259,9 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 		}
 	}
 
-	// Global actions line (summarize state + command affordance)
-	if row < startRow+maxRows-1 {
+	// Bottom-anchored tail: the rows were reserved above, so it always fits.
+	row = bottom
+	if showActions {
 		row++
 		r.moveTo(row, col)
 		r.write(Bold + "actions" + Reset + "  ")
@@ -1191,61 +1275,57 @@ func (r *Renderer) drawOverviewContent(startRow, col, width, maxRows int, status
 			}
 			r.write(fmt.Sprintf("%s%s summarize failed: %s%s", FgRed, IconWarning, msg, Reset))
 		default:
-			if actions.SummarizeEnabled {
-				r.write(fmt.Sprintf("%sm%s summarize", FgCyan+Bold, Reset))
-			}
+			r.write(fmt.Sprintf("%sm%s summarize", FgCyan+Bold, Reset))
 		}
 		row++
 	}
 
-	// Command palette (bottom of overview)
-	if commandInput {
-		if row < startRow+maxRows-1 {
-			row++
-			r.moveTo(row, col)
-			r.write(r.truncateANSI(Bold+"run command"+Reset+FgBrightBlack+"  (type to filter, ↑↓ select, ⏎ run, esc cancel)", width) + Reset)
-			row++
-			r.moveTo(row, col)
-			r.write(r.truncateANSI(fmt.Sprintf("%s>%s %s%s█%s", FgCyan+Bold, Reset, commandBuffer, FgBrightBlack, Reset), width) + Reset)
-			row++
+	if !commandInput {
+		return
+	}
+	row++
+	r.moveTo(row, col)
+	r.write(r.truncateANSI(Bold+"run command"+Reset+FgBrightBlack+"  (type to filter, ↑↓ select, Tab complete, ⏎ run, Esc cancel)", width) + Reset)
+	row++
+	r.moveTo(row, col)
+	r.write(r.truncateANSI(fmt.Sprintf("%s>%s %s%s█%s", FgCyan+Bold, Reset, commandBuffer, FgBrightBlack, Reset), width) + Reset)
+	row++
 
-			matches, _, _ := filterPaletteCommands(commandBuffer)
-			if len(matches) == 0 && row < startRow+maxRows {
-				r.moveTo(row, col+1)
-				r.write(FgBrightBlack + "no matching command" + Reset)
-				row++
-			}
-			for i, c := range matches {
-				if row >= startRow+maxRows {
-					break
-				}
-				r.moveTo(row, col+1)
-				selected := i == commandSelectedIdx
-				marker := "  "
-				if selected {
-					marker = FgCyan + Bold + "▸ " + Reset
-				}
-				name := c.Name
-				if c.Arg != "" {
-					name += " " + c.Arg
-				}
-				nameCol := FgWhite
-				if selected {
-					nameCol = FgCyan + Bold
-				}
-				line := fmt.Sprintf("%s%s%-22s%s%s%s", marker, nameCol, name, Reset, FgBrightBlack, c.Desc)
-				if len(line) > 0 {
-					r.write(r.truncateANSI(line, width-1) + Reset)
-				}
-				row++
-			}
-		}
-	} else if row < startRow+maxRows-1 {
+	if len(paletteMatches) == 0 {
+		r.moveTo(row, col+1)
+		r.write(FgBrightBlack + "no matching command" + Reset)
+		return
+	}
+	// Scroll the list so the highlight stays in view; the last row of a
+	// clipped list says how many more there are.
+	first := max(0, commandSelectedIdx-paletteRows+1)
+	for i := first; i < len(paletteMatches) && i < first+paletteRows; i++ {
+		r.moveTo(row, col+1)
 		row++
-		r.moveTo(row, col)
-		r.write(FgBrightBlack + "Press " + Reset + FgCyan + Bold + ":" + Reset + FgBrightBlack + " to run a command" + Reset)
+		if i == first+paletteRows-1 && i < len(paletteMatches)-1 && i != commandSelectedIdx {
+			r.write(fmt.Sprintf("%s  … %d more · type to filter%s", FgBrightBlack, len(paletteMatches)-i, Reset))
+			break
+		}
+		c := paletteMatches[i]
+		selected := i == commandSelectedIdx
+		marker := "  "
+		nameCol := FgWhite
+		if selected {
+			marker = FgCyan + Bold + "▸ " + Reset
+			nameCol = FgCyan + Bold
+		}
+		name := c.Name
+		if c.Arg != "" {
+			name += " " + c.Arg
+		}
+		line := fmt.Sprintf("%s%s%-22s%s%s%s", marker, nameCol, name, Reset, FgBrightBlack, c.Desc)
+		r.write(r.truncateANSI(line, width-1) + Reset)
 	}
 }
+
+// maxPaletteRows caps the command list so the palette leaves the top of the
+// overview — the notices and connection line — in view.
+const maxPaletteRows = 8
 
 // --- Overview section helpers -------------------------------------------------
 //
@@ -1365,9 +1445,22 @@ func (r *Renderer) drawScriptsSection(row, col, width, bottom int, scripts []Scr
 	if width < 60 {
 		nameW = 10
 	}
-	for i, s := range scripts {
-		if row >= bottom || i >= 8 {
+	// At most maxScriptRows rows, scrolled so the highlighted script is one of
+	// them: with a fixed first-8 cut, ↓ walked the highlight off the list.
+	visible := min(min(len(scripts), maxScriptRows), max(bottom-row, 0))
+	first := 0
+	if selectedIdx >= visible {
+		first = selectedIdx - visible + 1
+	}
+	for i := first; i < first+visible && i < len(scripts); i++ {
+		s := scripts[i]
+		if row >= bottom {
 			break
+		}
+		// The number is the 1-9 key that opens this script's panel.
+		num := "  "
+		if i < 9 {
+			num = fmt.Sprintf("%d ", i+1)
 		}
 		icon, iconColor := processStateIcon(s.State, s.HasAlerts, frame)
 		stateColor := StateColorCode(s.State)
@@ -1385,7 +1478,7 @@ func (r *Renderer) drawScriptsSection(row, col, width, bottom int, scripts []Scr
 		r.moveTo(row, col+1)
 		if selected {
 			// Plain, color-free line under reverse video for a clean bar.
-			plain := fmt.Sprintf("%s %s %-9s", icon, padCell(s.Name, nameW), s.State)
+			plain := fmt.Sprintf("%s%s %s %-9s", num, icon, padCell(s.Name, nameW), s.State)
 			if len(meta) > 0 {
 				plain += " " + strings.Join(meta, " ")
 			}
@@ -1397,7 +1490,8 @@ func (r *Renderer) drawScriptsSection(row, col, width, bottom int, scripts []Scr
 			continue
 		}
 		var b strings.Builder
-		b.WriteString(fmt.Sprintf("%s%s%s %s%s%s %s%-9s%s",
+		b.WriteString(fmt.Sprintf("%s%s%s%s%s%s %s%s%s %s%-9s%s",
+			FgBrightBlack, num, Reset,
 			iconColor, icon, Reset,
 			FgWhite, padCell(s.Name, nameW), Reset,
 			stateColor, s.State, Reset))
@@ -1409,7 +1503,7 @@ func (r *Renderer) drawScriptsSection(row, col, width, bottom int, scripts []Scr
 			b.WriteString(" " + metaColor + strings.Join(meta, " ") + Reset)
 		}
 		if s.LastError != "" && s.State == "failed" {
-			used := 1 + nameW + 1 + 9 + 1
+			used := 2 + 1 + nameW + 1 + 9 + 1
 			for _, m := range meta {
 				used += len([]rune(m)) + 1
 			}
@@ -1420,11 +1514,20 @@ func (r *Renderer) drawScriptsSection(row, col, width, bottom int, scripts []Scr
 		r.write(b.String())
 		row++
 	}
+	if hidden := len(scripts) - visible; hidden > 0 && row < bottom {
+		r.moveTo(row, col+1)
+		r.write(fmt.Sprintf("%s  %d of %d shown · ↑↓ to scroll%s", FgBrightBlack, visible, len(scripts), Reset))
+		row++
+	}
 	if row < bottom {
 		row++ // trailing blank
 	}
 	return row
 }
+
+// maxScriptRows caps the overview script list; the rest scroll into view
+// with the selection.
+const maxScriptRows = 8
 
 // padCellTrim truncates s to at most w display cells with an ellipsis, without
 // padding (used for trailing free-form text).

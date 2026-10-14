@@ -291,6 +291,7 @@ func (r *InputRouter) openConfigPanel() error {
 		Type: "config", ID: "__config", Label: "config",
 	})
 	r.overlay.panelIndex = len(r.overlay.panelItems) - 1
+	r.overlay.orderPanels()
 	return nil
 }
 
@@ -369,10 +370,17 @@ func (r *InputRouter) handleConfigKey(key string) bool {
 		e.MoveCursor(0, -1)
 	case "Right":
 		e.MoveCursor(0, 1)
+	case "PageUp":
+		e.MoveCursor(-r.pageLines(), 0)
+	case "PageDown":
+		e.MoveCursor(r.pageLines(), 0)
 	case "Home":
 		e.MoveToLineStart()
 	case "End":
 		e.MoveToLineEnd()
+	case "Shift+Tab":
+		// Named keys the editor has no use for are swallowed: the default
+		// branch below would otherwise type the key's name into the buffer.
 	case "\x7f", "\b", "Backspace":
 		e.Backspace()
 	case "Delete":
