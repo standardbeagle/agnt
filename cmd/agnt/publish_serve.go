@@ -752,12 +752,11 @@ func acquireServeStoreLock(storeDir string) (release func(), err error) {
 //
 //   - cloudflare: CF-Connecting-IP. Cloudflare's edge sets it to the client it
 //     accepted the connection from and replaces any value the client sent.
-//   - ngrok, tailscale: the RIGHTMOST entry of X-Forwarded-For. The ngrok agent
-//     and `tailscale serve` are local reverse proxies that APPEND the address
-//     they received the request from; a visitor can send their own
-//     X-Forwarded-For, and whatever they send ends up to the LEFT of the entry
-//     the trusted hop added. So the leftmost entry is attacker-chosen and is
-//     never read. A rightmost entry that is not an IP is not skipped in favour
+//   - ngrok, tailscale: the RIGHTMOST entry of X-Forwarded-For. Both were seen
+//     to overwrite a client-sent value (below); had either appended instead,
+//     whatever the visitor sent would sit to the LEFT of the entry the trusted
+//     hop added, so the rightmost entry is the right one either way and the
+//     leftmost, attacker-chosen in the append case, is never read. A rightmost entry that is not an IP is not skipped in favour
 //     of the one before it — that would walk back into attacker-chosen entries
 //     — the whole header is ignored and the TCP peer used.
 //
@@ -770,13 +769,10 @@ func acquireServeStoreLock(storeDir string) (release func(), err error) {
 //   - tailscale serve: loopback peer; X-Forwarded-For is the true tailnet
 //     client and a client-sent value is OVERWRITTEN, not appended to, so the
 //     rightmost entry is still the true client.
-//
-// NOT CAPTURED: ngrok. Its rule rests on how the agent is generally known to
-// behave. If it does not append — sends no header, or passes the visitor's
-// through untouched — the failure modes are: no header → TCP peer (one shared
-// bucket); visitor's header passed through → a visitor picks their own bucket
-// key, which evades the per-client bucket but not the per-share aggregate one
-// behind it.
+//   - ngrok http (3.39, free domain): loopback peer; X-Forwarded-For is the
+//     true client and a client-sent value is OVERWRITTEN, so the rightmost
+//     (only) entry is the true client. X-Real-Ip and X-Forwarded-Host pass
+//     through from the client and are never read.
 func tunnelClientAddr(provider tunnel.Provider, up *atomic.Bool) func(*http.Request) string {
 	var forwarded func(http.Header) string
 	switch provider {

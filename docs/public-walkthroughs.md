@@ -129,7 +129,7 @@ like a password.
   | `--tunnel` | Client address taken from |
   |---|---|
   | `cloudflare` | `CF-Connecting-IP`, which Cloudflare's edge sets and overwrites |
-  | `ngrok`, `tailscale` | the **rightmost** entry of `X-Forwarded-For` — the one the local agent appended. A viewer can send their own `X-Forwarded-For`; it lands to the *left* of that entry and is never read |
+  | `ngrok`, `tailscale` | the **rightmost** entry of `X-Forwarded-For` — the one the tunnel set. Both overwrite a viewer-sent `X-Forwarded-For`; an agent that appended instead would put the viewer's value to the *left*, where it is never read |
 
   If the header is missing, or the value does not parse as an IP address, the
   TCP peer is used; a malformed rightmost entry is not skipped in favour of the
@@ -140,13 +140,9 @@ like a password.
   `CF-Connecting-IP` is refused at Cloudflare's edge before it reaches the
   origin. `tailscale serve`: `X-Forwarded-For` is the true tailnet client and a
   viewer-sent value is overwritten, so the rightmost entry is the true client.
-
-  **`ngrok` was not checked.** Its rule rests on how the agent is generally
-  known to behave (a local reverse proxy that appends `X-Forwarded-For`). If it
-  sends no header, viewers fall back to one shared per-client bucket; if it
-  passes a viewer's header through without appending, a viewer could choose
-  their own bucket key. In both cases the per-share aggregate bucket still
-  bounds the share.
+  `ngrok http` (3.39, free domain): the same — `X-Forwarded-For` is the true
+  client and a viewer-sent value is overwritten. (ngrok passes a viewer-sent
+  `X-Real-Ip` and `X-Forwarded-Host` through; neither is read.)
 
   **Stated residual: the daemon's `AGNT_PUBLIC_ADDR` listener always keys on the
   TCP peer.** It starts no tunnel of its own, so it has no hop whose header it

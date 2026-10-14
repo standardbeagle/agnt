@@ -1207,24 +1207,26 @@ Entries the proxy writes itself (HTTP traffic, proxy diagnostics, process
 output) and everything from a trusted connection are never marked.
 
 **The local browser keeps full control while the proxy is exposed** — with a
-Cloudflare quick tunnel or `tailscale serve` that agnt started (`tunnel start
+Cloudflare quick tunnel, `tailscale serve` or ngrok tunnel that agnt started (`tunnel start
 … proxy_id`) bound to it, or on a `0.0.0.0` bind. A tunnel's agent runs on this machine, so a tunnelled request also
 arrives from a loopback peer; what separates it from the local browser is the
 `Host` the provider forwards and the headers it adds, neither of which the
-visitor controls. For Cloudflare quick tunnels and `tailscale serve` that was
-captured live at the origin: `Host` is always the public / tailnet name, the
-provider's headers are always present, and client-supplied copies are appended
+visitor controls. For Cloudflare quick tunnels, `tailscale serve` and ngrok
+that was captured live at the origin: `Host` is always the public / tailnet
+name (ngrok refuses any other `Host` with 421), the provider's
+`X-Forwarded-For` is always present, and client-supplied copies are appended
 to, overwritten or rejected at the edge. Rule 2 is applied only while no
 public URL is bound, or the bound one was set by a tunnel **agnt itself
-started, of a kind captured live** — a Cloudflare quick tunnel or `tailscale
-serve` — or is the proxy's own named tunnel. What decides is what started the
-tunnel (the `tunnel` tool tells the proxy), not what the URL looks like; the
-hostname is only checked as a second lock. With a public URL bound any other
-way the local browser is refused too, as before, and the gated features come
-back when the tunnel stops:
+started, of a kind captured live** — a Cloudflare quick tunnel, `tailscale
+serve` or ngrok — or is the proxy's own named tunnel. What decides is what
+started the tunnel (the `tunnel` tool tells the proxy), not what the URL looks
+like; the hostname is only checked as a second lock. With a public URL bound
+any other way the local browser is refused too, as before, and the gated
+features come back when the tunnel stops:
 
-- **ngrok was not captured** (its documented behaviour is the same); the rule
-  is not applied on an assumption.
+- **An ngrok tunnel on a reserved custom domain.** Only ngrok's own names
+  (`*.ngrok-free.dev`, `*.ngrok-free.app`, `*.ngrok.app`, `*.ngrok.dev`,
+  `*.ngrok.io`) were captured.
 - **An operator-supplied `public-url`**, or any URL whose origin the proxy
   does not know — including a `*.ts.net` or `*.trycloudflare.com` one. A
   hostname does not say what is behind it: Tailscale Funnel (public, not

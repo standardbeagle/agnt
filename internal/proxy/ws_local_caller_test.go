@@ -106,6 +106,25 @@ func TestControlCallerTrusted_LocalBrowserKeepsControl(t *testing.T) {
 		}
 		assert.False(t, ps.controlCallerTrusted(visitor.request()))
 	})
+	t.Run("ngrok started by agnt", func(t *testing.T) {
+		ps := newGateProxy(t)
+		startedTunnel(t, ps, "https://abc-def-ghi.ngrok-free.dev", TunnelKindNgrok)
+		assert.True(t, ps.controlCallerTrusted(localBrowser().request()))
+
+		// A visitor through that tunnel, as captured at the origin: loopback
+		// peer, the ngrok name as Host (any other Host is refused at the
+		// edge), ngrok's X-Forwarded-For, and a loopback Origin the visitor
+		// chose — ngrok passes Origin through untouched.
+		visitor := upgradeShape{
+			peer: "127.0.0.1:53123", host: "abc-def-ghi.ngrok-free.dev", origin: gateLocalOrigin,
+			headers: map[string]string{
+				"X-Forwarded-For":   "203.0.113.9",
+				"X-Forwarded-Host":  "abc-def-ghi.ngrok-free.dev",
+				"X-Forwarded-Proto": "https",
+			},
+		}
+		assert.False(t, ps.controlCallerTrusted(visitor.request()))
+	})
 	t.Run("bound to every interface", func(t *testing.T) {
 		ps, err := NewProxyServer(ProxyConfig{
 			ID: "gate-lan", TargetURL: "http://localhost:3000", ListenPort: 8123,
@@ -214,12 +233,21 @@ func TestControlCallerTrusted_PublicURLWithoutACapturedTunnelKindDoesNotGetLocal
 		"operator public-url on an unknown host":  func(_ *testing.T, ps *ProxyServer) { ps.SetPublicURL("https://dev.example.com") },
 		"tunnel of unknown kind on ts.net":        func(t *testing.T, ps *ProxyServer) { startedTunnel(t, ps, "https://build1.example.ts.net", "") },
 		"tunnel of unknown kind on trycloudflare": func(t *testing.T, ps *ProxyServer) { startedTunnel(t, ps, gateTunnelURL, "") },
-		// A provider that was not captured.
-		"ngrok tunnel": func(t *testing.T, ps *ProxyServer) {
-			startedTunnel(t, ps, "https://abc123.ngrok-free.app", TunnelKindNgrok)
+		"operator public-url on ngrok":            func(_ *testing.T, ps *ProxyServer) { ps.SetPublicURL("https://abc123.ngrok-free.app") },
+		// An ngrok tunnel whose URL is not one of ngrok's own names: a reserved
+		// custom domain (whose edge behaviour was not captured), or a binding
+		// that claims ngrok but points elsewhere.
+		"ngrok kind on a custom domain": func(t *testing.T, ps *ProxyServer) {
+			startedTunnel(t, ps, "https://dev.example.com", TunnelKindNgrok)
 		},
-		"ngrok tunnel on a lookalike host": func(t *testing.T, ps *ProxyServer) {
+		"ngrok kind on a trycloudflare URL": func(t *testing.T, ps *ProxyServer) {
 			startedTunnel(t, ps, gateTunnelURL, TunnelKindNgrok)
+		},
+		"ngrok kind, bare suffix": func(t *testing.T, ps *ProxyServer) {
+			startedTunnel(t, ps, "https://ngrok-free.app", TunnelKindNgrok)
+		},
+		"ngrok kind, suffix in the middle": func(t *testing.T, ps *ProxyServer) {
+			startedTunnel(t, ps, "https://abc.ngrok-free.app.evil.test", TunnelKindNgrok)
 		},
 		// The second lock: a captured kind whose URL is not that kind's.
 		"quick tunnel kind, http URL": func(t *testing.T, ps *ProxyServer) {
@@ -252,8 +280,8 @@ func TestControlCallerTrusted_PublicURLWithoutACapturedTunnelKindDoesNotGetLocal
 func TestControlCallerTrusted_TunnelBindingEndsWithTheTunnel(t *testing.T) {
 	ps := newGateProxy(t)
 	done := make(chan struct{})
-	ps.SetTunnelURL("https://abc123.ngrok-free.app", done, TunnelKindNgrok)
-	require.False(t, ps.controlCallerTrusted(localBrowser().request()), "premise: refused while the ngrok tunnel is up")
+	ps.SetTunnelURL("https://dev.example.com", done, TunnelKindNgrok)
+	require.False(t, ps.controlCallerTrusted(localBrowser().request()), "premise: refused while the custom-domain ngrok tunnel is up")
 	close(done)
 	assert.True(t, ps.controlCallerTrusted(localBrowser().request()))
 }

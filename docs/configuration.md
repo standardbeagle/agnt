@@ -289,13 +289,13 @@ control WebSocket classifies each connection once, when it opens:
   panel shows an error toast saying so.
 - A visitor through a `cloudflare-tunnel` behind Cloudflare Access, and an
   identified tailnet peer on a `bind "tailscale"` proxy, are trusted as you are.
-- While an **ngrok** tunnel, or a public URL agnt did not bind through a
-  tunnel of its own (a `public-url` you set, whatever its hostname), is bound,
-  your local browser is refused those features too. Cloudflare quick tunnels
-  and `tailscale serve` were captured live; ngrok's behaviour is documented
-  but unverified, and a URL of unknown origin could be anything (Tailscale
-  Funnel shares `*.ts.net` with serve). The rule that recognises the local
-  browser goes by what started the tunnel, and is not applied on an
+- While a public URL agnt did not bind through a tunnel of its own (a
+  `public-url` you set, whatever its hostname), or an ngrok tunnel on a
+  reserved custom domain, is bound, your local browser is refused those
+  features too. Cloudflare quick tunnels, `tailscale serve` and ngrok on its
+  own domains were captured live; a URL of unknown origin could be anything
+  (Tailscale Funnel shares `*.ts.net` with serve). The rule that recognises
+  the local browser goes by what started the tunnel, and is not applied on an
   assumption.
 
 The exact rule, the list of gated frame types and its limits are in

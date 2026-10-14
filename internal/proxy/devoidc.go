@@ -181,7 +181,10 @@ func (ps *ProxyServer) tailnetWhois(ctx context.Context, ip string) string {
 //   - tailscale serve (captured live, node to node): X-Forwarded-For,
 //     X-Forwarded-Host and Tailscale-User-Login/-Name, each set by tailscaled
 //     with any client-supplied value overwritten.
-//   - ngrok (documented, NOT captured live): X-Forwarded-For/-Proto/-Host.
+//   - ngrok (captured live, `ngrok http`): X-Forwarded-For and
+//     X-Forwarded-Proto set by ngrok on every request, a client-supplied
+//     X-Forwarded-For replaced; X-Forwarded-Host is passed through from the
+//     client when sent, otherwise set by ngrok.
 //   - Via, X-Real-Ip, Forwarded: what a hand-run nginx/caddy/haproxy adds.
 var reverseProxyFingerprints = []string{
 	"Cf-Ray", "Cf-Connecting-Ip", "Cdn-Loop", "Tailscale-User-Login",
