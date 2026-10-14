@@ -1207,6 +1207,22 @@ func finishSession(height int, waitErr error, userInterrupted bool, rt *pipeline
 	reportUnexpectedShutdown(waitErr, userInterrupted, launch, tail, res)
 }
 
+// terminalSaneReset disables DEC private modes the child may have left
+// enabled when it stopped without running its own cleanup (a stopped, killed
+// or crashed process cannot emit its restore sequences). Claude Code and
+// similar TUIs enable mouse reporting, bracketed paste, and the alternate
+// screen; if we hand the tty back to the shell with those still on, mouse
+// movement echoes as raw escape bytes and the terminal appears corrupted
+// until `reset`. Complements term.Restore, which only fixes termios, not DEC
+// modes. Mirrors the constants in internal/overlay/render.go (CursorShow,
+// ExitAltScreen); the mouse/paste modes are child-owned so they live here.
+const terminalSaneReset = "\x1b[?1003l\x1b[?1002l\x1b[?1000l" + // mouse tracking (any-motion, button-motion, click)
+	"\x1b[?1006l\x1b[?1015l" + // mouse encodings (SGR, urxvt)
+	"\x1b[?1004l" + // focus reporting
+	"\x1b[?2004l" + // bracketed paste
+	"\x1b[?1049l" + // return to main screen buffer
+	"\x1b[?25h" // show cursor
+
 func cleanupTerminal(height int) {
 	// Re-query the current terminal height: the terminal may have been resized
 	// since startup, and clearing/positioning against the stale startup height
@@ -1217,12 +1233,12 @@ func cleanupTerminal(height int) {
 	}
 
 	// Disable extended keyboard/input modes that the child process may have enabled
-	// These cause garbage output (semicolons, escape sequences) if left enabled
+	// These cause garbage output (semicolons, escape sequences) if left enabled.
+	// A child that crashed or was killed never emitted its own restore
+	// sequences, so mouse reporting and the alternate screen are reset too.
+	fmt.Fprint(os.Stdout, terminalSaneReset)
 	fmt.Fprint(os.Stdout, "\x1b[?9001l") // Disable win32-input-mode (extended key reporting)
-	fmt.Fprint(os.Stdout, "\x1b[?1004l") // Disable focus event reporting ([I and [O sequences)
-	fmt.Fprint(os.Stdout, "\x1b[?2004l") // Disable bracketed paste mode
 	fmt.Fprint(os.Stdout, "\x1b[?1l")    // Disable application cursor keys (DECCKM)
-	fmt.Fprint(os.Stdout, "\x1b[?25h")   // Show cursor (might have been hidden)
 
 	// Reset scroll region to full screen (removes protected area)
 	fmt.Fprint(os.Stdout, "\x1b[r")
