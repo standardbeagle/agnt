@@ -80,6 +80,11 @@ type DropWatcher struct {
 
 	mu     sync.RWMutex
 	upload DropUpload
+	// uploadGen counts non-nil uploaders installed. A file's failures are
+	// charged to the generation they happened under; a new transport (a
+	// reconnect) starts it over, because failures against a dead transport say
+	// nothing about the file.
+	uploadGen uint64
 
 	cancel context.CancelFunc
 	done   chan struct{}
@@ -107,9 +112,17 @@ func NewDropWatcher(dir string, upload DropUpload, notify func(string)) (*DropWa
 
 // SetUpload replaces the transport-dependent upload function. A nil function
 // pauses uploads while local observation continues (for SSH reconnects).
+// Installing a non-nil function starts a new upload generation: files that
+// failed or were given up on under an earlier transport are retried promptly,
+// with a fresh attempt budget. Keepalive takes ~45s to declare a transport
+// dead, longer than the ~15s backoff-to-give-up, so without this a drop made
+// during a dead-transport window was never synced after reconnect.
 func (w *DropWatcher) SetUpload(upload DropUpload) {
 	w.mu.Lock()
 	w.upload = upload
+	if upload != nil {
+		w.uploadGen++
+	}
 	w.mu.Unlock()
 }
 
@@ -127,6 +140,8 @@ type dropState struct {
 	uploaded bool
 	failures int
 	gaveUp   bool
+	// failGen is the upload generation the failures were counted under.
+	failGen uint64
 }
 
 func (w *DropWatcher) run(ctx context.Context, fw *fsnotify.Watcher) {
@@ -185,16 +200,29 @@ func (w *DropWatcher) observe(name string, files map[string]dropState, now time.
 func (w *DropWatcher) uploadSettled(files map[string]dropState, now time.Time) {
 	w.mu.RLock()
 	upload := w.upload
+	gen := w.uploadGen
 	w.mu.RUnlock()
 	if upload == nil {
 		return
 	}
 	for name, state := range files {
+		if !state.uploaded && state.failures > 0 && state.failGen != gen {
+			// Failures from an earlier transport: reset the budget and make
+			// the file eligible now (the backoff may have pushed changed into
+			// the future), keeping its settle time if it is still settling.
+			state.failures = 0
+			state.gaveUp = false
+			if retryAt := now.Add(-dropQuiescence); state.changed.After(retryAt) {
+				state.changed = retryAt
+			}
+			files[name] = state
+		}
 		if state.uploaded || state.gaveUp || now.Sub(state.changed) < dropQuiescence {
 			continue
 		}
 		if err := upload(name, filepath.Base(name)); err != nil {
 			state.failures++
+			state.failGen = gen
 			if state.failures >= maxUploadAttempts {
 				state.gaveUp = true
 				files[name] = state

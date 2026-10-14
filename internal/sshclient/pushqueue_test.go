@@ -247,6 +247,55 @@ func TestPushQueueConnectedRaceWithReconnectEnqueuesInsteadOfDropping(t *testing
 	}
 }
 
+// A Reconnecting() that landed between flush popping an item and executing it
+// nilled the transport, and the accepted push failed with "push transport
+// unavailable". The pop now happens under opMu, so that reconnect waits for
+// the in-flight item, which completes on the transport it was flushed to.
+func TestPushQueueFlushRaceWithReconnectDoesNotFailPoppedItem(t *testing.T) {
+	root, initial := newSFTPFixture(t)
+	q := NewPushQueue(root, 4, func(string, int64) error { return nil }, nil)
+	q.SetSFTP(initial)
+	q.Reconnecting()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := q.Push("flushed.txt", "", bytes.NewBufferString("flushed"))
+		done <- err
+	}()
+	waitForPushQueueDepth(t, q, 1)
+
+	// Start a reconnect in the window and give it the chance to finish before
+	// the item executes. Against the old flush it finishes and the push fails;
+	// now it blocks on opMu until the item is done.
+	reconnected := make(chan struct{})
+	var once sync.Once
+	q.afterFlushPop = func() {
+		once.Do(func() {
+			go func() { q.Reconnecting(); close(reconnected) }()
+			select {
+			case <-reconnected:
+			case <-time.After(200 * time.Millisecond):
+			}
+		})
+	}
+
+	_, replacement := newSFTPFixture(t)
+	q.Connected(func() (*sftp.Client, error) { return replacement, nil })
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("popped push failed by a racing reconnect: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("push never completed")
+	}
+	select {
+	case <-reconnected:
+	case <-time.After(2 * time.Second):
+		t.Fatal("racing reconnect never completed after the item finished")
+	}
+}
+
 func waitForPushQueueDepth(t *testing.T, q *PushQueue, want int) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)

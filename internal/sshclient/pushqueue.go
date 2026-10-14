@@ -50,6 +50,10 @@ type PushQueue struct {
 	// opMu. It exists only to let tests deterministically inject a
 	// Reconnecting() into that exact window.
 	onConnectedRace func()
+	// afterFlushPop, if non-nil, runs in flush after an item is popped and
+	// before it executes. Tests use it to start a Reconnecting() in exactly
+	// that window, which used to fail the accepted push.
+	afterFlushPop func()
 }
 
 type pushQueueState uint8
@@ -208,12 +212,20 @@ func (q *PushQueue) pushConnected(item *queuedPush) (string, error) {
 	}
 }
 
+// flush drains pending FIFO. Each item is popped only while holding opMu,
+// after re-checking the state: opMu serialises against Reconnecting, so a
+// reconnect can no longer land between the pop and the execute and fail an
+// accepted push with "push transport unavailable". A reconnect that wins the
+// race leaves the item at the front of the queue and stops this flush; the
+// next Connected starts a fresh one.
 func (q *PushQueue) flush() {
 	for {
+		q.opMu.Lock()
 		q.mu.Lock()
 		if q.state == pushQueueClosed || q.state == pushQueueReconnecting {
 			q.flushActive = false
 			q.mu.Unlock()
+			q.opMu.Unlock()
 			return
 		}
 		if len(q.pending) == 0 {
@@ -221,21 +233,20 @@ func (q *PushQueue) flush() {
 			q.flushActive = false
 			q.closeDrainedLocked()
 			q.mu.Unlock()
+			q.opMu.Unlock()
 			return
 		}
 		item := q.pending[0]
 		q.pending = q.pending[1:]
 		q.mu.Unlock()
+		if q.afterFlushPop != nil {
+			q.afterFlushPop()
+		}
 
-		path, err := q.execute(item)
+		path, err := q.executeLocked(item)
+		q.opMu.Unlock()
 		item.result <- pushResult{remotePath: path, err: err}
 	}
-}
-
-func (q *PushQueue) execute(item *queuedPush) (string, error) {
-	q.opMu.Lock()
-	defer q.opMu.Unlock()
-	return q.executeLocked(item)
 }
 
 // executeLocked performs the push assuming the caller already holds opMu.

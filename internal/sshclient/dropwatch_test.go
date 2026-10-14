@@ -169,6 +169,48 @@ func TestUploadSettled_PersistentFailureBacksOffAndGivesUp(t *testing.T) {
 	}
 }
 
+// A drop made while the transport is dead (Dead() takes ~45s) exhausts its
+// ~15s retry budget and is given up on. Installing the reconnected uploader
+// must retry it, with a fresh budget, without the file changing on disk.
+func TestUploadSettled_NewUploaderRetriesGivenUpFile(t *testing.T) {
+	w := &DropWatcher{notify: func(string) {}}
+	w.SetUpload(func(string, string) error { return errors.New("transport dead") })
+
+	base := time.Unix(0, 0)
+	name := filepath.Join("drop", "during-outage.txt")
+	files := map[string]dropState{name: {size: 1, changed: base}}
+	now := base
+	for i := 0; i < 600; i++ { // 60s of ticks on the dead transport
+		now = now.Add(dropPollPeriod)
+		w.uploadSettled(files, now)
+	}
+	require.True(t, files[name].gaveUp, "precondition: the dead transport exhausted the budget")
+
+	w.SetUpload(nil) // reconnecting
+	now = now.Add(dropPollPeriod)
+	w.uploadSettled(files, now)
+
+	var synced int
+	w.SetUpload(func(string, string) error { synced++; return nil })
+	now = now.Add(dropPollPeriod)
+	w.uploadSettled(files, now)
+	require.Equal(t, 1, synced, "reconnected uploader must retry the given-up file on its next tick")
+	require.True(t, files[name].uploaded)
+
+	// A fresh budget, not a single retry: a new transport that also fails
+	// gets the full maxUploadAttempts again.
+	other := filepath.Join("drop", "flaky.txt")
+	files[other] = dropState{size: 1, changed: now, failures: maxUploadAttempts, gaveUp: true, failGen: 0}
+	var calls int
+	w.SetUpload(func(string, string) error { calls++; return errors.New("still failing") })
+	for i := 0; i < 2000; i++ {
+		now = now.Add(dropPollPeriod)
+		w.uploadSettled(files, now)
+	}
+	require.Equal(t, maxUploadAttempts, calls)
+	require.True(t, files[other].gaveUp)
+}
+
 func TestDropWatcher_CloseWithoutFilesLeaksNoGoroutines(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
 	w, err := NewDropWatcher(t.TempDir(), nil, nil)

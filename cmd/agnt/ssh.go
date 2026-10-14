@@ -395,7 +395,13 @@ func (r *reconnectForwarding) start(client *sshclient.Client) {
 		return
 	}
 	r.daemonFwd = fwd
-	go fwd.Serve()
+	go func() {
+		// Serve returns nil after Close; anything else means the local
+		// socket stopped accepting and AGNT_DAEMON_SOCKET users are cut off.
+		if serveErr := fwd.Serve(); serveErr != nil {
+			fmt.Fprintf(os.Stderr, "agnt ssh: daemon socket forwarder stopped: %v\n", serveErr)
+		}
+	}()
 	fmt.Fprintf(os.Stderr, "agnt ssh: forwarding remote daemon socket to %s\n", sshclient.LocalForwardSocketPath(r.host))
 	writeDaemonSocketEnvHint(os.Stderr, sshclient.LocalForwardSocketPath(r.host))
 	r.connectPorts(client)
@@ -746,49 +752,6 @@ func ensureRemoteBootstrap(client *sshclient.Client, host string) (string, error
 	}
 	fmt.Fprintf(os.Stderr, "agnt ssh: installed agnt to %s on %s\n", decision.FinalPath, host)
 	return opts.LocalVersion, nil
-}
-
-// startDaemonSocketForwarding discovers the remote daemon's socket path over
-// the existing SSH connection, opens a local unix-socket forwarder for it,
-// and prints the export line pointed at by the task's acceptance criteria:
-// "local AGNT_DAEMON_SOCKET=... agnt monitor streams remote events". It does
-// NOT set the env var for this process's own children — this command never
-// spawns 'agnt monitor'/'agnt doctor' itself; the user runs those in another
-// terminal after exporting the printed variable there.
-//
-// Forwarding failure is non-fatal to the PTY session: it is surfaced loudly
-// on stderr and the returned stop func is a no-op, so a remote daemon that
-// isn't running (or an old agnt binary without 'daemon socket-path') doesn't
-// prevent the interactive session from proceeding.
-func startDaemonSocketForwarding(host string, client *sshclient.Client) func() {
-	remoteSocketPath, err := sshclient.RemoteDaemonSocketPath(client.SSH)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "agnt ssh: could not discover remote daemon socket path (%v) — local AGNT_DAEMON_SOCKET forwarding disabled\n", err)
-		return func() {}
-	}
-
-	localSocketPath := sshclient.LocalForwardSocketPath(host)
-	forwarder, err := sshclient.NewForwarder(client, remoteSocketPath, localSocketPath)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "agnt ssh: could not start local daemon socket forwarding (%v) — AGNT_DAEMON_SOCKET forwarding disabled\n", err)
-		return func() {}
-	}
-
-	go func() {
-		if serveErr := forwarder.Serve(); serveErr != nil {
-			fmt.Fprintf(os.Stderr, "agnt ssh: daemon socket forwarder stopped: %v\n", serveErr)
-		}
-	}()
-
-	fmt.Fprintf(os.Stderr, "agnt ssh: forwarding remote daemon socket to %s\n", localSocketPath)
-	fmt.Fprintf(os.Stderr, "agnt ssh: run this in another terminal to point agnt monitor/agnt doctor/the MCP daemon tool at the remote daemon:\n")
-	writeDaemonSocketEnvHint(os.Stderr, localSocketPath)
-
-	return func() {
-		if err := forwarder.Close(); err != nil {
-			fmt.Fprintf(os.Stderr, "agnt ssh: closing daemon socket forwarder: %v\n", err)
-		}
-	}
 }
 
 func writeDaemonSocketEnvHint(w io.Writer, endpoint string) {

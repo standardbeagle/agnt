@@ -97,7 +97,7 @@ type portForward struct {
 
 // NewPortForwardManager builds a manager for the proxies visible on dclient
 // (a daemonclient.Client already connected to the remote daemon, typically over
-// the forwarded unix socket set up by startDaemonSocketForwarding), dialing
+// the forwarded unix socket set up by reconnectForwarding.start in cmd/agnt), dialing
 // new streams through sshClient. notify receives one-line human-readable
 // status messages (collision remaps, forward up/down) for the caller to
 // print or toast — this package never writes to stdout/stderr directly.
