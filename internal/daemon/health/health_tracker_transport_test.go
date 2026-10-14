@@ -40,6 +40,25 @@ func TestHealthTracker_TransportError_BelowThreshold(t *testing.T) {
 	assert.True(t, tr.IsProxyInTransportOutage("p1"), "third err crosses threshold")
 }
 
+// A proxy's own (project) config wins over the tracker-wide one, so one
+// project's thresholds do not govern another project's proxies.
+func TestHealthTracker_TransportConfigResolverIsPerProxy(t *testing.T) {
+	tr := NewHealthTracker(nil, nil)
+	tr.SetTransportConfig(TransportConfig{Threshold: 1, Window: time.Second})
+	tr.SetTransportConfigResolver(func(proxyID string) (TransportConfig, bool) {
+		if proxyID == "strict" {
+			return TransportConfig{Threshold: 3, Window: time.Second}, true
+		}
+		return TransportConfig{}, false
+	})
+
+	now := time.Now()
+	tr.RecordTransportError("strict", now)
+	tr.RecordTransportError("loose", now)
+	assert.False(t, tr.IsProxyInTransportOutage("strict"), "its own threshold of 3 applies")
+	assert.True(t, tr.IsProxyInTransportOutage("loose"), "no own config: the tracker-wide threshold of 1 applies")
+}
+
 func TestHealthTracker_TransportError_WindowEviction(t *testing.T) {
 	tr := NewHealthTracker(nil, nil)
 	tr.SetTransportConfig(TransportConfig{

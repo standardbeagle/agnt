@@ -155,6 +155,11 @@ type HealthTracker struct {
 	// are atomic via the pointer.
 	transportConfig atomic.Pointer[TransportConfig]
 
+	// transportResolver, when set, supplies a proxy's own transport config
+	// (its project's outage-hold block). A false result falls back to
+	// transportConfig.
+	transportResolver atomic.Pointer[func(proxyID string) (TransportConfig, bool)]
+
 	// procLookup resolves a processID to a *ManagedProcess. In production
 	// this is bound to d.hub.ProcessManager().Get; tests can supply a stub.
 	procLookup func(processID string) (*goprocess.ManagedProcess, error)
@@ -594,10 +599,29 @@ func (h *HealthTracker) SetOnTransportRecovery(fn func(proxyID string)) {
 	h.onTransportRecovery.Store(&fn)
 }
 
-// transportCfg returns the active transport config or the default.
-func (h *HealthTracker) transportCfg() TransportConfig {
+// SetTransportConfigResolver registers a per-proxy config lookup consulted
+// before the tracker-wide config. Pass nil to clear.
+func (h *HealthTracker) SetTransportConfigResolver(fn func(proxyID string) (TransportConfig, bool)) {
+	if h == nil {
+		return
+	}
+	if fn == nil {
+		h.transportResolver.Store(nil)
+		return
+	}
+	h.transportResolver.Store(&fn)
+}
+
+// transportCfg returns proxyID's transport config: its own when the resolver
+// has one, else the tracker-wide config, else the default.
+func (h *HealthTracker) transportCfg(proxyID string) TransportConfig {
 	if h == nil {
 		return DefaultTransportConfig
+	}
+	if fn := h.transportResolver.Load(); fn != nil {
+		if cfg, ok := (*fn)(proxyID); ok {
+			return cfg
+		}
 	}
 	if cfg := h.transportConfig.Load(); cfg != nil {
 		return *cfg
@@ -614,7 +638,7 @@ func (h *HealthTracker) RecordTransportError(proxyID string, ts time.Time) {
 		return
 	}
 	st := h.getOrCreateTransport(proxyID)
-	cfg := h.transportCfg()
+	cfg := h.transportCfg(proxyID)
 
 	st.mu.Lock()
 	defer st.mu.Unlock()
@@ -651,7 +675,7 @@ func (h *HealthTracker) RecordRecoverySignal(proxyID string, ts time.Time) {
 		return
 	}
 
-	cfg := h.transportCfg()
+	cfg := h.transportCfg(proxyID)
 
 	st.mu.Lock()
 	if !st.inOutage.Load() {

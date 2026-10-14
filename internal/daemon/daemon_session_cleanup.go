@@ -868,6 +868,10 @@ func (d *Daemon) doCleanupExact(sessionCode string, expected *Session, expectedP
 		// just torn down. Pinned errors survive (they live outside the ring).
 		d.maybeRetireOnSessionEnd(projectPath)
 
+		// The project's alerts settings go with it; the next session's
+		// connect applies them again from .agnt.kdl.
+		d.retireProjectAlertsConfig(projectPath)
+
 		// Cancel any in-flight autostart run for this project, then drop the
 		// handle so the next session triggers a fresh autostart. Matching the
 		// "script registry is ephemeral" rule: autostart state does not carry

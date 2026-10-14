@@ -609,7 +609,8 @@ a parsed-but-inert channel toggle or delivering the same digest twice.
 
 Controls when the daemon retires stale errors from the agent-facing stores
 (alert ring + incident inboxes) so `get_incidents` reflects the
-code that is actually running. All triggers default to **enabled**. Incidents
+code that is actually running. All triggers default to **enabled**. The
+settings apply to this project's processes only. Incidents
 the agent pinned (`get_incidents {action:"pin"}`) survive every trigger until
 explicitly unpinned; the alert ring has no pin concept of its own, so its
 entries are always retired.
@@ -951,7 +952,7 @@ definitions in `internal/config/agnt.go` carry the full comments.
 | `disable` | none | Built-in pattern ids to turn off. |
 | `auto-forward { enabled sources severity }` | on, `"browser" "http"`, `"error"` | Forwarding of browser and proxy errors to the agent. `sources` accepts only `browser` and `http`; `severity` only `error` (5xx only) or `warning` (4xx too). Any other value fails the config load. |
 | `auto-forward { debounce }` | — | Deprecated, no effect: nothing reads it (forwarded errors are deduplicated and batched by the alert queue). Accepted so existing files load; declaring it adds a config warning to the startup log. |
-| `outage-hold { enabled window-ms transport-err-threshold transport-err-window-ms recovery-debounce-ms js-cascade-patterns }` | on, `3000`, `1`, `1000`, `500`, built-in list | Holds transport-cascade errors while a dev server restarts. |
+| `outage-hold { enabled window-ms transport-err-threshold transport-err-window-ms recovery-debounce-ms js-cascade-patterns }` | on, `3000`, `1`, `1000`, `500`, built-in list | Holds transport-cascade errors while a dev server restarts. Applies to this project's proxies only; another project connected to the same daemon keeps its own settings. |
 | `incident-pipeline` | — | Deprecated, no effect; see *Alert Push Channels*. Declaring it adds a config warning to the startup log. |
 
 ### `channel`

@@ -354,6 +354,7 @@ func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
 		return
 	}
 	proxyID := server.ID
+	projectPath := normalizePath(server.Path)
 	owner, _ := d.incidentProxyOwner.Load(proxyID)
 	lifetimeOwner, _ := owner.(*health.ResourceOwner)
 	d.eventHub.RegisterProxyPath(proxyID, server.Path)
@@ -367,12 +368,14 @@ func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
 		case gateAccept:
 			d.fireGatedFanOutForOwner(entry, proxyID, 1, lifetimeOwner)
 		case gateHold:
-			hb := d.holdBuffer.Load()
+			// Resolved per entry: the project's buffer appears, or is
+			// replaced, when its alerts config is applied.
+			hb := d.holdBufferForProject(projectPath)
 			if hb == nil {
 				return
 			}
 			fp := health.FingerprintForEntry(entry)
-			cascade := d.classifyCascade(entry)
+			cascade := classifyCascade(entry, hb)
 			hb.HoldForOwner(entry, proxyID, fp, cascade, lifetimeOwner)
 		case gateDrop:
 			// Drop without emission — used for diagnostic suppression
@@ -499,12 +502,12 @@ func (d *Daemon) feedTransportSignals(proxyID string, entry proxy.LogEntry) {
 // transport-cascade message that the buffer drops on recovery. Transport
 // diagnostics and matching browser-JS errors qualify; HTTP entries do
 // not (5xx that arrives during outage is upstream signal worth keeping).
-func (d *Daemon) classifyCascade(entry proxy.LogEntry) bool {
+// The JS cascade patterns are those of hb, the buffer the entry goes to.
+func classifyCascade(entry proxy.LogEntry, hb *health.HoldBuffer) bool {
 	switch entry.Type {
 	case proxy.LogTypeDiagnostic:
 		return true
 	case proxy.LogTypeError:
-		hb := d.holdBuffer.Load()
 		if entry.Error == nil || hb == nil {
 			return false
 		}

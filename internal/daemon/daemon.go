@@ -45,6 +45,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"reflect"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -399,7 +400,25 @@ type Daemon struct {
 	// shutdown — an unsynchronised field swap was a data race. All
 	// health.HoldBuffer methods are nil/closed-safe, so Load → call is lock-free
 	// and correct even against a concurrent Swap+Stop.
+	//
+	// It is the default buffer: it serves proxies whose project has had no
+	// alerts block applied. A project that has gets its own buffer in
+	// projectHoldBuffers, so one project's outage-hold settings never govern
+	// another project's proxies.
 	holdBuffer atomic.Pointer[health.HoldBuffer]
+
+	// projectHoldBuffers, projectTransport and projectRetention hold each
+	// project's alerts settings once ApplyAlertsConfig has run for it, keyed by
+	// normalized project path. Read on every proxy log entry (hold gate,
+	// transport detector) and by the retention triggers; written by
+	// ApplyAlertsConfig; retired with the project's last session
+	// (retireProjectAlertsConfig). Not user-visible.
+	projectHoldBuffers sync.Map // project path -> *health.HoldBuffer
+	projectTransport   sync.Map // project path -> health.TransportConfig
+	projectRetention   sync.Map // project path -> *config.RetentionConfig
+	// holdSwapMu serializes ApplyAlertsConfig's compare-and-replace of a
+	// buffer. Readers never take it.
+	holdSwapMu sync.Mutex
 
 	// alertPushConfigs stores effective alerts.push policy by normalized project
 	// path. Pinger callbacks resolve their session's current project at delivery
@@ -604,13 +623,15 @@ func New(config DaemonConfig) *Daemon {
 	// loaded; ApplyAlertsConfig replaces it on session connect.
 	d.holdBuffer.Store(health.NewOwnedHoldBuffer(nil, d.fireHoldEmitForOwner))
 	d.healthTracker.SetTransportConfig(health.DefaultTransportConfig)
+	d.healthTracker.SetTransportConfigResolver(d.transportConfigForProxy)
 
 	// Wire transport-recovery callback so health.HealthTracker exits to the buffer
-	// flush path on every recovery signal.
+	// flush path on every recovery signal. The proxy's entries may sit in its
+	// project's buffer or, if they were held before that project's config was
+	// applied, in the default one; a buffer holding nothing for the proxy
+	// ignores the signal.
 	d.healthTracker.SetOnTransportRecovery(func(proxyID string) {
-		if hb := d.holdBuffer.Load(); hb != nil {
-			hb.OnRecovery(proxyID)
-		}
+		d.eachHoldBuffer(func(hb *health.HoldBuffer) { hb.OnRecovery(proxyID) })
 	})
 
 	// health.OutageClassifier extends health.HealthTracker with rebuild/crash
@@ -1194,17 +1215,16 @@ func (d *Daemon) IncidentBus() *incident.MPSCBus {
 
 // ApplyAlertsConfig pushes the alerts block from a project's AgntConfig
 // into the daemon's runtime alert subsystems: the health.HoldBuffer's per-proxy
-// hold window and cascade patterns, and the health.HealthTracker's transport
-// outage thresholds. Safe to call multiple times — the latest values win.
-// A nil cfg restores defaults.
+// hold window and cascade patterns, the health.HealthTracker's transport
+// outage thresholds, and the error-retention gates. Each project keeps its own
+// settings: they govern only proxies and processes of that project. An empty
+// projectPath sets the daemon-wide defaults used by everything without a
+// project of its own. Safe to call multiple times — the latest values for a
+// project win. A nil cfg restores defaults.
 func (d *Daemon) ApplyAlertsConfig(projectPath string, cfg *config.AlertsConfig) {
 	if d == nil {
 		return
 	}
-
-	// Retention gates follow the same lifecycle as the rest of the alerts
-	// block: applied on session connect, daemon-wide, last writer wins.
-	d.SetRetentionConfig(cfg.GetRetention())
 
 	var holdCfg *config.OutageHoldConfig
 	var pushCfg *config.PushConfig
@@ -1212,38 +1232,133 @@ func (d *Daemon) ApplyAlertsConfig(projectPath string, cfg *config.AlertsConfig)
 		holdCfg = cfg.OutageHold
 		pushCfg = cfg.GetPushConfig()
 	}
+	transport := health.TransportConfig{
+		Threshold:        holdCfg.GetTransportErrThreshold(),
+		Window:           holdCfg.GetTransportErrWindow(),
+		RecoveryDebounce: holdCfg.GetRecoveryDebounce(),
+	}
 	projectPath = normalizePath(projectPath)
-	if projectPath != "" && pushCfg == nil {
+	if projectPath == "" {
+		d.SetRetentionConfig(cfg.GetRetention())
+		d.swapHoldBuffer(nil, holdCfg)
+		if d.healthTracker != nil {
+			d.healthTracker.SetTransportConfig(transport)
+		}
+		return
+	}
+
+	if pushCfg == nil {
 		d.alertPushConfigs.Delete(projectPath)
-	} else if projectPath != "" {
+	} else {
 		mcp, pty := pushCfg.MCPNotificationsEnabled(), pushCfg.PTYInjectionEnabled()
 		d.alertPushConfigs.Store(projectPath, &config.PushConfig{MCPNotifications: &mcp, PTYInjection: &pty})
 	}
+	d.projectRetention.Store(projectPath, cfg.GetRetention())
+	d.projectTransport.Store(projectPath, transport)
+	d.swapHoldBuffer(&projectPath, holdCfg)
+}
 
-	// Swap atomically, then stop the old buffer. Concurrent readers either
-	// see the old buffer (its methods are closed-safe) or the new one.
-	newHB := health.NewOwnedHoldBuffer(holdCfg, d.fireHoldEmitForOwner)
-	if old := d.holdBuffer.Swap(newHB); old != nil {
-		old.Stop()
+// swapHoldBuffer installs a buffer built from holdCfg as the project's buffer
+// (the default one when project is nil). This runs on every session connect
+// and AUTOSTART RECONCILE, so an unchanged config keeps the running buffer and
+// everything it holds. A replaced buffer retires into the new one: its held
+// entries move over with their deadlines instead of being dropped.
+func (d *Daemon) swapHoldBuffer(project *string, holdCfg *config.OutageHoldConfig) {
+	d.holdSwapMu.Lock()
+	defer d.holdSwapMu.Unlock()
+
+	var cur *health.HoldBuffer
+	if project == nil {
+		cur = d.holdBuffer.Load()
+	} else if v, ok := d.projectHoldBuffers.Load(*project); ok {
+		cur = v.(*health.HoldBuffer)
 	}
-	// Shutdown race: if Stop() ran concurrently it may have already torn down
-	// the hold buffer (it swaps to nil under d.shutdown). In that case the
-	// buffer just installed would never be stopped and its goroutine would
-	// leak. Re-check and reclaim our own buffer. CompareAndSwap ensures we only
-	// stop it if it is still the installed one (if Stop already claimed it via
-	// Swap(nil), the CAS fails and Stop owns the teardown).
+	if cur != nil && reflect.DeepEqual(cur.Config(), holdCfg) {
+		return
+	}
+
+	newHB := health.NewOwnedHoldBuffer(holdCfg, d.fireHoldEmitForOwner)
+	if project == nil {
+		cur = d.holdBuffer.Swap(newHB)
+	} else {
+		d.projectHoldBuffers.Store(*project, newHB)
+	}
+	// Concurrent readers see either the old buffer (its methods are
+	// closed-safe) or the new one.
+	if cur != nil {
+		cur.StopInto(newHB)
+	}
+	// Shutdown race: Stop may already have claimed the installed buffers. Then
+	// the one just installed would never be stopped and its goroutine would
+	// leak. Reclaim it only if it is still installed; if Stop got it first,
+	// Stop owns the teardown.
 	if d.isShuttingDown() {
-		if d.holdBuffer.CompareAndSwap(newHB, nil) {
+		if project == nil {
+			if d.holdBuffer.CompareAndSwap(newHB, nil) {
+				newHB.Stop()
+			}
+		} else if d.projectHoldBuffers.CompareAndDelete(*project, newHB) {
 			newHB.Stop()
 		}
 	}
+}
 
-	if d.healthTracker != nil {
-		d.healthTracker.SetTransportConfig(health.TransportConfig{
-			Threshold:        holdCfg.GetTransportErrThreshold(),
-			Window:           holdCfg.GetTransportErrWindow(),
-			RecoveryDebounce: holdCfg.GetRecoveryDebounce(),
-		})
+// holdBufferForProject returns the hold buffer governing a project's proxies:
+// its own once its alerts config was applied, otherwise the default.
+func (d *Daemon) holdBufferForProject(projectPath string) *health.HoldBuffer {
+	if projectPath != "" {
+		if v, ok := d.projectHoldBuffers.Load(projectPath); ok {
+			return v.(*health.HoldBuffer)
+		}
+	}
+	return d.holdBuffer.Load()
+}
+
+// eachHoldBuffer calls fn with every installed hold buffer.
+func (d *Daemon) eachHoldBuffer(fn func(*health.HoldBuffer)) {
+	if hb := d.holdBuffer.Load(); hb != nil {
+		fn(hb)
+	}
+	d.projectHoldBuffers.Range(func(_, v any) bool {
+		fn(v.(*health.HoldBuffer))
+		return true
+	})
+}
+
+// transportConfigForProxy resolves the transport outage thresholds for a
+// proxy from its project's alerts config. false means the project has none
+// and the tracker's default applies.
+func (d *Daemon) transportConfigForProxy(proxyID string) (health.TransportConfig, bool) {
+	if d.proxym == nil {
+		return health.TransportConfig{}, false
+	}
+	ps, err := d.proxym.Get(proxyID)
+	if err != nil || ps == nil || ps.Path == "" {
+		return health.TransportConfig{}, false
+	}
+	v, ok := d.projectTransport.Load(normalizePath(ps.Path))
+	if !ok {
+		return health.TransportConfig{}, false
+	}
+	return v.(health.TransportConfig), true
+}
+
+// retireProjectAlertsConfig drops a project's alerts settings when its last
+// session leaves. Entries its buffer still holds belong to proxies that are
+// being stopped with the project, so they move to the default buffer and emit
+// there rather than vanish.
+func (d *Daemon) retireProjectAlertsConfig(projectPath string) {
+	projectPath = normalizePath(projectPath)
+	if projectPath == "" {
+		return
+	}
+	d.projectRetention.Delete(projectPath)
+	d.projectTransport.Delete(projectPath)
+	d.alertPushConfigs.Delete(projectPath)
+	d.holdSwapMu.Lock()
+	defer d.holdSwapMu.Unlock()
+	if v, ok := d.projectHoldBuffers.LoadAndDelete(projectPath); ok {
+		v.(*health.HoldBuffer).StopInto(d.holdBuffer.Load())
 	}
 }
 

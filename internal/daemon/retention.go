@@ -30,15 +30,34 @@ import (
 // Start-of-build signals (rebuild-generic etc.) intentionally do not clear.
 const buildSuccessPatternID = "rebuild-build-success"
 
-// SetRetentionConfig atomically installs the retention gate config.
-// Follows the ApplyAlertsConfig pattern: applied on session connect,
-// daemon-wide, last writer wins.
+// SetRetentionConfig atomically installs the daemon-wide retention gate
+// config, used for processes whose project has no alerts block applied.
+// A project's own gates are set by ApplyAlertsConfig.
 func (d *Daemon) SetRetentionConfig(cfg *config.RetentionConfig) {
 	d.retentionCfg.Store(cfg)
 }
 
-func (d *Daemon) retention() *config.RetentionConfig {
-	return d.retentionCfg.Load() // nil is valid: all getters default to enabled
+// retention returns the gates for a project: its own once ApplyAlertsConfig
+// ran for it, else the daemon-wide ones. nil is valid: all getters default to
+// enabled.
+func (d *Daemon) retention(projectPath string) *config.RetentionConfig {
+	if projectPath != "" {
+		if v, ok := d.projectRetention.Load(normalizePath(projectPath)); ok {
+			return v.(*config.RetentionConfig)
+		}
+	}
+	return d.retentionCfg.Load()
+}
+
+// retentionForProcess returns the gates for the project processID runs in.
+func (d *Daemon) retentionForProcess(processID string) *config.RetentionConfig {
+	var projectPath string
+	if d.hub != nil {
+		if proc, err := d.hub.ProcessManager().Get(processID); err == nil {
+			projectPath = proc.ProjectPath
+		}
+	}
+	return d.retention(projectPath)
 }
 
 // retireProcessErrors clears processID's errors stamped at or before the
@@ -75,7 +94,7 @@ func (d *Daemon) maybeRetireOnBuildSuccess(patternID, processID string, ts time.
 	if patternID != buildSuccessPatternID || processID == "" {
 		return
 	}
-	if !d.retention().ClearOnBuildSuccess() {
+	if !d.retentionForProcess(processID).ClearOnBuildSuccess() {
 		return
 	}
 	d.retireProcessErrors(processID, ts, "build-success")
@@ -83,7 +102,7 @@ func (d *Daemon) maybeRetireOnBuildSuccess(patternID, processID string, ts time.
 
 // maybeRetireOnProcStop fires trigger 2 for explicit PROC STOP / RESTART.
 func (d *Daemon) maybeRetireOnProcStop(processID string) int {
-	if !d.retention().ClearOnProcStop() {
+	if !d.retentionForProcess(processID).ClearOnProcStop() {
 		return 0
 	}
 	return d.retireProcessErrors(processID, time.Now(), "proc-stop")
@@ -91,7 +110,7 @@ func (d *Daemon) maybeRetireOnProcStop(processID string) int {
 
 // maybeRetireOnSessionEnd fires trigger 3 from doCleanup's last-session path.
 func (d *Daemon) maybeRetireOnSessionEnd(projectPath string) {
-	if projectPath == "" || !d.retention().ClearOnSessionEnd() {
+	if projectPath == "" || !d.retention(projectPath).ClearOnSessionEnd() {
 		return
 	}
 	if removed := d.alertStore.ClearProject(projectPath); removed > 0 {

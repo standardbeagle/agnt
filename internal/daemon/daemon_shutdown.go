@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
+	"github.com/standardbeagle/agnt/internal/daemon/health"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/platform"
 	"github.com/standardbeagle/agnt/internal/proxy"
@@ -366,6 +367,14 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		hb.Stop()
 		d.daemonStartupLog("info", "hold_buffer_stopped", "hold buffer stopped")
 	}
+	// Per-project buffers: LoadAndDelete claims each one exactly once against
+	// swapHoldBuffer's own post-install shutdown check.
+	d.projectHoldBuffers.Range(func(k, _ any) bool {
+		if v, ok := d.projectHoldBuffers.LoadAndDelete(k); ok {
+			v.(*health.HoldBuffer).Stop()
+		}
+		return true
+	})
 
 	if err := d.tunnelm.Shutdown(ctx); err != nil {
 		debug.Error("daemon", "tunnel manager shutdown error: %v", err)

@@ -270,3 +270,39 @@ func TestHoldBuffer_ConcurrentHolds(t *testing.T) {
 
 // Belt and braces: ensure unused-import guard does not pollute coverage.
 var _ atomic.Int64
+
+// A config change replaced the buffer and Stop dropped what it held, so an
+// error the agent had not seen yet vanished. StopInto hands every held entry
+// to the successor with its merge count and classification intact.
+func TestHoldBuffer_StopIntoTransfersHeldEntries(t *testing.T) {
+	cfg := &config.OutageHoldConfig{WindowMs: 3_600_000} // never expires in the test
+	oldRec, newRec := &emitRecord{}, &emitRecord{}
+	old := NewHoldBuffer(cfg, oldRec.record)
+	next := NewHoldBuffer(cfg, newRec.record)
+	t.Cleanup(next.Stop)
+
+	genuine := makeBrowserError("TypeError: x is undefined")
+	fp := FingerprintForEntry(genuine)
+	old.Hold(genuine, "p1", fp, false)
+	old.Hold(genuine, "p1", fp, false)
+	cascade := makeTransportEntry("connection_refused", "dial tcp: refused")
+	old.Hold(cascade, "p1", FingerprintForEntry(cascade), true)
+
+	old.StopInto(next)
+
+	require.Equal(t, 2, next.pendingCount(), "both held records move to the successor")
+	oldEntries, _, _ := oldRec.snapshot()
+	assert.Empty(t, oldEntries, "the retiring buffer must not emit early")
+
+	// Recovery on the successor applies the original classification: the
+	// genuine error is emitted with its merged count, the cascade is dropped.
+	next.OnRecovery("p1")
+	require.Eventually(t, func() bool {
+		e, _, _ := newRec.snapshot()
+		return len(e) == 1
+	}, 2*time.Second, 5*time.Millisecond)
+	_, proxies, counts := newRec.snapshot()
+	assert.Equal(t, []string{"p1"}, proxies)
+	assert.Equal(t, []int{2}, counts)
+	assert.Equal(t, 0, next.pendingCount())
+}

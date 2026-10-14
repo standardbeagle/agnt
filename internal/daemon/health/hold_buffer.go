@@ -106,6 +106,10 @@ type holdMessage struct {
 	owner    *ResourceOwner
 	now      time.Time
 	resultCh chan int // for synchronous size-query in tests; nil otherwise
+
+	// adopted carries a held record handed over by a predecessor buffer
+	// (holdMsgAdopt): its merge count and original deadline survive the move.
+	adopted *holdEntry
 }
 
 type holdMsgKind int
@@ -116,6 +120,7 @@ const (
 	holdMsgForget
 	holdMsgSize
 	holdMsgStop
+	holdMsgAdopt
 )
 
 // HoldBuffer suppresses transport-cascade noise during proxy outages.
@@ -135,6 +140,18 @@ type HoldBuffer struct {
 	// closed gates re-entry into the channel after Stop. Reads/writes are
 	// atomic; the loop goroutine is the only writer.
 	closed atomic.Bool
+
+	// successor, when set before stopCh closes, receives every entry still
+	// held at stop time (StopInto) instead of their being dropped.
+	successor atomic.Pointer[HoldBuffer]
+}
+
+// Config returns the outage-hold config the buffer was built with (may be nil).
+func (b *HoldBuffer) Config() *config.OutageHoldConfig {
+	if b == nil {
+		return nil
+	}
+	return b.cfg
 }
 
 // NewHoldBuffer constructs a buffer with the given config and emit
@@ -252,6 +269,47 @@ func (b *HoldBuffer) Stop() {
 	<-b.doneCh
 }
 
+// StopInto terminates the buffer like Stop, but hands every entry still held
+// — including pushes queued but not yet processed — to next, keeping each
+// entry's merge count, cascade classification, owner and original deadline.
+// Used when a config change replaces the daemon's buffer: a swap must never
+// silently drop an error the agent has not seen yet. A nil next behaves as
+// Stop.
+func (b *HoldBuffer) StopInto(next *HoldBuffer) {
+	if b == nil {
+		return
+	}
+	if next != nil && next != b {
+		b.successor.Store(next)
+	}
+	b.Stop()
+}
+
+// adopt takes over a record from a predecessor buffer. Non-blocking: on a full
+// channel the record is emitted at once — an early emission, never a loss.
+func (b *HoldBuffer) adopt(e *holdEntry) {
+	if b.closed.Load() {
+		b.emitDirect(e)
+		return
+	}
+	select {
+	case b.ch <- holdMessage{kind: holdMsgAdopt, adopted: e}:
+	default:
+		b.emitDirect(e)
+	}
+}
+
+// emitDirect releases e through whichever emit callback the buffer has,
+// outside the loop goroutine.
+func (b *HoldBuffer) emitDirect(e *holdEntry) {
+	defer debug.LogRecovered("hold-buffer", "emit callback")
+	if b.ownerEmit != nil {
+		b.ownerEmit(e.entry, e.proxyID, e.count, e.owner)
+	} else if b.emit != nil {
+		b.emit(e.entry, e.proxyID, e.count)
+	}
+}
+
 // MatchesJSCascade reports whether msg matches any configured cascade
 // pattern. Case-insensitive substring match. Exposed for callers that
 // classify entries before calling Hold.
@@ -344,6 +402,21 @@ func (b *HoldBuffer) loop() {
 			if timer != nil {
 				timer.Stop()
 			}
+			if next := b.successor.Load(); next != nil {
+				// Process what was already queued, then hand over everything
+				// still held. closed is set, so nothing new can arrive.
+				for drained := false; !drained; {
+					select {
+					case msg := <-b.ch:
+						b.handleMessage(&msg, entries, hh, emit)
+					default:
+						drained = true
+					}
+				}
+				for hh.Len() > 0 {
+					next.adopt(heap.Pop(hh).(*holdEntry))
+				}
+			}
 			return
 		case msg := <-b.ch:
 			b.handleMessage(&msg, entries, hh, emit)
@@ -388,6 +461,23 @@ func (b *HoldBuffer) handleMessage(msg *holdMessage, entries map[string]*holdEnt
 		}
 		entries[key] = e
 		heap.Push(hh, e)
+
+	case holdMsgAdopt:
+		a := msg.adopted
+		if a == nil {
+			return
+		}
+		key := holdLifetimeKey(a.proxyID, a.fingerprint, a.owner)
+		if existing, ok := entries[key]; ok {
+			existing.count += a.count
+			if a.cascade {
+				existing.cascade = true
+			}
+			return
+		}
+		a.heapIndex = -1
+		entries[key] = a
+		heap.Push(hh, a)
 
 	case holdMsgRecover:
 		// Walk all entries for this proxy; emit non-cascade, drop cascade.
