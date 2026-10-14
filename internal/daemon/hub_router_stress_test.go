@@ -491,10 +491,7 @@ func TestRouter_UnknownVerb(t *testing.T) {
 	require.NoError(t, err)
 
 	_ = c.SetReadDeadline(time.Now().Add(2 * time.Second))
-	buf := make([]byte, 1024)
-	n, err := c.Read(buf)
-	require.NoError(t, err)
-	response := string(buf[:n])
+	response := readFrameUntilTerminator(t, c)
 
 	t.Logf("unknown-verb response: %q", response)
 
@@ -512,6 +509,22 @@ func TestRouter_UnknownVerb(t *testing.T) {
 	assert.Contains(t, se.Message, "unknown STRESS sub-command")
 	// ValidActions must be sorted and exclude the empty-string bucket.
 	assert.Equal(t, []string{"ALSO-KNOWN", "KNOWN"}, se.ValidActions)
+}
+
+// readFrameUntilTerminator reads one response frame, through its `;;`
+// terminator. A single Read returns whatever arrived first, which for a long
+// ERR frame can be only part of it.
+func readFrameUntilTerminator(t *testing.T, c net.Conn) string {
+	t.Helper()
+	var acc strings.Builder
+	buf := make([]byte, 1024)
+	for !strings.Contains(acc.String(), ";;") {
+		n, err := c.Read(buf)
+		acc.Write(buf[:n])
+		require.NoError(t, err, "frame so far: %q", acc.String())
+	}
+	frame := acc.String()
+	return frame[:strings.Index(frame, ";;")+2]
 }
 
 // decodeErrFrameJSON returns the JSON message of an `ERR <code> <json>;;`

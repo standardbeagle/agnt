@@ -108,6 +108,7 @@ func TestAiClaude_PromptFromFlag(t *testing.T) {
 
 	// Verify the command starts and accepts its flags, then reap the whole
 	// group (agnt + the real claude it spawns).
+	isolateClaude(t, cmd)
 	startVerifyKill(t, cmd)
 }
 
@@ -130,6 +131,7 @@ func TestAiClaude_PromptFromStdin(t *testing.T) {
 	// Provide prompt via stdin
 	cmd.Stdin = strings.NewReader("echo hello")
 
+	isolateClaude(t, cmd)
 	startVerifyKill(t, cmd)
 }
 
@@ -150,6 +152,7 @@ func TestAiClaude_PositionalPrompt(t *testing.T) {
 		"--raw",
 	)
 
+	isolateClaude(t, cmd)
 	startVerifyKill(t, cmd)
 }
 
@@ -457,6 +460,17 @@ func TestBuildClaudeOptions(t *testing.T) {
 	})
 }
 
+// isolateClaude keeps a test's real claude child away from the developer's
+// setup: it runs in a temp dir, not the repo, and with an empty config dir,
+// so it neither reads the developer's ~/.claude (settings, hooks, login) nor
+// writes session files into the checkout. Without a login it cannot spend
+// tokens either; these tests only check that the flags are accepted.
+func isolateClaude(t *testing.T, cmd *exec.Cmd) {
+	t.Helper()
+	cmd.Dir = t.TempDir()
+	cmd.Env = append(os.Environ(), "CLAUDE_CONFIG_DIR="+t.TempDir())
+}
+
 // claudeAvailable checks if Claude Code is installed and available.
 func claudeAvailable() bool {
 	_, err := exec.LookPath("claude")
@@ -485,6 +499,7 @@ func TestAiClaude_MultilinePrompt(t *testing.T) {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
+	isolateClaude(t, cmd)
 	startVerifyKill(t, cmd)
 
 	// Should not have complained about invalid prompt

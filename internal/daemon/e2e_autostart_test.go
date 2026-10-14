@@ -3191,10 +3191,13 @@ func TestE2E_AutostartWithProxy_IndependentProxy(t *testing.T) {
 			if acceptErr != nil {
 				return
 			}
-			// Read request then write HTTP response
-			buf := make([]byte, 4096)
-			conn.Read(buf)
-			resp := "HTTP/1.1 200 OK\r\nContent-Length: 12\r\n\r\nindependent!"
+			// Read the whole request, then answer. Replying after a single
+			// Read and closing with request bytes unread can reset the
+			// connection before the client reads the response.
+			if req, readErr := http.ReadRequest(bufio.NewReader(conn)); readErr == nil {
+				_, _ = io.Copy(io.Discard, req.Body)
+			}
+			resp := "HTTP/1.1 200 OK\r\nContent-Length: 12\r\nConnection: close\r\n\r\nindependent!"
 			conn.Write([]byte(resp))
 			conn.Close()
 		}

@@ -15,7 +15,7 @@ paths:
 
 Byte caps, lookaheads, timeouts and retry counts are fine. The defect is what the exhaustion branch does with a partial unit. Wrong answers: return what you have, or reset and hand the remainder to the next layer as fresh input. Right answers: discard to the end of the unit, or fail loud. Keep an outer cap on the discard path so an unterminated stream cannot wedge the reader.
 
-Instances, all fixed: ESC lookahead and `csiMaxLen` in `internal/overlay/input.go` (OSC/DCS/CSI tails leaked into the child as keypresses); `win32PendingFlush` in the same file (split sequences released early); the 4096-byte line accumulator in `internal/overlay/activity.go` (line tails reached the alert tap as new lines).
+Instances, all fixed: the 8KB URL scan window in `internal/daemon/urltracker.go` (`scanStreamForURLs` finishes the straddling line within `maxScanLineOverrun`, else discards it); ESC lookahead and `csiMaxLen` in `internal/overlay/input.go` (OSC/DCS/CSI tails leaked into the child as keypresses); `win32PendingFlush` in the same file (split sequences released early); the 4096-byte line accumulator in `internal/overlay/activity.go` (line tails reached the alert tap as new lines).
 
 Tests: the split is the test case. Feed input in chunks, across read boundaries, with gaps. A single write passes against broken code. Record honest limits as tests too (`TestIntroducerSeparatedFromItsSequenceDegradesToPassthrough`). Read HTTP responses to their end (`http.ReadResponse`, `io.ReadAll`), never judge them from one `Read`.
 
@@ -34,14 +34,16 @@ A new registry's doc comment states who reads it and whether that reader is user
 
 `t.TempDir()`, `t.Setenv` and `os.Chdir` constrain only the test process. A fixture that execs anything sets `cmd.Dir`. A test that builds a binary builds it fresh, into a temp dir, once per test binary.
 
+## Fixed from the sweep register
+
+- Frames and HTTP stubs read to their terminator: `hub_router_stress_test.go` (`readFrameUntilTerminator`), `e2e_autostart_test.go` (`http.ReadRequest`).
+- Tunnel, browser and chromedp managers count an entry from the moment it is listed and retire it by identity (`CompareAndDelete`).
+- `ProcessAutoRestarter.Take` reads and removes one registration; `Unregister` is a stop intent for whatever the id holds.
+- `sendEntersUntilActivity` stops retrying once the screen shows the message left the input box (`ActivityMonitor.CursorRowsContain`); silence alone still retries when the screen cannot tell.
+- `utils.js` ancestor walks (`MAX_ANCESTOR_WALK`) report a truncated walk instead of answering as if they reached the root.
+- `alert_delivery.go` defers while the agent is active up to `maxActivityDeferral` (2 min), not five 2s retries.
+- `cmd/agnt/ai_test.go` runs the real `claude` in a temp dir with an empty `CLAUDE_CONFIG_DIR` (`isolateClaude`).
+
 ## Open register (found by sweep, not yet fixed)
 
-- `internal/daemon/hub_router_stress_test.go:494`: frame parsed from one 1024-byte `Read` (class 1, test only).
-- `internal/daemon/e2e_autostart_test.go:3167`: stub replies after one `Read` and closes with unread bytes (class 1, test only).
-- `internal/tunnel/manager.go:51`, `internal/browser/manager.go:52`, `internal/chromedp/manager.go:112`: registered before `Start`, so the list and the active count disagree during startup (mitigated by an honest `State`).
-- `internal/daemon/process_autorestart.go:243`: `Unregister` deletes by id without the identity guard `removeIfCurrent` has.
-- `cmd/agnt/overlay.go:837`: `sendEntersUntilActivity` treats "no output" as "not accepted" and can send up to four stray Enters.
-- `internal/daemon/urltracker.go:163`: the 8KB scan window ends at a byte offset, so a URL straddling it can register truncated.
-- `internal/proxy/scripts/utils.js`: `generateSelector`, `getStackingContext` and `isDevtoolElement` return ordinary answers after hitting the 50-ancestor cap.
-- `internal/overlay/alert_delivery.go:77`: after five defers, the batch is delivered into a still-active agent.
-- `cmd/agnt/ai_test.go`: spawns the real `claude` CLI with the developer's `~/.claude`, inside the repo.
+None.
