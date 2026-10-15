@@ -51,8 +51,12 @@ func SaveAuditData(projectRoot, auditType, label string, result json.RawMessage)
 
 	// Create filename with timestamp
 	timestamp := time.Now().Format("20060102-150405")
+	// Both name parts come from the browser (a panel_message audit
+	// attachment), so both are reduced to a single safe path component: an
+	// unsanitized auditType's "../" segments walked the write out of auditDir.
+	safeType := sanitizeFilename(auditType)
 	safeLabel := sanitizeFilename(label)
-	filename := fmt.Sprintf("audit-%s-%s-%s.json", auditType, safeLabel, timestamp)
+	filename := fmt.Sprintf("audit-%s-%s-%s.json", safeType, safeLabel, timestamp)
 	filePath := filepath.Join(auditDir, filename)
 
 	// Create audit data structure

@@ -227,6 +227,28 @@ func TestSaveAuditData_LandsUnderSuppliedRoot(t *testing.T) {
 	require.True(t, os.IsNotExist(statErr))
 }
 
+// auditType arrives from the browser (a panel_message audit attachment) and
+// was formatted into the filename unsanitized, so "../" segments walked the
+// write out of .agnt/audit to wherever the page chose.
+func TestSaveAuditData_AuditTypeCannotLeaveTheAuditDir(t *testing.T) {
+	outer := t.TempDir()
+	projectRoot := filepath.Join(outer, "project")
+	require.NoError(t, os.MkdirAll(projectRoot, 0o755))
+
+	for _, auditType := range []string{"x/../../../../escape", `x\..\..\..\..\escape`} {
+		filePath, err := SaveAuditData(projectRoot, auditType, "l", json.RawMessage(`{}`))
+		require.NoError(t, err)
+		require.Equal(t, filepath.Join(projectRoot, ".agnt", AuditDirName), filepath.Dir(filePath),
+			"audit type %q placed the file outside the audit dir", auditType)
+	}
+
+	entries, err := os.ReadDir(outer)
+	require.NoError(t, err)
+	for _, e := range entries {
+		require.Equal(t, "project", e.Name(), "a file escaped the project tree")
+	}
+}
+
 func TestSaveAuditData_EmptyRootFailsLoud(t *testing.T) {
 	sentinelCwd := t.TempDir()
 	t.Chdir(sentinelCwd)
