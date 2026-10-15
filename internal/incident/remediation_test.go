@@ -1,6 +1,9 @@
 package incident
 
 import (
+	"go/ast"
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -62,8 +65,10 @@ func repoRoot(t *testing.T) string {
 }
 
 // allSources lists every Source constant for exhaustiveness checks.
+// TestAllSources_ListsEverySourceConstant keeps it complete.
 var allSources = []Source{
 	SourceBrowserJS,
+	SourceBrowserJSUntrusted,
 	SourceHTTP5xx,
 	SourceHTTP5xxUntrusted,
 	SourceHTTP4xx,
@@ -79,9 +84,57 @@ var allSources = []Source{
 
 // ── exhaustiveness ────────────────────────────────────────────────────────────
 
+// TestAllSources_ListsEverySourceConstant parses envelope.go and fails when
+// a Source constant is declared there but missing from allSources, so a new
+// source cannot silently skip the route exhaustiveness check.
+func TestAllSources_ListsEverySourceConstant(t *testing.T) {
+	t.Parallel()
+	f, err := parser.ParseFile(token.NewFileSet(), "envelope.go", nil, 0)
+	if err != nil {
+		t.Fatalf("parse envelope.go: %v", err)
+	}
+	listed := map[Source]bool{}
+	for _, src := range allSources {
+		listed[src] = true
+	}
+	declared := 0
+	for _, decl := range f.Decls {
+		gd, ok := decl.(*ast.GenDecl)
+		if !ok || gd.Tok != token.CONST {
+			continue
+		}
+		for _, spec := range gd.Specs {
+			vs := spec.(*ast.ValueSpec)
+			if id, ok := vs.Type.(*ast.Ident); !ok || id.Name != "Source" {
+				continue
+			}
+			for i, name := range vs.Names {
+				lit, ok := vs.Values[i].(*ast.BasicLit)
+				if !ok {
+					t.Fatalf("Source constant %s is not a string literal", name.Name)
+				}
+				declared++
+				if v := Source(strings.Trim(lit.Value, `"`)); !listed[v] {
+					t.Errorf("Source constant %s (%q) missing from allSources", name.Name, v)
+				}
+			}
+		}
+	}
+	if declared != len(allSources) {
+		t.Errorf("envelope.go declares %d Source constants, allSources lists %d", declared, len(allSources))
+	}
+}
+
+// TestRoute_AllSourcesHaveEntry requires a dedicated route for every source.
+// Checking only that Resolve returns something would pass on the generic
+// fallback, which is how browser_js_untrusted and chaos_swallowed_error went
+// unrouted.
 func TestRoute_AllSourcesHaveEntry(t *testing.T) {
 	t.Parallel()
 	for _, src := range allSources {
+		if _, ok := routes[src]; !ok {
+			t.Errorf("Source %q has no route (falls back to the generic get_incidents route)", src)
+		}
 		ev := NewIncidentEvent(src, SeverityError, "cat", "msg", Context{}, nil)
 		r := Resolve(&ev)
 		if r.PrimaryTool == "" {

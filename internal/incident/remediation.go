@@ -55,6 +55,33 @@ var routes = map[Source]route{
 		skill:   "agnt:browser-debug",
 		context: []string{"proxy_id"},
 	},
+	SourceBrowserJSUntrusted: {
+		// Reported by a connection the proxy does not trust, so the text is
+		// the sender's. Read the logged report first (proxylog labels it
+		// untrusted), then check whether the error reproduces on the local,
+		// trusted page before acting on it.
+		primary: toolCall{"proxylog", map[string]any{
+			"types": []string{"error"},
+		}},
+		fallback: toolCall{"currentpage", map[string]any{
+			"action": "triage",
+		}},
+		skill:   "agnt:browser-debug",
+		context: []string{"proxy_id"},
+	},
+	SourceChaosSwallow: {
+		// A chaos-injected failure drew no error from the app. The proxy log
+		// shows the faulted request and that no JS error or error-level log
+		// followed; the page triage shows what the user was left looking at.
+		primary: toolCall{"proxylog", map[string]any{
+			"types": []string{"http", "error", "custom"},
+		}},
+		fallback: toolCall{"currentpage", map[string]any{
+			"action": "triage",
+		}},
+		skill:   "agnt:browser-debug",
+		context: []string{"proxy_id"},
+	},
 	SourceHTTP5xx: {
 		primary: toolCall{"proxylog", map[string]any{
 			"types":        []string{"http"},
