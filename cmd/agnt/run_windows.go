@@ -165,9 +165,7 @@ func runConPTYChild(ctx context.Context, args []string, socketPath string, sessi
 	// io.Copy in the shared pipeline returns even if the PTY stays open.
 	var waitErr error
 	go func() {
-		// go-pty's ConPTY Wait returns nil for a non-zero exit; the
-		// status lives only in ProcessState (see childWaitError).
-		waitErr = childWaitError(cmd.Wait(), cmd.ProcessState)
+		waitErr = childWaitError(cmd.Wait(), cmd.ProcessState) // ConPTY Wait is nil on any exit
 		close(processExited)
 		ptmx.Close()
 	}()
