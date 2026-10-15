@@ -114,6 +114,24 @@ func TestGenerateFilename(t *testing.T) {
 	}
 }
 
+// A URL with a query string or other characters illegal in a Windows filename
+// must still produce a name the filesystem accepts; before, `?` reached the
+// filename and CreateBaseline failed on Windows.
+func TestGenerateFilename_IsAPortableFilename(t *testing.T) {
+	m, err := NewManager(t.TempDir(), 0.01)
+	require.NoError(t, err)
+	dir := t.TempDir()
+	for i, url := range []string{
+		"http://localhost:3000/search?q=x&page=2",
+		`http://localhost:3000/a*b<c>d|e"f\g#frag`,
+		"http://localhost:3000/café/über/日本語/日本",
+	} {
+		got := m.generateFilename(url, i)
+		assert.Regexp(t, `^[A-Za-z0-9._-]+$`, got, "only portable filename characters")
+		require.NoError(t, os.WriteFile(filepath.Join(dir, got), []byte("png"), 0o600), "filename %q must be writable", got)
+	}
+}
+
 func TestGenerateFilename_TruncatedAt30(t *testing.T) {
 	m, err := NewManager(t.TempDir(), 0.01)
 	require.NoError(t, err)

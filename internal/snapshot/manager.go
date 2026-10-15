@@ -241,11 +241,19 @@ func (m *Manager) generateFilename(url string, index int) string {
 	hash := sha256.Sum256([]byte(url))
 	hashStr := hex.EncodeToString(hash[:])[:8]
 
-	// Clean URL for filename
+	// Clean URL for filename. Only [A-Za-z0-9._-] survive: a URL's query or
+	// fragment carries characters (? * < > | " \) that are illegal in a
+	// Windows filename, where they made CreateBaseline fail outright. Every
+	// kept byte is ASCII, so the byte truncation below cannot split a rune.
 	name := strings.TrimPrefix(url, "http://")
 	name = strings.TrimPrefix(name, "https://")
-	name = strings.ReplaceAll(name, "/", "_")
-	name = strings.ReplaceAll(name, ":", "_")
+	name = strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '.', r == '-':
+			return r
+		}
+		return '_'
+	}, name)
 	if len(name) > 30 {
 		name = name[:30]
 	}
