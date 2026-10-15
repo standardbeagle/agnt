@@ -314,10 +314,20 @@ func (d *Daemon) hubHandleProcStop(ctx context.Context, conn *hubpkg.Connection,
 	processID = proc.ID
 
 	if !proc.IsRunning() {
+		// A process that crashed under auto-restart sits here, exited, while
+		// the monitor waits out its restart delay. "Stop" must mean it stays
+		// down: drop the registration, which cancels that pending relaunch.
+		cancelledRestart := false
+		if d.autoRestarter != nil {
+			_, cancelledRestart = d.autoRestarter.Take(processID)
+		}
 		d.retireIncidentProcessOwner(processID)
 		message := fmt.Sprintf("process %q already stopped", processID)
 		if cancelledPending {
 			message += "; pending relaunch cancelled"
+		}
+		if cancelledRestart {
+			message += "; auto-restart cancelled"
 		}
 		resp := map[string]interface{}{
 			"process_id": processID,
