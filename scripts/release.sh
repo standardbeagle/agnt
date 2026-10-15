@@ -4,17 +4,39 @@
 # Usage: ./scripts/release.sh 0.6.4
 #        ./scripts/release.sh patch   # auto-increment patch version
 #        ./scripts/release.sh minor   # auto-increment minor version
-#        ./scripts/release.sh --build # Build release after creating tag
+#        ./scripts/release.sh --build patch       # Build release after creating tag
+#        ./scripts/release.sh --allow-branch patch # Release from a branch other than main
+#
+# Refuses to run unless: the version is MAJOR.MINOR.PATCH (optionally
+# -prerelease), differs from the current one, has no existing v<version> tag,
+# the tree has no uncommitted changes, and HEAD is main (--allow-branch
+# overrides only the branch check). Every version substitution must change its
+# file; one that matches nothing aborts the release and restores the files.
 
 set -e
 
 BUILD_RELEASE=false
+ALLOW_BRANCH=false
 
-# Check for --build flag
-if [ "$1" = "--build" ]; then
-    BUILD_RELEASE=true
-    shift
-fi
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --build)
+            BUILD_RELEASE=true
+            shift
+            ;;
+        --allow-branch)
+            ALLOW_BRANCH=true
+            shift
+            ;;
+        -*)
+            echo "Error: unknown flag: $1"
+            exit 1
+            ;;
+        *)
+            break
+            ;;
+    esac
+done
 
 # Get current version from Go source
 CURRENT_VERSION=$(grep 'appVersion = ' cmd/agnt/main.go | sed 's/.*"\(.*\)"/\1/')
@@ -22,13 +44,26 @@ CURRENT_VERSION=$(grep 'appVersion = ' cmd/agnt/main.go | sed 's/.*"\(.*\)"/\1/'
 if [ -z "$1" ]; then
     echo "Current version: $CURRENT_VERSION"
     echo ""
-    echo "Usage: $0 <version|patch|minor|major>"
+    echo "Usage: $0 [--build] [--allow-branch] <version|patch|minor|major>"
     echo "  $0 0.6.4       # Set specific version"
     echo "  $0 patch       # Increment patch (0.6.3 -> 0.6.4)"
     echo "  $0 minor       # Increment minor (0.6.3 -> 0.7.0)"
     echo "  $0 major       # Increment major (0.6.3 -> 1.0.0)"
     exit 1
 fi
+
+# MAJOR.MINOR.PATCH with an optional -prerelease (release.yml marks -rc,
+# -beta and -alpha tags as prereleases).
+SEMVER_RE='^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z][0-9A-Za-z.-]*)?$'
+
+case "$1" in
+    patch|minor|major)
+        if ! [[ "$CURRENT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Error: cannot auto-increment current version '$CURRENT_VERSION'; pass an explicit version."
+            exit 1
+        fi
+        ;;
+esac
 
 # Parse version components
 IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
@@ -48,6 +83,21 @@ case "$1" in
         ;;
 esac
 
+if ! [[ "$NEW_VERSION" =~ $SEMVER_RE ]]; then
+    echo "Error: '$NEW_VERSION' is not a version of the form MAJOR.MINOR.PATCH[-prerelease] (no leading 'v')."
+    exit 1
+fi
+
+if [ "$NEW_VERSION" = "$CURRENT_VERSION" ]; then
+    echo "Error: version is already $CURRENT_VERSION."
+    exit 1
+fi
+
+if git rev-parse -q --verify "refs/tags/v$NEW_VERSION" >/dev/null; then
+    echo "Error: tag v$NEW_VERSION already exists."
+    exit 1
+fi
+
 echo "Releasing version: $CURRENT_VERSION -> $NEW_VERSION"
 echo ""
 
@@ -57,38 +107,64 @@ if ! git diff --quiet || ! git diff --staged --quiet; then
     exit 1
 fi
 
+CURRENT_BRANCH=$(git symbolic-ref --short -q HEAD || true)
+if [ "$CURRENT_BRANCH" != "main" ] && [ "$ALLOW_BRANCH" != true ]; then
+    echo "Error: releases are cut from main, but HEAD is ${CURRENT_BRANCH:-detached}."
+    echo "Pass --allow-branch to release from it anyway."
+    exit 1
+fi
+
+VERSION_FILES="cmd/agnt/main.go internal/daemon/daemon.go internal/daemonclient/upgrade.go npm/agnt/package.json python/agnt/pyproject.toml python/agnt/src/agnt/__init__.py package.json npm/devtool-mcp/package.json python/pyproject.toml"
+
+# bump FILE SED_EXPR: apply one version substitution, and abort the release
+# (restoring every version file, which the clean-tree check above proved
+# unmodified) if it left FILE unchanged or without the new version in it.
+bump() {
+    local file="$1" expr="$2" before
+    before=$(cat "$file")
+    sed -i "$expr" "$file"
+    if [ "$(cat "$file")" = "$before" ] || ! grep -qF "$NEW_VERSION" "$file"; then
+        echo "Error: the version substitution in $file matched nothing:"
+        echo "  sed '$expr'"
+        echo "Restoring the version files; fix the pattern in $0 and rerun."
+        # shellcheck disable=SC2086
+        git checkout -- $VERSION_FILES
+        exit 1
+    fi
+}
+
 # Update Go version (main.go)
 echo "Updating cmd/agnt/main.go..."
-sed -i "s/appVersion = \".*\"/appVersion = \"$NEW_VERSION\"/" cmd/agnt/main.go
+bump cmd/agnt/main.go "s/appVersion = \".*\"/appVersion = \"$NEW_VERSION\"/"
 
 # Update Go version (daemon.go + daemonclient/upgrade.go — kept in sync deliberately)
 echo "Updating internal/daemon/daemon.go..."
-sed -i "s/var Version = \".*\"/var Version = \"$NEW_VERSION\"/" internal/daemon/daemon.go
-sed -i "s/var Version = \".*\"/var Version = \"$NEW_VERSION\"/" internal/daemonclient/upgrade.go
+bump internal/daemon/daemon.go "s/var Version = \".*\"/var Version = \"$NEW_VERSION\"/"
+bump internal/daemonclient/upgrade.go "s/var Version = \".*\"/var Version = \"$NEW_VERSION\"/"
 
 # Update npm package version
 echo "Updating npm/agnt/package.json..."
-sed -i "s/\"version\": \".*\"/\"version\": \"$NEW_VERSION\"/" npm/agnt/package.json
+bump npm/agnt/package.json "s/\"version\": \".*\"/\"version\": \"$NEW_VERSION\"/"
 
 # Update Python package version (both pyproject.toml and __init__.py)
 echo "Updating python/agnt/pyproject.toml..."
-sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" python/agnt/pyproject.toml
+bump python/agnt/pyproject.toml "s/^version = \".*\"/version = \"$NEW_VERSION\"/"
 echo "Updating python/agnt/src/agnt/__init__.py..."
-sed -i "s/__version__ = \".*\"/__version__ = \"$NEW_VERSION\"/" python/agnt/src/agnt/__init__.py
+bump python/agnt/src/agnt/__init__.py "s/__version__ = \".*\"/__version__ = \"$NEW_VERSION\"/"
 
 # Update root package.json
 echo "Updating package.json..."
-sed -i "0,/\"version\": \".*\"/{s/\"version\": \".*\"/\"version\": \"$NEW_VERSION\"/}" package.json
+bump package.json "0,/\"version\": \".*\"/{s/\"version\": \".*\"/\"version\": \"$NEW_VERSION\"/}"
 
 # Update deprecated npm wrapper (version and dependency)
 echo "Updating npm/devtool-mcp/package.json..."
-sed -i "0,/\"version\": \".*\"/{s/\"version\": \".*\"/\"version\": \"$NEW_VERSION\"/}" npm/devtool-mcp/package.json
-sed -i "s/\"@standardbeagle\/agnt\": \".*\"/\"@standardbeagle\/agnt\": \"^$NEW_VERSION\"/" npm/devtool-mcp/package.json
+bump npm/devtool-mcp/package.json "0,/\"version\": \".*\"/{s/\"version\": \".*\"/\"version\": \"$NEW_VERSION\"/}"
+bump npm/devtool-mcp/package.json "s/\"@standardbeagle\/agnt\": \".*\"/\"@standardbeagle\/agnt\": \"^$NEW_VERSION\"/"
 
 # Update deprecated Python wrapper (version and dependency)
 echo "Updating python/pyproject.toml..."
-sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" python/pyproject.toml
-sed -i "s/\"agnt>=.*\"/\"agnt>=$NEW_VERSION\"/" python/pyproject.toml
+bump python/pyproject.toml "s/^version = \".*\"/version = \"$NEW_VERSION\"/"
+bump python/pyproject.toml "s/\"agnt>=.*\"/\"agnt>=$NEW_VERSION\"/"
 
 # Verify updates
 echo ""
@@ -106,7 +182,8 @@ grep '^version = ' python/pyproject.toml
 # Commit and tag
 echo ""
 echo "Creating commit and tag..."
-git add cmd/agnt/main.go internal/daemon/daemon.go internal/daemonclient/upgrade.go npm/agnt/package.json python/agnt/pyproject.toml python/agnt/src/agnt/__init__.py package.json npm/devtool-mcp/package.json python/pyproject.toml
+# shellcheck disable=SC2086
+git add $VERSION_FILES
 git commit -m "chore: bump version to $NEW_VERSION
 
 🤖 Generated with [Claude Code](https://claude.com/claude-code)

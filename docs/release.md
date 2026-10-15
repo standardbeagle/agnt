@@ -43,8 +43,8 @@ Use the `scripts/release.sh` script to update all version files automatically:
 ```
 
 The script will:
-1. Validate no uncommitted changes exist
-2. Update all version files listed above
+1. Validate the release: the version is `MAJOR.MINOR.PATCH[-prerelease]` and differs from the current one, tag `v<VERSION>` does not exist yet, there are no uncommitted changes, and HEAD is `main` (`--allow-branch` releases from another branch)
+2. Update all version files listed above, aborting and restoring them if any substitution matches nothing
 3. Create a git commit with all changes
 4. Create a git tag `v<VERSION>`
 5. Display push instructions
