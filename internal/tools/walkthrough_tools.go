@@ -106,12 +106,33 @@ func (dt *DaemonTools) makeWalkthroughHandler() func(context.Context, *mcp.CallT
 		}
 
 		resultStr := getString(result, "result")
+		if errMsg := walkthroughBrowserError(resultStr); errMsg != "" {
+			return fail[WalkthroughOutput](fmt.Sprintf("walkthrough %s failed: %s", input.Action, errMsg))
+		}
 		return nil, WalkthroughOutput{
 			Success: true,
 			Message: fmt.Sprintf("walkthrough %s on proxy %q", input.Action, input.ProxyID),
 			Result:  resultStr,
 		}, nil
 	}
+}
+
+// walkthroughBrowserError returns the error the browser-side walkthrough API
+// reported, or "" when it reported none. The exec snippet JSON-stringifies the
+// API's return value, so a refusal (an invalid script, the host frame being
+// unavailable, the API missing) arrives as the text {"error":"..."} inside the
+// exec result rather than as an exec error.
+func walkthroughBrowserError(resultStr string) string {
+	var payload struct {
+		Error any `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(resultStr), &payload); err != nil || payload.Error == nil {
+		return ""
+	}
+	if s, ok := payload.Error.(string); ok {
+		return s
+	}
+	return fmt.Sprint(payload.Error)
 }
 
 // buildWalkthroughExec builds the JS snippet for a walkthrough action. The

@@ -102,3 +102,30 @@ func TestBuildWalkthroughExec_AcceptsObjectScript(t *testing.T) {
 		t.Errorf("object script not embedded: %q", code)
 	}
 }
+
+// The browser-side walkthrough API reports a refusal as a returned
+// {error: ...} object, which the exec snippet JSON-stringifies into the exec
+// result. The tool reported such a result as success:true; it must surface
+// the browser's error instead.
+func TestWalkthroughBrowserError(t *testing.T) {
+	cases := []struct {
+		name, result, want string
+	}{
+		{"invalid script", `{"error":"step 0: advance.type is required"}`, "step 0: advance.type is required"},
+		{"host frame unavailable", `{"error":"walkthrough host frame unavailable"}`, "walkthrough host frame unavailable"},
+		{"api missing", `{"error":"walkthrough not available"}`, "walkthrough not available"},
+		{"ok", `{"ok":true,"id":"demo","steps":3}`, ""},
+		{"status", `{"running":true,"index":1,"error":null}`, ""},
+		{"empty error", `{"error":""}`, ""},
+		{"list array", `[{"id":"demo"}]`, ""},
+		{"not json", `undefined`, ""},
+		{"empty", ``, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := walkthroughBrowserError(tc.result); got != tc.want {
+				t.Fatalf("walkthroughBrowserError(%q) = %q, want %q", tc.result, got, tc.want)
+			}
+		})
+	}
+}
