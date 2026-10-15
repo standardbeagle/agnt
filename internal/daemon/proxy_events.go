@@ -239,6 +239,13 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 				fmt.Sprintf("failed to create proxy %s: %v", proxyID, err), 0)
 			continue
 		}
+		if !hasFallback {
+			// Resolves an earlier proxy_creation_failed for this script in the
+			// notices banner (same key). The replace path records its own
+			// outcome (startup_proxy_fallback_replaced / _replace_failed).
+			d.recordStartupEntry(event.ScriptID, proxyName, "info", "proxy_started",
+				fmt.Sprintf("proxy %s started for detected URL %s", proxyID, event.URL), server.BoundPort())
+		}
 
 		if owner, ok := d.incidentProcessOwner.Load(event.ScriptID); ok {
 			d.registerIncidentProxyResourceOwner(server.ID, ownerAsIncidentResource(owner))

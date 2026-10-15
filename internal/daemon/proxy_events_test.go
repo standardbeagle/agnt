@@ -1382,3 +1382,35 @@ func TestProxyEvent_HandleScriptStopped_IgnoresAlreadyStoppedProxy(t *testing.T)
 		t.Errorf("expected script proxy tracking cleared after stop, got %v", tracked)
 	}
 }
+
+// A proxy_creation_failed recorded for a script is resolved in the notices
+// banner once URL detection later creates that script's proxy.
+func TestProxyEvent_HandleURLDetected_SuccessClearsCreationFailureNotice(t *testing.T) {
+	daemon, tmpDir := newFallbackTestDaemon(t)
+	if err := writeFile(filepath.Join(tmpDir, ".agnt.kdl"), `
+proxies {
+    dev {
+        script "dev"
+    }
+}
+`); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	scriptID := makeProcessID(tmpDir, "dev")
+	daemon.recordStartupEntry(scriptID, "", "error", "proxy_creation_failed", "earlier attempt failed", 0)
+	if n := buildNotices(daemon.startupErrorStore.Query(StartupLogFilter{ProjectPath: tmpDir})); len(n) != 1 {
+		t.Fatalf("precondition: want 1 notice, got %+v", n)
+	}
+
+	daemon.handleURLDetected(ProxyEvent{Type: URLDetected, ScriptID: scriptID, URL: "http://localhost:3011", Path: tmpDir})
+	proxyID := makeProxyIDFromURL(tmpDir, "dev", "http://localhost:3011")
+	if _, ok := daemon.exactProxy(proxyID); !ok {
+		t.Fatalf("proxy %s was not created", proxyID)
+	}
+	t.Cleanup(func() { _ = daemon.proxym.Stop(context.Background(), proxyID) })
+
+	if n := buildNotices(daemon.startupErrorStore.Query(StartupLogFilter{ProjectPath: tmpDir})); len(n) != 0 {
+		t.Fatalf("creation-failure notice not cleared by the later successful proxy: %+v", n)
+	}
+}

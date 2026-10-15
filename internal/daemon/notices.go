@@ -2,7 +2,9 @@ package daemon
 
 import (
 	"fmt"
+	"sort"
 	"strings"
+	"time"
 )
 
 // Notice is a surfaced silent-failure: a config-declared resource (proxy,
@@ -106,7 +108,11 @@ func buildNotices(entries []*StartupLogEntry) []Notice {
 		}
 	}
 
-	var notices []Notice
+	type active struct {
+		notice Notice
+		at     time.Time
+	}
+	var open []active
 	for key, g := range groups {
 		if g.failure == nil {
 			continue
@@ -115,7 +121,19 @@ func buildNotices(entries []*StartupLogEntry) []Notice {
 		if g.latestSuccess != nil && !g.latestSuccess.Timestamp.Before(g.failure.Timestamp) {
 			continue
 		}
-		notices = append(notices, makeNotice(key, g.failure))
+		open = append(open, active{notice: makeNotice(key, g.failure), at: g.failure.Timestamp})
+	}
+	// Map iteration order is random; give the banner a stable order: oldest
+	// failure first, ties broken by ID.
+	sort.Slice(open, func(i, j int) bool {
+		if !open[i].at.Equal(open[j].at) {
+			return open[i].at.Before(open[j].at)
+		}
+		return open[i].notice.ID < open[j].notice.ID
+	})
+	var notices []Notice
+	for _, a := range open {
+		notices = append(notices, a.notice)
 	}
 	return notices
 }

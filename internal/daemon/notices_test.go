@@ -206,3 +206,27 @@ func TestBuildNotices_MultipleResources(t *testing.T) {
 	assert.True(t, hasProxy)
 	assert.True(t, hasScript)
 }
+
+// Notices come out in a stable order (oldest failure first, ties by ID), not
+// in map iteration order.
+func TestBuildNotices_DeterministicOrder(t *testing.T) {
+	var entries []*StartupLogEntry
+	// Inserted newest-first so input order cannot pass for the sort.
+	for i := 9; i >= 0; i-- {
+		entries = append(entries, entry("p-1:s"+string(rune('a'+i)), "", "error", "start_failed", "boom", at(i)))
+	}
+	// Two failures at the same instant: ordered by ID.
+	entries = append(entries,
+		entry("p-1:zz", "", "error", "start_failed", "boom", at(20)),
+		entry("p-1:yy", "", "error", "start_failed", "boom", at(20)))
+
+	for run := 0; run < 20; run++ {
+		notices := buildNotices(entries)
+		require.Len(t, notices, 12)
+		for i := 0; i < 10; i++ {
+			require.Equal(t, "script:p-1:s"+string(rune('a'+i)), notices[i].ID, "run %d position %d", run, i)
+		}
+		require.Equal(t, "script:p-1:yy", notices[10].ID)
+		require.Equal(t, "script:p-1:zz", notices[11].ID)
+	}
+}
