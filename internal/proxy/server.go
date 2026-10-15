@@ -975,12 +975,18 @@ func (ps *ProxyServer) runServer(ctx context.Context, listener net.Listener) {
 
 			// Check if auto-restart is enabled
 			if !ps.autoRestart {
+				ps.reportServeFailure("proxy_serve_failed",
+					fmt.Sprintf("proxy %s stopped serving on %s and auto-restart is off: %v", ps.ID, ps.liveAddr(), err),
+					err.Error())
 				return
 			}
 
 			// Check restart limits
 			if !ps.shouldRestart() {
-				ps.lastError.Store(fmt.Sprintf("max restarts exceeded: %v", err.Error()))
+				ps.reportServeFailure("proxy_restart_exhausted",
+					fmt.Sprintf("proxy %s stopped serving on %s and gave up restarting (%d restarts within %v): %v",
+						ps.ID, ps.liveAddr(), ps.maxRestarts, ps.restartWindow, err),
+					fmt.Sprintf("max restarts exceeded: %v", err.Error()))
 				return
 			}
 
@@ -1020,7 +1026,10 @@ func (ps *ProxyServer) runServer(ctx context.Context, listener net.Listener) {
 					newListener, restartErr = ps.netListen(ps.autoAssignAddr())
 				}
 				if restartErr != nil {
-					ps.lastError.Store(fmt.Sprintf("restart failed: %v (original: %v)", restartErr.Error(), err.Error()))
+					ps.reportServeFailure("proxy_restart_failed",
+						fmt.Sprintf("proxy %s could not rebind %s after it stopped serving: %v (original: %v)",
+							ps.ID, ps.ListenAddr, restartErr, err),
+						fmt.Sprintf("restart failed: %v (original: %v)", restartErr.Error(), err.Error()))
 					return
 				}
 			}
@@ -1177,6 +1186,26 @@ func isLoopbackAuthority(authority string) bool {
 	}
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
+}
+
+// reportServeFailure records why the proxy stopped serving for good: lastError
+// for stats, and an error diagnostic so it reaches the agent (the incident
+// pipeline ingests error diagnostics) instead of only the stats a caller has
+// to think to ask for.
+func (ps *ProxyServer) reportServeFailure(event, message, lastError string) {
+	ps.lastError.Store(lastError)
+	ps.logger.LogDiagnostic(ProxyDiagnostic{
+		Timestamp: time.Now(),
+		Level:     DiagnosticError,
+		Category:  "proxy",
+		Event:     event,
+		Message:   message,
+		Target:    ps.liveAddr(),
+		Data: map[string]any{
+			"proxy_id":    ps.ID,
+			"listen_addr": ps.liveAddr(),
+		},
+	})
 }
 
 // shouldRestart checks if we should attempt another restart based on rate limits

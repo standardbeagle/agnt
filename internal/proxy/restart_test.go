@@ -2,7 +2,9 @@ package proxy
 
 import (
 	"context"
+	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -212,4 +214,102 @@ func TestProxyServer_HealthyRestart(t *testing.T) {
 
 	t.Logf("Proxy stats: running=%v, auto_restart=%v, restarts=%d",
 		stats.Running, stats.AutoRestart, stats.RestartCount)
+}
+
+// crashingListener is a loopback listener whose Accept fails permanently once
+// crash is closed, which is what makes http.Server.Serve return an unexpected
+// error (a crash) rather than ErrServerClosed.
+type crashingListener struct {
+	net.Listener
+	crash chan struct{}
+}
+
+func (l *crashingListener) Accept() (net.Conn, error) {
+	<-l.crash
+	return nil, errors.New("listener died")
+}
+
+// startCrashableProxy starts a proxy whose first listener crashes on demand;
+// later binds (the auto-restart rebind) go through rebind.
+func startCrashableProxy(t *testing.T, autoRestart bool, rebind func(network, addr string) (net.Listener, error)) (*ProxyServer, func()) {
+	t.Helper()
+	ps, err := NewProxyServer(ProxyConfig{
+		ID: "crash", TargetURL: "http://localhost:9999", ListenPort: 0,
+		MaxLogSize: 100, AutoRestart: autoRestart,
+	})
+	if err != nil {
+		t.Fatalf("NewProxyServer: %v", err)
+	}
+	crash := make(chan struct{})
+	first := true
+	ps.listen = func(network, addr string) (net.Listener, error) {
+		if !first {
+			return rebind(network, addr)
+		}
+		first = false
+		l, err := net.Listen(network, "127.0.0.1:0")
+		if err != nil {
+			return nil, err
+		}
+		return &crashingListener{Listener: l, crash: crash}, nil
+	}
+	if err := ps.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = ps.Stop(context.Background()) })
+	return ps, func() { close(crash) }
+}
+
+// waitDiagnostic waits for an error-level diagnostic with the given event.
+func waitDiagnostic(t *testing.T, ps *ProxyServer, event string) *ProxyDiagnostic {
+	t.Helper()
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, e := range ps.Logger().Query(LogFilter{Types: []LogEntryType{LogTypeDiagnostic}, Limit: 1000}) {
+			if e.Diagnostic != nil && e.Diagnostic.Event == event {
+				return e.Diagnostic
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("no %q diagnostic; got %v", event, diagnosticEvents(ps))
+	return nil
+}
+
+// A proxy that stops serving for good must say so on the agent-visible path
+// (an error diagnostic, which the incident pipeline ingests), not only in the
+// stats lastError nobody is told to read.
+func TestRunServer_TerminalFailuresReachTheAgent(t *testing.T) {
+	t.Run("auto-restart off", func(t *testing.T) {
+		ps, crash := startCrashableProxy(t, false, nil)
+		crash()
+		d := waitDiagnostic(t, ps, "proxy_serve_failed")
+		if d.Level != DiagnosticError || !strings.Contains(d.Message, "listener died") {
+			t.Errorf("diagnostic = %+v, want an error naming the cause", d)
+		}
+	})
+
+	t.Run("restart limit reached", func(t *testing.T) {
+		ps, crash := startCrashableProxy(t, true, nil)
+		ps.maxRestarts = 0
+		crash()
+		d := waitDiagnostic(t, ps, "proxy_restart_exhausted")
+		if d.Level != DiagnosticError {
+			t.Errorf("diagnostic level = %q, want error", d.Level)
+		}
+		if got := ps.Stats().LastError; !strings.Contains(got, "max restarts exceeded") {
+			t.Errorf("stats last error = %q, want it kept", got)
+		}
+	})
+
+	t.Run("rebind fails", func(t *testing.T) {
+		ps, crash := startCrashableProxy(t, true, func(string, string) (net.Listener, error) {
+			return nil, errors.New("bind refused")
+		})
+		crash()
+		d := waitDiagnostic(t, ps, "proxy_restart_failed")
+		if d.Level != DiagnosticError || !strings.Contains(d.Message, "bind refused") {
+			t.Errorf("diagnostic = %+v, want an error naming the rebind failure", d)
+		}
+	})
 }
