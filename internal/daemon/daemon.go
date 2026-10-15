@@ -420,10 +420,9 @@ type Daemon struct {
 	// transport-cascade noise that arrived during a successful recovery.
 	// See internal/daemon/hold_buffer.go for semantics.
 	//
-	// atomic.Pointer because ApplyAlertsConfig swaps the buffer (on every
-	// session connect, from an async autostart worker) while hub-handler
-	// goroutines read it on every proxy log entry and Stop reads it on
-	// shutdown — an unsynchronised field swap was a data race. All
+	// atomic.Pointer because Stop swaps it out on shutdown while hub-handler
+	// goroutines read it on every proxy log entry. It is installed once at
+	// startup with built-in settings; no config replaces it. All
 	// health.HoldBuffer methods are nil/closed-safe, so Load → call is lock-free
 	// and correct even against a concurrent Swap+Stop.
 	//
@@ -1250,10 +1249,11 @@ func (d *Daemon) IncidentBus() *incident.MPSCBus {
 // into the daemon's runtime alert subsystems: the health.HoldBuffer's per-proxy
 // hold window and cascade patterns, the health.HealthTracker's transport
 // outage thresholds, and the error-retention gates. Each project keeps its own
-// settings: they govern only proxies and processes of that project. An empty
-// projectPath sets the daemon-wide defaults used by everything without a
-// project of its own. Safe to call multiple times — the latest values for a
-// project win. A nil cfg restores defaults.
+// settings: they govern only proxies and processes of that project. Anything
+// without an applied block uses the built-in defaults installed at startup,
+// which no config changes; projectPath is normalized, so "" names the current
+// directory's project, not the defaults. Safe to call multiple times — the
+// latest values for a project win. A nil cfg restores defaults.
 func (d *Daemon) ApplyAlertsConfig(projectPath string, cfg *config.AlertsConfig) {
 	if d == nil {
 		return
@@ -1271,14 +1271,6 @@ func (d *Daemon) ApplyAlertsConfig(projectPath string, cfg *config.AlertsConfig)
 		RecoveryDebounce: holdCfg.GetRecoveryDebounce(),
 	}
 	projectPath = normalizePath(projectPath)
-	if projectPath == "" {
-		d.SetRetentionConfig(cfg.GetRetention())
-		d.swapHoldBuffer(nil, holdCfg)
-		if d.healthTracker != nil {
-			d.healthTracker.SetTransportConfig(transport)
-		}
-		return
-	}
 
 	if pushCfg == nil {
 		d.alertPushConfigs.Delete(projectPath)
@@ -1288,22 +1280,20 @@ func (d *Daemon) ApplyAlertsConfig(projectPath string, cfg *config.AlertsConfig)
 	}
 	d.projectRetention.Store(projectPath, cfg.GetRetention())
 	d.projectTransport.Store(projectPath, transport)
-	d.swapHoldBuffer(&projectPath, holdCfg)
+	d.swapHoldBuffer(projectPath, holdCfg)
 }
 
-// swapHoldBuffer installs a buffer built from holdCfg as the project's buffer
-// (the default one when project is nil). This runs on every session connect
-// and AUTOSTART RECONCILE, so an unchanged config keeps the running buffer and
-// everything it holds. A replaced buffer retires into the new one: its held
-// entries move over with their deadlines instead of being dropped.
-func (d *Daemon) swapHoldBuffer(project *string, holdCfg *config.OutageHoldConfig) {
+// swapHoldBuffer installs a buffer built from holdCfg as the project's buffer.
+// This runs on every session connect and AUTOSTART RECONCILE, so an unchanged
+// config keeps the running buffer and everything it holds. A replaced buffer
+// retires into the new one: its held entries move over with their deadlines
+// instead of being dropped.
+func (d *Daemon) swapHoldBuffer(project string, holdCfg *config.OutageHoldConfig) {
 	d.holdSwapMu.Lock()
 	defer d.holdSwapMu.Unlock()
 
 	var cur *health.HoldBuffer
-	if project == nil {
-		cur = d.holdBuffer.Load()
-	} else if v, ok := d.projectHoldBuffers.Load(*project); ok {
+	if v, ok := d.projectHoldBuffers.Load(project); ok {
 		cur = v.(*health.HoldBuffer)
 	}
 	if cur != nil && reflect.DeepEqual(cur.Config(), holdCfg) {
@@ -1311,11 +1301,7 @@ func (d *Daemon) swapHoldBuffer(project *string, holdCfg *config.OutageHoldConfi
 	}
 
 	newHB := health.NewOwnedHoldBuffer(holdCfg, d.fireHoldEmitForOwner)
-	if project == nil {
-		cur = d.holdBuffer.Swap(newHB)
-	} else {
-		d.projectHoldBuffers.Store(*project, newHB)
-	}
+	d.projectHoldBuffers.Store(project, newHB)
 	// Concurrent readers see either the old buffer (its methods are
 	// closed-safe) or the new one.
 	if cur != nil {
@@ -1325,14 +1311,8 @@ func (d *Daemon) swapHoldBuffer(project *string, holdCfg *config.OutageHoldConfi
 	// the one just installed would never be stopped and its goroutine would
 	// leak. Reclaim it only if it is still installed; if Stop got it first,
 	// Stop owns the teardown.
-	if d.isShuttingDown() {
-		if project == nil {
-			if d.holdBuffer.CompareAndSwap(newHB, nil) {
-				newHB.Stop()
-			}
-		} else if d.projectHoldBuffers.CompareAndDelete(*project, newHB) {
-			newHB.Stop()
-		}
+	if d.isShuttingDown() && d.projectHoldBuffers.CompareAndDelete(project, newHB) {
+		newHB.Stop()
 	}
 }
 

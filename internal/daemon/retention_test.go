@@ -94,7 +94,8 @@ func TestRetention_BuildSuccessRetiresStaleErrors(t *testing.T) {
 func TestRetention_ConfigGateDisablesBuildSuccessClear(t *testing.T) {
 	d := NewForTest(t, DaemonConfig{})
 	off := false
-	d.SetRetentionConfig(&config.RetentionConfig{OnBuildSuccess: &off})
+	// The daemon-wide gates (retentionCfg) govern a process with no project.
+	d.retentionCfg.Store(&config.RetentionConfig{OnBuildSuccess: &off})
 
 	base := time.Now()
 	stale := alertMatch("go-panic", "go", "panic: stale error", overlay.AlertSeverityError, base.Add(-time.Minute))

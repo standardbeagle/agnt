@@ -30,13 +30,6 @@ import (
 // Start-of-build signals (rebuild-generic etc.) intentionally do not clear.
 const buildSuccessPatternID = "rebuild-build-success"
 
-// SetRetentionConfig atomically installs the daemon-wide retention gate
-// config, used for processes whose project has no alerts block applied.
-// A project's own gates are set by ApplyAlertsConfig.
-func (d *Daemon) SetRetentionConfig(cfg *config.RetentionConfig) {
-	d.retentionCfg.Store(cfg)
-}
-
 // retention returns the gates for a project: its own once ApplyAlertsConfig
 // ran for it, else the daemon-wide ones. nil is valid: all getters default to
 // enabled.
