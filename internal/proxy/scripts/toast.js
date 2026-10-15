@@ -335,7 +335,9 @@
       options.onSubmitted = function(sent) {
         dismiss(id);
         if (sent) {
-          info(options.name + ' saved to the agnt store (value never shared with the agent)', 'Secret received');
+          // Sent is not saved: the server answers with secret_ack, and only
+          // that says whether the store took it (or refused the connection).
+          awaitSecretAck(options.name);
         } else {
           error('Could not submit ' + options.name + ' — connection unavailable, try again', 'Secret not saved');
         }
@@ -464,8 +466,51 @@
     return show({ type: 'info', message: message, title: title });
   }
 
+  // Secret submissions waiting for the server's secret_ack, by secret name.
+  // The ack comes back on the connection that sent the secret_submit, which
+  // is this frame's own. With no ack in SECRET_ACK_TIMEOUT_MS the outcome is
+  // unknown, and the user is told so rather than told it was saved.
+  var SECRET_ACK_TIMEOUT_MS = 10000;
+  var pendingSecrets = {};
+
+  function awaitSecretAck(name) {
+    var prev = pendingSecrets[name];
+    if (prev) {
+      clearTimeout(prev.timer);
+      dismiss(prev.toastId);
+    }
+    var waitingId = show({ type: 'info', title: 'Secret sent', message: 'Saving ' + name + '…', duration: SECRET_ACK_TIMEOUT_MS });
+    pendingSecrets[name] = {
+      toastId: waitingId,
+      timer: setTimeout(function() {
+        if (!pendingSecrets[name] || pendingSecrets[name].toastId !== waitingId) return;
+        delete pendingSecrets[name];
+        dismiss(waitingId);
+        error('No confirmation that ' + name + ' was saved — check the agnt store and submit it again if it is missing', 'Secret not confirmed');
+      }, SECRET_ACK_TIMEOUT_MS)
+    };
+  }
+
+  function handleSecretAck(ack) {
+    var name = ack.name;
+    var pending = pendingSecrets[name];
+    if (!pending) return;
+    clearTimeout(pending.timer);
+    dismiss(pending.toastId);
+    delete pendingSecrets[name];
+    if (ack.ok === true) {
+      info(name + ' saved to the agnt store (value never shared with the agent)', 'Secret received');
+    } else {
+      error('Could not save ' + name + ': ' + (ack.error || 'the server refused it'), 'Secret not saved');
+    }
+  }
+
   // Listen for toast messages from WebSocket (via core message handlers)
   function handleMessage(message) {
+    if (message.type === 'secret_ack') {
+      handleSecretAck(message.payload || message);
+      return;
+    }
     if (message.type === 'toast') {
       var payload = message.payload || message;
       show({
