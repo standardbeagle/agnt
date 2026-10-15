@@ -914,12 +914,39 @@ func hashToken(token string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// ScrubSharePath redacts a public share URL path for logging. It replaces the
-// token in a "/s/{token}" (optionally with a trailing sub-path) with its 8-hex
-// hash prefix, so the proxy traffic log (proxy_handler.go:532,
+// ScrubSharePath redacts a public share URL for logging. It replaces the token
+// in a "/s/{token}" path (optionally with a trailing sub-path) with its 8-hex
+// hash prefix, so the proxy traffic log (proxy_handler.go,
 // HTTPLogEntry.URL = r.URL.String()) records only hash[:8], never the raw token
-// (INV-9). A path that is not a share path is returned unchanged.
-func ScrubSharePath(urlPath string) string {
+// (INV-9). The input may be a bare path or an absolute URL: a request sent in
+// absolute-form ("GET http://host/s/{token} HTTP/1.1", RFC 9112 §3.2.2) gives
+// r.URL a scheme and host, and r.URL.String() then starts with "http://host",
+// so only scrubbing a leading "/s/" let that token through. A URL whose path is
+// not a share path is returned unchanged.
+func ScrubSharePath(rawURL string) string {
+	authStart := -1
+	switch {
+	case strings.HasPrefix(rawURL, "//"):
+		authStart = 2
+	case strings.HasPrefix(rawURL, "/"):
+		return scrubSharePathOnly(rawURL)
+	default:
+		i := strings.Index(rawURL, "://")
+		if i <= 0 || strings.ContainsAny(rawURL[:i], "/?#") {
+			return rawURL
+		}
+		authStart = i + 3
+	}
+	end := strings.IndexAny(rawURL[authStart:], "/?#")
+	if end < 0 {
+		return rawURL
+	}
+	pathStart := authStart + end
+	return rawURL[:pathStart] + scrubSharePathOnly(rawURL[pathStart:])
+}
+
+// scrubSharePathOnly is ScrubSharePath for an origin-form path.
+func scrubSharePathOnly(urlPath string) string {
 	const prefix = "/s/"
 	if !strings.HasPrefix(urlPath, prefix) {
 		return urlPath
