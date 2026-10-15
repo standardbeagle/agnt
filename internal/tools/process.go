@@ -35,10 +35,13 @@ type RunInput struct {
 	// Dependency-ordered start: hold the process in pending state until
 	// each named dependency reaches a ready signal (URL detected or port
 	// bound). On dependency timeout the process transitions to failed
-	// with reason "dependency_timeout:<name>". Default per-dep timeout
-	// is 30s; override via DependsOnTimeout (seconds).
-	DependsOn        []string `json:"depends_on,omitempty" jsonschema:"Process IDs this process must wait on before launching"`
-	DependsOnTimeout int      `json:"depends_on_timeout,omitempty" jsonschema:"Per-process dep-wait timeout in seconds (default 30, negative for unbounded)"`
+	// with reason "dependency_timeout:<name>". Default wait is 30s;
+	// override via DependsOnTimeout (seconds). A raw command or detected
+	// script with depends_on launches through PROC RUN, which holds it; a
+	// script declared in .agnt.kdl takes its depends-on from the config and
+	// refuses depends_on here.
+	DependsOn        []string `json:"depends_on,omitempty" jsonschema:"Names of processes in this project (the id or script name each runs under) to wait for before launching. Raw commands and detected scripts only: a script declared in .agnt.kdl uses its configured depends-on"`
+	DependsOnTimeout int      `json:"depends_on_timeout,omitempty" jsonschema:"Dependency-wait timeout in seconds (default 30, negative for unbounded). Also overrides a .agnt.kdl script's configured wait"`
 }
 
 // GroupProcessInput defines a single process inside a run_group action.

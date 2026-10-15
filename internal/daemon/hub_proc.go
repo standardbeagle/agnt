@@ -1060,14 +1060,16 @@ func (d *Daemon) hubHandleProcRun(ctx context.Context, conn *hubpkg.Connection, 
 	}
 
 	if payload.FromConfig {
+		callerTimeout := depTimeout
 		var cfgErr error
 		scriptCfg, deps, depTimeout, cfgErr = scriptFromProjectConfig(projectPath, name, payload.ExtraArgs)
 		if cfgErr != nil {
 			return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("PROC RUN: %v", cfgErr))
 		}
-		// An explicit bound from the caller still wins over the config's.
-		if payload.DependsOnTimeout > 0 {
-			depTimeout = time.Duration(payload.DependsOnTimeout) * time.Second
+		// An explicit bound from the caller — a number of seconds, or negative
+		// for unbounded — still wins over the config's.
+		if payload.DependsOnTimeout != 0 {
+			depTimeout = callerTimeout
 		}
 		if payload.NoAutoRestart {
 			scriptCfg.AutoRestart = false
@@ -1090,7 +1092,14 @@ func (d *Daemon) hubHandleProcRun(ctx context.Context, conn *hubpkg.Connection, 
 		d.markAdHocLaunch(processID, false)
 	}
 	d.registerIncidentProcessOwner(processID, conn.SessionCode())
-	result := d.StartProcessWithDeps(ctx, name, scriptCfg, projectPath, deps, depTimeout)
+	launchCtx := ctx
+	if !payload.FromConfig {
+		// The caller's session owns an inline launch, as it owns a RUN: the
+		// run tool sends an ad-hoc command here when it carries depends_on, and
+		// the process must still go when that session ends.
+		launchCtx = withAutostartOwner(ctx, conn.SessionCode())
+	}
+	result := d.StartProcessWithDeps(launchCtx, name, scriptCfg, projectPath, deps, depTimeout)
 	foreground := isForegroundRunMode(payload.Mode)
 	if result.Err != nil {
 		// StartScript reports any exit inside its startup window as a failed

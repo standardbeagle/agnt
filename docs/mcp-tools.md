@@ -24,7 +24,7 @@ for an explicit audit request, not routine debugging.
 | Tool | Description |
 |------|-------------|
 | `detect` | Detect project type (Go/Node/Python) + scripts |
-| `run` | Run scripts/commands (background/foreground/foreground-raw). Returns a project-scoped `process_id` (`myapp-1a2b3c4d:dev`) and the short `name` (`dev`); `proc` accepts either from the same project |
+| `run` | Run scripts/commands (background/foreground/foreground-raw). Returns a project-scoped `process_id` (`myapp-1a2b3c4d:dev`) and the short `name` (`dev`); `proc` accepts either from the same project. `depends_on` holds a raw command or detected script in `pending` (reply carries `waiting_for`) until each named process in the project is ready, failing with `dependency_timeout:<name>` after `depends_on_timeout` seconds (default 30, negative unbounded); a script declared in `.agnt.kdl` refuses `depends_on` (its own `depends-on` applies) but honours `depends_on_timeout` |
 | `proc` | Process management (status, output, find, stop, restart, list, cleanup_port, autorestart, scripts, script_output, script_history, run, run_group, snapshot, wait) |
 | `proxy` | Reverse proxy (start, stop, restart, status, list, exec, navigate, resize, toast, chaos) |
 | `proxylog` | Query proxy logs (query, summary, clear, stats) |

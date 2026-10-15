@@ -47,8 +47,27 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 		var send func(c runRequester) (map[string]interface{}, error)
 		var hints []string
 
-		// runViaRUN starts a bare command through the RUN verb.
+		// runViaRUN starts a bare command through the RUN verb — or, when the
+		// caller gave depends_on, through PROC RUN's inline mode: RUN starts at
+		// once and has no dependency gate, while PROC RUN is the same ad-hoc
+		// launch held pending until each dependency is ready.
 		runViaRUN := func(id, cmd string, args []string) {
+			if len(input.DependsOn) > 0 {
+				procCfg := daemonclient.ProcRunConfig{
+					Command:          cmd,
+					Args:             args,
+					Env:              environMap(os.Environ()),
+					ProjectPath:      absPath,
+					Mode:             mode,
+					DependsOn:        input.DependsOn,
+					DependsOnTimeout: input.DependsOnTimeout,
+				}
+				send = func(c runRequester) (map[string]interface{}, error) { return c.ProcRun(id, procCfg) }
+				return
+			}
+			if input.DependsOnTimeout != 0 {
+				hints = append(hints, "depends_on_timeout was not applied: it bounds the wait for depends_on, and none was given.")
+			}
 			config := struct {
 				protocol.RunConfig
 				NoAutoRestart bool `json:"no_auto_restart,omitempty"`
@@ -82,17 +101,24 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 			return fail[RunOutput]("script_name required (or use raw=true with command)")
 
 		case kdlScriptDeclared(absPath, input.ScriptName):
+			// Its dependencies are the depends-on it declares; the daemon refuses
+			// inline ones beside from_config, and dropping them here would start
+			// the script without the wait the caller asked for.
+			if len(input.DependsOn) > 0 {
+				return fail[RunOutput](fmt.Sprintf("depends_on is not accepted for %q: it is declared in .agnt.kdl, so its dependencies are the depends-on declared there. Edit .agnt.kdl, or omit depends_on (depends_on_timeout still overrides the configured wait).", input.ScriptName))
+			}
 			// A script declared in .agnt.kdl is launched by the daemon from the
 			// config itself, so it runs with everything it declares — env, cwd,
 			// shell, ports, url-matchers, depends-on, auto-restart, lifecycle
 			// hooks. Resolving it here and forwarding a bare command line kept
 			// only the command and its arguments.
 			procCfg := daemonclient.ProcRunConfig{
-				ProjectPath:   absPath,
-				FromConfig:    true,
-				ExtraArgs:     input.Args,
-				NoAutoRestart: input.NoAutoRestart,
-				Mode:          mode,
+				ProjectPath:      absPath,
+				FromConfig:       true,
+				ExtraArgs:        input.Args,
+				NoAutoRestart:    input.NoAutoRestart,
+				Mode:             mode,
+				DependsOnTimeout: input.DependsOnTimeout,
 			}
 			send = func(c runRequester) (map[string]interface{}, error) {
 				return c.ProcRun(input.ScriptName, procCfg)
@@ -191,7 +217,7 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 		// A dependency-gated script has not launched yet; say what it waits on
 		// rather than leaving a bare "pending".
 		if waitingFor := getStringSlice(result, "waiting_for"); len(waitingFor) > 0 {
-			hints = append(hints, fmt.Sprintf("Not started yet: waiting for %s to be ready (depends-on in .agnt.kdl). Check with proc {action:\"status\", process_id:%q}.",
+			hints = append(hints, fmt.Sprintf("Not started yet: waiting for %s to be ready (depends_on). Check with proc {action:\"status\", process_id:%q}.",
 				strings.Join(waitingFor, ", "), processID))
 		}
 		if output.State != "failed" {
@@ -981,6 +1007,19 @@ func filterScriptFallbackLines(lines []string, filter protocol.OutputFilter) ([]
 type runRequester interface {
 	Run(config interface{}) (map[string]interface{}, error)
 	ProcRun(name string, cfg daemonclient.ProcRunConfig) (map[string]interface{}, error)
+}
+
+// environMap turns an os.Environ-style KEY=VALUE list into the env map PROC
+// RUN takes. Entries without a name (the "=C:=C:\" drive cwds Windows keeps)
+// are dropped, as the daemon drops them from a RUN env list.
+func environMap(env []string) map[string]string {
+	m := make(map[string]string, len(env))
+	for _, kv := range env {
+		if i := strings.Index(kv, "="); i > 0 {
+			m[kv[:i]] = kv[i+1:]
+		}
+	}
+	return m
 }
 
 // kdlScriptDeclared reports whether the project's .agnt.kdl declares scriptName.

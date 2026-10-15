@@ -207,3 +207,52 @@ func TestProcRunInline_ZeroExitOneShotIsNotAStartupError(t *testing.T) {
 	require.True(t, ok)
 	assert.NotEqual(t, "failed", entry.State().String(), "the registry must not call a successful one-shot failed")
 }
+
+// An inline PROC RUN is how the run tool sends an ad-hoc command that carries
+// depends_on, so the caller's session owns it as it owns a RUN — including
+// when the launch waited on a dependency first — and session cleanup stops it.
+func TestProcRunInline_CallerSessionOwnsLaunch(t *testing.T) {
+	// No t.Parallel: starts real processes.
+	d, client, tmpDir := newHubProcTestDaemon(t)
+	dir := normalizePath(tmpDir)
+	_, err := client.SessionRegister("inline-owner", "-", tmpDir, "test", nil)
+	require.NoError(t, err)
+
+	command, args := stayAliveExec()
+	_, err = client.ProcRun("api", daemonclient.ProcRunConfig{
+		Command: command, Args: args, ProjectPath: tmpDir,
+		DependsOn: []string{"db"}, DependsOnTimeout: 30,
+	})
+	require.NoError(t, err)
+	processID := makeProcessID(dir, "api")
+	stopManagedForTest(t, d, processID, dir)
+	d.readySignaler.SignalReady(makeProcessID(dir, "db"))
+
+	require.Eventually(t, func() bool {
+		proc, getErr := d.hub.ProcessManager().GetByPath(processID, dir)
+		return getErr == nil && proc.IsRunning()
+	}, 15*time.Second, 20*time.Millisecond)
+	entry, ok := d.scriptRegistry.Get("api", dir)
+	require.True(t, ok)
+	assert.Equal(t, "inline-owner", entry.Owner())
+}
+
+// A caller's negative depends_on_timeout on a from_config launch means
+// unbounded, and wins over the wait the script declares, as a positive one
+// does.
+func TestProcRunFromConfig_CallerUnboundedTimeoutWins(t *testing.T) {
+	d, client, tmpDir := newHubProcTestDaemon(t)
+	dir := normalizePath(tmpDir)
+	kdl := "scripts {\n    db {\n        run \"echo db\"\n    }\n    api {\n        run \"echo api\"\n        depends-on \"db\" timeout=60\n    }\n}\n"
+	require.NoError(t, os.WriteFile(filepath.Join(tmpDir, ".agnt.kdl"), []byte(kdl), 0o644))
+
+	resp, err := client.ProcRun("api", daemonclient.ProcRunConfig{ProjectPath: tmpDir, FromConfig: true, DependsOnTimeout: -1})
+	require.NoError(t, err)
+	assert.Equal(t, "pending", resp["state"])
+	processID := makeProcessID(dir, "api")
+	t.Cleanup(func() { d.pendingProcs.Cancel(processID) })
+
+	pending, ok := d.pendingProcs.Get(processID)
+	require.True(t, ok)
+	assert.True(t, pending.Deadline.IsZero(), "an unbounded caller timeout must replace the configured 60s, got deadline %v", pending.Deadline)
+}
