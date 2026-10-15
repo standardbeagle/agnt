@@ -121,3 +121,32 @@ func TestResolveHost_MissingFileIsNotAnError(t *testing.T) {
 		t.Errorf("ResolveHost with missing file = %+v, want defaults", hc)
 	}
 }
+
+// "ProxyJump none" is OpenSSH's explicit "no jump host", and like every
+// directive it is the first obtained value: a later catch-all block's jump
+// must not apply. Treating "none" as a host name made every dial try to
+// connect through a machine called "none".
+func TestResolveHostFromReader_ProxyJumpNoneMeansNoJump(t *testing.T) {
+	cfg := `
+Host direct
+    ProxyJump none
+
+Host *
+    ProxyJump bastion
+`
+	hc, err := ResolveHostFromReader(strings.NewReader(cfg), "direct")
+	if err != nil {
+		t.Fatalf("ResolveHostFromReader: %v", err)
+	}
+	if hc.ProxyJump != "" {
+		t.Errorf("ProxyJump = %q, want \"\" (none disables jumping, and the later Host * jump must not apply)", hc.ProxyJump)
+	}
+
+	hc, err = ResolveHostFromReader(strings.NewReader(cfg), "other")
+	if err != nil {
+		t.Fatalf("ResolveHostFromReader: %v", err)
+	}
+	if hc.ProxyJump != "bastion" {
+		t.Errorf("ProxyJump for a host without the override = %q, want \"bastion\"", hc.ProxyJump)
+	}
+}

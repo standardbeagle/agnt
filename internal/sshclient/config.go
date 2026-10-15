@@ -38,7 +38,8 @@ type HostConfig struct {
 	IdentityFile []string
 	// ProxyJump is the raw ProxyJump directive value, e.g.
 	// "bastion,jump2:2222" — comma-separated jump hosts, OpenSSH's own
-	// multi-hop syntax "[user@]host[:port]" per hop. Empty means no jump.
+	// multi-hop syntax "[user@]host[:port]" per hop. Empty means no jump
+	// (an ssh_config "ProxyJump none" resolves to empty).
 	ProxyJump string
 	// Warnings lists ssh_config constructs this parser read past without
 	// applying (Include, Match, options placed before the first Host). The
@@ -250,6 +251,12 @@ func ResolveHostFromReader(r io.Reader, alias string) (HostConfig, error) {
 	}
 	if cfg.HostName == "" {
 		cfg.HostName = alias
+	}
+	// "ProxyJump none" is OpenSSH's explicit no-jump value. It is kept as
+	// the first obtained value during the loop above, so a later catch-all
+	// block cannot supply a jump, and only then cleared.
+	if cfg.ProxyJump == "none" {
+		cfg.ProxyJump = ""
 	}
 	return cfg, nil
 }
