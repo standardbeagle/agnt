@@ -185,6 +185,21 @@ func TestWalkthrough_PlayDisarmsBeforeRearming(t *testing.T) {
 	)
 }
 
+// TestSketch_ShortcutsSkipShadowTextInputs — behaviour: jstest/sketch.test.js
+// ("sketch keyboard shortcuts"). Sketch's text inputs live in the shadow-root
+// mount, where document.activeElement is the host, so the keydown handler must
+// judge the event's composed-path origin, not document.activeElement.
+func TestSketch_ShortcutsSkipShadowTextInputs(t *testing.T) {
+	mustContain(t, "sketch.js", sketchJS,
+		"function keyEventOrigin(e)",
+		"e.composedPath()",
+		"if (isTextEntryTarget(keyEventOrigin(e))) return;",
+	)
+	mustNotContain(t, "sketch.js", sketchJS,
+		"document.activeElement.tagName === 'INPUT'",
+	)
+}
+
 // TestPanels_EscapePageDerivedStrings — behaviour: jstest/html-sinks.test.js.
 func TestPanels_EscapePageDerivedStrings(t *testing.T) {
 	mustContain(t, "diagnostics.js", diagnosticsJS,

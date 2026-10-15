@@ -971,11 +971,29 @@
     }
   }
 
+  // keyEventOrigin returns the element the key event really came from, looking
+  // through any open shadow root (e.target is retargeted to the host).
+  function keyEventOrigin(e) {
+    try {
+      var path = typeof e.composedPath === 'function' ? e.composedPath() : null;
+      if (path && path.length) return path[0];
+    } catch (err) { /* fall through */ }
+    return e.target;
+  }
+
+  function isTextEntryTarget(el) {
+    if (!el || el.nodeType !== 1) return false;
+    var tag = el.tagName;
+    return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || !!el.isContentEditable;
+  }
+
   function handleKeyDown(e) {
     if (!sketchState.isActive) return;
 
-    // Don't capture keys when editing text
-    if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+    // Don't capture keys when editing text. Sketch's own text inputs live in
+    // the shadow-root mount, where document.activeElement is the shadow host,
+    // so read the real origin of the event from its composed path.
+    if (isTextEntryTarget(keyEventOrigin(e))) return;
 
     if (e.key === 'Escape') {
       close();
