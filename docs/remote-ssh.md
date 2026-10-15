@@ -1,6 +1,6 @@
 # Remote SSH
 
-`agnt ssh` opens a local terminal on a daemon-owned session on a remote host. It uses OpenSSH configuration and `known_hosts`, keeps the remote session alive across transport loss, forwards remote proxy ports, and exposes the remote daemon through a local Unix socket (Linux/macOS/WSL) or named pipe (native Windows).
+`agnt ssh` opens a local terminal on a daemon-owned session on a remote host. It uses OpenSSH configuration and `known_hosts`, keeps the remote session alive across transport loss, forwards remote proxy ports, and exposes the remote daemon through a local Unix-domain socket (AF_UNIX on every platform, native Windows included).
 
 ## Quick start
 
@@ -8,7 +8,7 @@
 agnt ssh my-host:/path/to/project
 ```
 
-The argument is `host[:remote-project-path]`; the first colon separates host from path, not a port. Configure `Port`, `User`, `IdentityFile`, and `ProxyJump` in `~/.ssh/config`. The default session name is the local working-directory basename; override it with `--attach NAME`. Native Windows and WSL are distinct: Windows uses owner-only `\\.\pipe\agnt-ssh-*` local endpoints and polls console resize; WSL retains the Linux Unix-socket and SIGWINCH behavior.
+The argument is `host[:remote-project-path]`; the first colon separates host from path, not a port. Configure `Port`, `User`, `IdentityFile`, and `ProxyJump` in `~/.ssh/config`. The default session name is the local working-directory basename; override it with `--attach NAME`. Native Windows and WSL are distinct: Windows puts the daemon forward at `%TEMP%\agnt\ssh-<hash>.sock`, serves the `agnt push` control endpoint on an owner-only `\\.\pipe\agnt-ssh-control-*` named pipe, and polls console resize; WSL retains the Linux Unix-socket and SIGWINCH behavior.
 
 ## Bootstrap and authentication
 
@@ -28,13 +28,13 @@ agnt session kill my-session
 
 `session hosts` lists detachable sessions. In `agnt attach`, press `Ctrl-\` then `Ctrl-\` again (the default `session.detach-key`) to detach without killing the session; a later attach replays retained scrollback and resumes live output. `session kill` explicitly terminates it. These manual actions are distinct from `agnt ssh` automatic transport reconnect, which reattaches after network loss.
 
-Native Windows `agnt attach` relays the daemon-owned ConPTY through the local console, restores console modes on every exit, and polls for resize changes. Redirected stdout is supported as a byte stream; redirected stdin is rejected before the remote attach begins because detach chords and interactive console input cannot be preserved safely. WSL uses the Linux raw-terminal and SIGWINCH path.
+Native Windows `agnt attach` relays the remote daemon-owned PTY through the local console, restores console modes on every exit, and polls for resize changes. Redirected stdout is supported as a byte stream; redirected stdin is rejected before the remote attach begins because detach chords and interactive console input cannot be preserved safely. WSL uses the Linux raw-terminal and SIGWINCH path. A daemon running on native Windows cannot host a session itself (the PTY library has no Windows backend), so attach there always targets a remote daemon.
 
 ## Daemon and proxy forwarding
 
-On connection, `agnt ssh` prints a local endpoint and an `AGNT_DAEMON_SOCKET` value for commands such as `agnt monitor` (PowerShell: `$env:AGNT_DAEMON_SOCKET='\\.\pipe\…'`; POSIX shells: `export AGNT_DAEMON_SOCKET=…`). Remote reverse-proxy ports are forwarded automatically to loopback. The same local port is preferred; if occupied, a replacement is selected and reported. `--status` prints active mappings. Forwards are rebuilt from remote state after reconnect. The overlay is a per-session Unix-domain socket on the remote host and is not forwarded.
+On connection, `agnt ssh` prints a local endpoint and an `AGNT_DAEMON_SOCKET` value for commands such as `agnt monitor` (PowerShell: `$env:AGNT_DAEMON_SOCKET='C:\Users\…\AppData\Local\Temp\agnt\ssh-….sock'`; POSIX shells: `export AGNT_DAEMON_SOCKET=…`). Remote reverse-proxy ports are forwarded automatically to loopback. The same local port is preferred; if occupied, a replacement is selected and reported. `--status` prints active mappings. Forwards are rebuilt from remote state after reconnect. The overlay is a per-session Unix-domain socket on the remote host and is not forwarded.
 
-Native Windows named pipes use an owner-only security descriptor and disappear when the owning process exits; a live same-host pipe collision fails loudly. Pipe names include a hash of the normalized SSH host identity so sanitization cannot alias distinct hosts. `agnt push` works with `--host`; enumeration without `--host` is intentionally unsupported on native Windows because named pipes cannot be safely listed and therefore fails with an actionable error. `go-winio` is used because Go's standard library and the existing socket abstraction do not provide named-pipe listeners with explicit ACLs.
+On native Windows only the control endpoint is a named pipe. It uses an owner-only security descriptor and disappears when the owning process exits; a live same-host pipe collision fails loudly. Pipe names include a hash of the normalized SSH host identity so sanitization cannot alias distinct hosts. `agnt push` works with `--host`; enumeration without `--host` is intentionally unsupported on native Windows because named pipes cannot be safely listed and therefore fails with an actionable error. `go-winio` is used because Go's standard library and the existing socket abstraction do not provide named-pipe listeners with explicit ACLs.
 
 ## Push files
 

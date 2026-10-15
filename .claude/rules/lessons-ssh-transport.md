@@ -43,7 +43,7 @@ The other two bootstrap sources (`bootstrap.go`) stage, check that the binary re
 
 ## 8. Platform-gated subcommands get a loud stub
 
-A `//go:build !windows` command under `cmd/agnt/` needs a `<cmd>_windows.go` registering the same command whose `RunE` errors with what is unsupported, the tracking task, and the workaround (see `ssh_windows.go`, `attach_windows.go`). Never let it fall through to cobra's "unknown command".
+A `//go:build !windows` command under `cmd/agnt/` needs a `<cmd>_windows.go` registering the same command whose `RunE` errors with what is unsupported, the tracking task, and the workaround (see `acp_windows.go`, `ai_claude_windows.go`). Never let it fall through to cobra's "unknown command".
 
 ## 9. Freezing a forking daemon: whole tree, settled scans
 

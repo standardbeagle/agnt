@@ -48,7 +48,7 @@ The default template (`DefaultAgntConfigKDL`) must parse, and so must every exam
 
 ## Numeric coercion: bound-into-absence
 
-Where `0`/absent means unbounded (`depends-on` timeout, `settings.default-timeout`), truncating a small value to 0 silently removes the limit. Convert in float space: `time.Duration(val * float64(time.Second))`, not `time.Duration(val) * time.Second`. `kdl-go` truncates a float into an `int` field with no error, so an `int` field whose 0 means unbounded is latent (open: `settings.default-timeout`, task `01M0B1Y2D30F1J4GAQN6F3A6M2`). Truncation to 0 is safe only when the code re-clamps ≤0 to a positive default (e.g. `graceful-timeout` → 5s).
+Where `0`/absent means unbounded (`depends-on` timeout, `settings.default-timeout`), truncating a small value to 0 silently removes the limit. Convert in float space: `time.Duration(val * float64(time.Second))`, not `time.Duration(val) * time.Second`. `kdl-go` truncates a float into an `int` field with no error, so an `int` field whose 0 means unbounded is latent. Closed instance: `settings.default-timeout` (and `graceful-timeout`) are `float64` in `KDLSettings` (`internal/config/kdl.go`), and `validate` refuses a fractional or negative value at parse time (`kdl_settings_timeout_test.go`). Truncation to 0 is safe only when the code re-clamps ≤0 to a positive default (e.g. `graceful-timeout` → 5s).
 
 ## Shell resolution
 

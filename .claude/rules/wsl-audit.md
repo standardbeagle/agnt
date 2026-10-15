@@ -33,7 +33,7 @@ The Windows-side fallbacks are gated, not always-on: they shell out (~50-150 ms)
 
 ## Deferred
 
-- Native-Windows `agnt ssh` (`01KXDMG7KG02MH91W2KXWHZAYA`) and `agnt attach` (ConPTY relay, `01KXDMGBMJB61WXA5YDHB8CY40`) are loud stubs; WSL is the workaround. The daemon-socket forward (`internal/sshclient/forward_listen.go`) is a Unix-domain socket on every platform, Windows included, because its only consumers are daemon clients and those dial AF_UNIX; only the control socket is a named pipe.
+- Native-Windows `agnt ssh` and `agnt attach` are implemented, not stubs (`ssh_terminal_windows.go`, `attach_windows.go`: console raw mode, polled resize). Still deferred: a native-Windows daemon cannot host session-host PTYs (`creack/pty` returns `ErrUnsupported`), so attach from Windows targets a remote daemon; WSL is the workaround for a local one. The daemon-socket forward (`internal/sshclient/forward_listen.go`) is a Unix-domain socket on every platform, Windows included, because its only consumers are daemon clients and those dial AF_UNIX; only the control socket is a named pipe.
 
 ## Accepted escape hatches (do not "fix")
 

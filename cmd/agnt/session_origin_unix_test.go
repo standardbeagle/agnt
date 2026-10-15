@@ -18,8 +18,8 @@ import (
 )
 
 // This test attaches to a daemon-owned session-host PTY running `sh -c cat`
-// and drives it through a real pty pair. Session-host PTYs and `agnt attach`
-// are unsupported on native Windows (attach registers a loud stub there), so
+// and drives it through a real pty pair. A daemon on native Windows cannot
+// host session-host PTYs (creack/pty has no Windows backend), so
 // the behaviour under test exists only on Unix.
 func TestAttachAndSessionHostsCommandsExposeRemoteSurface(t *testing.T) {
 	// The commands under test take the project from the working directory,

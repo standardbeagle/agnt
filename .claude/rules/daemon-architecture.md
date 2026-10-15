@@ -66,7 +66,7 @@ Every OS-level operation goes through `internal/platform/` and handles Linux/mac
 | Group kill | SIGTERM → SIGKILL to pgid | `CTRL_BREAK_EVENT` → `TerminateJobObject` | `taskkill.exe` for Windows-side PIDs |
 | Proxy probe | TCP / HTTP | same | same |
 
-WSL is `GOOS=linux`: consult `platform.IsWSL()` / `platform.ShouldUseWindowsShell(path)` before gating on `runtime.GOOS`. `agnt ssh` and `agnt attach` are unsupported on native Windows and register loud stubs; WSL is the workaround.
+WSL is `GOOS=linux`: consult `platform.IsWSL()` / `platform.ShouldUseWindowsShell(path)` before gating on `runtime.GOOS`. `agnt ssh` and `agnt attach` run on native Windows (console raw mode, polled resize); a native-Windows daemon cannot host session-host PTYs (`creack/pty` has no Windows backend), so attach there targets a remote daemon.
 
 WSL wired/deferred status and accepted escape hatches: `.claude/rules/wsl-audit.md`.
 
