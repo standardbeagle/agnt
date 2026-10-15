@@ -81,12 +81,19 @@
         timeout: timeout
       };
 
-      // Send request via WebSocket
-      core.send('store_request', {
+      // Send request via WebSocket. core.send returns false when the frame
+      // was not written (socket closed between the check and here, or the
+      // payload did not serialise); reject now instead of timing out.
+      var sent = core.send('store_request', {
         request_id: requestId,
         action: action,
         params: params || {}
       });
+      if (sent === false) {
+        clearTimeout(timeout);
+        delete pendingRequests[requestId];
+        reject(new Error('Store request failed: DevTool socket not connected'));
+      }
     });
   }
 

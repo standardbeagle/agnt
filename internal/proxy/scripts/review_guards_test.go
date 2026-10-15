@@ -216,6 +216,18 @@ func TestSketch_UndoRedoSwapTheLiveState(t *testing.T) {
 	)
 }
 
+// TestStore_FailsFastWhenNotSent — behaviour: jstest/store.test.js. A store
+// request rejects at once when core.send reports the frame unsent, instead of
+// waiting out its 10s response timeout.
+func TestStore_FailsFastWhenNotSent(t *testing.T) {
+	mustContain(t, "store.js", storeJS,
+		"if (!core || typeof core.isConnected !== 'function' || !core.isConnected()) {",
+		"var sent = core.send('store_request', {",
+		"if (sent === false) {",
+		"clearTimeout(timeout);",
+	)
+}
+
 // TestPanels_EscapePageDerivedStrings — behaviour: jstest/html-sinks.test.js.
 func TestPanels_EscapePageDerivedStrings(t *testing.T) {
 	mustContain(t, "diagnostics.js", diagnosticsJS,
