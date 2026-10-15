@@ -17,7 +17,13 @@ import (
 // setAttribute; image URLs go through the dedicated setImageSrc op (which
 // enforces https, §6). This is deny-by-default and safe.
 func allowedAttrName(name string) bool {
-	lower := strings.ToLower(strings.TrimSpace(name))
+	// The name reaches Element.setAttribute verbatim, which throws on
+	// whitespace, so a padded spelling (" class") must not be accepted on the
+	// strength of its trimmed form: it would fail silently at render time.
+	if name != strings.TrimSpace(name) {
+		return false
+	}
+	lower := strings.ToLower(name)
 	// Explicitly forbidden regardless of anything else.
 	if strings.HasPrefix(lower, "on") { // on*, e.g. onclick — event handlers
 		return false
@@ -30,16 +36,10 @@ func allowedAttrName(name string) bool {
 	}
 	if strings.HasPrefix(lower, "aria-") || strings.HasPrefix(lower, "data-") {
 		// The name is handed to Element.setAttribute verbatim, which throws on
-		// anything that is not a valid attribute name. Validate the ORIGINAL
-		// spelling (not the trimmed one) so a name the browser would refuse is
-		// refused at publish instead of failing silently at render time, and cap
+		// anything that is not a valid attribute name. Validate the tail so a
+		// name the browser would refuse is refused at publish instead of
+		// failing silently at render time, and cap
 		// its length so the field is not unbounded.
-		// lower was trimmed for the deny checks above; the prefix must also hold
-		// on the untrimmed name, or " data-x" would be sliced mid-prefix.
-		raw := strings.ToLower(name)
-		if !strings.HasPrefix(raw, "aria-") && !strings.HasPrefix(raw, "data-") {
-			return false
-		}
 		return len(name) <= MaxAttrNameLength && attrTailRe.MatchString(name[len("aria-"):])
 	}
 	return false

@@ -116,11 +116,12 @@ type Share struct {
 	// content digest — see revision_identity.go. An edit mints a new one; the
 	// token does not change.
 	RevisionID RevisionID `json:"revision_id,omitempty"`
-	// Revisions is the append-only revision history. It records revision
-	// identity (id + digest + time) only, NOT the historical artifact bodies:
-	// nothing serves an old revision — the token always resolves to the current
-	// one — so retaining every past walkthrough would grow the record without
-	// a reader. Add bodies here only when something actually reads them.
+	// Revisions is the append-only revision history, capped to the newest
+	// MaxShareRevisions entries. It records revision identity (id + digest +
+	// time) only, NOT the historical artifact bodies: nothing serves an old
+	// revision — the token always resolves to the current one — so retaining
+	// every past walkthrough would grow the record without a reader. Add
+	// bodies here only when something actually reads them.
 	Revisions []ShareRevision `json:"revisions,omitempty"`
 	// Revoked tombstones the share (kept for audit, not deleted — spec §3).
 	Revoked   bool       `json:"revoked"`
@@ -647,8 +648,13 @@ func (s *Store) PublishFile(pw *PublishedWalkthrough, projectPath, fileName stri
 	updated.Digest = digest
 	updated.RevisionID = revID
 	// Copy-on-append: `updated` is a shallow copy of a record other readers may
-	// still hold, so never append into the shared backing array.
-	updated.Revisions = append(append(make([]ShareRevision, 0, len(cur.Revisions)+1), cur.Revisions...),
+	// still hold, so never append into the shared backing array. The history
+	// keeps the newest MaxShareRevisions entries.
+	hist := cur.Revisions
+	if keep := MaxShareRevisions - 1; len(hist) > keep {
+		hist = hist[len(hist)-keep:]
+	}
+	updated.Revisions = append(append(make([]ShareRevision, 0, len(hist)+1), hist...),
 		ShareRevision{ID: revID, Digest: digest, CreatedAt: now})
 	updated.UpdatedAt = &now
 	// TokenHash is deliberately carried over verbatim: the whole point of this

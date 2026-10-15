@@ -226,7 +226,10 @@
     // aria-*, data-*. href/src cannot be set via setAttribute — image URLs go
     // through setImageSrc (https-only).
     function allowedAttrName(name) {
-      var lower = String(name).toLowerCase().trim();
+      // setAttribute throws on whitespace, so a padded name is refused rather
+      // than accepted on the strength of its trimmed form.
+      if (String(name) !== String(name).trim()) { return false; }
+      var lower = String(name).toLowerCase();
       if (lower.indexOf('on') === 0) { return false; }
       switch (lower) {
         case 'href': case 'src': case 'srcdoc': case 'formaction':

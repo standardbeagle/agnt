@@ -45,6 +45,12 @@ const (
 	// default under the "no field is unbounded" principle.
 	MaxAttrNameLength = 128
 
+	// MaxShareRevisions caps a share's revision history (ShareRevision
+	// entries: id, digest, time). Every save of a watched file is a publish,
+	// and the whole record is rewritten and checksummed on each one; the
+	// oldest entries go first. Nothing serves or reads an old revision.
+	MaxShareRevisions = 100
+
 	// MaxOpsPerVariant caps the ops in one variant. Each op is individually
 	// bounded, but without a count cap a variant — and so the walkthrough.json
 	// and variants.json every viewer downloads — is not.

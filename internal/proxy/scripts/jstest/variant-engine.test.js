@@ -211,3 +211,15 @@ describe('addScript', () => {
     expect(res.reason).not.toContain(REFUSAL);
   });
 });
+
+describe('setAttribute name', () => {
+  it('refuses a whitespace-padded name instead of accepting its trimmed form', () => {
+    const { win } = page('');
+    for (const name of [' class', 'title ', '\tid', ' data-x']) {
+      const res = win.__variantEngine.validateOp({ op: 'setAttribute', selector: '.x', name, value: 'v' });
+      expect(res.ok, JSON.stringify(name)).toBe(false);
+      expect(res.reason).toContain('not on allowlist');
+    }
+    expect(win.__variantEngine.validateOp({ op: 'setAttribute', selector: '.x', name: 'class', value: 'v' }).ok).toBe(true);
+  });
+});

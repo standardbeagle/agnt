@@ -58,6 +58,9 @@ func TestSetAttribute_DataAndAriaNamesAreValidated(t *testing.T) {
 		"data-x>",         // angle
 		" data-x",         // leading space: trimmed prefix must not launder it
 		"data-x ",         // trailing space
+		" class",          // padded fixed name: the deny/allow checks trim, setAttribute does not
+		"title ",          // trailing pad on a fixed name
+		"\tid",            // tab pad
 		"data-é",          // non-ASCII tail
 		"data-" + strings.Repeat("a", MaxAttrNameLength), // over the length cap
 	} {

@@ -240,11 +240,12 @@ Each file is a `PublishedWalkthrough`:
   running in the badge's own realm can defeat it (INV-14; see §9a). Raw CSS/HTML
   is unaffected — it cannot hide the indicator (CSP + closed shadow root, §9b).
 - Validation failures name the file. See the spec's limits table (§5) for the size
-  and selector-grammar bounds. Three bounds the spec table does not carry:
-  at most **256 ops per variant**, a whole artifact of at most **1 MiB**
-  (canonical JSON), and `setAttribute` names under `aria-*`/`data-*` limited to
-  128 bytes of `[A-Za-z0-9_.-]`. A `wait` step on `element-present` /
-  `element-visible` must name a selector.
+  and selector-grammar bounds. Bounds the spec table does not carry: at most
+  **256 ops per variant**, a whole artifact of at most **1 MiB** (canonical
+  JSON), `setAttribute` names under `aria-*`/`data-*` limited to 128 bytes of
+  `[A-Za-z0-9_.-]` (a name padded with whitespace is refused), and a share's
+  revision history kept to its newest 100 entries. A `wait` step on
+  `element-present` / `element-visible` must name a selector.
 
 ---
 

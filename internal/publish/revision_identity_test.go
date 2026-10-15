@@ -1,6 +1,7 @@
 package publish
 
 import (
+	"fmt"
 	"reflect"
 	"testing"
 )
@@ -114,5 +115,30 @@ func TestFeedbackKeyedByRevisionDigest_V1V2V1(t *testing.T) {
 			t.Fatalf("row %d keyed by %q, want the shared content digest %q — feedback history split",
 				i, row.RevisionDigest, digV1)
 		}
+	}
+}
+
+// TestPublishFileRevisionHistoryIsCapped: every save of a watched file is a
+// publish, and the history was appended forever — rewritten and checksummed
+// whole on each one, with no reader but tests. It keeps the newest
+// MaxShareRevisions entries.
+func TestPublishFileRevisionHistoryIsCapped(t *testing.T) {
+	s, _ := newStore(t)
+	var revs []RevisionID
+	var id string
+	for i := 0; i < MaxShareRevisions+5; i++ {
+		got, _, rev, err := s.PublishFile(fileWalkthrough("wt", fmt.Sprintf("v%d", i)), "/proj", "tour.html")
+		if err != nil {
+			t.Fatalf("publish %d: %v", i, err)
+		}
+		id = got
+		revs = append(revs, rev)
+	}
+	h := s.byID[id].Revisions
+	if len(h) != MaxShareRevisions {
+		t.Fatalf("history holds %d revisions, want the cap %d", len(h), MaxShareRevisions)
+	}
+	if h[0].ID != revs[5] || h[len(h)-1].ID != revs[len(revs)-1] {
+		t.Fatalf("history is not the newest %d publishes in order", MaxShareRevisions)
 	}
 }
