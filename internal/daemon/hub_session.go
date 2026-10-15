@@ -832,17 +832,26 @@ func (d *Daemon) hubHandleSessionURL(conn *hubpkg.Connection, cmd *hubproto.Comm
 }
 
 // sendMessageToOverlay sends a message to an overlay socket.
-
+//
+// Each call builds its own transport for one request, so keep-alives are off:
+// a pooled idle connection would outlive the call (and its transport), holding
+// a socket and two goroutines here and one of the overlay listener's capped
+// connection slots (httpcaps MaxConns) until the overlay's idle timeout. The
+// incident PTY sink calls this on every ping, so an error storm filled the
+// overlay's slots and it stopped accepting connections.
 func (d *Daemon) sendMessageToOverlay(socketPath string, message string) error {
 	// Create HTTP client that connects via Unix socket
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var dialer net.Dialer
-				return dialer.DialContext(ctx, "unix", socketPath)
-			},
+	transport := &http.Transport{
+		DisableKeepAlives: true,
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			var dialer net.Dialer
+			return dialer.DialContext(ctx, "unix", socketPath)
 		},
+	}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{
+		Timeout:   5 * time.Second,
+		Transport: transport,
 	}
 
 	// Build request body
