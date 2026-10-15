@@ -1087,6 +1087,11 @@ tunnel {action: "start", provider: "cloudflare", local_port: 12345, proxy_id: "d
 tunnel {action: "start", provider: "tailscale",  local_port: 12345, proxy_id: "dev"}
 ```
 
+`start` waits for the provider to print its public URL for `url_timeout_ms`
+(default 60000, max 600000). If none arrives, or the provider exits first, the
+tunnel is stopped and the error gives its state and last output line. A
+`proxy_id` that names no proxy is an error, and no tunnel is started.
+
 For a stable public hostname protected by Cloudflare Access, declare a named
 tunnel on the proxy in `.agnt.kdl` instead (`cloudflare-tunnel`,
 `docs/configuration.md` § Named Cloudflare Tunnel). The `tunnel` tool starts

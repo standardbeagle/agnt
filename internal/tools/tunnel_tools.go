@@ -17,7 +17,8 @@ type TunnelInput struct {
 	LocalPort  int    `json:"local_port,omitempty" jsonschema:"Local port to tunnel (required for start)"`
 	LocalHost  string `json:"local_host,omitempty" jsonschema:"Local host (default: localhost)"`
 	BinaryPath string `json:"binary_path,omitempty" jsonschema:"Optional path to tunnel binary"`
-	ProxyID    string `json:"proxy_id,omitempty" jsonschema:"Optional proxy ID to auto-configure with the tunnel's public URL"`
+	ProxyID    string `json:"proxy_id,omitempty" jsonschema:"Optional proxy ID to auto-configure with the tunnel's public URL; start fails if it names no proxy"`
+	URLTimeout int    `json:"url_timeout_ms,omitempty" jsonschema:"For start: max ms to wait for the provider's public URL (default 60000, max 600000); on timeout the tunnel is stopped"`
 	Global     *bool  `json:"global,omitempty" jsonschema:"For list: override project config; true includes all projects, false forces current project"`
 }
 
@@ -129,12 +130,13 @@ func (dt *DaemonTools) handleTunnelStart(input TunnelInput) (*mcp.CallToolResult
 	}
 
 	config := protocol.TunnelStartConfig{
-		ID:         input.ID,
-		Provider:   input.Provider,
-		LocalPort:  input.LocalPort,
-		LocalHost:  input.LocalHost,
-		BinaryPath: input.BinaryPath,
-		ProxyID:    input.ProxyID,
+		ID:           input.ID,
+		Provider:     input.Provider,
+		LocalPort:    input.LocalPort,
+		LocalHost:    input.LocalHost,
+		BinaryPath:   input.BinaryPath,
+		ProxyID:      input.ProxyID,
+		URLTimeoutMs: input.URLTimeout,
 	}
 
 	result, err := dt.client.TunnelStart(config)

@@ -279,3 +279,70 @@ func TestManager_StopUnknownID(t *testing.T) {
 	// strings.Split component matching sanity used by Get.
 	assert.Equal(t, []string{"a", "b", "c"}, strings.Split("a:b:c", ":"))
 }
+
+// StopExact retires the stopped tunnel's own entry before it returns, so the
+// caller can report the stop (or retry the id) without the stopped tunnel
+// still listed; it never retires a same-id replacement, and a tunnel that
+// cannot be stopped stays registered.
+func TestManager_StopExact(t *testing.T) {
+	t.Run("stopped tunnel is retired before return, counted down once", func(t *testing.T) {
+		m := NewManager()
+		tun := connectedTunnel("web", "/projA", "u1")
+		close(tun.done)
+		m.tunnels.Store("web", tun)
+		m.active.Add(1)
+
+		require.NoError(t, m.StopExact(context.Background(), tun))
+		_, err := m.Get("web")
+		assert.ErrorIs(t, err, ErrTunnelNotFound, "entry must be gone when StopExact returns")
+		assert.Equal(t, 0, m.ActiveCount())
+
+		m.retire(tun) // the Done watcher retiring it again must not double-count
+		assert.Equal(t, 0, m.ActiveCount())
+	})
+
+	t.Run("same-id replacement is never retired", func(t *testing.T) {
+		m := NewManager()
+		old := connectedTunnel("web", "/projA", "u1")
+		close(old.done)
+		replacement := connectedTunnel("web", "/projA", "u2")
+		m.tunnels.Store("web", replacement)
+		m.active.Add(1)
+
+		require.NoError(t, m.StopExact(context.Background(), old))
+		got, err := m.Get("web")
+		require.NoError(t, err)
+		assert.Same(t, replacement, got)
+		assert.Equal(t, 1, m.ActiveCount())
+	})
+
+	t.Run("unstoppable tunnel stays registered", func(t *testing.T) {
+		m := NewManager()
+		blocker := connectedTunnel("web", "/projA", "u1") // done never closes
+		m.tunnels.Store("web", blocker)
+		m.active.Add(1)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+		require.ErrorIs(t, m.StopExact(ctx, blocker), context.DeadlineExceeded)
+		got, err := m.Get("web")
+		require.NoError(t, err)
+		assert.Same(t, blocker, got)
+		assert.Equal(t, 1, m.ActiveCount())
+	})
+}
+
+// LastOutput reports the provider's latest line while it is still running,
+// which is what a URL-wait timeout quotes.
+func TestTunnel_LastOutputWhileRunning(t *testing.T) {
+	tun := fakeProviderTunnel(t, ProviderCloudflare, "silent")
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	require.NoError(t, tun.Start(ctx))
+	t.Cleanup(func() { _ = tun.Stop(context.Background()) })
+
+	require.Eventually(t, func() bool {
+		return strings.Contains(tun.LastOutput(), "still connecting")
+	}, 10*time.Second, 20*time.Millisecond)
+	assert.Equal(t, StateStarting, tun.State())
+}

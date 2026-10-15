@@ -134,6 +134,11 @@ type Tunnel struct {
 	cmd    *exec.Cmd
 	cancel context.CancelFunc
 
+	// lastOutput is the provider's most recent non-blank output line. It is
+	// where cloudflared, ngrok and tailscale say what they are doing, so it
+	// is quoted when the provider exits or fails to produce a URL in time.
+	lastOutput atomic.Pointer[string]
+
 	// Callbacks
 	onURL func(url string)
 }
@@ -330,6 +335,20 @@ func (t *Tunnel) WaitForURL(ctx context.Context) (string, error) {
 			}
 		}
 	}
+}
+
+// LastOutput returns the provider's most recent non-blank output line,
+// capped at maxExitTailBytes, or "" when it has printed nothing.
+func (t *Tunnel) LastOutput() string {
+	last := t.lastOutput.Load()
+	if last == nil {
+		return ""
+	}
+	tail := *last
+	if len(tail) > maxExitTailBytes {
+		tail = tail[:maxExitTailBytes] + "…"
+	}
+	return tail
 }
 
 // Done returns a channel that's closed when the tunnel exits.
@@ -547,13 +566,12 @@ func (t *Tunnel) launch(ctx context.Context, name string, cmd *exec.Cmd, handle 
 	t.cmd = cmd
 	t.procMu.Unlock()
 
-	var lastLine atomic.Pointer[string]
 	parsed := make(chan struct{})
 	go func() {
 		defer close(parsed)
 		forEachLine(pr, func(line string) {
 			if trimmed := strings.TrimSpace(line); trimmed != "" {
-				lastLine.Store(&trimmed)
+				t.lastOutput.Store(&trimmed)
 			}
 			handle(line)
 		})
@@ -571,11 +589,7 @@ func (t *Tunnel) launch(ctx context.Context, name string, cmd *exec.Cmd, handle 
 			waitErr = errors.New("exited unexpectedly with status 0")
 		}
 		err := fmt.Errorf("%s exited: %w", name, waitErr)
-		if last := lastLine.Load(); last != nil {
-			tail := *last
-			if len(tail) > maxExitTailBytes {
-				tail = tail[:maxExitTailBytes] + "…"
-			}
+		if tail := t.LastOutput(); tail != "" {
 			err = fmt.Errorf("%w (last output: %s)", err, tail)
 		}
 		t.setError(err)

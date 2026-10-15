@@ -230,6 +230,9 @@ type TunnelStartConfig struct {
 	LocalHost  string `json:"local_host,omitempty"`  // Local host (default: localhost)
 	BinaryPath string `json:"binary_path,omitempty"` // Optional path to tunnel binary
 	ProxyID    string `json:"proxy_id,omitempty"`    // Optional proxy ID to auto-configure public_url
+	// URLTimeoutMs bounds the wait for the provider's public URL (default
+	// 60000, max 600000). On timeout the tunnel is stopped and an error returned.
+	URLTimeoutMs int `json:"url_timeout_ms,omitempty"`
 }
 
 // ChaosRuleConfig represents configuration for a CHAOS ADD-RULE command.

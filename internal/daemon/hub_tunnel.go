@@ -3,7 +3,10 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"strings"
+	"time"
 
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
@@ -35,11 +38,12 @@ func (d *Daemon) hubHandleTunnelStart(ctx context.Context, conn *hubpkg.Connecti
 	tunnelID := cmd.Args[0]
 
 	config, _ := unmarshalCommand[struct {
-		Provider   string `json:"provider"`
-		LocalPort  int    `json:"local_port"`
-		LocalHost  string `json:"local_host"`
-		ProxyID    string `json:"proxy_id"`
-		BinaryPath string `json:"binary_path"`
+		Provider     string `json:"provider"`
+		LocalPort    int    `json:"local_port"`
+		LocalHost    string `json:"local_host"`
+		ProxyID      string `json:"proxy_id"`
+		BinaryPath   string `json:"binary_path"`
+		URLTimeoutMs int    `json:"url_timeout_ms"`
 	}](cmd)
 
 	if config.Provider == "" {
@@ -59,6 +63,24 @@ func (d *Daemon) hubHandleTunnelStart(ctx context.Context, conn *hubpkg.Connecti
 		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
 	}
 
+	urlTimeout, err := d.tunnelURLWait(config.URLTimeoutMs)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+	}
+
+	// Resolve the proxy before anything starts. A proxy_id that names no
+	// proxy used to be skipped after the tunnel was up, and the reply still
+	// said running: the caller believed the proxy now knew its public URL,
+	// and the tunnel was left running for nothing.
+	var linked *proxy.ProxyServer
+	if config.ProxyID != "" {
+		p, err := getSessionScoped(d, conn, config.ProxyID, d.proxym.GetWithPathFilter)
+		if err != nil {
+			return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("proxy_id %q: %v; no tunnel was started", config.ProxyID, err))
+		}
+		linked = p
+	}
+
 	// Get project path from session for session scoping
 	projectPath := d.getSessionProjectPath(conn)
 
@@ -70,26 +92,27 @@ func (d *Daemon) hubHandleTunnelStart(ctx context.Context, conn *hubpkg.Connecti
 		Path:       projectPath,
 	}
 
+	// The provider process lives on ctx, the hub's own context, for as long
+	// as the tunnel runs. Only the wait for its URL is bounded.
 	t, err := d.tunnelm.Start(ctx, tunnelID, tunnelConfig)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInternal, err.Error())
 	}
 
-	// Wait for public URL
-	publicURL, err := t.WaitForURL(ctx)
+	waitCtx, cancel := context.WithTimeout(ctx, urlTimeout)
+	publicURL, err := t.WaitForURL(waitCtx)
+	cancel()
+	timedOut := errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil
 	if err != nil {
-		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("tunnel started but failed to get URL: %v", err))
+		return d.failTunnelStart(ctx, conn, t, provider, urlTimeout, timedOut, err)
 	}
 
-	// Update proxy public URL if proxy_id specified
-	if config.ProxyID != "" {
-		if p, err := getSessionScoped(d, conn, config.ProxyID, d.proxym.GetWithPathFilter); err == nil {
-			// Tell the proxy what started this tunnel, not just its URL: the
-			// control WebSocket's local-caller rule is granted per tunnel
-			// kind, and a hostname cannot stand in for it (tailscale serve
-			// and the public Funnel share *.ts.net).
-			p.SetTunnelURL(publicURL, t.Done(), tunnelKindFor(provider))
-		}
+	if linked != nil {
+		// Tell the proxy what started this tunnel, not just its URL: the
+		// control WebSocket's local-caller rule is granted per tunnel
+		// kind, and a hostname cannot stand in for it (tailscale serve
+		// and the public Funnel share *.ts.net).
+		linked.SetTunnelURL(publicURL, t.Done(), tunnelKindFor(provider))
 	}
 
 	resp := map[string]interface{}{
@@ -102,6 +125,73 @@ func (d *Daemon) hubHandleTunnelStart(ctx context.Context, conn *hubpkg.Connecti
 
 	data, _ := json.Marshal(resp)
 	return conn.WriteJSON(data)
+}
+
+// defaultTunnelURLTimeout bounds how long TUNNEL START waits for a provider to
+// print its public URL when the caller names no url_timeout_ms. A Cloudflare
+// quick tunnel or ngrok normally reports one within seconds; a minute leaves
+// room for a slow edge without holding the caller's connection indefinitely.
+const defaultTunnelURLTimeout = 60 * time.Second
+
+// maxTunnelURLTimeout is the longest url_timeout_ms a caller may ask for.
+const maxTunnelURLTimeout = 10 * time.Minute
+
+// tunnelURLWait returns how long TUNNEL START waits for the public URL: the
+// caller's url_timeout_ms when given, else the daemon default.
+func (d *Daemon) tunnelURLWait(requestedMs int) (time.Duration, error) {
+	switch {
+	case requestedMs < 0:
+		return 0, fmt.Errorf("url_timeout_ms must be positive, got %d", requestedMs)
+	case int64(requestedMs) > maxTunnelURLTimeout.Milliseconds():
+		return 0, fmt.Errorf("url_timeout_ms %d exceeds the maximum of %d", requestedMs, maxTunnelURLTimeout.Milliseconds())
+	case requestedMs > 0:
+		return time.Duration(requestedMs) * time.Millisecond, nil
+	case d.tunnelURLTimeout > 0:
+		return d.tunnelURLTimeout, nil
+	default:
+		return defaultTunnelURLTimeout, nil
+	}
+}
+
+// tunnelStopTimeout bounds stopping a tunnel whose URL never arrived.
+const tunnelStopTimeout = 5 * time.Second
+
+// failTunnelStart answers a TUNNEL START whose tunnel produced no URL. The
+// tunnel is stopped and its own registry entry retired before the reply, so
+// the caller is never told "failed" about a provider still running under the
+// id, and a retry of the same id is not refused as already existing. The
+// error carries the provider's state and its last words.
+func (d *Daemon) failTunnelStart(ctx context.Context, conn *hubpkg.Connection, t *tunnel.Tunnel, provider tunnel.Provider, wait time.Duration, timedOut bool, waitErr error) error {
+	info := t.Info()
+	lastOutput := t.LastOutput()
+
+	var msg string
+	if timedOut {
+		msg = fmt.Sprintf("tunnel %s: %s printed no public URL within %s (state %s", t.ID(), provider, wait, info.State)
+	} else {
+		msg = fmt.Sprintf("tunnel %s: %s failed before printing a public URL: %v (state %s", t.ID(), provider, waitErr, info.State)
+	}
+	if info.Error != "" && timedOut {
+		msg += "; error: " + info.Error
+	}
+	if lastOutput != "" && !strings.Contains(msg, lastOutput) {
+		msg += "; last output: " + lastOutput
+	}
+	msg += ")"
+
+	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), tunnelStopTimeout)
+	defer cancel()
+	if err := d.tunnelm.StopExact(stopCtx, t); err != nil {
+		msg += fmt.Sprintf("; the tunnel could not be stopped and is still registered: %v", err)
+	} else {
+		msg += "; the tunnel was stopped"
+	}
+
+	code := hubproto.ErrInternal
+	if timedOut {
+		code = hubproto.ErrTimeout
+	}
+	return conn.WriteErr(code, msg)
 }
 
 // tunnelKindFor maps the provider TUNNEL START launched to the kind the proxy

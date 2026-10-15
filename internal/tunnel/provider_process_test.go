@@ -45,6 +45,11 @@ func runFakeProvider(mode string, args []string) int {
 		return 1
 	case "exit0":
 		return 0
+	case "silent":
+		// Runs, logs, and never prints a public URL.
+		fmt.Fprintln(os.Stderr, "INF still connecting to the edge")
+		time.Sleep(30 * time.Second)
+		return 0
 	}
 	return 2
 }

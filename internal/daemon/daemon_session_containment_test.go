@@ -29,6 +29,9 @@ const portHolderEnv = "AGNT_TEST_PORTHOLDER"
 const portHolderSetsidEnv = "AGNT_TEST_PORTHOLDER_SETSID"
 
 func TestMain(m *testing.M) {
+	if mode := os.Getenv(fakeTunnelProviderEnv); mode != "" {
+		os.Exit(runFakeTunnelProvider(mode))
+	}
 	if port := os.Getenv(portHolderEnv); port != "" {
 		runPortHolder(port)
 		return

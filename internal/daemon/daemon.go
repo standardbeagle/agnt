@@ -268,6 +268,10 @@ type Daemon struct {
 	incidentProcessOwner sync.Map                               // process ID -> *health.ResourceOwner for one lifetime
 	hookRing             *hookRingBuffer                        // Claude Code hook event ring buffer (phase 1 scope)
 
+	// tunnelURLTimeout overrides defaultTunnelURLTimeout for a TUNNEL START
+	// that names no url_timeout_ms. Zero means the default; tests shorten it.
+	tunnelURLTimeout time.Duration
+
 	// forwardingPaused records per-session "stop pushing to the agent" toggles
 	// set from the overlay (OVERLAY FORWARDING verb). When a session is paused,
 	// the incident-digest MCP sink drops pings — but the inbox still accumulates

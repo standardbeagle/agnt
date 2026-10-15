@@ -56,19 +56,38 @@ func (m *Manager) Start(ctx context.Context, id string, config Config) (*Tunnel,
 	m.active.Add(1)
 
 	if err := tunnel.Start(ctx); err != nil {
-		m.tunnels.CompareAndDelete(id, tunnel)
-		m.active.Add(-1)
+		m.retire(tunnel)
 		return nil, err
 	}
 
 	// Clean up when tunnel exits. Retire this tunnel's own entry only.
 	go func() {
 		<-tunnel.Done()
-		m.tunnels.CompareAndDelete(id, tunnel)
-		m.active.Add(-1)
+		m.retire(tunnel)
 	}()
 
 	return tunnel, nil
+}
+
+// retire removes t's own registry entry, never a same-id replacement, and
+// uncounts it. Whichever caller deletes the entry uncounts it, so the count
+// drops exactly once however many paths retire the same tunnel.
+func (m *Manager) retire(t *Tunnel) {
+	if m.tunnels.CompareAndDelete(t.ID(), t) {
+		m.active.Add(-1)
+	}
+}
+
+// StopExact stops exactly t and, once its process is gone, retires t's own
+// registry entry before returning, so a caller that reports the stop (or
+// retries the same id) never finds the stopped tunnel still listed. A tunnel
+// that cannot be stopped stays registered and the error is returned.
+func (m *Manager) StopExact(ctx context.Context, t *Tunnel) error {
+	if err := t.Stop(ctx); err != nil {
+		return err
+	}
+	m.retire(t)
+	return nil
 }
 
 // Stop stops a tunnel by ID.
