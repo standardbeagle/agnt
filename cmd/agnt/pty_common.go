@@ -2120,7 +2120,7 @@ func setupTerminalOverlay(ctx context.Context, handle *ptyHandle, rt *pipelineRu
 		// overlay draws can restore it with an absolute CUP. Without this the
 		// overlay uses the terminal's single SCP/RCP save slot, which the child
 		// TUI also uses — see internal/overlay/cursorpark.go.
-		overlay.SetChildCursorSource(rt.outputFilter.ChildCursor)
+		overlay.SetChildCursorSource(rt.outputFilter.HoldChildCursor)
 	}
 
 	// Repaint the child from our own model of its screen when a panel closes

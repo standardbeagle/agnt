@@ -716,6 +716,18 @@ func (pw *ProtectedWriter) ChildCursor() (row, col int, visible bool) {
 	return int(pw.cursorRow.Load()), int(pw.cursorCol.Load()), pw.cursorVisible.Load()
 }
 
+// HoldChildCursor calls fn with the child's tracked cursor while holding the
+// filter's lock. Write tracks a chunk and hands it to the terminal under that
+// same lock, so while fn runs the tracked position is exactly where the
+// terminal's cursor is, and no child output can land between fn's writes.
+// fn may write to the filter's output writer; it must not call back into the
+// filter (the lock is not reentrant).
+func (pw *ProtectedWriter) HoldChildCursor(fn func(row, col int, visible bool)) {
+	pw.mu.Lock()
+	defer pw.mu.Unlock()
+	fn(int(pw.cursorRow.Load()), int(pw.cursorCol.Load()), pw.cursorVisible.Load())
+}
+
 // InAltScreen returns whether the child process is currently in the alternate screen buffer.
 func (pw *ProtectedWriter) InAltScreen() bool {
 	return pw.inAltScreen.Load()

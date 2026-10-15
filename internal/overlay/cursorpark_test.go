@@ -12,7 +12,7 @@ import (
 // bar's position and paint its next frame from the wrong origin — the "TUI
 // stops redrawing when switching panels" report.
 //
-// Deleting the parkCursor wiring makes every assertion below fail, so these
+// Deleting the drawOverChild wiring makes every assertion below fail, so these
 // are behavioural, not tautological: they name the exact bytes that must and
 // must not reach the terminal.
 
@@ -20,7 +20,7 @@ func newTrackedFilter(t *testing.T, out *bytes.Buffer, w, h int) *ProtectedWrite
 	t.Helper()
 	pw := NewProtectedWriter(out, w, h, FilterConfig{ProtectBottomRows: 1})
 	t.Cleanup(func() { SetChildCursorSource(nil) })
-	SetChildCursorSource(pw.ChildCursor)
+	SetChildCursorSource(pw.HoldChildCursor)
 	return pw
 }
 

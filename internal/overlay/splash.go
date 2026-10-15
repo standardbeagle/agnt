@@ -207,14 +207,11 @@ func (s *StartupSplash) render(msg string) {
 	}
 
 	var sb strings.Builder
-	park, parked := parkCursor()
-	sb.WriteString(park)
 	sb.WriteString(fmt.Sprintf(CursorToFormat, targetRow, 2))
 	sb.WriteString(ClearLine)
 	sb.WriteString(line)
-	sb.WriteString(parked.restore())
 
-	s.out.Write([]byte(sb.String()))
+	writeOverChild(s.out, []byte(sb.String()))
 }
 
 // clear removes the splash text by clearing the row it occupied.
@@ -225,11 +222,8 @@ func (s *StartupSplash) clear() {
 	}
 
 	var sb strings.Builder
-	park, parked := parkCursor()
-	sb.WriteString(park)
 	sb.WriteString(fmt.Sprintf(CursorToFormat, targetRow, 1))
 	sb.WriteString(ClearLine)
-	sb.WriteString(parked.restore())
 
-	s.out.Write([]byte(sb.String()))
+	writeOverChild(s.out, []byte(sb.String()))
 }

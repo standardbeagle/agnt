@@ -62,11 +62,6 @@ func (sm *ScreenManager) write(s string) {
 	io.WriteString(sm.out, s)
 }
 
-// moveTo moves cursor to row, col (1-indexed).
-func (sm *ScreenManager) moveTo(row, col int) {
-	sm.write(fmt.Sprintf("\x1b[%d;%dH", row, col))
-}
-
 // SaveRegion saves the screen content in a region.
 // Since we can't actually read terminal content, we use the alternate screen buffer
 // approach - save cursor, draw overlay, restore when done.
@@ -99,16 +94,16 @@ func (sm *ScreenManager) RestoreRegion(name string) {
 	// Overwrite the region with spaces using default attributes.
 	// We use spaces instead of ECH because ECH leaves "blank" cells
 	// that some terminal emulators don't properly refresh on SIGWINCH.
-	park, parked := parkCursor()
-	sm.write(park + Reset)
+	var body strings.Builder
+	body.WriteString(Reset)
 	spaces := strings.Repeat(" ", buf.Region.Width)
 	for row := buf.Region.Row; row < buf.Region.Row+buf.Region.Height; row++ {
 		if row > 0 && row <= sm.height {
-			sm.moveTo(row, buf.Region.Col)
-			sm.write(spaces)
+			fmt.Fprintf(&body, "\x1b[%d;%dH", row, buf.Region.Col)
+			body.WriteString(spaces)
 		}
 	}
-	sm.write(parked.restore())
+	writeOverChild(sm.out, []byte(body.String()))
 
 	delete(sm.savedRegs, name)
 }
@@ -118,15 +113,13 @@ func (sm *ScreenManager) ClearRegion(region ScreenRegion) {
 	sm.mu.Lock()
 	defer sm.mu.Unlock()
 
-	park, parked := parkCursor()
-	sm.write(park)
+	var body strings.Builder
 	for row := region.Row; row < region.Row+region.Height; row++ {
 		if row > 0 && row <= sm.height {
-			sm.moveTo(row, region.Col)
-			sm.write(fmt.Sprintf("\x1b[%dX", region.Width))
+			fmt.Fprintf(&body, "\x1b[%d;%dH\x1b[%dX", row, region.Col, region.Width)
 		}
 	}
-	sm.write(parked.restore())
+	writeOverChild(sm.out, []byte(body.String()))
 }
 
 // ForceRedraw sends a signal to force the underlying application to redraw.

@@ -127,6 +127,7 @@ reaches the terminal.
 - Blocks alt screen (`\x1b[?1049h`)
 - Enforces scroll region (`\x1b[r` → `\x1b[1;Nr`)
 - Clamps cursor moves to protected bottom row
+- Tracks the child's cursor; overlay draws restore it by absolute CUP, never CSI s/u (`internal/overlay/cursorpark.go`). Every draw over the child goes out through `drawOverChild`, which reads the cursor and writes the whole draw under the filter's lock (`HoldChildCursor`), so no child chunk can be tracked but not yet emitted when the restore is computed. Lock order: renderer/splash/screen locks → filter → gate; the filter's lock is only ever followed by the gate's.
 
 **OutputGate** (`internal/overlay/gate.go`):
 - Freeze/unfreeze for menu display
