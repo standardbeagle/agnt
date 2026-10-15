@@ -1004,12 +1004,8 @@ func runCommand(cmd *cobra.Command, args []string) {
 		os.Exit(1)
 	}
 
-	// If debug was enabled (via env var or flag) but no log file was set,
-	// force file-only logging. In PTY context, stderr output corrupts the terminal.
-	if debug.IsEnabled() && debug.GetLogFilePath() == "" {
-		if err := debug.SetLogFile("agnt-run.log"); err != nil {
-			fmt.Fprintf(os.Stderr, "Warning: failed to set debug log file: %v\n", err)
-		}
+	if err := routeRunLogsToFile(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to set debug log file: %v\n", err)
 	}
 
 	if err := runPlatformPTY(commandArgs, overlaySocketPath, sessionCode); err != nil {
@@ -1020,6 +1016,17 @@ func runCommand(cmd *cobra.Command, args []string) {
 	if runChildExitCode != 0 {
 		os.Exit(runChildExitCode)
 	}
+}
+
+// routeRunLogsToFile sends the debug logger to agnt-run.log when no log file
+// was chosen, whether or not debug is enabled: debug.Error/Warn/Info always
+// print, and the wrapped agent owns the terminal, so anything on stderr
+// corrupts its screen.
+func routeRunLogsToFile() error {
+	if debug.GetLogFilePath() == "" {
+		return debug.SetLogFile("agnt-run.log")
+	}
+	return nil
 }
 
 // runChildExitCode is the status `agnt run` exits with, recorded by
