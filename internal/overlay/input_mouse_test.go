@@ -60,8 +60,7 @@ func TestEscapeSequenceReader_SwallowsMouseReports(t *testing.T) {
 // looking at, and leaves the tail of the sequence to be typed into the child.
 func TestEscapeSequenceReader_SwallowsUnknownCompleteSequences(t *testing.T) {
 	for _, seq := range []string{
-		"\x1b[200~",         // bracketed paste start
-		"\x1b[201~",         // bracketed paste end
+		"\x1b[201~",         // stray bracketed paste end (the start opens a paste: input_paste_test.go)
 		"\x1b[1;2C",         // shift+right
 		"\x1b[15;3~",        // alt+F5
 		"\x1b[?1000;1006$y", // DECRQM reply

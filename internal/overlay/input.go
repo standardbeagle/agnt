@@ -339,7 +339,11 @@ func (r *InputRouter) Run() error {
 
 				// If we're now waiting for more escape sequence bytes, start a timer
 				if r.escReader.IsPending() {
-					escTimer = time.NewTimer(escTimeout)
+					wait := escTimeout
+					if r.escReader.InPaste() {
+						wait = pasteTimeout
+					}
+					escTimer = time.NewTimer(wait)
 				}
 			} else {
 				// Pass through to PTY - batch with any pending bytes to keep
@@ -411,6 +415,13 @@ func (r *InputRouter) handleOverlayInput(b byte) {
 func (r *InputRouter) handleMenuKey(key string) {
 	r.overlay.mu.Lock()
 	defer r.overlay.mu.Unlock()
+
+	// A bracketed paste is text, never a run of key commands: read key by key
+	// its 'q' closes the panel and its digits open scripts.
+	if text, ok := strings.CutPrefix(key, pasteKeyPrefix); ok {
+		r.handlePaste(text)
+		return
+	}
 
 	// Command palette captures ALL keys while active. This must run before the
 	// global menu switch below: otherwise Enter/Up/Down/q/x/1-9 are stolen by
@@ -546,6 +557,34 @@ func (r *InputRouter) handleMenuKey(key string) {
 			r.overviewStartScript()
 			return
 		}
+	}
+}
+
+// handlePaste delivers a bracketed paste to the panel's text input the way
+// typed text would arrive there. A panel without one ignores it, and says so.
+// Must be called with overlay.mu held.
+func (r *InputRouter) handlePaste(text string) {
+	o := r.overlay
+	text = strings.NewReplacer("\r\n", "\n", "\r", "\n").Replace(text)
+	switch {
+	case o.commandInput:
+		// The palette is one line of printable ASCII, the same set typing
+		// reaches it with; a pasted newline is not Enter.
+		for i := 0; i < len(text); i++ {
+			if c := text[i]; c >= 32 && c < 127 {
+				o.commandBuffer += string(c)
+			}
+		}
+		o.commandSelectedIdx = 0
+		o.draw()
+	case r.isConfigPanel() && o.configEditor != nil:
+		r.configDiscardArmed = false
+		o.configEditor.Paste(text)
+		o.draw()
+	default:
+		// Notify would re-take o.mu to repaint; add the toast and draw here.
+		o.notifications.add(Notification{ID: "paste", Level: LevelInfo, Text: "paste ignored: this panel has no text input"}, time.Now())
+		o.draw()
 	}
 }
 
@@ -1839,7 +1878,21 @@ const (
 	escX10Mouse          // inside the three raw bytes of an ESC [ M report
 	escInString          // inside OSC/DCS/APC/PM/SOS, waiting for a string terminator
 	escDiscardCSI        // past the CSI cap, waiting for the sequence's final byte
+	escInPaste           // inside a bracketed paste, waiting for ESC [201~
 )
+
+// Bracketed paste: a terminal whose application enabled mode 2004 (the agent
+// does) wraps pasted text in these markers.
+const (
+	bracketedPasteStart = "\x1b[200~"
+	bracketedPasteEnd   = "\x1b[201~"
+)
+
+// pasteTimeout is how long a bracketed paste may go quiet before the router
+// abandons it. Far longer than the bare-Escape window, because a large paste
+// over a slow link arrives in reads spaced wider than 50ms, and each byte of a
+// paste read as a key is a panel command.
+const pasteTimeout = time.Second
 
 // stringSequenceIntroducers are the bytes that follow ESC to open a sequence
 // carrying a payload rather than a keypress: OSC (a colour or clipboard
@@ -1864,6 +1917,15 @@ const csiMaxLen = 32
 // every keypress after it. It is generous because a legitimate OSC 52
 // clipboard reply carries base64 of whatever was copied.
 const stringMaxLen = 8192
+
+// pasteKeyPrefix marks a key that carries a whole bracketed paste: the reader
+// reports a paste as one key, pasteKeyPrefix followed by the pasted text.
+const pasteKeyPrefix = "Paste:"
+
+// pasteMaxLen bounds the text held for one bracketed paste. A longer paste is
+// still consumed to its end marker, then dropped whole: delivering a truncated
+// paste would be worse than delivering none.
+const pasteMaxLen = 64 << 10
 
 // x10MouseBytes is the fixed payload length of an ESC [ M mouse report.
 const x10MouseBytes = 3
@@ -1892,6 +1954,10 @@ type EscapeSequenceReader struct {
 	// a stream that never produces a final byte is abandoned rather than
 	// swallowing every later keypress.
 	discarded int
+	// paste holds a bracketed paste's text (plus any partial end marker);
+	// pasteOverflow records that it outgrew pasteMaxLen and will be dropped.
+	paste         []byte
+	pasteOverflow bool
 }
 
 // NewEscapeSequenceReader creates a new escape sequence reader.
@@ -1981,6 +2047,9 @@ func (r *EscapeSequenceReader) Feed(b byte) (key string, complete bool) {
 		}
 		return "", false
 
+	case escInPaste:
+		return r.feedPaste(b)
+
 	case escAfterSS3:
 		r.reset()
 		if name, ok := ss3Keys[b]; ok {
@@ -2018,8 +2087,32 @@ func (r *EscapeSequenceReader) Feed(b byte) (key string, complete bool) {
 		}
 		seq := string(r.buffer)
 		r.reset()
+		if seq == bracketedPasteStart {
+			r.state = escInPaste
+			return "", false
+		}
 		return csiKeys[seq], true
 	}
+}
+
+// feedPaste consumes one byte of a bracketed paste. The text is never read as
+// keys: it is reported whole, as one pasteKeyPrefix key, when the end marker
+// arrives.
+func (r *EscapeSequenceReader) feedPaste(b byte) (key string, complete bool) {
+	r.paste = append(r.paste, b)
+	if b == '~' && strings.HasSuffix(string(r.paste[max(0, len(r.paste)-len(bracketedPasteEnd)):]), bracketedPasteEnd) {
+		if !r.pasteOverflow {
+			key = pasteKeyPrefix + string(r.paste[:len(r.paste)-len(bracketedPasteEnd)])
+		}
+		r.reset()
+		return key, true
+	}
+	// Past the cap keep only enough of the tail to recognise the end marker.
+	if keep := len(bracketedPasteEnd) - 1; len(r.paste) > pasteMaxLen+keep {
+		r.pasteOverflow = true
+		r.paste = append(r.paste[:0], r.paste[len(r.paste)-keep:]...)
+	}
+	return "", false
 }
 
 // Timeout should be called when no more input arrives after starting an escape
@@ -2053,11 +2146,19 @@ func (r *EscapeSequenceReader) reset() {
 	r.x10Remaining = 0
 	r.stringESC = false
 	r.discarded = 0
+	r.paste = r.paste[:0]
+	r.pasteOverflow = false
 }
 
 // IsPending returns true if we're in the middle of parsing an escape sequence.
 func (r *EscapeSequenceReader) IsPending() bool {
 	return r.state != escGround
+}
+
+// InPaste reports whether the reader is inside a bracketed paste, which the
+// router gives pasteTimeout rather than the bare-Escape window.
+func (r *EscapeSequenceReader) InPaste() bool {
+	return r.state == escInPaste
 }
 
 // closeProcessViewer closes the process viewer.

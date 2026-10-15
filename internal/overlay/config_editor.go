@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/standardbeagle/agnt/internal/config"
 )
@@ -132,6 +133,36 @@ func (e *ConfigEditor) Insert(text string) {
 		e.lines[e.cursorLine] = string(line)
 		e.cursorCol++
 	}
+	e.markEdited()
+}
+
+// Paste inserts text at the cursor verbatim: line breaks split lines but, unlike
+// NewLine, add no indentation, because pasted text carries its own. Control
+// characters other than newline are dropped; tabs become four spaces as in
+// Insert. The cursor ends just after the pasted text.
+func (e *ConfigEditor) Paste(text string) {
+	text = strings.ReplaceAll(text, "\t", "    ")
+	text = strings.Map(func(r rune) rune {
+		if (r < 0x20 && r != '\n') || r == 0x7f {
+			return -1
+		}
+		return r
+	}, text)
+	if text == "" {
+		return
+	}
+	line := e.runes(e.cursorLine)
+	parts := strings.Split(text, "\n")
+	last := len(parts) - 1
+	col := utf8.RuneCountInString(parts[last])
+	if last == 0 {
+		col += e.cursorCol
+	}
+	parts[0] = string(line[:e.cursorCol]) + parts[0]
+	parts[last] += string(line[e.cursorCol:])
+	e.lines = append(e.lines[:e.cursorLine], append(parts, e.lines[e.cursorLine+1:]...)...)
+	e.cursorLine += last
+	e.cursorCol = col
 	e.markEdited()
 }
 

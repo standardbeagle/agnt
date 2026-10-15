@@ -18,6 +18,8 @@ Ctrl+→ / Ctrl+← from the agent's screen opens the panel view on the **overvi
 | Enter, 1-9 | open the highlighted / Nth script | 1-9 open the Nth script |
 | x | — | close a stopped/failed script panel |
 
+A paste while a panel is open is one unit, never a run of keys: the escape reader collects a bracketed paste (`ESC [200~` … `ESC [201~`, which the terminal sends because the agent enables mode 2004) and reports it as one `Paste:` key. The command palette takes it as typed text on one line (a pasted newline is not Enter), the config editor inserts it verbatim, and any other panel ignores it with a toast. A paste over 64 KiB is dropped whole; one that goes quiet for a second is abandoned.
+
 The 1-9 numbers are printed beside each overview script row and follow the script list, never panel-creation order. The overview list shows 8 rows and scrolls with the highlight. The footer lists only the keys that work on the active panel.
 
 The panel view is live: every status update (the 2s tick, and the immediate refresh after a palette or a/s/r command) rebuilds the tabs and repaints. The repaint is a frame diff, so an unchanged status writes nothing. Proxy tabs come and go with the proxies; the tab you are viewing going away drops you on the overview. A disconnected status never removes tabs. The daemon drops its 4s ports/orphans cache after every port kill or orphan reap (`invalidatePortsCache`), so the refresh after `kill-port` or `kill-orphans` is a fresh scan.
