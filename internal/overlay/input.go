@@ -273,7 +273,13 @@ func (r *InputRouter) Run() error {
 	}
 	go func() {
 		for b := range scanWin32Input(inputSrc, flush) {
-			inputCh <- b
+			// Once Stop has ended the loop below nobody drains inputCh, so a
+			// blind send would block forever and pin the scanner with it.
+			select {
+			case inputCh <- b:
+			case <-r.done:
+				return
+			}
 		}
 		errCh <- io.EOF
 	}()
