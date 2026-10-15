@@ -74,3 +74,39 @@ describe('sketch keyboard shortcuts', () => {
     expect(sketch.state.elements).toEqual([]);
   });
 });
+
+describe('sketch undo / redo', () => {
+  it('moves exactly one state per step in both directions', async () => {
+    const { win, sketch } = await boot();
+    const key = (k, mods = {}) => win.document.body.dispatchEvent(
+      new win.KeyboardEvent('keydown', { key: k, ctrlKey: true, bubbles: true, ...mods }));
+    const count = () => sketch.state.elements.length;
+
+    sketch.fromJSON({ version: 1, elements: [rect('r1', 10)] });
+    key('a');
+    key('c');
+    key('v'); // 2 elements
+    key('v'); // 3 elements
+    expect(count()).toBe(3);
+
+    const seen = [];
+    for (let i = 0; i < 3; i++) { sketch.undo(); seen.push(count()); }
+    for (let i = 0; i < 3; i++) { sketch.redo(); seen.push(count()); }
+    expect(seen).toEqual([2, 1, 1, 2, 3, 3]);
+
+    // The keyboard shortcuts take the same path.
+    key('z');
+    expect(count()).toBe(2);
+    key('z', { shiftKey: true });
+    expect(count()).toBe(3);
+    key('z');
+
+    // A new edit after an undo drops the redo branch.
+    sketch.clearAll();
+    expect(count()).toBe(0);
+    sketch.redo();
+    expect(count()).toBe(0);
+    sketch.undo();
+    expect(count()).toBe(2);
+  });
+});

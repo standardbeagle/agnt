@@ -200,6 +200,22 @@ func TestSketch_ShortcutsSkipShadowTextInputs(t *testing.T) {
 	)
 }
 
+// TestSketch_UndoRedoSwapTheLiveState — behaviour: jstest/sketch.test.js
+// ("sketch undo / redo"). saveHistory() snapshots the state BEFORE each edit,
+// so the live state is never in the array; undo/redo must swap it with the
+// neighbouring snapshot rather than load history[index] after moving the
+// index (which made the first undo a no-op and lost the newest state).
+func TestSketch_UndoRedoSwapTheLiveState(t *testing.T) {
+	mustContain(t, "sketch.js", sketchJS,
+		"function swapLiveWith(index) {",
+		"sketchState.history[index] = live;",
+		"if (sketchState.historyIndex >= 0) {",
+	)
+	mustNotContain(t, "sketch.js", sketchJS,
+		"if (sketchState.historyIndex > 0) {",
+	)
+}
+
 // TestPanels_EscapePageDerivedStrings — behaviour: jstest/html-sinks.test.js.
 func TestPanels_EscapePageDerivedStrings(t *testing.T) {
 	mustContain(t, "diagnostics.js", diagnosticsJS,

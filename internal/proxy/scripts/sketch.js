@@ -1487,6 +1487,13 @@
   }
 
   // History management
+  //
+  // Every mutation calls saveHistory() BEFORE it changes the drawing, so the
+  // live state is never in the array. history[0..historyIndex] are the states
+  // undo returns to (newest last); history[historyIndex+1..] are the states
+  // redo returns to (nearest first). Undo and redo each swap the live state
+  // with the neighbouring snapshot, so every step moves exactly one state and
+  // the state left behind is kept for the opposite direction.
   function saveHistory() {
     // Remove future history if we're not at the end
     sketchState.history = sketchState.history.slice(0, sketchState.historyIndex + 1);
@@ -1502,21 +1509,25 @@
     }
   }
 
+  function swapLiveWith(index) {
+    var live = JSON.stringify(sketchState.elements);
+    sketchState.elements = JSON.parse(sketchState.history[index]);
+    sketchState.history[index] = live;
+    sketchState.selectedElements = [];
+    render();
+  }
+
   function undo() {
-    if (sketchState.historyIndex > 0) {
+    if (sketchState.historyIndex >= 0) {
+      swapLiveWith(sketchState.historyIndex);
       sketchState.historyIndex--;
-      sketchState.elements = JSON.parse(sketchState.history[sketchState.historyIndex]);
-      sketchState.selectedElements = [];
-      render();
     }
   }
 
   function redo() {
     if (sketchState.historyIndex < sketchState.history.length - 1) {
       sketchState.historyIndex++;
-      sketchState.elements = JSON.parse(sketchState.history[sketchState.historyIndex]);
-      sketchState.selectedElements = [];
-      render();
+      swapLiveWith(sketchState.historyIndex);
     }
   }
 
