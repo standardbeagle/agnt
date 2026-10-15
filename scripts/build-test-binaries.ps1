@@ -32,19 +32,16 @@ if (-not (Test-Path $OutputDir)) {
     Write-Info "Created output directory: $OutputDir"
 }
 
-# Save current state
-Write-Info "Saving current git state..."
-$currentBranch = git rev-parse --abbrev-ref HEAD
-$hasChanges = (git status --porcelain) -ne $null
+$OutputDir = (Resolve-Path $OutputDir).Path
 
-if ($hasChanges) {
-    Write-Info "Stashing uncommitted changes..."
-    git stash push -m "build-test-binaries.ps1 auto-stash"
-}
+# Build the old version in a temporary detached worktree, so this checkout is
+# never switched and never stashed (a bare `git stash pop` can pop another
+# session's entry: the stash stack is shared by every worktree of the repo).
+$oldTree = Join-Path ([System.IO.Path]::GetTempPath()) ("agnt-old-" + [System.Guid]::NewGuid().ToString("N"))
 
 try {
     # Build old version
-    Write-Info "Checking out old version: $OldTag"
+    Write-Info "Preparing old version: $OldTag"
 
     # Fetch tags to ensure we have the old tag
     git fetch --tags 2>$null
@@ -58,14 +55,19 @@ try {
         throw "Old tag not found"
     }
 
-    # Checkout old tag
-    git checkout $OldTag 2>$null
+    git worktree add --detach $oldTree $OldTag 2>$null
     if ($LASTEXITCODE -ne 0) {
-        throw "Failed to checkout $OldTag"
+        throw "Failed to create a worktree for $OldTag"
     }
 
     Write-Info "Building old version ($OldTag)..."
-    go build -o "$OutputDir/agnt-old.exe" ./cmd/agnt/
+    Push-Location $oldTree
+    try {
+        go build -o "$OutputDir/agnt-old.exe" ./cmd/agnt/
+    }
+    finally {
+        Pop-Location
+    }
 
     if ($LASTEXITCODE -ne 0) {
         throw "Failed to build old version"
@@ -76,16 +78,8 @@ try {
     Write-Success "Old version built: $oldVersion"
     Write-Success "Binary: $OutputDir/agnt-old.exe"
 
-    # Return to original branch
-    Write-Info "Returning to $currentBranch..."
-    git checkout $currentBranch 2>$null
-
-    if ($LASTEXITCODE -ne 0) {
-        throw "Failed to checkout $currentBranch"
-    }
-
-    # Build new version
-    Write-Info "Building new version (current)..."
+    # Build new version from this checkout, uncommitted changes included
+    Write-Info "Building new version (current working tree)..."
     go build -o "$OutputDir/agnt-new.exe" ./cmd/agnt/
 
     if ($LASTEXITCODE -ne 0) {
@@ -125,18 +119,10 @@ try {
 }
 catch {
     Write-Failure $_.Exception.Message
-
-    # Try to return to original branch
-    try {
-        git checkout $currentBranch 2>$null
-    } catch {}
-
     exit 1
 }
 finally {
-    # Restore stashed changes
-    if ($hasChanges) {
-        Write-Info "Restoring stashed changes..."
-        git stash pop 2>$null
+    if (Test-Path $oldTree) {
+        git worktree remove --force $oldTree 2>$null
     }
 }
