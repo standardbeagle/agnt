@@ -2,6 +2,7 @@ package daemonclient
 
 import (
 	"errors"
+	"sync/atomic"
 	"time"
 
 	goclient "github.com/standardbeagle/go-cli-server/client"
@@ -79,6 +80,12 @@ func DefaultResilientClientConfig() ResilientClientConfig {
 type ResilientClient struct {
 	config ResilientClientConfig
 	rc     *goclient.ResilientConn
+
+	// mismatchAccepted is set when OnVersionMismatch accepted a version-skewed
+	// connection. In agnt that callback is the auto-upgrade, which shuts the
+	// daemon behind the connection down and starts a replacement, so Connect
+	// redials instead of keeping a connection to a daemon that has exited.
+	mismatchAccepted atomic.Bool
 }
 
 // NewResilientClient creates a new resilient client.
@@ -100,6 +107,8 @@ func NewResilientClient(config ResilientClientConfig) *ResilientClient {
 		OnReconnectFailed:    config.OnReconnectFailed,
 	}
 
+	client := &ResilientClient{config: config}
+
 	// Set up version checking if configured
 	if config.ClientVersion != "" {
 		resilientCfg.VersionCheck = func(conn *goclient.Conn) error {
@@ -116,7 +125,11 @@ func NewResilientClient(config ResilientClientConfig) *ResilientClient {
 				debug.Log("client", "version mismatch: client=%s daemon=%s", config.ClientVersion, info.Version)
 				// Versions don't match - call callback if configured
 				if config.OnVersionMismatch != nil {
-					return config.OnVersionMismatch(config.ClientVersion, info.Version)
+					if err := config.OnVersionMismatch(config.ClientVersion, info.Version); err != nil {
+						return err
+					}
+					client.mismatchAccepted.Store(true)
+					return nil
 				}
 
 				// No callback - stop the daemon so next connection uses new version.
@@ -145,15 +158,23 @@ func NewResilientClient(config ResilientClientConfig) *ResilientClient {
 		}
 	}
 
-	return &ResilientClient{
-		config: config,
-		rc:     goclient.NewResilientConn(resilientCfg),
-	}
+	client.rc = goclient.NewResilientConn(resilientCfg)
+	return client
 }
 
 // Connect establishes the initial connection to the daemon.
 func (rc *ResilientClient) Connect() error {
-	return rc.rc.Connect()
+	rc.mismatchAccepted.Store(false)
+	if err := rc.rc.Connect(); err != nil {
+		return err
+	}
+	if rc.mismatchAccepted.Swap(false) {
+		// The accepted connection points at the daemon OnVersionMismatch just
+		// replaced; using it would fail the first request with EOF. Dial once
+		// more to reach the replacement (the old connection is closed by it).
+		return rc.rc.Connect()
+	}
+	return nil
 }
 
 // Close shuts down the resilient client.
