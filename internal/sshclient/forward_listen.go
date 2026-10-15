@@ -21,6 +21,11 @@ func listenLocalForward(path string) (net.Listener, func() error, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, nil, err
 	}
+	// MkdirAll keeps a directory that already exists whoever made it, so the
+	// ownership and mode are checked, not assumed.
+	if err := checkForwardDir(filepath.Dir(path)); err != nil {
+		return nil, nil, err
+	}
 	mgr := socket.NewManager(socket.Config{Path: path, Mode: 0o600, Name: "agnt-ssh-forward", ProcessMatcher: func(pid int) bool { return pid == os.Getpid() }})
 	ln, err := mgr.Listen()
 	if err != nil {

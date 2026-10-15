@@ -20,3 +20,7 @@ func LocalForwardSocketPath(host string) string {
 	hash := pipe[strings.LastIndexByte(pipe, '-')+1:]
 	return filepath.Join(os.TempDir(), "agnt", "ssh-"+hash+".sock")
 }
+
+// checkForwardDir is a no-op on Windows: the forward directory lives under the
+// per-user temp directory, which other users cannot reach.
+func checkForwardDir(string) error { return nil }
