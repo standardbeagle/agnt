@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"compress/flate"
 	"compress/gzip"
+	"compress/zlib"
 	"io"
 	"net/http"
 	"strings"
@@ -134,6 +135,43 @@ func TestModifyResponse_DeflateCompression(t *testing.T) {
 	// Verify instrumentation was injected
 	if !strings.Contains(bodyStr, "__devtool") {
 		t.Errorf("instrumentation script was not injected")
+	}
+}
+
+// TestModifyResponse_DeflateZlibWrapped: RFC 9110 defines Content-Encoding
+// "deflate" as the zlib format (RFC 1950), which most servers send. Decoding it
+// as raw DEFLATE fails mid-read and the page became a 502.
+func TestModifyResponse_DeflateZlibWrapped(t *testing.T) {
+	ps := &ProxyServer{ListenAddr: ":8080"}
+	htmlContent := []byte("<html><head><title>Test</title></head><body>Hello Zlib</body></html>")
+
+	var buf bytes.Buffer
+	zw := zlib.NewWriter(&buf)
+	if _, err := zw.Write(htmlContent); err != nil {
+		t.Fatalf("failed to compress: %v", err)
+	}
+	zw.Close()
+
+	resp := &http.Response{
+		StatusCode: http.StatusOK,
+		Header: http.Header{
+			"Content-Type":     []string{"text/html"},
+			"Content-Encoding": []string{"deflate"},
+		},
+		Body: io.NopCloser(&buf),
+	}
+	if err := ps.modifyResponse(resp); err != nil {
+		t.Fatalf("modifyResponse failed on zlib-wrapped deflate (would be a 502): %v", err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("failed to read modified body: %v", err)
+	}
+	if resp.Header.Get("Content-Encoding") != "" {
+		t.Errorf("Content-Encoding should be removed, got %q", resp.Header.Get("Content-Encoding"))
+	}
+	if !strings.Contains(string(body), "Hello Zlib") || !strings.Contains(string(body), "__devtool") {
+		t.Errorf("body not decoded and injected: %q", body)
 	}
 }
 

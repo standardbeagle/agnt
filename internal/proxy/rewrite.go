@@ -1,9 +1,11 @@
 package proxy
 
 import (
+	"bufio"
 	"bytes"
 	"compress/flate"
 	"compress/gzip"
+	"compress/zlib"
 	"context"
 	"io"
 	"net"
@@ -26,6 +28,19 @@ func responseHasNoBody(resp *http.Response) bool {
 	return (resp.StatusCode >= 100 && resp.StatusCode < 200) ||
 		resp.StatusCode == http.StatusNoContent ||
 		resp.StatusCode == http.StatusNotModified
+}
+
+// newDeflateReader decodes a "deflate" Content-Encoding body. RFC 9110 §8.4.1.2
+// defines it as the zlib format (RFC 1950): a 2-byte header around the DEFLATE
+// stream. Some servers send raw DEFLATE (RFC 1951) instead, so the header is
+// sniffed the way browsers do: a valid zlib header (compression method 8 and a
+// header checksum divisible by 31) selects zlib, anything else raw DEFLATE.
+func newDeflateReader(body io.Reader) (io.ReadCloser, error) {
+	br := bufio.NewReader(body)
+	if h, err := br.Peek(2); err == nil && h[0]&0x0f == 8 && (uint16(h[0])<<8|uint16(h[1]))%31 == 0 {
+		return zlib.NewReader(br)
+	}
+	return flate.NewReader(br), nil
 }
 
 // modifyResponse rewrites URLs and injects JavaScript into HTML responses.
@@ -85,7 +100,12 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 		}()
 		bodyReader = gzReader
 	} else if strings.Contains(encoding, "deflate") {
-		deflateReader := flate.NewReader(resp.Body)
+		deflateReader, err := newDeflateReader(resp.Body)
+		if err != nil {
+			// If decompression fails, skip injection and pass through original
+			debug.Log("proxy", "Failed to decompress deflate response: %v", err)
+			return nil
+		}
 		defer func() {
 			if !passthrough {
 				deflateReader.Close()
