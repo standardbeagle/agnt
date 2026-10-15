@@ -1019,8 +1019,11 @@ func (d *Daemon) autostartProxy(ctx context.Context, name string, proxyConfig *c
 	targetURL := proxyConfig.ExplicitTargetURL()
 
 	if targetURL == "" {
-		debug.Log("daemon", "Proxy %s has no explicit target URL, skipping", name)
-		return nil
+		// `autostart true` with neither a target nor a script declares a proxy
+		// that can never be created. Returning nil here had the caller log
+		// proxy_started and list it in the result: a declared proxy reported
+		// as running that never existed.
+		return fmt.Errorf("proxy %s: autostart is set but it declares no target (url, port, or target) and no script, so there is nothing to proxy", name)
 	}
 
 	// Pre-flight check for explicit listen-port. An explicit port
