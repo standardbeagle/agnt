@@ -275,3 +275,47 @@ func TestRoute_UnknownSource_ReturnsGenericFallback(t *testing.T) {
 		t.Errorf("unknown source SkillHint: got %q, want daemon-debug", r.SkillHint)
 	}
 }
+
+// TestAllSources_DocumentedForGetIncidents keeps the agent-facing `sources`
+// filter lists — the docs/mcp-tools.md parameter row and the get_incidents
+// jsonschema tag — naming every Source, so a new source is never an
+// undocumented filter value (browser_js_untrusted, http_5xx_untrusted and
+// process_output were once missing from both).
+func TestAllSources_DocumentedForGetIncidents(t *testing.T) {
+	t.Parallel()
+	root := repoRoot(t)
+	line := func(rel, marker string) string {
+		data, err := os.ReadFile(filepath.Join(root, rel))
+		if err != nil {
+			t.Fatalf("read %s: %v", rel, err)
+		}
+		for _, l := range strings.Split(string(data), "\n") {
+			if strings.Contains(l, marker) {
+				return l
+			}
+		}
+		t.Fatalf("%s: no line containing %q", rel, marker)
+		return ""
+	}
+	lists := map[string]string{
+		"docs/mcp-tools.md sources row": line("docs/mcp-tools.md", "| `sources` | string[] |"),
+		"get_incidents sources tag":     line("internal/tools/get_incidents.go", "Filter by source:"),
+	}
+	for where, l := range lists {
+		for _, src := range allSources {
+			// Delimited match so browser_js does not pass for browser_js_untrusted.
+			found := false
+			for _, tok := range strings.FieldsFunc(l, func(r rune) bool {
+				return !(r == '_' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9')
+			}) {
+				if tok == string(src) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Errorf("%s does not list source %q", where, src)
+			}
+		}
+	}
+}

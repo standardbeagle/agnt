@@ -69,7 +69,7 @@ Cursor-based pull from the always-active incident inbox. This is the authoritati
 | `severity` | string[] | all | Filter: `critical`, `error`, `warning`, `info` |
 | `since` | string | beginning | Cursor from a prior pull (RFC3339) or duration like `5m` |
 | `fingerprints` | string[] | — | Retrieve specific incident fingerprints |
-| `sources` | string[] | all | Filter by source: `browser_js`, `http_5xx`, `http_4xx`, `transport_err`, `proxy_diag`, `process_alert`, `process_crash`, `build_fail`, `chaos_swallowed_error`, `external` |
+| `sources` | string[] | all | Filter by source: `browser_js`, `browser_js_untrusted`, `http_5xx`, `http_5xx_untrusted`, `http_4xx`, `transport_err`, `proxy_diag`, `process_alert`, `process_output`, `process_crash`, `build_fail`, `chaos_swallowed_error`, `external`. The `_untrusted` sources are reports from a connection the proxy does not trust and are not matched by their trusted counterparts. `process_output` is a declared source that no monitor emits yet |
 | `proxy_id` / `process_id` | string | — | Filter to a specific proxy/process |
 | `detail` | string | `summary` | `full` hydrates from the caller session's bounded blob store; evicted payloads fall back to summary |
 | `mark_read` | bool | false | Advance cursor and mark returned incidents read. With an active `profile`, the daemon projects the page first, so exactly the rendered rows are marked read and dropped rows raise `truncated` instead of being swept past the cursor |

@@ -26,7 +26,7 @@ type GetIncidentsInput struct {
 	Severity     []string `json:"severity,omitempty"      jsonschema:"Filter by severity: critical/error/warning/info (default: all)"`
 	Since        string   `json:"since,omitempty"         jsonschema:"Cursor from prior pull (RFC3339 timestamp) or duration like '5m'"`
 	Fingerprints []string `json:"fingerprints,omitempty"  jsonschema:"Retrieve specific incident fingerprints"`
-	Sources      []string `json:"sources,omitempty"       jsonschema:"Filter by source: browser_js/http_5xx/http_4xx/transport_err/proxy_diag/process_alert/process_crash/build_fail/chaos_swallowed_error/external"`
+	Sources      []string `json:"sources,omitempty"       jsonschema:"Filter by source: browser_js/browser_js_untrusted/http_5xx/http_5xx_untrusted/http_4xx/transport_err/proxy_diag/process_alert/process_output/process_crash/build_fail/chaos_swallowed_error/external"`
 	ProxyID      string   `json:"proxy_id,omitempty"      jsonschema:"Filter to specific proxy"`
 	ProcessID    string   `json:"process_id,omitempty"    jsonschema:"Filter to specific process"`
 	Detail       string   `json:"detail,omitempty"        jsonschema:"'summary' (default) or 'full' to hydrate full payload from blob store"`
