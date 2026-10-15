@@ -25,3 +25,22 @@ func ProbeSocketPath(label string) string {
 	sum := sha256.Sum256([]byte(seed))
 	return filepath.Join(filepath.Dir(LocalForwardSocketPath("probe")), fmt.Sprintf("probe-%x.sock", sum[:8]))
 }
+
+// maxSocketPathLen is the longest Unix socket path agnt ssh binds: macOS
+// sun_path (104 bytes) minus its terminating NUL, the tightest limit it runs
+// under.
+const maxSocketPathLen = 103
+
+// forwardSocketPathIn is the forward socket path for host in dir. A name that
+// fits maxSocketPathLen keeps its readable ssh-<host>.sock form; a longer one
+// is replaced by a fixed-length hash of host, as ProbeSocketPath does. The
+// hash is deterministic because the same path is computed to bind the forward
+// and, later, to dial it.
+func forwardSocketPathIn(dir, host string) string {
+	p := filepath.Join(dir, "ssh-"+host+".sock")
+	if len(p) <= maxSocketPathLen {
+		return p
+	}
+	sum := sha256.Sum256([]byte(host))
+	return filepath.Join(dir, fmt.Sprintf("ssh-%x.sock", sum[:8]))
+}

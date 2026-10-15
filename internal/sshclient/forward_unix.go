@@ -9,12 +9,15 @@ import (
 	"syscall"
 )
 
+// LocalForwardSocketPath is the forward socket for host under
+// $XDG_RUNTIME_DIR/agnt, or <TMPDIR>/agnt without it. A host name long enough
+// to overflow sun_path is hashed (forwardSocketPathIn).
 func LocalForwardSocketPath(host string) string {
 	base := os.Getenv("XDG_RUNTIME_DIR")
 	if base == "" {
 		base = os.TempDir()
 	}
-	return filepath.Join(base, "agnt", fmt.Sprintf("ssh-%s.sock", host))
+	return forwardSocketPathIn(filepath.Join(base, "agnt"), host)
 }
 
 // checkForwardDir refuses a forward-socket directory another user could reach.
