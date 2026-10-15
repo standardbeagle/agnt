@@ -8,7 +8,8 @@ import (
 )
 
 // maxFollowSteps bounds a replay; a contract workflow never legitimately
-// exceeds it, so hitting the bound means a next: cycle.
+// exceeds it, so a chain that still points onward after this many steps
+// means a next: cycle.
 const maxFollowSteps = 24
 
 var toolNameRE = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
@@ -37,7 +38,7 @@ func Follow(scenario string, ex Executor) (*Trace, error) {
 	}
 	tr.Steps = append(tr.Steps, stepFrom(Call{Tool: "currentpage"}, resp, false))
 
-	for len(tr.Steps) < maxFollowSteps {
+	for {
 		next := strings.TrimSpace(resp.Next)
 		if next == "" {
 			next = firstNextLine(resp.Text)
@@ -52,6 +53,11 @@ func Follow(scenario string, ex Executor) (*Trace, error) {
 			}
 			return tr, nil
 		}
+		// Bound checked only once the latest response still points onward,
+		// so a chain whose last step lands exactly on the bound completes.
+		if len(tr.Steps) >= maxFollowSteps {
+			return nil, fmt.Errorf("agentbench: %s: exceeded %d steps — next: cycle?", scenario, maxFollowSteps)
+		}
 		call, err := ParseNext(next)
 		if err != nil {
 			return nil, fmt.Errorf("agentbench: %s: step %d: %w\noffending response:\n%s",
@@ -65,7 +71,6 @@ func Follow(scenario string, ex Executor) (*Trace, error) {
 		}
 		tr.Steps = append(tr.Steps, stepFrom(call, resp, prescribed))
 	}
-	return nil, fmt.Errorf("agentbench: %s: exceeded %d steps — next: cycle?", scenario, maxFollowSteps)
 }
 
 // hasUsefulStep reports whether any recorded step produced a finding.

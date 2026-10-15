@@ -19,7 +19,8 @@ type Thresholds struct {
 	// MaxBroadAudits is how many full-profile, unscoped audits one trace
 	// may run before further ones count as repeated waste.
 	MaxBroadAudits int
-	// BytesPerToken converts returned_bytes into tokens_estimate.
+	// BytesPerToken converts returned_bytes into tokens_estimate. Must be
+	// positive; ScoreWithThresholds rejects anything else.
 	BytesPerToken int
 }
 
@@ -80,6 +81,9 @@ func Score(trace *Trace) (Report, error) {
 func ScoreWithThresholds(trace *Trace, th Thresholds) (Report, error) {
 	if err := trace.validate(); err != nil {
 		return Report{}, err
+	}
+	if th.BytesPerToken <= 0 {
+		return Report{}, fmt.Errorf("agentbench: Thresholds.BytesPerToken must be positive, got %d", th.BytesPerToken)
 	}
 	r := Report{Scenario: trace.Scenario, Steps: len(trace.Steps)}
 

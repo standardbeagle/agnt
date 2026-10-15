@@ -223,3 +223,12 @@ func TestAgentBenchBaselineReport(t *testing.T) {
 		fmt.Println(line)
 	}
 }
+
+// TestScore_ZeroBytesPerTokenIsAnError: a zero-value Thresholds (no
+// BytesPerToken) must be rejected, not divide by zero.
+func TestScore_ZeroBytesPerTokenIsAnError(t *testing.T) {
+	tr := &Trace{Scenario: "z", Steps: []Step{{Tool: "currentpage", Kind: KindState, ResponseBytes: 10}}}
+	if _, err := ScoreWithThresholds(tr, Thresholds{}); err == nil || !strings.Contains(err.Error(), "BytesPerToken") {
+		t.Fatalf("zero BytesPerToken must return an error naming it, got: %v", err)
+	}
+}

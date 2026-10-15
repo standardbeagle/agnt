@@ -466,3 +466,38 @@ func TestNegativeFixturesStillDetected(t *testing.T) {
 		t.Fatalf("screenshot-before-hypothesis negative fixture: detector did not fire")
 	}
 }
+
+// chainExecutor answers a straight chain: currentpage, then step1, step2, ...
+// each pointing at the next, and step<length-1> is a useful terminal step.
+type chainExecutor struct{ length int }
+
+func (c chainExecutor) Execute(call Call) (Response, error) {
+	i := 0
+	if call.Tool != "currentpage" {
+		if _, err := fmt.Sscanf(call.Tool, "step%d", &i); err != nil {
+			return Response{}, fmt.Errorf("unexpected call %+v", call)
+		}
+	}
+	if i == c.length-1 {
+		return Response{Text: "finding", Useful: true, FindingKind: "errors"}, nil
+	}
+	return Response{Text: "working", Next: fmt.Sprintf("step%d", i+1)}, nil
+}
+
+// TestFollower_ChainAtStepBoundIsNotACycle pins the step bound: a chain of
+// exactly maxFollowSteps steps whose last response is terminal completes;
+// only a chain that needs one more step is reported as a cycle.
+func TestFollower_ChainAtStepBoundIsNotACycle(t *testing.T) {
+	tr, err := Follow("at_bound", chainExecutor{length: maxFollowSteps})
+	if err != nil {
+		t.Fatalf("a %d-step chain ending in a terminal step must complete, got: %v", maxFollowSteps, err)
+	}
+	if len(tr.Steps) != maxFollowSteps {
+		t.Fatalf("expected %d steps, got %d", maxFollowSteps, len(tr.Steps))
+	}
+
+	if _, err := Follow("over_bound", chainExecutor{length: maxFollowSteps + 1}); err == nil ||
+		!strings.Contains(err.Error(), "cycle") {
+		t.Fatalf("a chain needing step %d must fail as a cycle, got: %v", maxFollowSteps+1, err)
+	}
+}
