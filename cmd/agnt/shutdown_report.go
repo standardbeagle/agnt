@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"syscall"
 	"unicode"
 
 	"github.com/standardbeagle/agnt/internal/selflog"
@@ -183,6 +184,26 @@ func childWaitError(waitErr error, ps *os.ProcessState) error {
 		return waitErr
 	}
 	return &exec.ExitError{ProcessState: ps}
+}
+
+// childExitCode maps the wrapped command's Wait error to the status `agnt run`
+// exits with, the way a shell reports a child: its own code, or 128+signal for
+// a signal death. Anything else that is not a clean exit is 1.
+func childExitCode(waitErr error) int {
+	if waitErr == nil {
+		return 0
+	}
+	var ee *exec.ExitError
+	if !errors.As(waitErr, &ee) {
+		return 1
+	}
+	if ws, ok := ee.Sys().(syscall.WaitStatus); ok && ws.Signaled() {
+		return 128 + int(ws.Signal())
+	}
+	if code := ee.ExitCode(); code > 0 {
+		return code
+	}
+	return 1
 }
 
 // shutdownWriter is the sink for the persistent notice. Overridable in tests.

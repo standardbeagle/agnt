@@ -34,6 +34,15 @@ func TestClassifyChildExit_Signal(t *testing.T) {
 	}
 }
 
+// TestChildExitCode_Signal: a signal death maps to 128+signal, as a shell
+// reports it.
+func TestChildExitCode_Signal(t *testing.T) {
+	c := helperProcess(t, "sleep")
+	require.NoError(t, c.Start())
+	_ = c.Process.Kill()
+	assert.Equal(t, 128+int(syscall.SIGKILL), childExitCode(c.Wait()))
+}
+
 // TestReportUnexpectedShutdown_SignalDoesNotBlameTheAgent covers the case that
 // exposed the misattribution: kimi was terminated by a signal from outside, and
 // the banner claimed the (redraw) output below was an error kimi reported.

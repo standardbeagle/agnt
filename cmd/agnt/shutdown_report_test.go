@@ -83,6 +83,20 @@ func TestChildWaitError_ProcessStateOnlyExit(t *testing.T) {
 	}
 }
 
+// TestChildExitCode pins the status `agnt run` exits with: the wrapped
+// command's own code, never a blanket 0. (Signal deaths: unix test file.)
+func TestChildExitCode(t *testing.T) {
+	if got := childExitCode(waitErrExit(t, 0)); got != 0 {
+		t.Fatalf("exit 0 → %d", got)
+	}
+	if got := childExitCode(waitErrExit(t, 7)); got != 7 {
+		t.Fatalf("exit 7 → %d", got)
+	}
+	if got := childExitCode(os.ErrClosed); got != 1 {
+		t.Fatalf("non-exit wait error → %d, want 1", got)
+	}
+}
+
 // TestChildOutputTapResource verifies resource matching, dedup, capacity, and
 // that non-matching lines stay out of the resource list.
 func TestChildOutputTapResource(t *testing.T) {

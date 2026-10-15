@@ -3,6 +3,8 @@
 package main
 
 import (
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -93,6 +95,50 @@ func TestRunNoOverlayExitsWithoutKeypress(t *testing.T) {
 	mu.Unlock()
 	if !strings.Contains(got, marker) {
 		t.Fatalf("child output %q not relayed; got:\n%s", marker, got)
+	}
+}
+
+// TestRunExitsWithChildStatus is the end-to-end regression for `agnt run`
+// reporting success whatever its child did: the wrapped command's exit status
+// was dropped and agnt always exited 0.
+//
+// Spawns the real binary under a real PTY, so no t.Parallel().
+func TestRunExitsWithChildStatus(t *testing.T) {
+	if testing.Short() {
+		t.Skip("spawns the agnt binary")
+	}
+	bin := findAgntBinary(t)
+
+	projectDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectDir, ".agnt.kdl"), []byte("// test project\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	master, slave := openRunTestPTY(t)
+
+	cmd := exec.Command(bin, "run", "--no-overlay", "--no-autostart", "--session", "exitcode-test",
+		"sh", "-c", "exit 7")
+	cmd.Dir = projectDir
+	cmd.Env = append(os.Environ(), "XDG_STATE_HOME="+t.TempDir(), "TERM=xterm")
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = slave, slave, slave
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start agnt run: %v", err)
+	}
+	_ = slave.Close()
+	go func() { _, _ = io.Copy(io.Discard, master) }()
+
+	exited := make(chan error, 1)
+	go func() { exited <- cmd.Wait() }()
+	var err error
+	select {
+	case err = <-exited:
+	case <-time.After(90 * time.Second):
+		_ = cmd.Process.Kill()
+		<-exited
+		t.Fatal("agnt run did not exit after its child exited")
+	}
+	var ee *exec.ExitError
+	if !errors.As(err, &ee) || ee.ExitCode() != 7 {
+		t.Fatalf("agnt run exit = %v, want status 7 (the child's)", err)
 	}
 }
 

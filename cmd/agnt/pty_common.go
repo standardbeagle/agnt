@@ -900,7 +900,10 @@ Overlay Features:
 
 The overlay listens on a per-session Unix socket (see DefaultOverlaySocketPath)
 for events from the daemon that can be injected as user input. Sessions can receive
-scheduled messages via MCP tools, CLI commands, or the devtools API.`,
+scheduled messages via MCP tools, CLI commands, or the devtools API.
+
+Exit status: agnt run exits with the wrapped command's status (128+N when a
+signal N killed it), so a script or supervisor sees the agent's own verdict.`,
 	DisableFlagParsing: true,
 	Args:               cobra.MinimumNArgs(1),
 	Run:                runCommand,
@@ -1012,7 +1015,17 @@ func runCommand(cmd *cobra.Command, args []string) {
 	if err := runPlatformPTY(commandArgs, overlaySocketPath, sessionCode); err != nil {
 		log.Fatalf("Error: %v", err)
 	}
+	// Every deferred PTY/terminal restore has run by now; hand the wrapped
+	// command's status to our caller instead of always reporting success.
+	if runChildExitCode != 0 {
+		os.Exit(runChildExitCode)
+	}
 }
+
+// runChildExitCode is the status `agnt run` exits with, recorded by
+// finishSession from the wrapped command's Wait. Phases run sequentially, so
+// the last child to finish (the coding phase after a first-run setup) decides.
+var runChildExitCode int
 
 func runHelpRequested(args []string) bool {
 	for i := 0; i < len(args); i++ {
@@ -1193,6 +1206,7 @@ func generateSessionCode(command string) string {
 // user sees why when they return to the tab. Kept here (not in run*.go) to hold
 // those files under their line budget (TestRunFilesUnderBudget).
 func finishSession(height int, waitErr error, userInterrupted bool, rt *pipelineRuntime) {
+	runChildExitCode = childExitCode(waitErr)
 	cleanupTerminal(height)
 	if rt != nil && rt.restoreNotifier != nil {
 		rt.restoreNotifier()
