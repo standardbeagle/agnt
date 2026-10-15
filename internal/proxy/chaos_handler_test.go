@@ -83,6 +83,43 @@ func TestHandleProxy_SlowDripRuleDeliversTheWholeBody(t *testing.T) {
 	}
 }
 
+// Under a real server ReverseProxy aborts a response whose body copy fails by
+// panicking with http.ErrAbortHandler, so the logging after ServeHTTP never
+// ran: a dropped connection (chaos disconnect here; a client leaving mid-body
+// in practice) left no traffic-log entry for the request at all.
+func TestHandleProxy_AbortedResponseIsStillLogged(t *testing.T) {
+	body := strings.Repeat("z", 20*1024)
+	ps := newChaosTestProxy(t, body, &ChaosRule{ID: "d", Type: ChaosDisconnect, Enabled: true, DropAfterBytes: 1000})
+	front := httptest.NewServer(http.HandlerFunc(ps.handleProxy))
+	t.Cleanup(front.Close)
+
+	resp, err := http.Get(front.URL + "/aborted.json")
+	if err == nil {
+		_, _ = io.ReadAll(resp.Body)
+		resp.Body.Close()
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		var found *HTTPLogEntry
+		for _, e := range ps.Logger().Query(LogFilter{Types: []LogEntryType{LogTypeHTTP}}) {
+			if e.HTTP != nil && strings.Contains(e.HTTP.URL, "/aborted.json") {
+				found = e.HTTP
+			}
+		}
+		if found != nil {
+			if found.Error == "" {
+				t.Fatalf("aborted response logged without an error: %+v", found)
+			}
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the aborted request has no traffic-log entry")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
 func TestHandleProxy_DisconnectRuleStopsTheBody(t *testing.T) {
 	body := strings.Repeat("z", 20*1024)
 	ps := newChaosTestProxy(t, body, &ChaosRule{ID: "d", Type: ChaosDisconnect, Enabled: true, DropAfterBytes: 1000})

@@ -707,8 +707,29 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		reqID:          reqID,
 	}
 
+	// Under a real server, ReverseProxy aborts a response whose body copy
+	// fails — a client that went away mid-body, a chaos disconnect — by
+	// panicking with http.ErrAbortHandler, so nothing after ServeHTTP runs.
+	// The transaction is logged from this defer on that path, so an aborted
+	// response still gets its one entry; the panic then continues to the
+	// server, which closes the connection.
+	completed := false
+	defer func() {
+		if completed {
+			return
+		}
+		if r.Context().Err() != nil {
+			recorder.clientCanceled = true
+		}
+		if recorder.proxyErr == "" {
+			recorder.proxyErr = "response aborted before its body was complete"
+		}
+		ps.logProxiedRequest(r, reqID, startTime, reqHeaders, reqBody, recorder)
+	}()
+
 	// Proxy the request
 	ps.proxy.ServeHTTP(recorder, r)
+	completed = true
 	ps.logProxiedRequest(r, reqID, startTime, reqHeaders, reqBody, recorder)
 }
 
