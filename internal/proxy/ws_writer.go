@@ -213,7 +213,7 @@ func (w *asyncWSWriter) WriteMessage(_ int, data []byte) error {
 	}
 	// Non-blocking send: drop on full buffer to isolate slow subscribers. A drop
 	// is reported to the caller as errBroadcastDropped so a dropped frame is not
-	// counted as a delivery (broadcastRaw counts only nil returns). Silently
+	// counted as a delivery (sendToConns counts only nil returns). Silently
 	// returning nil on a drop made "0 clients" detection unreliable.
 	select {
 	case w.ch <- data:

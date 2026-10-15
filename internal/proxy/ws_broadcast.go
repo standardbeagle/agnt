@@ -9,24 +9,6 @@ import (
 	"github.com/standardbeagle/agnt/internal/debug"
 )
 
-// broadcastRaw sends data to every registered wsWriter. Failed sends are
-// silently ignored (best-effort broadcast); the broken connection will be
-// removed when its handler goroutine detects the next read error.
-func (ps *ProxyServer) broadcastRaw(data []byte) int {
-	sent := 0
-	ps.wsConns.Range(func(_, value interface{}) bool {
-		conn := connFromMap(value)
-		if conn == nil {
-			return true
-		}
-		if conn.WriteMessage(websocket.TextMessage, data) == nil {
-			sent++
-		}
-		return true
-	})
-	return sent
-}
-
 // connTrusted reports whether a wsConns registry value is a trusted
 // connection. A connection registered by handleWebSocket carries the verdict
 // controlCallerTrusted reached on its upgrade (default: untrusted). Any other
@@ -65,8 +47,8 @@ func (ps *ProxyServer) sendToConns(connIDs []string, data []byte) int {
 	return sent
 }
 
-// broadcastTrusted is broadcastRaw for frames that carry the agent's or the
-// operator's own material — terminal output previews, tool-call events, the
+// broadcastTrusted sends data to every trusted connection. It is the fan-out
+// for frames that carry the agent's or the operator's own material — terminal output previews, tool-call events, the
 // secret-entry prompt. A visitor on an unauthenticated tunnel is a connected
 // client too, and must not be sent them.
 func (ps *ProxyServer) broadcastTrusted(data []byte) int {

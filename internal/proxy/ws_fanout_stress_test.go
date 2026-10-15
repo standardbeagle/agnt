@@ -468,3 +468,24 @@ func TestProxyWS_LargeMessagePayload(t *testing.T) {
 	assert.Greater(t, asyncSlow.dropped.Load(), int64(0),
 		"slow asyncWSWriter must drop messages when channel is full")
 }
+
+// broadcastRaw sends data to every registered wsWriter, trusted or not, and
+// returns how many took it. Test-only: production fans out through
+// broadcastTrusted or sendToConns, which share the same Range + connFromMap +
+// WriteMessage path this harness stresses. Failed sends are ignored; the
+// broken connection is removed when its handler goroutine sees the next read
+// error.
+func (ps *ProxyServer) broadcastRaw(data []byte) int {
+	sent := 0
+	ps.wsConns.Range(func(_, value interface{}) bool {
+		conn := connFromMap(value)
+		if conn == nil {
+			return true
+		}
+		if conn.WriteMessage(websocket.TextMessage, data) == nil {
+			sent++
+		}
+		return true
+	})
+	return sent
+}

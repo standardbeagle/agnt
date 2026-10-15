@@ -43,7 +43,7 @@ Use this skill when you need to find where something is implemented, understand 
 ### Daemon — Process Lifecycle
 - **Process start/stop**: `internal/daemon/daemon.go` — `StartScript`, `autostartScript`, `CleanupSessionResources`
 - **Autostart orchestration**: `daemon.go` — `RunAutostart`, `startAutostartScripts`
-- **Dependency ordering**: `internal/daemon/process_readiness.go` — `ProcessReadiness`, `MarkReady/Failed/Exited`, `Wait`
+- **Dependency ordering**: `internal/daemon/ready_signaler.go` — `ReadySignaler` (`SignalReady/SignalFailed`, `WaitReadyCtx`, `StartPortProbe`); pending set in `proc_pending.go`, `daemon_proc_deps.go`
   - See also: `docs/plans/2026-03-15-process-dependency-ordering-design.md`
 - **Process state machine**: `internal/daemon/daemon.go` + `go-cli-server/process`
 - **Script registry** (ephemeral, rebuilt per session): `go-cli-server/script.Registry`

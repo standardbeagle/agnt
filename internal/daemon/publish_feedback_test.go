@@ -194,12 +194,8 @@ func TestFeedbackArrivalEventScopedToOwningProject(t *testing.T) {
 	d, c := bootPublicPlaneSession(t, "/proj-a")
 	addr := d.PublicPlaneAddr()
 
-	subA := d.feedbackHub.Subscribe("/proj-a")
-	require.NotNil(t, subA)
-	t.Cleanup(func() { d.feedbackHub.Unsubscribe(subA) })
-	subB := d.feedbackHub.Subscribe("/proj-b")
-	require.NotNil(t, subB)
-	t.Cleanup(func() { d.feedbackHub.Unsubscribe(subB) })
+	subA := projectEventSink(t, d, "/proj-a")
+	subB := projectEventSink(t, d, "/proj-b")
 
 	res, err := c.PublishCreate(protocol.PublishCreateRequest{Walkthrough: publishTestWalkthrough(t)})
 	require.NoError(t, err)
@@ -207,24 +203,42 @@ func TestFeedbackArrivalEventScopedToOwningProject(t *testing.T) {
 
 	require.Equal(t, http.StatusAccepted, postFeedback(t, addr, token, `{"message":"scoped ping"}`))
 
-	select {
-	case ev := <-subA.C:
-		require.Equal(t, res.ID, ev.ShareID)
-		require.Equal(t, 1, ev.Total)
-		require.NotEmpty(t, ev.Remediation)
-		// No token / no body on the event.
-		evJSON := mustJSON(t, ev)
-		require.NotContains(t, evJSON, token, "arrival event must not carry the token")
-		require.NotContains(t, evJSON, "scoped ping", "arrival event must not carry the feedback body")
-	case <-time.After(2 * time.Second):
-		t.Fatal("project A subscriber did not receive the arrival event")
-	}
+	entry, ok := nextFeedbackArrival(subA, 2*time.Second)
+	require.True(t, ok, "project A's event stream did not receive the arrival event")
+	require.Equal(t, res.ID, entry.Custom.Data["share_id"])
+	require.Equal(t, 1, entry.Custom.Data["total"])
+	require.NotEmpty(t, entry.Custom.Message)
+	// No token / no body on the event.
+	evJSON := mustJSON(t, entry)
+	require.NotContains(t, evJSON, token, "arrival event must not carry the token")
+	require.NotContains(t, evJSON, "scoped ping", "arrival event must not carry the feedback body")
 
-	select {
-	case <-subB.C:
-		t.Fatal("project B subscriber must NOT receive project A's feedback event")
-	case <-time.After(200 * time.Millisecond):
-		// expected: no delivery to the wrong project.
+	_, leaked := nextFeedbackArrival(subB, 200*time.Millisecond)
+	require.False(t, leaked, "project B's event stream must NOT receive project A's feedback event")
+}
+
+// projectEventSink subscribes to the STREAM-EVENTS transport for one
+// project, the way an agent or developer process does.
+func projectEventSink(t *testing.T, d *Daemon, projectPath string) *StreamSink {
+	t.Helper()
+	sink := d.eventHub.AddStreamSink(streamFilter{projectPath: projectPath})
+	t.Cleanup(func() { d.eventHub.RemoveStreamSink(sink) })
+	return sink
+}
+
+// nextFeedbackArrival returns the next feedback_arrival entry on sink, skipping
+// any other entry the project's stream carries.
+func nextFeedbackArrival(sink *StreamSink, wait time.Duration) (proxy.LogEntry, bool) {
+	deadline := time.After(wait)
+	for {
+		select {
+		case entry := <-sink.Ch:
+			if entry.Type == proxy.LogTypeCustom && entry.Custom != nil && entry.Custom.ID == "feedback_arrival" {
+				return entry, true
+			}
+		case <-deadline:
+			return proxy.LogEntry{}, false
+		}
 	}
 }
 
@@ -351,17 +365,12 @@ func TestFeedbackDroppedCountShareScoped(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, fbB.Dropped, "A's drops must not appear in B's feedback read")
 
-	subB := d.feedbackHub.Subscribe("/proj-b")
-	require.NotNil(t, subB)
-	t.Cleanup(func() { d.feedbackHub.Unsubscribe(subB) })
+	subB := projectEventSink(t, d, "/proj-b")
 	require.Equal(t, http.StatusAccepted, postFeedback(t, addr, resB.Token, `{"message":"b-first"}`))
-	select {
-	case ev := <-subB.C:
-		require.Equal(t, resB.ID, ev.ShareID)
-		require.Zero(t, ev.Dropped, "A's drops must not appear in B's arrival event")
-	case <-time.After(2 * time.Second):
-		t.Fatal("project B subscriber did not receive its feedback arrival")
-	}
+	entry, ok := nextFeedbackArrival(subB, 2*time.Second)
+	require.True(t, ok, "project B's event stream did not receive its feedback arrival")
+	require.Equal(t, resB.ID, entry.Custom.Data["share_id"])
+	require.Equal(t, int64(0), entry.Custom.Data["dropped"], "A's drops must not appear in B's arrival event")
 }
 
 // TestFeedbackReadRedactionNoToken pins that create returns the token once and

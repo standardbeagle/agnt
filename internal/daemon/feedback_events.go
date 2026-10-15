@@ -1,7 +1,6 @@
 package daemon
 
 import (
-	"sync"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/proxy"
@@ -53,111 +52,44 @@ type FeedbackArrival struct {
 // per-share secret (INV-9), only the tool the agent should call.
 const feedbackRemediationHint = "run `publish feedback` with this share id to read the new rows"
 
-// FeedbackHub fans FeedbackArrival events to per-project subscribers. Safe for
-// concurrent use. A subscriber only ever sees events for the exact project path
-// it subscribed with — the map key IS the isolation boundary.
+// FeedbackHub emits FeedbackArrival events onto the owning project's
+// STREAM-EVENTS stream. Safe for concurrent use: it holds no state of its own.
+// The project stamp on each entry IS the isolation boundary.
 type FeedbackHub struct {
-	mu       sync.Mutex
-	subs     map[string]map[*FeedbackSub]struct{} // projectPath -> set of subscribers
 	eventHub *EventHub
 }
 
-// FeedbackSub is one subscription. C delivers arrival events for the subscribed
-// project; it is buffered and drop-newest so a slow subscriber never blocks the
-// public-plane POST path.
-type FeedbackSub struct {
-	projectPath string
-	C           chan FeedbackArrival
-}
-
-// NewFeedbackHub returns an empty hub.
+// NewFeedbackHub returns a hub that emits onto eventHub.
 func NewFeedbackHub(eventHub *EventHub) *FeedbackHub {
-	return &FeedbackHub{
-		subs:     make(map[string]map[*FeedbackSub]struct{}),
-		eventHub: eventHub,
-	}
+	return &FeedbackHub{eventHub: eventHub}
 }
 
-// Subscribe registers a subscriber for exactly one project path. An empty
-// projectPath is rejected (returns nil): an unscoped subscription would be the
-// cross-project leak this hub exists to prevent.
-func (h *FeedbackHub) Subscribe(projectPath string) *FeedbackSub {
-	if h == nil || projectPath == "" {
-		return nil
-	}
-	sub := &FeedbackSub{projectPath: projectPath, C: make(chan FeedbackArrival, 16)}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	set := h.subs[projectPath]
-	if set == nil {
-		set = make(map[*FeedbackSub]struct{})
-		h.subs[projectPath] = set
-	}
-	set[sub] = struct{}{}
-	return sub
-}
-
-// Unsubscribe removes a subscriber. Idempotent and nil-safe.
-func (h *FeedbackHub) Unsubscribe(sub *FeedbackSub) {
-	if h == nil || sub == nil {
-		return
-	}
-	h.mu.Lock()
-	defer h.mu.Unlock()
-	set := h.subs[sub.projectPath]
-	if set == nil {
-		return
-	}
-	delete(set, sub)
-	if len(set) == 0 {
-		delete(h.subs, sub.projectPath)
-	}
-}
-
-// Emit delivers ev to every subscriber of exactly projectPath — and no other
+// Emit delivers ev to the event stream of exactly projectPath — and no other
 // project. An empty projectPath is dropped: without a resolvable owner the event
 // has no scope, and delivering it anywhere would bleed across projects. Delivery
-// is non-blocking (drop-newest) so the public POST path never stalls on a slow
-// agent.
+// is non-blocking (stream sinks drop on a full channel) so the public POST path
+// never stalls on a slow agent.
 func (h *FeedbackHub) Emit(projectPath string, ev FeedbackArrival) {
-	if h == nil || projectPath == "" {
+	if h == nil || projectPath == "" || h.eventHub == nil {
 		return
 	}
-	h.mu.Lock()
-	subs := make([]*FeedbackSub, 0, len(h.subs[projectPath]))
-	for sub := range h.subs[projectPath] {
-		subs = append(subs, sub)
-	}
-	h.mu.Unlock()
-	for _, sub := range subs {
-		select {
-		case sub.C <- ev:
-		default:
-			// Drop-newest: a saturated subscriber loses this event rather than
-			// blocking ingest. The counts on the next arrival are cumulative, so
-			// a dropped notice self-heals.
-		}
-	}
-
-	// STREAM-EVENTS is the real agent/developer transport. Stamp the owning
-	// project explicitly so another project's subscriber cannot receive this
-	// proxy-less event. Stream sink removal owns channel cleanup; this synchronous
-	// edge adds no goroutine or subscription lifecycle of its own.
-	if h.eventHub != nil {
-		h.eventHub.BroadcastLogEntryForProject(proxy.LogEntry{
-			Type: proxy.LogTypeCustom,
-			Custom: &proxy.CustomLog{
-				ID:        "feedback_arrival",
-				Timestamp: time.Now(),
-				Level:     "info",
-				Message:   ev.Remediation,
-				Data: map[string]interface{}{
-					"share_id":    ev.ShareID,
-					"revision_id": ev.RevisionID,
-					"total":       ev.Total,
-					"dropped":     ev.Dropped,
-				},
+	// STREAM-EVENTS is the agent/developer transport. Stamp the owning project
+	// explicitly so another project's subscriber cannot receive this proxy-less
+	// event. Stream sink removal owns channel cleanup; this synchronous edge adds
+	// no goroutine or subscription lifecycle of its own.
+	h.eventHub.BroadcastLogEntryForProject(proxy.LogEntry{
+		Type: proxy.LogTypeCustom,
+		Custom: &proxy.CustomLog{
+			ID:        "feedback_arrival",
+			Timestamp: time.Now(),
+			Level:     "info",
+			Message:   ev.Remediation,
+			Data: map[string]interface{}{
+				"share_id":    ev.ShareID,
+				"revision_id": ev.RevisionID,
+				"total":       ev.Total,
+				"dropped":     ev.Dropped,
 			},
-		}, projectPath)
-	}
+		},
+	}, projectPath)
 }
