@@ -37,7 +37,7 @@ func main() {
 </html>`
 
 	server := &http.Server{
-		Addr: ":18081",
+		Addr: "127.0.0.1:18081", // loopback only
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/html")
 			w.Write([]byte(testHTML))
@@ -51,7 +51,7 @@ func main() {
 	proxyMgr := proxy.NewProxyManager()
 	proxyServer, err := proxyMgr.Create(ctx, proxy.ProxyConfig{
 		ID:         "tab-test",
-		TargetURL:  "http://localhost:18081",
+		TargetURL:  "http://127.0.0.1:18081",
 		ListenPort: 0,
 		MaxLogSize: 1000,
 		Path:       ".",

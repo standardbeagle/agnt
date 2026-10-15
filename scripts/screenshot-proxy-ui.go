@@ -97,7 +97,7 @@ func main() {
 
 	// Start test server
 	server := &http.Server{
-		Addr: ":18080",
+		Addr: "127.0.0.1:18080", // loopback only
 		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "text/html")
 			w.Write([]byte(testHTML))
@@ -106,14 +106,14 @@ func main() {
 	go server.ListenAndServe()
 	defer server.Shutdown(ctx)
 
-	log.Println("Test server started on :18080")
+	log.Println("Test server started on 127.0.0.1:18080")
 	time.Sleep(500 * time.Millisecond)
 
 	// Start a proxy
 	proxyMgr := proxy.NewProxyManager()
 	proxyConfig := proxy.ProxyConfig{
 		ID:         "ui-test",
-		TargetURL:  "http://localhost:18080",
+		TargetURL:  "http://127.0.0.1:18080",
 		ListenPort: 0, // Auto-assign
 		MaxLogSize: 1000,
 		Path:       ".",
