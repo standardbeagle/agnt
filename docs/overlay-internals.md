@@ -109,7 +109,9 @@ tear the screen:
 - **Locking**: `Notify` takes the overlay lock to repaint, so code already holding it (every
   panel key handler runs under it) calls `notifyLocked`. Calling `Notify` there deadlocks the
   input goroutine on itself and freezes all overlay input; a handler that must call something
-  which notifies (`setForwarding`) releases the lock around it.
+  which notifies (`setForwarding`) releases the lock around it. The same goes for a daemon
+  round trip (config editor ^S → `ReconcileConfig`): it runs with the lock released so repaints
+  do not wait on IPC, and its result is reported with `notifyLocked` after re-acquiring.
 
 Trade-off, shared with the splash: the rows belong to the child, so a toast overwrites
 whatever the agent drew there until the agent repaints (interactive agents redraw their

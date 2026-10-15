@@ -75,7 +75,12 @@ func TestConfigPanel_SaveKeyWritesAndReconciles(t *testing.T) {
 	r.overlay.configEditor.MoveToLineStart()
 	r.overlay.configEditor.Insert("    dev {\n    run \"npm run dev\"\n}\n")
 
-	if !r.handleConfigKey("\x13") { // Ctrl+S arrives as a raw control byte
+	// handleConfigKey runs under the overlay lock (handleMenuKey holds it);
+	// ^S releases it around the daemon call, so the test must hold it too.
+	r.overlay.mu.Lock()
+	consumed := r.handleConfigKey("\x13") // Ctrl+S arrives as a raw control byte
+	r.overlay.mu.Unlock()
+	if !consumed {
 		t.Fatal("Ctrl+S was not consumed")
 	}
 	cfg, err := config.LoadAgntConfigFile(path)

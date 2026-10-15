@@ -27,8 +27,9 @@ type fakeProxyController struct {
 	tunnelURL      string
 	tunnelErr      error
 
-	reconciled bool
-	reconcile  error
+	reconciled  bool
+	reconcile   error
+	onReconcile func() // runs inside ReconcileConfig, before it returns
 
 	proxyURLName string // config name ProxyURL was asked for
 	proxyURL     string // what the daemon reports after the rebind
@@ -62,6 +63,9 @@ func (f *fakeProxyController) StartTunnel(provider, proxyID string, localPort in
 
 func (f *fakeProxyController) ReconcileConfig() error {
 	f.reconciled = true
+	if f.onReconcile != nil {
+		f.onReconcile()
+	}
 	return f.reconcile
 }
 

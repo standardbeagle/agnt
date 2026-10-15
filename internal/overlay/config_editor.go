@@ -355,7 +355,9 @@ func (r *InputRouter) closeConfigPanel() {
 // handleConfigKey routes one parsed key into the editor. It returns false for
 // keys the editor does not consume, so panel navigation still works.
 // Must be called with the overlay lock held, so messages go out through
-// notifyLocked: Notify would take the lock again and freeze all input.
+// notifyLocked: Notify would take the lock again and freeze all input. ^S
+// releases the lock around its daemon call and re-acquires it before
+// returning.
 //
 // Everything printable is consumed: a config panel that let 'q' or 'x' fall
 // through to the panel browser would close itself the moment someone typed a
@@ -388,8 +390,15 @@ func (r *InputRouter) handleConfigKey(key string) bool {
 			r.overlay.notifyLocked(Notification{Level: LevelError, Text: err.Error()})
 		} else {
 			r.overlay.notifyLocked(Notification{Level: LevelInfo, Text: e.Status()})
-			// A saved config is only useful once the daemon has it.
-			if err := r.scriptController.ReconcileConfig(); err != nil {
+			// A saved config is only useful once the daemon has it. That is
+			// an IPC round trip, so the overlay lock is released around it
+			// (as dispatchPaletteCommand does): holding it would stall every
+			// repaint until the daemon answers. The result is reported under
+			// the lock again, through notifyLocked.
+			r.overlay.mu.Unlock()
+			err := r.scriptController.ReconcileConfig()
+			r.overlay.mu.Lock()
+			if err != nil {
 				r.overlay.notifyLocked(Notification{
 					Level: LevelWarn,
 					Text:  "saved, but could not apply live: " + err.Error(),

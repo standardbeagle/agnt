@@ -227,3 +227,37 @@ func TestPalette_ConfigFailureIsReported(t *testing.T) {
 		t.Errorf("a failed :config was silent; toasts = %q", toastTexts(ov))
 	}
 }
+
+// ^S asks the daemon to apply the saved file. That is an IPC round trip, and
+// holding the overlay lock across it stalled every repaint (status bar,
+// toasts, indicator) until the daemon answered. The lock must be free while
+// ReconcileConfig runs, and the result must still be reported afterwards.
+func TestConfigPanel_SaveReleasesOverlayLockAroundReconcile(t *testing.T) {
+	for _, reconcileErr := range []error{nil, errors.New("daemon gone")} {
+		r, ov, ctrl, _ := menuRouterWithConfig(t, "scripts {\n}\n")
+		ctrl.reconcile = reconcileErr
+		lockHeld := false
+		ctrl.onReconcile = func() {
+			if ov.mu.TryLock() {
+				ov.mu.Unlock()
+			} else {
+				lockHeld = true
+			}
+		}
+		ov.mu.Lock()
+		ov.configEditor.Insert("// ok\n")
+		ov.mu.Unlock()
+
+		pressKey(t, r, "\x13")
+		if !ctrl.reconciled {
+			t.Fatal("^S did not ask the daemon to apply the saved config")
+		}
+		if lockHeld {
+			t.Errorf("ReconcileConfig ran with the overlay lock held (err=%v)", reconcileErr)
+		}
+		if reconcileErr != nil && !hasToast(ov, "could not apply live") {
+			t.Errorf("reconcile failure not reported; toasts = %q", toastTexts(ov))
+		}
+		pressKey(t, r, "x") // the lock was re-acquired and released again
+	}
+}
