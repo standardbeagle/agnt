@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/httpcaps"
@@ -67,9 +68,15 @@ func (ps *ProxyServer) NamedTunnelConfig() *NamedTunnelConfig {
 type namedTunnel struct {
 	tun     *tunnel.Tunnel
 	ingress *http.Server
+	// stopping is set before a requested stop, so the exit watcher can tell
+	// it from cloudflared dying on its own (only the latter is a failure).
+	stopping atomic.Bool
+	// watched is closed once the exit watcher has handled cloudflared's exit.
+	watched chan struct{}
 }
 
 func (n *namedTunnel) stop() {
+	n.stopping.Store(true)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	_ = n.tun.Stop(ctx)
@@ -160,18 +167,23 @@ func (ps *ProxyServer) serveNamedTunnel(ctx context.Context, ln net.Listener, ha
 		ps.logNamedTunnel(DiagnosticInfo, "named_tunnel_connected",
 			fmt.Sprintf("named tunnel connected: %s", url))
 	})
-	ps.tunnel.Store(&namedTunnel{tun: tun, ingress: ingress})
+	nt := &namedTunnel{tun: tun, ingress: ingress, watched: make(chan struct{})}
+	ps.tunnel.Store(nt)
 
 	if err := tun.Start(ctx); err != nil {
+		close(nt.watched)
 		_ = ingress.Close()
 		ps.logNamedTunnel(DiagnosticError, "named_tunnel_failed",
 			fmt.Sprintf("named tunnel %s: %v", name, err))
 		return
 	}
 	go func() {
+		defer close(nt.watched)
 		<-tun.Done()
 		_ = ingress.Close()
-		if ctx.Err() == nil {
+		// Stop stops the tunnel before it cancels ctx, so ctx alone cannot
+		// tell a requested stop from cloudflared exiting on its own.
+		if ctx.Err() == nil && !nt.stopping.Load() {
 			ps.logNamedTunnel(DiagnosticError, "named_tunnel_failed",
 				fmt.Sprintf("named tunnel %s exited: %s", name, tun.Info().Error))
 		}

@@ -11,7 +11,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -27,7 +29,7 @@ func fakeCloudflared(t *testing.T) (bin, argvFile string) {
 	dir := t.TempDir()
 	bin = filepath.Join(dir, "cloudflared")
 	argvFile = filepath.Join(dir, "argv")
-	script := "#!/bin/sh\nprintf '%s\\n' \"$@\" > " + argvFile + "\n" +
+	script := "#!/bin/sh\necho $$ > " + filepath.Join(dir, "pid") + "\nprintf '%s\\n' \"$@\" > " + argvFile + "\n" +
 		"echo 'INF Registered tunnel connection connIndex=0' >&2\nexec sleep 60\n"
 	w := exec.Command("/bin/sh", "-c", `cat > "$0" && chmod 755 "$0"`, bin)
 	w.Stdin = strings.NewReader(script)
@@ -218,5 +220,59 @@ func TestNamedTunnelRefusedWithoutAccessOrOptOut(t *testing.T) {
 		if _, err := NewProxyServer(ProxyConfig{ID: "p", TargetURL: "http://127.0.0.1:1", NamedTunnel: cfg}); err == nil {
 			t.Errorf("%s: NewProxyServer accepted a named tunnel with no usable Access check", name)
 		}
+	}
+}
+
+// namedTunnelFailures counts named_tunnel_failed diagnostics after the tunnel's
+// exit watcher has handled cloudflared's exit.
+func namedTunnelFailures(t *testing.T, ps *ProxyServer, n *namedTunnel) int {
+	t.Helper()
+	select {
+	case <-n.watched:
+	case <-time.After(10 * time.Second):
+		t.Fatal("named tunnel exit watcher never ran")
+	}
+	failures := 0
+	for _, e := range ps.Logger().Query(LogFilter{}) {
+		if e.Diagnostic != nil && e.Diagnostic.Event == "named_tunnel_failed" {
+			failures++
+		}
+	}
+	return failures
+}
+
+// TestNamedTunnelGracefulStopIsNotAFailure: Stop stops the tunnel before it
+// cancels the proxy context, and the exit watcher took the tunnel exiting
+// under a live context as a crash, telling the agent every requested stop
+// had failed.
+func TestNamedTunnelGracefulStopIsNotAFailure(t *testing.T) {
+	ps, _, _ := startNamedTunnelProxy(t, true)
+	n := ps.tunnel.Load()
+	if err := ps.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if got := namedTunnelFailures(t, ps, n); got != 0 {
+		t.Fatalf("graceful Stop reported %d named_tunnel_failed diagnostics, want 0", got)
+	}
+}
+
+// TestNamedTunnelUnexpectedExitIsAFailure is the control for the test above:
+// cloudflared dying on its own must still be reported.
+func TestNamedTunnelUnexpectedExitIsAFailure(t *testing.T) {
+	ps, _, _ := startNamedTunnelProxy(t, true)
+	n := ps.tunnel.Load()
+	raw, err := os.ReadFile(filepath.Join(filepath.Dir(ps.namedTunnelSetup.cfg.BinaryPath), "pid"))
+	if err != nil {
+		t.Fatalf("reading fake cloudflared pid: %v", err)
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
+	if err != nil {
+		t.Fatalf("parsing pid %q: %v", raw, err)
+	}
+	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+		t.Fatalf("killing fake cloudflared: %v", err)
+	}
+	if got := namedTunnelFailures(t, ps, n); got != 1 {
+		t.Fatalf("unexpected cloudflared exit reported %d named_tunnel_failed diagnostics, want 1", got)
 	}
 }
