@@ -140,8 +140,9 @@ type HookRulesConfig struct {
 	BypassEnv string `kdl:"bypass-env"`
 
 	// BashPatterns is a map from rule name to bash pattern rule. The
-	// rule name is used only for diagnostics (rules list output) and
-	// does not affect matching order relative to builtins.
+	// rule name appears in diagnostics and orders user rules among
+	// themselves (byte order, first match wins); every user rule still
+	// evaluates after the builtins.
 	BashPatterns map[string]*HookBashPattern `kdl:"bash-patterns"`
 
 	// PromptPatterns is a map from rule name to prompt pattern rule.

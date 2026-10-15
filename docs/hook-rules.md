@@ -112,6 +112,12 @@ hook-rules {
   Bash rules so `^` matches after `;` / `&&` separators.
 - Prompt patterns are compiled with `(?i)` case-insensitive prefix by
   default.
+- Evaluation order: builtins first, then your rules sorted by rule name
+  (byte order). The first matching Bash rule wins, so to make one of your
+  rules take precedence over another that matches the same command, give
+  it a name that sorts earlier (`10-block-docker`, `20-warn-docker`). A
+  KDL rule can never pre-empt a builtin. Prompt reminders are emitted in
+  the same order.
 - Invalid regexes are silently skipped on the hot path. Run
   `agnt hook rules list` to surface parse errors — it uses the strict
   loader that reports per-rule compile failures.

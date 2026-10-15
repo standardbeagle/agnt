@@ -2,8 +2,10 @@ package hookrules
 
 import (
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
@@ -12,7 +14,7 @@ import (
 // LoadForProject returns the merged rule set for the given project path.
 // Built-in rules are always present; KDL overrides (from `.agnt.kdl`
 // `hook-rules` block) are appended so a user-provided rule evaluates AFTER
-// builtins. A user who needs to override a builtin pattern should do it by
+// builtins, and among themselves in rule-name order (see byName). A user who needs to override a builtin pattern should do it by
 // negating via a more specific pattern earlier in evaluation order — which
 // today means editing the builtin catalog, since override-before-builtin
 // semantics would require per-project reordering we have deliberately not
@@ -33,6 +35,15 @@ func LoadForProject(projectDir string) *RuleSet {
 	return MergeOverrides(base, cfg.HookRules)
 }
 
+// byName returns the rule names of a .agnt.kdl pattern block in byte order.
+// The block is parsed into a map, which keeps no document order, so the
+// order user rules are appended (and so which of two overlapping bash rules
+// wins, first match winning) is fixed by name rather than left to map
+// iteration, which differs from run to run.
+func byName[V any](m map[string]V) []string {
+	return slices.Sorted(maps.Keys(m))
+}
+
 // MergeOverrides returns a new RuleSet that combines the builtin base with
 // the parsed KDL override block. It does not mutate base. Invalid patterns
 // in the override are silently skipped — consistent with the fail-open
@@ -49,7 +60,8 @@ func MergeOverrides(base *RuleSet, override *config.HookRulesConfig) *RuleSet {
 	if override.BypassEnv != "" {
 		rs.BypassEnv = override.BypassEnv
 	}
-	for name, r := range override.BashPatterns {
+	for _, name := range byName(override.BashPatterns) {
+		r := override.BashPatterns[name]
 		if r == nil || r.Pattern == "" {
 			continue
 		}
@@ -69,7 +81,8 @@ func MergeOverrides(base *RuleSet, override *config.HookRulesConfig) *RuleSet {
 		}
 		rs.BashRules = append(rs.BashRules, rule)
 	}
-	for name, r := range override.PromptPatterns {
+	for _, name := range byName(override.PromptPatterns) {
+		r := override.PromptPatterns[name]
 		if r == nil || r.Pattern == "" {
 			continue
 		}
@@ -113,7 +126,8 @@ func LoadAndValidate(projectDir string) (*RuleSet, []error) {
 	if cfg.HookRules.BypassEnv != "" {
 		rs.BypassEnv = cfg.HookRules.BypassEnv
 	}
-	for name, r := range cfg.HookRules.BashPatterns {
+	for _, name := range byName(cfg.HookRules.BashPatterns) {
+		r := cfg.HookRules.BashPatterns[name]
 		if r == nil || r.Pattern == "" {
 			errs = append(errs, fmt.Errorf("bash-pattern %q: empty pattern", name))
 			continue
@@ -131,7 +145,8 @@ func LoadAndValidate(projectDir string) (*RuleSet, []error) {
 		}
 		rs.BashRules = append(rs.BashRules, rule)
 	}
-	for name, r := range cfg.HookRules.PromptPatterns {
+	for _, name := range byName(cfg.HookRules.PromptPatterns) {
+		r := cfg.HookRules.PromptPatterns[name]
 		if r == nil || r.Pattern == "" {
 			errs = append(errs, fmt.Errorf("prompt-pattern %q: empty pattern", name))
 			continue

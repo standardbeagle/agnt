@@ -79,8 +79,10 @@ type PromptRule struct {
 
 // RuleSet is the merged collection of Bash and prompt rules used by the
 // check-bash / check-prompt subcommands. Rules are evaluated in order;
-// first match wins for Bash (so higher-priority patterns should be listed
-// first in both builtin defaults and the KDL override).
+// first match wins for Bash. Builtins come first in catalog order, then the
+// .agnt.kdl rules in rule-name order (the KDL block is a map and keeps no
+// document order), so a higher-priority user rule needs a name that sorts
+// earlier.
 type RuleSet struct {
 	BashRules   []BashRule
 	PromptRules []PromptRule

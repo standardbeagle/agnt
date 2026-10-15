@@ -1,6 +1,8 @@
 package hookrules
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -220,6 +222,48 @@ func TestHookActionsAcceptedByConfig(t *testing.T) {
 		rs := MergeOverrides(&RuleSet{}, cfg.HookRules)
 		if got := rs.MatchBash("zzz-cmd").Action; got != a {
 			t.Errorf("action %q reached the hook as %q", a, got)
+		}
+	}
+}
+
+// TestOverrideOrderIsByRuleName pins the precedence among .agnt.kdl rules:
+// they are parsed into a map, so evaluation order must not follow map
+// iteration. Two overlapping bash rules resolve by name (first match wins,
+// names in byte order), and prompt reminders come back in name order, on
+// every load and through both loaders.
+func TestOverrideOrderIsByRuleName(t *testing.T) {
+	const kdl = `hook-rules {
+    bash-patterns {
+        b-block { pattern "zzz-cmd"; action "block"; }
+        a-allow { pattern "zzz-cmd"; action "allow"; }
+        c-warn { pattern "zzz-cmd"; action "soft-warn"; }
+    }
+    prompt-patterns {
+        y-second { pattern "zzz prompt"; reminder "second"; }
+        x-first { pattern "zzz prompt"; reminder "first"; }
+    }
+}
+`
+	cfg, err := config.ParseAgntConfig(kdl)
+	require.NoError(t, err)
+
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".agnt.kdl"), []byte(kdl), 0o644))
+
+	for i := 0; i < 50; i++ {
+		validated, errs := LoadAndValidate(dir)
+		require.Empty(t, errs)
+		for name, rs := range map[string]*RuleSet{
+			"MergeOverrides":  MergeOverrides(&RuleSet{}, cfg.HookRules),
+			"LoadForProject":  LoadForProject(dir),
+			"LoadAndValidate": validated,
+		} {
+			require.Equal(t, ActionAllow, rs.MatchBash("zzz-cmd").Action, "%s: a-allow sorts first and must win", name)
+			var reminders []string
+			for _, r := range rs.MatchPrompt("zzz prompt") {
+				reminders = append(reminders, r.Reminder)
+			}
+			require.Equal(t, []string{"first", "second"}, reminders, name)
 		}
 	}
 }
