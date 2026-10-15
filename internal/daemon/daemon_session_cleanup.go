@@ -913,6 +913,7 @@ func (d *Daemon) finalizeSessionRetirement(sessionCode string, expected *Session
 	if !d.sessionRegistry.UnregisterExact(sessionCode, expected) {
 		return
 	}
+	d.releaseProxyOverlays(expected)
 	d.finalizeSessionState(sessionCode)
 }
 

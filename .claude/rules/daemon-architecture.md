@@ -98,7 +98,7 @@ Cross-session delivery is gated by `scope.Scope`. The zero value is invalid and 
 - `scope.Unscoped(reason)` — every project; logs `UNSCOPED … caller=file:line`.
 - `ProxyManager.ListScoped(scope)` replaced `List()` on purpose — every proxy enumeration must pass a scope.
 - `resolveScope(filter, connSessionCode)` (`hub_helpers.go`) bridges the `(path, global)` chain to a `Scope`; non-global with no session fails loud, `global:true` becomes an audited `Unscoped`.
-- `overlayEndpointForProject(path)` resolves a proxy's overlay socket from the owning session, `""` when none (fail closed; `rebindProxyOverlays` late-binds). No global overlay fallback — `SetOverlayEndpoint` no longer broadcasts (that was the cross-project leak).
+- `overlayEndpointForProject(path)` resolves a proxy's overlay socket from the owning session, `""` when none (fail closed; `rebindProxyOverlays` late-binds, replacing an endpoint no registered session owns). A retired session's proxies move to the project's remaining session or unbind (`releaseProxyOverlays`, CAS on the departed endpoint). No global overlay fallback — `SetOverlayEndpoint` no longer broadcasts (that was the cross-project leak).
 - `internal/scope/audit_test.go` (`TestUnscopedCallSites`) pins every production `Unscoped(...)` site; a new one fails CI until reviewed.
 
 ## Tool session-scoping

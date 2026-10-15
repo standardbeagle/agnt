@@ -47,6 +47,23 @@ func NewOverlayNotifier() *OverlayNotifier {
 func (n *OverlayNotifier) SetEndpoint(socketPath string) {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	n.setEndpointLocked(socketPath)
+}
+
+// CompareAndSwapEndpoint replaces the endpoint with next only while it is
+// still old, so a caller retiring one session's binding cannot clobber a
+// binding another session installed in the meantime.
+func (n *OverlayNotifier) CompareAndSwapEndpoint(old, next string) bool {
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.socketPath != old {
+		return false
+	}
+	n.setEndpointLocked(next)
+	return true
+}
+
+func (n *OverlayNotifier) setEndpointLocked(socketPath string) {
 	n.socketPath = socketPath
 	n.enabled = socketPath != ""
 

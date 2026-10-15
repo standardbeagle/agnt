@@ -177,6 +177,17 @@ func (ps *ProxyServer) SetOverlayEndpoint(endpoint string) {
 	ps.overlayNotifier.SetEndpoint(endpoint)
 }
 
+// OverlayEndpoint returns the overlay endpoint this proxy is bound to, or "".
+func (ps *ProxyServer) OverlayEndpoint() string {
+	return ps.overlayNotifier.GetEndpoint()
+}
+
+// CompareAndSwapOverlayEndpoint rebinds the proxy to next only while it is
+// still bound to old ("" meaning unbound), and reports whether it did.
+func (ps *ProxyServer) CompareAndSwapOverlayEndpoint(old, next string) bool {
+	return ps.overlayNotifier.CompareAndSwapEndpoint(old, next)
+}
+
 // HasOverlayEndpoint returns true if this proxy has an overlay endpoint bound.
 func (ps *ProxyServer) HasOverlayEndpoint() bool {
 	return ps.overlayNotifier.IsEnabled()
