@@ -176,21 +176,9 @@ func runConPTYChild(ctx context.Context, args []string, socketPath string, sessi
 	}
 	rt.Stop()
 
-	// Give the process a moment to exit; force kill if needed.
-	exited := false
-	select {
-	case <-processExited:
-		exited = true
-	case <-time.After(2 * time.Second):
-		if cmd.Process != nil {
-			_ = cmd.Process.Kill()
-		}
-	}
-	if exited { // waitErr is safe to read only after processExited closed
-		finishSession(height, waitErr, ctx.Err() != nil, rt)
-	} else {
-		finishSession(height, nil, ctx.Err() != nil, rt)
-	}
+	// Give the process a moment to exit; a force kill is a non-clean exit.
+	exitErr := awaitForcedExit(processExited, &waitErr, cmd.Process.Kill, 2*time.Second)
+	finishSession(height, exitErr, ctx.Err() != nil, rt)
 	return 0, nil
 }
 

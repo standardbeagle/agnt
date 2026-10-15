@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"syscall"
+	"time"
 	"unicode"
 
 	"github.com/standardbeagle/agnt/internal/selflog"
@@ -375,4 +376,28 @@ func resolutionSteps(kind exitKind, launch agentLaunch) []string {
 		steps = append(steps, "Run `"+agent+"` on its own to see whether it fails the same way outside agnt.")
 	}
 	return append(steps, logStep)
+}
+
+// awaitForcedExit ends a session whose child signals its exit by closing
+// exited after storing its Wait error in *waitErr (the Windows ConPTY path).
+// It gives the child grace to exit; if it has not, it calls kill and waits up
+// to grace more. The result is what finishSession should report: the child's
+// own status when it exited in time (or kill found it already gone), and
+// otherwise a non-clean error, never nil, so `agnt run` does not exit 0 for an
+// agent it had to kill. *waitErr is read only after exited is closed.
+func awaitForcedExit(exited <-chan struct{}, waitErr *error, kill func() error, grace time.Duration) error {
+	select {
+	case <-exited:
+		return *waitErr
+	case <-time.After(grace):
+	}
+	killErr := kill()
+	select {
+	case <-exited:
+		if *waitErr != nil || killErr != nil {
+			return *waitErr
+		}
+	case <-time.After(grace):
+	}
+	return fmt.Errorf("agent did not exit within %s of the session ending and was force-killed", grace)
 }

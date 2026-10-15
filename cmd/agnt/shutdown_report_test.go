@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 
@@ -296,4 +297,55 @@ func TestMeaningfulTail(t *testing.T) {
 	// A line with real words always survives, however it is decorated.
 	assert.Equal(t, []string{"│ error: boom │"}, meaningfulTail([]string{"│ error: boom │", "╰───╯"}))
 	assert.Empty(t, meaningfulTail([]string{"╭───╮", "│ > │", "⠼"}), "pure chrome leaves nothing")
+}
+
+// TestAwaitForcedExit pins how the Windows session end reports a child that
+// had to be force-killed: never as a clean exit, so `agnt run` does not exit 0
+// for an agent it had to kill.
+func TestAwaitForcedExit(t *testing.T) {
+	const grace = 20 * time.Millisecond
+
+	t.Run("exits in grace: its own status stands", func(t *testing.T) {
+		exited := make(chan struct{})
+		var waitErr error
+		close(exited)
+		killed := false
+		got := awaitForcedExit(exited, &waitErr, func() error { killed = true; return nil }, grace)
+		if got != nil || killed {
+			t.Fatalf("clean exit: err=%v killed=%v, want nil/false", got, killed)
+		}
+	})
+
+	t.Run("killed and Wait returns", func(t *testing.T) {
+		exited := make(chan struct{})
+		var waitErr error
+		kill := func() error {
+			waitErr = waitErrExit(t, 1) // TerminateProcess exits with 1
+			close(exited)
+			return nil
+		}
+		got := awaitForcedExit(exited, &waitErr, kill, grace)
+		if childExitCode(got) == 0 {
+			t.Fatalf("force-killed child reported as clean (err=%v)", got)
+		}
+	})
+
+	t.Run("killed but Wait never returns", func(t *testing.T) {
+		exited := make(chan struct{})
+		var waitErr error
+		got := awaitForcedExit(exited, &waitErr, func() error { return nil }, grace)
+		if childExitCode(got) == 0 {
+			t.Fatalf("force-killed child reported as clean (err=%v)", got)
+		}
+	})
+
+	t.Run("killed and Wait reports success", func(t *testing.T) {
+		exited := make(chan struct{})
+		var waitErr error
+		kill := func() error { close(exited); return nil }
+		got := awaitForcedExit(exited, &waitErr, kill, grace)
+		if childExitCode(got) == 0 {
+			t.Fatalf("force-killed child reported as clean (err=%v)", got)
+		}
+	})
 }
