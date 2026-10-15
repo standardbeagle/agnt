@@ -112,9 +112,12 @@ func (d *Daemon) hubHandleChaosPreset(conn *hubpkg.Connection, cmd *hubproto.Com
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
 
-	config, _ := unmarshalCommand[struct {
+	config, err := unmarshalCommand[struct {
 		Preset string `json:"chaos_preset"`
 	}](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid chaos preset payload: %v", err))
+	}
 
 	if config.Preset == "" {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "chaos_preset is required")
@@ -200,9 +203,14 @@ func (d *Daemon) hubHandleChaosAddRule(conn *hubpkg.Connection, cmd *hubproto.Co
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
 
-	wrapper, _ := unmarshalCommand[struct {
+	// A payload that does not decode is refused as such; reading the zero
+	// value on would report it as a missing rule id.
+	wrapper, err := unmarshalCommand[struct {
 		Rule proxy.ChaosRule `json:"chaos_rule"`
 	}](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid chaos rule: %v", err))
+	}
 
 	if wrapper.Rule.ID == "" {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "rule id is required")
@@ -228,9 +236,12 @@ func (d *Daemon) hubHandleChaosRemoveRule(conn *hubpkg.Connection, cmd *hubproto
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
 
-	config, _ := unmarshalCommand[struct {
+	config, err := unmarshalCommand[struct {
 		RuleID string `json:"chaos_rule_id"`
 	}](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid chaos rule id payload: %v", err))
+	}
 
 	if config.RuleID == "" {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "chaos_rule_id is required")

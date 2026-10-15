@@ -421,3 +421,40 @@ func TestChaosSet_UndecodablePayloadLeavesRulesUntouched(t *testing.T) {
 	require.Len(t, cfg.Rules, 1, "the rules must be left untouched")
 	assert.Equal(t, "slow", cfg.Rules[0].ID)
 }
+
+// CHAOS ADD-RULE, PRESET and REMOVE-RULE discarded the payload decode error,
+// so a malformed payload was refused with a misleading "<field> is required".
+// It is refused as an invalid payload, with the decode error, and the rules
+// stay as they were.
+func TestChaosRuleVerbs_UndecodablePayloadIsReportedAsInvalid(t *testing.T) {
+	d := newReviewBatchDaemon(t)
+	conn := NewConn(d.config.SocketPath)
+	require.NoError(t, conn.EnsureConnected())
+	t.Cleanup(func() { _ = conn.Close() })
+
+	p, err := d.proxym.Create(context.Background(), proxy.ProxyConfig{
+		ID: "chaos-rule-decode", TargetURL: "http://127.0.0.1:65045", ListenPort: 0, MaxLogSize: 100,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.proxym.Stop(context.Background(), p.ID) })
+	require.NoError(t, p.ChaosEngine().SetConfig(&proxy.ChaosConfig{
+		Enabled: true,
+		Rules:   []*proxy.ChaosRule{{ID: "slow", Type: proxy.ChaosLatency, Enabled: true, MinLatencyMs: 100}},
+	}))
+
+	for _, c := range []struct{ verb, want, misleading string }{
+		{"ADD-RULE", "invalid chaos rule", "rule id is required"},
+		{"PRESET", "invalid chaos preset", "chaos_preset is required"},
+		{"REMOVE-RULE", "invalid chaos rule id", "chaos_rule_id is required"},
+	} {
+		err := conn.Request("CHAOS", c.verb, p.ID).WithData([]byte("{not json")).OK()
+		require.Error(t, err, "CHAOS %s must refuse an undecodable payload", c.verb)
+		assert.Contains(t, err.Error(), c.want, "CHAOS %s", c.verb)
+		assert.NotContains(t, err.Error(), c.misleading, "CHAOS %s", c.verb)
+	}
+
+	cfg := p.ChaosEngine().GetConfig()
+	require.NotNil(t, cfg)
+	require.Len(t, cfg.Rules, 1, "the rules must be left untouched")
+	assert.Equal(t, "slow", cfg.Rules[0].ID)
+}
