@@ -9,7 +9,6 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/debug"
-	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/go-sdk/mcp"
 )
 
@@ -26,22 +25,16 @@ func (dt *DaemonTools) makeCurrentPageHandler() func(context.Context, *mcp.CallT
 
 		input.ProxyID = pickProxyID(input.ID, input.ProxyID)
 		if input.ProxyID == "" {
-
-			proxies, listErr := dt.client.ProxyList(protocol.DirectoryFilter{Global: true})
-			if listErr == nil {
-				if proxyList, ok := proxies["proxies"].([]interface{}); ok && len(proxyList) > 0 {
-					var ids []string
-					for _, p := range proxyList {
-						if pm, ok := p.(map[string]interface{}); ok {
-							if id, ok := pm["id"].(string); ok {
-								ids = append(ids, id)
-							}
-						}
-					}
-					return fail[CurrentPageOutput](fmt.Sprintf("proxy_id required. Running proxies: %s\nExample: currentpage {proxy_id: %q}", strings.Join(ids, ", "), ids[0]))
-				}
+			// Candidates come from the caller's project only, like proxy
+			// list: another project's proxy ids are not the caller's to read.
+			proxies, listErr := dt.client.ProxyList(dt.scopeFilter(nil))
+			if listErr != nil {
+				return fail[CurrentPageOutput](fmt.Sprintf("proxy_id required (could not list this project's proxies: %v)", listErr))
 			}
-			return fail[CurrentPageOutput]("proxy_id required. No proxies are running. Start one with: proxy {action: \"start\", id: \"dev\", target_url: \"http://localhost:3000\"}")
+			if ids := extractProxyIDs(proxies); len(ids) > 0 {
+				return fail[CurrentPageOutput](fmt.Sprintf("proxy_id required. Running proxies: %s\nExample: currentpage {proxy_id: %q}", strings.Join(ids, ", "), ids[0]))
+			}
+			return fail[CurrentPageOutput]("proxy_id required. No proxies are running for this project. Start one with: proxy {action: \"start\", id: \"dev\", target_url: \"http://localhost:3000\"}")
 		}
 
 		action := input.Action
