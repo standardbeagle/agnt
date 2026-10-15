@@ -59,12 +59,12 @@ Reconnect reattach (`internal/sshclient/reconnect.go`) calls `SESSION-HOST LIST/
 
 `PushToInbox` (`internal/sshclient/sftp.go`) is the canonical validator for an untrusted remote path:
 
-1. Reject absolute paths and any `path.Clean` result that is or starts with `..`.
+1. Reject absolute paths and any `path.Clean` result that is or starts with `..`, and a `fileName` that is empty, `.`, `..` or not a bare name.
 2. Containment via normalized `root+"/"` prefix, never raw `HasPrefix(candidate, root)` (`/proj` vs `/proj-evil`).
-3. Resolve symlinks on every intermediate segment (`Lstat`/`ReadLink`), re-check containment per hop, fail closed on depth-cap overflow.
+3. Resolve symlinks on every intermediate segment (`Lstat`/`ReadLink`), re-check containment per hop, fail closed on hop-cap overflow. A symlink's target is itself walked component by component (`resolveWithinRoot`): checking the target string and then `Lstat`-ing only its last component lets `root/a -> hop/sub` with `root/hop -> /elsewhere` through, because the kernel follows `hop`.
 4. Re-run the symlink check immediately before the activating `PosixRename`.
 
-A sub-ms TOCTOU window remains (SFTP has no `openat`); it is accepted only because exploitation needs prior write access to the project root, and the check function's doc comment says so. Minor debt: `validateDestRelPath` should explicitly reject `fileName` of `.`/`..` instead of relying on the rename failing.
+A sub-ms TOCTOU window remains (SFTP has no `openat`); it is accepted only because exploitation needs prior write access to the project root, and the check function's doc comment says so.
 
 ## 13. Two remote-write paths, keep both
 

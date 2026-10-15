@@ -291,3 +291,75 @@ func TestVerifyWithinRoot_RejectsSiblingWithSharedPrefix(t *testing.T) {
 		t.Errorf("unexpected rejection of root itself: %v", err)
 	}
 }
+
+// A symlink's target string can look contained while one of the target's own
+// intermediate components is a symlink out of the root: root/a -> hop/sub is
+// "root/hop/sub" on paper, but root/hop -> <outside>. The guard verified the
+// target string and then Lstat'ed only its final component (which the kernel
+// resolves through hop), so the write landed outside the project root.
+func TestPushToInbox_RejectsSymlinkEscapeThroughTargetIntermediate(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		target func(root string) string
+	}{
+		{"relative target", func(string) string { return "hop/sub" }},
+		{"absolute target", func(root string) string { return filepath.Join(root, "hop", "sub") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root, sc := newSFTPFixture(t)
+			outside := t.TempDir()
+			if err := os.Mkdir(filepath.Join(outside, "sub"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			testutil.Symlink(t, outside, filepath.Join(root, "hop"))
+			testutil.Symlink(t, tc.target(root), filepath.Join(root, "a"))
+			// Premise: the link target's string is inside the root.
+			if err := verifyWithinRoot(root, path.Join(root, "hop", "sub")); err != nil {
+				t.Fatalf("premise broken: target string must look contained: %v", err)
+			}
+
+			_, err := PushToInbox(sc, root, "a", "payload.txt", bytes.NewReader([]byte("x")))
+			if err == nil || !strings.Contains(err.Error(), "outside project root") {
+				t.Fatalf("expected the symlink guard's outside-project-root refusal, got %v", err)
+			}
+			if _, statErr := os.Stat(filepath.Join(outside, "sub", "payload.txt")); statErr == nil {
+				t.Fatal("write landed outside the project root through the target's intermediate symlink")
+			}
+			entries, _ := os.ReadDir(filepath.Join(outside, "sub"))
+			if len(entries) != 0 {
+				t.Fatalf("guard let a temp file be written outside the root: %v", entries)
+			}
+		})
+	}
+}
+
+// A contained chain through intermediate symlinks still works: root/a ->
+// hop/sub with root/hop -> real (inside the root).
+func TestPushToInbox_AllowsContainedSymlinkChain(t *testing.T) {
+	root, sc := newSFTPFixture(t)
+	if err := os.MkdirAll(filepath.Join(root, "real", "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	testutil.Symlink(t, "real", filepath.Join(root, "hop"))
+	testutil.Symlink(t, "hop/sub", filepath.Join(root, "a"))
+
+	if _, err := PushToInbox(sc, root, "a", "payload.txt", bytes.NewReader([]byte("x"))); err != nil {
+		t.Fatalf("contained symlink chain rejected: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(root, "real", "sub", "payload.txt")); err != nil {
+		t.Fatalf("pushed file not at the resolved in-root location: %v", err)
+	}
+}
+
+// A symlink cycle inside the root fails closed on the hop cap instead of
+// spinning.
+func TestPushToInbox_SymlinkCycleFailsClosed(t *testing.T) {
+	root, sc := newSFTPFixture(t)
+	testutil.Symlink(t, "y", filepath.Join(root, "x"))
+	testutil.Symlink(t, "x", filepath.Join(root, "y"))
+
+	_, err := PushToInbox(sc, root, "x", "payload.txt", bytes.NewReader([]byte("x")))
+	if err == nil || !strings.Contains(err.Error(), "more than 10 symlinks") {
+		t.Fatalf("expected the symlink hop cap to refuse a cycle, got %v", err)
+	}
+}

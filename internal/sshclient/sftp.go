@@ -24,9 +24,9 @@ const DefaultInboxDir = ".agnt-inbox"
 // final-name claim. Callers may select another name and retry.
 var ErrDestinationExists = errors.New("sshclient: push: destination exists")
 
-// maxSymlinkDepth bounds symlink resolution while walking a candidate
-// destination's ancestor directories (see checkNoEscapingSymlink), so a
-// symlink cycle on the remote host cannot spin this check forever.
+// maxSymlinkDepth bounds the number of symlinks followed while resolving a
+// candidate destination (see checkNoEscapingSymlink), so a symlink cycle on
+// the remote host cannot spin this check forever; overflow fails closed.
 const maxSymlinkDepth = 10
 
 // NewSFTPClient opens the SFTP subsystem over an already-established SSH
@@ -232,9 +232,11 @@ func verifyWithinRoot(root, candidate string) error {
 // root/.agnt-inbox (or any intermediate directory) can itself be a symlink
 // planted by an attacker with prior write access to point outside root.
 //
-// Resolution recurses (a resolved target can itself be a symlink) up to
-// maxSymlinkDepth, which also bounds a symlink cycle rather than looping
-// forever.
+// Each resolved target is walked component by component in turn
+// (resolveWithinRoot), so a symlink anywhere along a target's own path is
+// checked too, not just the target's final component. The walk follows at
+// most maxSymlinkDepth symlinks in total, which also bounds a symlink cycle
+// rather than looping forever.
 //
 // TOCTOU: this check and the eventual write/rename are not perfectly
 // atomic — SFTP has no equivalent of openat(2) relative to an already-open,
@@ -256,58 +258,74 @@ func checkNoEscapingSymlink(sc *sftp.Client, root, dir string) error {
 		return nil
 	}
 
-	rel := strings.TrimPrefix(dir, root+"/")
-	segments := strings.Split(rel, "/")
-	current := root
-	for _, seg := range segments {
-		if seg == "" {
-			continue
-		}
-		current = path.Join(current, seg)
-		if err := resolveSymlinkChain(sc, root, current, 0); err != nil {
-			return err
-		}
-	}
-	return nil
+	hops := 0
+	_, err := resolveWithinRoot(sc, root, dir, &hops)
+	return err
 }
 
-// resolveSymlinkChain Lstats p; if p is not a symlink, it is left as-is (its
-// ancestors were already validated by the caller's loop and by construction
-// p == path.Join(root, ...) at this point, so it needs no further check
-// here). If p IS a symlink, its target is resolved and verified within
-// root, then recursively checked in case the target is itself a symlink.
-func resolveSymlinkChain(sc *sftp.Client, root, p string, depth int) error {
-	if depth > maxSymlinkDepth {
-		return fmt.Errorf("sshclient: push: symlink chain under %q exceeds depth %d resolving %q", root, maxSymlinkDepth, p)
+// resolveWithinRoot resolves p (a Clean absolute path) the way the remote
+// kernel will: component by component from root, Lstat-ing each one. A
+// symlink's target is verified within root and then itself resolved by this
+// same walk, so a symlink among the TARGET's intermediate components is
+// caught too: root/a -> hop/sub reads as "root/hop/sub", but if root/hop ->
+// /elsewhere the kernel lands in /elsewhere/sub, and an Lstat of the target's
+// last component alone would follow hop without seeing it. A relative target
+// is resolved against the link's resolved parent, and the walk continues from
+// the resolved directory. Returns the resolved path.
+//
+// hops counts every symlink followed across the whole walk; exceeding
+// maxSymlinkDepth fails closed, which also bounds a symlink cycle.
+func resolveWithinRoot(sc *sftp.Client, root, p string, hops *int) (string, error) {
+	if err := verifyWithinRoot(root, p); err != nil {
+		return "", err
 	}
-	info, err := sc.Lstat(p)
-	if err != nil {
-		// A missing intermediate directory is not a traversal attempt —
-		// PushToInbox's MkdirAll (or a later component's own Lstat) is
-		// where that surfaces as a real error; here it is simply not a
-		// symlink to resolve.
-		if os.IsNotExist(err) {
-			return nil
+	if p == root {
+		return root, nil
+	}
+	segments := strings.Split(strings.TrimPrefix(p, root+"/"), "/")
+	current := root
+	for i, seg := range segments {
+		if seg == "" || seg == "." {
+			continue
 		}
-		return fmt.Errorf("sshclient: push: lstat %q: %w", p, err)
-	}
-	if info.Mode()&os.ModeSymlink == 0 {
-		return nil
-	}
+		next := path.Join(current, seg)
+		info, err := sc.Lstat(next)
+		if err != nil {
+			// A missing component is not a traversal attempt, and nothing
+			// below it exists either. PushToInbox's MkdirAll creates real
+			// directories here, and the re-check before the activating
+			// rename walks them again.
+			if os.IsNotExist(err) {
+				return path.Join(append([]string{next}, segments[i+1:]...)...), nil
+			}
+			return "", fmt.Errorf("sshclient: push: lstat %q: %w", next, err)
+		}
+		if info.Mode()&os.ModeSymlink == 0 {
+			current = next
+			continue
+		}
 
-	target, err := sc.ReadLink(p)
-	if err != nil {
-		return fmt.Errorf("sshclient: push: reading symlink target of %q: %w", p, err)
+		*hops++
+		if *hops > maxSymlinkDepth {
+			return "", fmt.Errorf("sshclient: push: more than %d symlinks under %q resolving %q", maxSymlinkDepth, root, p)
+		}
+		target, err := sc.ReadLink(next)
+		if err != nil {
+			return "", fmt.Errorf("sshclient: push: reading symlink target of %q: %w", next, err)
+		}
+		resolved := target
+		if !path.IsAbs(resolved) {
+			resolved = path.Join(current, resolved)
+		}
+		resolved = path.Clean(resolved)
+		if err := verifyWithinRoot(root, resolved); err != nil {
+			return "", fmt.Errorf("sshclient: push: symlink %q resolves outside project root: %w", next, err)
+		}
+		if current, err = resolveWithinRoot(sc, root, resolved, hops); err != nil {
+			return "", err
+		}
 	}
-	resolved := target
-	if !path.IsAbs(resolved) {
-		resolved = path.Join(path.Dir(p), resolved)
-	}
-	resolved = path.Clean(resolved)
-	if err := verifyWithinRoot(root, resolved); err != nil {
-		return fmt.Errorf("sshclient: push: symlink %q resolves outside project root: %w", p, err)
-	}
-	return resolveSymlinkChain(sc, root, resolved, depth+1)
+	return current, nil
 }
 
 // ResolveRemoteProjectRoot resolves remotePath (as given to 'agnt ssh
