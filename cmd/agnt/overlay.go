@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -428,8 +429,7 @@ func (o *Overlay) handleType(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var msg TypeMessage
-	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if !decodeOverlayJSON(w, r, maxOverlayControlBody, &msg) {
 		return
 	}
 
@@ -444,6 +444,34 @@ func (o *Overlay) handleType(w http.ResponseWriter, r *http.Request) {
 
 // maxInjectBody caps a plain-text /inject message.
 const maxInjectBody = 64 << 10
+
+const (
+	// maxOverlayControlBody caps a /type, /key or /toast JSON body. Their
+	// text is a message (64KB at the tool layer), and JSON escaping can
+	// grow it several times over.
+	maxOverlayControlBody = 1 << 20
+	// maxOverlayEventBody caps a proxy /event. A sketch or screenshot event
+	// carries base64 image data from a browser frame of up to 16MB
+	// (wsMaxMessageBytes in internal/proxy), re-encoded as JSON.
+	maxOverlayEventBody = 32 << 20
+)
+
+// decodeOverlayJSON decodes a JSON request body of at most limit bytes into
+// v, writing the error response itself (413 over the cap, 400 otherwise)
+// when it returns false.
+func decodeOverlayJSON(w http.ResponseWriter, r *http.Request, limit int64, v any) bool {
+	err := json.NewDecoder(http.MaxBytesReader(w, r.Body, limit)).Decode(v)
+	if err == nil {
+		return true
+	}
+	var tooLarge *http.MaxBytesError
+	if errors.As(err, &tooLarge) {
+		http.Error(w, err.Error(), http.StatusRequestEntityTooLarge)
+	} else {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+	}
+	return false
+}
 
 // handleInject receives a plain-text message from the daemon (`agnt session
 // send`, the browser's session send, and the incident pipeline's PTY hint) and
@@ -496,8 +524,7 @@ func (o *Overlay) handleKey(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var msg KeyMessage
-	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if !decodeOverlayJSON(w, r, maxOverlayControlBody, &msg) {
 		return
 	}
 
@@ -514,8 +541,7 @@ func (o *Overlay) handleToast(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var msg ToastMessage
-	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if !decodeOverlayJSON(w, r, maxOverlayControlBody, &msg) {
 		return
 	}
 
@@ -546,8 +572,7 @@ func (o *Overlay) handleEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var event ProxyEvent
-	if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if !decodeOverlayJSON(w, r, maxOverlayEventBody, &event) {
 		return
 	}
 
