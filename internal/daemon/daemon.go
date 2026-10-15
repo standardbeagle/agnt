@@ -254,7 +254,7 @@ type Daemon struct {
 	browserm             *browser.Manager
 	sessionm             *chromedp.SessionManager // chromedp automation sessions
 	storem               *store.StoreManager
-	automator            *automation.Processor
+	automator            atomic.Pointer[automation.Processor]   // lazily built by getOrCreateAutomator
 	autoRestarter        *ProcessAutoRestarter                  // Process auto-restart manager
 	alertStore           *ProcessAlertStore                     // Ring buffer store for process output alerts
 	retentionCfg         atomic.Pointer[config.RetentionConfig] // Error-retention trigger gates

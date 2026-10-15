@@ -33,11 +33,13 @@ func (d *Daemon) hubHandleAutomate(ctx context.Context, conn *hubpkg.Connection,
 		dispatch(ctx, conn, cmd, actions)
 }
 
-// getOrCreateAutomator returns the automation processor, creating it on first use.
-
+// getOrCreateAutomator returns the automation processor, creating it on first
+// use. Connections dispatch concurrently, so the first callers can race here:
+// the pointer is published with CompareAndSwap and a loser adopts the winner's
+// processor. A failed build is not cached; the next call tries again.
 func (d *Daemon) getOrCreateAutomator() (*automation.Processor, error) {
-	if d.automator != nil {
-		return d.automator, nil
+	if p := d.automator.Load(); p != nil {
+		return p, nil
 	}
 
 	// Create automation processor with default config
@@ -46,8 +48,10 @@ func (d *Daemon) getOrCreateAutomator() (*automation.Processor, error) {
 		return nil, fmt.Errorf("failed to create automation processor: %w", err)
 	}
 
-	d.automator = proc
-	return d.automator, nil
+	if d.automator.CompareAndSwap(nil, proc) {
+		return proc, nil
+	}
+	return d.automator.Load(), nil
 }
 
 // hubHandleAutomateProcess handles AUTOMATE PROCESS command.
