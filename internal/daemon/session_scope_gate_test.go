@@ -83,9 +83,11 @@ func TestResolveProjectScope(t *testing.T) {
 			wantPath: projMalformed,
 		},
 		{
-			name:    "omitted global fails loudly on malformed project config",
-			filter:  protocol.DirectoryFilter{Directory: projMalformed},
-			wantErr: true,
+			// The parse error is surfaced in the startup log instead
+			// (TestResolveProjectScope_MalformedConfigIsVisibleNotFatal).
+			name:     "omitted global falls back to project scope on malformed project config",
+			filter:   protocol.DirectoryFilter{Directory: projMalformed},
+			wantPath: projMalformed,
 		},
 		{
 			name:        "connection's bound session resolves to its project",
@@ -122,6 +124,48 @@ func TestResolveProjectScope(t *testing.T) {
 			}
 		})
 	}
+}
+
+// A broken .agnt.kdl made every scoped verb fail — STARTUP-LOG and `agnt
+// monitor` included, the places an agent would look for the cause. The verb
+// now resolves to the project (default-global false) and the parse error is a
+// startup-log entry that query can see, recorded once per distinct error.
+func TestResolveProjectScope_MalformedConfigIsVisibleNotFatal(t *testing.T) {
+	d := NewForTest(t, defaultTestDaemonConfig(t))
+	proj := normalizePath(t.TempDir())
+	cfgPath := filepath.Join(proj, ".agnt.kdl")
+	require.NoError(t, os.WriteFile(cfgPath, []byte("scope { invalid"), 0o600))
+	require.NoError(t, d.sessionRegistry.Register(&Session{Code: "sess-broken", ProjectPath: proj}))
+
+	configErrors := func() []*StartupLogEntry {
+		var out []*StartupLogEntry
+		for _, e := range d.startupErrorStore.Query(StartupLogFilter{ProjectPath: proj}) {
+			if e.EventType == "config_error" {
+				out = append(out, e)
+			}
+		}
+		return out
+	}
+
+	for i := 0; i < 3; i++ {
+		path, global, err := d.resolveProjectScope(protocol.DirectoryFilter{}, "sess-broken")
+		require.NoError(t, err, "a config parse error must not fail the scoped verb")
+		assert.False(t, global)
+		assert.Equal(t, proj, path)
+	}
+	entries := configErrors()
+	require.Len(t, entries, 1, "the parse error is recorded once, not on every query")
+	assert.Equal(t, "warning", entries[0].Level)
+	assert.Contains(t, entries[0].Message, "default-global falls back to false")
+
+	// Fixed, then broken again: the new breakage is reported again.
+	require.NoError(t, os.WriteFile(cfgPath, []byte("scope {\n  default-global false\n}\n"), 0o600))
+	_, _, err := d.resolveProjectScope(protocol.DirectoryFilter{}, "sess-broken")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(cfgPath, []byte("scope { invalid"), 0o600))
+	_, _, err = d.resolveProjectScope(protocol.DirectoryFilter{}, "sess-broken")
+	require.NoError(t, err)
+	assert.Len(t, configErrors(), 2)
 }
 
 func TestResolveStreamFilterScope(t *testing.T) {

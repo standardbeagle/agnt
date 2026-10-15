@@ -300,6 +300,11 @@ type Daemon struct {
 	// secrets rather than replaying the last ones. Not user-visible; retired
 	// with portKillDeclined.
 	launchEnv sync.Map // processID -> []string
+	// scopeConfigErrReported holds, per project path, the .agnt.kdl load error
+	// resolveProjectScope last put in that project's startup log, so a polled
+	// scoped query records it once rather than on every call. Cleared when the
+	// file loads again. Read only by reportScopeConfigError; not user-visible.
+	scopeConfigErrReported sync.Map // project path -> message
 	// restartPending marks processes that restartProcess (PROC RESTART /
 	// RESTART-ALL) is stopping in order to relaunch. The exit watcher reads it
 	// so the old lifetime's exit does not tear down the script's proxies.

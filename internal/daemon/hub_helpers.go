@@ -161,12 +161,30 @@ func (d *Daemon) resolveProjectScope(filter protocol.DirectoryFilter, connSessio
 	}
 	cfg, loadErr := config.LoadAgntConfig(path)
 	if loadErr != nil {
-		return "", false, fmt.Errorf("load scope config for %s: %w", path, loadErr)
+		// A broken .agnt.kdl must not take down every scoped verb — STARTUP-LOG
+		// and `agnt monitor` included, which is where the agent would look for
+		// the cause. Fall back to the default (false: this project only, the
+		// narrower answer) and put the parse error in the project's startup log.
+		d.reportScopeConfigError(path, loadErr)
+		return path, false, nil
 	}
+	d.scopeConfigErrReported.Delete(path)
 	if cfg != nil && cfg.Scope != nil && cfg.Scope.DefaultGlobal {
 		return "", true, nil
 	}
 	return path, false, nil
+}
+
+// reportScopeConfigError records, once per distinct error, that path's
+// .agnt.kdl failed to load while resolving scope.default-global. Scope is
+// resolved on every scoped query (a monitor polls), so an unconditional entry
+// would flood the shared 100-entry startup log and evict real errors.
+func (d *Daemon) reportScopeConfigError(path string, loadErr error) {
+	msg := fmt.Sprintf("failed to load .agnt.kdl from %s: %v; scope.default-global falls back to false (queries stay scoped to this project) until the file parses", path, loadErr)
+	if prev, loaded := d.scopeConfigErrReported.Swap(path, msg); loaded && prev == msg {
+		return
+	}
+	d.startupLog(path).Warn("", "config_error", msg)
 }
 
 // resolveScope is the scoped-token form of resolveProjectScope. It is the
