@@ -277,8 +277,38 @@ func (d *Daemon) hubHandleProcStdin(_ context.Context, conn *hubpkg.Connection, 
 	return conn.WriteJSON(data)
 }
 
-// hubHandleProcStop handles PROC STOP <id> [force].
+// procStopStartingWait bounds how long PROC STOP waits for a process in its
+// spawn window (Starting: between the OS spawn and its publication as Running)
+// before it can be stopped. The window is normally milliseconds.
+const procStopStartingWait = 5 * time.Second
 
+// waitPastStarting waits until proc leaves Starting, and reports whether it
+// did before timeout or ctx ended. The process manager publishes no event for
+// the Starting -> Running transition, so this re-reads the state on a short
+// tick; it exits at once for a process that is not starting.
+func waitPastStarting(ctx context.Context, proc *goprocess.ManagedProcess, timeout time.Duration) bool {
+	if proc.State() != goprocess.StateStarting {
+		return true
+	}
+	deadline := time.NewTimer(timeout)
+	defer deadline.Stop()
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	for proc.State() == goprocess.StateStarting {
+		select {
+		case <-ctx.Done():
+			return false
+		case <-deadline.C:
+			return false
+		case <-proc.Done():
+			return true // finished: nothing left to stop
+		case <-tick.C:
+		}
+	}
+	return true
+}
+
+// hubHandleProcStop handles PROC STOP <id> [force].
 func (d *Daemon) hubHandleProcStop(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	if len(cmd.Args) < 1 {
 		return conn.WriteErr(hubproto.ErrMissingParam, "process_id required")
@@ -312,6 +342,15 @@ func (d *Daemon) hubHandleProcStop(ctx context.Context, conn *hubpkg.Connection,
 		return conn.WriteJSON(data)
 	}
 	processID = proc.ID
+
+	// A process in its spawn window (Starting) is about to be published
+	// Running; treating it as already stopped would leave it running after
+	// the user stopped it. StopProcess cannot stop it yet, so wait for the
+	// spawn to settle first.
+	if !waitPastStarting(ctx, proc, procStopStartingWait) {
+		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf(
+			"process %q is still starting after %s; retry the stop", processID, procStopStartingWait))
+	}
 
 	if !proc.IsRunning() {
 		// A process that crashed under auto-restart sits here, exited, while
