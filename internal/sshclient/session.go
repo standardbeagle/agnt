@@ -92,7 +92,7 @@ func ensureRemoteSessionCreated(client *ssh.Client, name, cwd string, size TermS
 		return fmt.Errorf("sshclient: discovering remote daemon socket for session create: %w", err)
 	}
 
-	localPath := fmt.Sprintf("%s.probe-%x", LocalForwardSocketPath("initial-"+name), time.Now().UnixNano())
+	localPath := ProbeSocketPath("initial-" + name)
 	fw, err := NewForwarder(&Client{SSH: client}, remoteSocketPath, localPath)
 	if err != nil {
 		return fmt.Errorf("sshclient: opening initial-connect probe forward: %w", err)

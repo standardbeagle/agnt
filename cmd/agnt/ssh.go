@@ -675,7 +675,7 @@ func ensureRemoteSessionAttachable(host string, client *sshclient.Client, name, 
 		return fmt.Errorf("agnt ssh: discovering remote daemon socket for reconnect check: %w", err)
 	}
 
-	localPath := sshclient.LocalForwardSocketPath(host) + fmt.Sprintf(".probe-%x", time.Now().UnixNano())
+	localPath := sshclient.ProbeSocketPath(host)
 	fw, err := sshclient.NewForwarder(client, remoteSocketPath, localPath)
 	if err != nil {
 		return fmt.Errorf("agnt ssh: opening reconnect probe forward: %w", err)
