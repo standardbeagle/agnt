@@ -877,3 +877,40 @@ func TestStoredAddScriptShareIsQuarantinedAtLoad(t *testing.T) {
 		}
 	})
 }
+
+// TestStoreLoadRejectsRecordFiledUnderAnotherName pins that a share record is
+// loaded only from its own file, <id>.json. A copy left under any other name
+// (an operator's backup taken while the share was live) used to load too:
+// ReadDir sorts "<id>.old.json" after "<id>.json", so the stale live copy
+// overwrote the revoked record in byID and re-indexed the revoked token —
+// INV-4 undone by a restart. persist writes <id>.json, so a record under any
+// other name is corrupt on-disk state and fails the load loudly, as a
+// feedback record filed under the wrong name already does.
+func TestStoreLoadRejectsRecordFiledUnderAnotherName(t *testing.T) {
+	s, dir := newStore(t)
+	id, token, err := s.Create(validWalkthrough("wt"), "/proj")
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, err := os.ReadFile(filepath.Join(dir, id+recordSuffix))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, id+".old"+recordSuffix), live, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Revoke(id); err != nil {
+		t.Fatal(err)
+	}
+
+	reopened, err := New(dir, nil)
+	if err == nil {
+		if _, _, ok := reopened.VerifyToken(token); ok {
+			t.Fatal("a revoked token serves again after reload: the backup copy was loaded over the revoked record")
+		}
+		t.Fatal("a record filed under a name other than <id>.json loaded without error")
+	}
+	if !errors.Is(err, ErrCorrupt) {
+		t.Fatalf("want ErrCorrupt, got %v", err)
+	}
+}

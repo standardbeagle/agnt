@@ -296,6 +296,15 @@ func (s *Store) load() error {
 		if err != nil {
 			return fmt.Errorf("%w: %s: %v", ErrCorrupt, name, err)
 		}
+		// persist writes a record only to <id>.json, so a record under any other
+		// name was copied there (a backup taken while the share was live). Loading
+		// it would let a stale copy overwrite the current record — ReadDir sorts
+		// "<id>.old.json" after "<id>.json", so a revoked token served again
+		// (INV-4) — and an id that is not a plain name would steer persist outside
+		// the store directory. Same rule as the feedback store's load.
+		if want := sh.ID + recordSuffix; name != want {
+			return fmt.Errorf("%w: %s: record names share %q, whose file is %s", ErrCorrupt, name, sh.ID, want)
+		}
 		// INV-14 at LOAD. Publish has refused addScript since 2026-08-18, but a
 		// record written before that gate carries the op and — because load
 		// checked only the checksum — was indexed and served, script and all.
