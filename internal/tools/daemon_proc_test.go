@@ -229,3 +229,23 @@ func TestBuildWhatPattern(t *testing.T) {
 		assert.Contains(t, err.Error(), "unknown what")
 	})
 }
+
+// PROC LIST carries a top-level `warnings` list when a managed process's port
+// is held by a process the daemon does not manage. proc list dropped it, so a
+// process reported running while a stranger answers on its port looked
+// healthy.
+func TestProcListOutput_CarriesDaemonWarnings(t *testing.T) {
+	rogue := `Process "web" shows as running but port 3000 is in use by unmanaged process (PID [4242]).`
+	out := procListOutput(map[string]interface{}{
+		"count": float64(1),
+		"processes": []interface{}{
+			map[string]interface{}{"id": "proj-1a2b3c4d:web", "state": "running", "warning": rogue},
+		},
+		"warnings": []interface{}{rogue},
+	})
+	require.Len(t, out.Processes, 1)
+	assert.Equal(t, "web", out.Processes[0].ScriptName)
+	assert.Equal(t, []string{rogue}, out.Warnings)
+
+	assert.Nil(t, procListOutput(map[string]interface{}{"count": float64(0)}).Warnings)
+}

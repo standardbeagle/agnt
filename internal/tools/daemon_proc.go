@@ -648,12 +648,20 @@ func (dt *DaemonTools) handleProcList(input ProcInput) (*mcp.CallToolResult, Pro
 	if err != nil {
 		return formatDaemonError(err, "proc"), ProcOutput{}, nil
 	}
+	return nil, procListOutput(result), nil
+}
 
+// procListOutput shapes a PROC LIST reply. The daemon's warnings (a managed
+// process whose port is held by a process it does not manage) travel on
+// Warnings: a process reported running while a stranger answers on its port
+// is the state an agent most needs to hear about.
+func procListOutput(result map[string]interface{}) ProcOutput {
 	output := ProcOutput{
 		Count:       getInt(result, "count"),
 		ProjectPath: getString(result, "project_path"),
 		SessionCode: getString(result, "session_code"),
 		Global:      getBool(result, "global"),
+		Warnings:    getStringSlice(result, "warnings"),
 	}
 
 	if processes, ok := result["processes"].([]interface{}); ok {
@@ -697,7 +705,7 @@ func (dt *DaemonTools) handleProcList(input ProcInput) (*mcp.CallToolResult, Pro
 		}
 	}
 
-	return nil, output, nil
+	return output
 }
 
 func (dt *DaemonTools) handleProcCleanupPort(input ProcInput) (*mcp.CallToolResult, ProcOutput, error) {

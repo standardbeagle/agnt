@@ -22,6 +22,10 @@ type SnapshotData struct {
 	Errors        []SnapshotError   `json:"errors"`
 	URLs          []SnapshotURL     `json:"urls"`
 	SuggestedNext []string          `json:"suggested_next"`
+	// ProxiesUnavailable carries the error when the proxy list could not be
+	// read. Proxies is then empty because it is unknown, not because no
+	// proxy runs, and no suggestion assumes there is none.
+	ProxiesUnavailable string `json:"proxies_unavailable,omitempty"`
 }
 
 // SnapshotProcess is the per-process row returned in a snapshot.
@@ -85,6 +89,7 @@ func (dt *DaemonTools) handleProcSnapshot(input ProcInput) (*mcp.CallToolResult,
 		entries     []map[string]interface{}
 		projectPath string
 		global      bool
+		warnings    []string
 		err         error
 	}
 	type proxyResult struct {
@@ -113,6 +118,7 @@ func (dt *DaemonTools) handleProcSnapshot(input ProcInput) (*mcp.CallToolResult,
 		}
 		procs.projectPath = getString(result, "project_path")
 		procs.global = getBool(result, "global")
+		procs.warnings = getStringSlice(result, "warnings")
 		if raw, ok := result["processes"].([]interface{}); ok {
 			procs.entries = make([]map[string]interface{}, 0, len(raw))
 			for _, p := range raw {
@@ -171,9 +177,7 @@ func (dt *DaemonTools) handleProcSnapshot(input ProcInput) (*mcp.CallToolResult,
 
 	// A daemon-IPC failure on proc list is fatal — without process state
 	// the snapshot is meaningless. Proxy/error failures are degraded but
-	// not fatal: we surface what we have. proxies.err being non-nil is
-	// intentionally ignored — a daemon that lost its proxy registry
-	// shouldn't block the agent from seeing process and error state.
+	// not fatal: we surface what we have, and say what is missing.
 	if procs.err != nil {
 		return formatDaemonError(procs.err, "proc"), ProcOutput{}, nil
 	}
@@ -181,10 +185,32 @@ func (dt *DaemonTools) handleProcSnapshot(input ProcInput) (*mcp.CallToolResult,
 	// the numbers rendered below.
 	deduped := deduplicateErrors(errs.errors)
 
-	snapshot := buildSnapshot(procs.entries, proxies.entries, deduped)
+	snapshot, warnings := assembleSnapshot(procs.entries, procs.warnings, proxies.entries, proxies.err, deduped, errs.warnings)
 
-	out := snapshotOutput(&snapshot, procs.projectPath, dirFilter.SessionCode, procs.global, errs.warnings, input.Raw)
+	out := snapshotOutput(&snapshot, procs.projectPath, dirFilter.SessionCode, procs.global, warnings, input.Raw)
 	return nil, out, nil
+}
+
+// assembleSnapshot builds the snapshot from the collected sources and the
+// warnings that travel with it: the daemon's own process warnings (a managed
+// process's port held by a process it does not manage) first, then the
+// partial-failure notices. A failed proxy list is one of those: the
+// snapshot marks its proxies unknown rather than reporting none, and drops
+// the "start a proxy" suggestion that an empty list would otherwise produce.
+func assembleSnapshot(procEntries []map[string]interface{}, procWarnings []string, proxyEntries []map[string]interface{}, proxyErr error, errors []unifiedError, errorWarnings []string) (SnapshotData, []string) {
+	snapshot := buildSnapshot(procEntries, proxyEntries, errors)
+	warnings := make([]string, 0, len(procWarnings)+len(errorWarnings)+1)
+	warnings = append(warnings, procWarnings...)
+	if proxyErr != nil {
+		snapshot.ProxiesUnavailable = proxyErr.Error()
+		snapshot.SuggestedNext = buildSuggestedNext(snapshot.Processes, snapshot.Proxies, false)
+		warnings = append(warnings, fmt.Sprintf("proxy list failed, proxies unknown: %v", proxyErr))
+	}
+	warnings = append(warnings, errorWarnings...)
+	if len(warnings) == 0 {
+		return snapshot, nil
+	}
+	return snapshot, warnings
 }
 
 // snapshotOutput shapes the snapshot response. Partial error-collection failures
@@ -303,7 +329,7 @@ func buildSnapshot(procEntries, proxyEntries []map[string]interface{}, errors []
 	})
 
 	// 5) Suggested next actions.
-	suggested := buildSuggestedNext(processes, proxies)
+	suggested := buildSuggestedNext(processes, proxies, true)
 
 	return SnapshotData{
 		Processes:     processes,
@@ -355,7 +381,10 @@ func splitFileLine(location string) (file, line string) {
 // Order matters: errors take priority because they're the most
 // actionable signal. We cap the number of suggestions to keep the
 // compact output readable (max ~5 lines).
-func buildSuggestedNext(procs []SnapshotProcess, proxies []SnapshotProxy) []string {
+//
+// proxiesKnown is false when the proxy list could not be read: an unknown
+// proxy set covers nothing and lacks nothing, so rule 3 is skipped.
+func buildSuggestedNext(procs []SnapshotProcess, proxies []SnapshotProxy, proxiesKnown bool) []string {
 	const maxSuggestions = 5
 	suggestions := make([]string, 0, maxSuggestions)
 
@@ -387,7 +416,7 @@ func buildSuggestedNext(procs []SnapshotProcess, proxies []SnapshotProxy) []stri
 	// Treat a proxy as "covering" a process URL if its target_url matches.
 	// Stopped proxies don't count — the agent should restart them rather
 	// than start a new one, and that's the failed/stopped branch above.
-	if len(suggestions) < maxSuggestions {
+	if proxiesKnown && len(suggestions) < maxSuggestions {
 		coveredURLs := make(map[string]struct{}, len(proxies))
 		for _, px := range proxies {
 			if px.Running {
@@ -464,10 +493,14 @@ func formatSnapshot(s *SnapshotData) string {
 	b.WriteString("\n")
 
 	// Proxies section.
-	fmt.Fprintf(&b, "PROXIES (%d active)\n", len(s.Proxies))
-	if len(s.Proxies) == 0 {
+	switch {
+	case s.ProxiesUnavailable != "":
+		fmt.Fprintf(&b, "PROXIES (unknown: %s)\n", s.ProxiesUnavailable)
+	case len(s.Proxies) == 0:
+		fmt.Fprintf(&b, "PROXIES (%d active)\n", len(s.Proxies))
 		b.WriteString("  (none)\n")
-	} else {
+	default:
+		fmt.Fprintf(&b, "PROXIES (%d active)\n", len(s.Proxies))
 		for _, px := range s.Proxies {
 			fmt.Fprintf(&b, "  %-8s %s -> %s  %d req  %d errors\n",
 				truncate(px.ID, 8), px.Target, px.ListenAddr, px.RequestCount, px.ErrorCount)

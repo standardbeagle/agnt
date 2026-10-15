@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -469,4 +470,35 @@ func TestSnapshotOutput_ReportsResolvedEffectiveGlobal(t *testing.T) {
 			assert.Equal(t, tc.effectiveGlobal, out.Global)
 		})
 	}
+}
+
+// The daemon warns in PROC LIST when a managed process's port is held by a
+// process it does not manage; snapshot dropped those warnings. It also
+// ignored a failed proxy list, rendering "0 proxies" and suggesting starting
+// one for a web process whose proxy may well be running.
+func TestAssembleSnapshot_SurfacesProcWarningsAndProxyListFailure(t *testing.T) {
+	rogue := `Process "web" shows as running but port 3000 is in use by unmanaged process (PID [4242]).`
+	procs := []map[string]interface{}{
+		{"id": "web", "state": "running", "urls": []interface{}{"http://localhost:3000"}},
+	}
+
+	snap, warnings := assembleSnapshot(procs, []string{rogue}, nil, errors.New("daemon: proxy registry unavailable"), nil, []string{"alert store query failed"})
+	require.Len(t, warnings, 3)
+	assert.Equal(t, rogue, warnings[0], "the daemon's process warning must survive")
+	assert.Contains(t, warnings[1], "proxy registry unavailable", "a failed proxy list must be reported")
+	assert.Equal(t, "alert store query failed", warnings[2])
+	assert.Equal(t, "daemon: proxy registry unavailable", snap.ProxiesUnavailable)
+	for _, s := range snap.SuggestedNext {
+		assert.NotContains(t, s, `proxy {action:"start"`, "an unknown proxy set must not produce a start-a-proxy suggestion")
+	}
+	text := formatSnapshot(&snap)
+	assert.Contains(t, text, "PROXIES (unknown: daemon: proxy registry unavailable)")
+	assert.NotContains(t, text, "PROXIES (0 active)")
+
+	// A successful proxy list keeps the start suggestion and reports no failure.
+	snap, warnings = assembleSnapshot(procs, nil, nil, nil, nil, nil)
+	assert.Nil(t, warnings)
+	assert.Empty(t, snap.ProxiesUnavailable)
+	assert.Contains(t, strings.Join(snap.SuggestedNext, "\n"), `proxy {action:"start"`)
+	assert.Contains(t, formatSnapshot(&snap), "PROXIES (0 active)")
 }

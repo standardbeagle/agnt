@@ -210,10 +210,12 @@ type ProcOutput struct {
 	// For snapshot — unified dev-environment status. Populated only by
 	// proc {action: "snapshot"}; nil for every other action.
 	Snapshot *SnapshotData `json:"snapshot,omitempty"`
-	// Partial-failure notices from a multi-source collection (currently
-	// snapshot). A snapshot assembled while one of its sources errored is
-	// incomplete, and a raw consumer that only reads Snapshot would otherwise
-	// read the gap as "nothing wrong". Mirrored into Output for text callers.
+	// Warnings the daemon raised about the listed processes (list, snapshot:
+	// a managed process's port held by a process it does not manage), and
+	// partial-failure notices from snapshot's multi-source collection. A
+	// snapshot assembled while one of its sources errored is incomplete, and
+	// a raw consumer that only reads Snapshot would otherwise read the gap as
+	// "nothing wrong". Mirrored into Output for text callers.
 	Warnings []string `json:"warnings,omitempty"`
 	// For multi-stream `proc output` (when process_ids is set) — per-process
 	// rows with extracted signals. Each row holds the line slice for that
