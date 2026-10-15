@@ -141,21 +141,49 @@ fi
 
 VERSION_FILES="cmd/agnt/main.go internal/daemon/daemon.go internal/daemonclient/upgrade.go npm/agnt/package.json python/agnt/pyproject.toml python/agnt/src/agnt/__init__.py package.json npm/devtool-mcp/package.json python/pyproject.toml"
 
-# bump FILE SED_EXPR: apply one version substitution, and abort the release
-# (restoring every version file, which the clean-tree check above proved
-# unmodified) if it left FILE unchanged or without the new version in it.
-bump() {
-    local file="$1" expr="$2" before
+# bump_with FILE CMD...: filter FILE through CMD (FILE on stdin) into a temp
+# file and move it into place, and abort the release (restoring every version
+# file, which the clean-tree check above proved unmodified) if the filter
+# failed or left FILE unchanged or without the new version in it. No `sed -i`:
+# GNU and BSD (macOS) sed disagree on its argument, so the temp file keeps this
+# portable.
+bump_with() {
+    local file="$1" before tmp
+    shift
     before=$(cat "$file")
-    sed -i "$expr" "$file"
-    if [ "$(cat "$file")" = "$before" ] || ! grep -qF "$NEW_VERSION" "$file"; then
-        echo "Error: the version substitution in $file matched nothing:"
-        echo "  sed '$expr'"
-        echo "Restoring the version files; fix the pattern in $0 and rerun."
-        # shellcheck disable=SC2086
-        git checkout -- $VERSION_FILES
-        exit 1
+    tmp="$file.bump.$$"
+    if ! "$@" < "$file" > "$tmp"; then
+        rm -f "$tmp"
+        bump_failed "$file" "$@"
     fi
+    mv "$tmp" "$file"
+    if [ "$(cat "$file")" = "$before" ] || ! grep -qF "$NEW_VERSION" "$file"; then
+        bump_failed "$file" "$@"
+    fi
+}
+
+bump_failed() {
+    local file="$1"
+    shift
+    echo "Error: the version substitution in $file matched nothing:"
+    echo "  $*"
+    echo "Restoring the version files; fix the pattern in $0 and rerun."
+    # shellcheck disable=SC2086
+    git checkout -- $VERSION_FILES
+    exit 1
+}
+
+# bump FILE SED_EXPR: apply one sed substitution to every matching line.
+bump() {
+    bump_with "$1" sed "$2"
+}
+
+# bump_first_version FILE: set the first "version": "..." in FILE (a JSON
+# manifest's own version, not a later nested one). Portable replacement for
+# GNU sed's `0,/re/{...}` first-match address, which BSD sed rejects.
+bump_first_version() {
+    bump_with "$1" awk -v v="$NEW_VERSION" \
+        '!done && sub(/"version": "[^"]*"/, "\"version\": \"" v "\"") { done = 1 } { print }'
 }
 
 # Update Go version (main.go)
@@ -179,11 +207,11 @@ bump python/agnt/src/agnt/__init__.py "s/__version__ = \".*\"/__version__ = \"$N
 
 # Update root package.json
 echo "Updating package.json..."
-bump package.json "0,/\"version\": \".*\"/{s/\"version\": \".*\"/\"version\": \"$NEW_VERSION\"/}"
+bump_first_version package.json
 
 # Update deprecated npm wrapper (version and dependency)
 echo "Updating npm/devtool-mcp/package.json..."
-bump npm/devtool-mcp/package.json "0,/\"version\": \".*\"/{s/\"version\": \".*\"/\"version\": \"$NEW_VERSION\"/}"
+bump_first_version npm/devtool-mcp/package.json
 bump npm/devtool-mcp/package.json "s/\"@standardbeagle\/agnt\": \".*\"/\"@standardbeagle\/agnt\": \"^$NEW_VERSION\"/"
 
 # Update deprecated Python wrapper (version and dependency)
