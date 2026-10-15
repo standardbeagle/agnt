@@ -212,6 +212,12 @@ func (pw *ProtectedWriter) processStateByte(out *bytes.Buffer, b byte) {
 
 // handleStateGround processes bytes in ground state.
 func (pw *ProtectedWriter) handleStateGround(out *bytes.Buffer, b byte) {
+	// Anything but a continuation byte ends a held partial character: an
+	// invalid sequence still reaches the terminal unchanged, ahead of b.
+	if pw.utf8Len > 0 && (b < 0x80 || b >= 0xC0) {
+		pw.flushUTF8(out)
+	}
+
 	if b == 0x1b { // ESC
 		pw.state = stateEscape
 		pw.escBuf = pw.escBuf[:0]
@@ -248,6 +254,11 @@ func (pw *ProtectedWriter) handleStateGround(out *bytes.Buffer, b byte) {
 		// UTF-8 lead byte (0xC0+): start accumulating.
 		// UTF-8 continuation (0x80-0xBF): continue accumulating.
 		// When complete rune is assembled, advance column by its display width.
+		//
+		// The bytes of a character are held until it is complete, not emitted
+		// as they arrive. The overlay draws between two Writes, so a character
+		// split across PTY reads would otherwise have the draw land inside it
+		// and the terminal show two replacement glyphs.
 
 		if b >= 0x20 && b < 0x7f {
 			// ASCII printable — 1 column
@@ -267,7 +278,6 @@ func (pw *ProtectedWriter) handleStateGround(out *bytes.Buffer, b byte) {
 			} else {
 				pw.utf8Need = 4
 			}
-			out.WriteByte(b)
 			return
 		}
 
@@ -275,9 +285,9 @@ func (pw *ProtectedWriter) handleStateGround(out *bytes.Buffer, b byte) {
 			// UTF-8 continuation byte
 			pw.utf8Buf[pw.utf8Len] = b
 			pw.utf8Len++
-			out.WriteByte(b)
 
 			if pw.utf8Len >= pw.utf8Need {
+				out.Write(pw.utf8Buf[:pw.utf8Len])
 				// Complete rune — decode and check width
 				r := decodeUTF8(pw.utf8Buf[:pw.utf8Len])
 				width := 1
@@ -294,6 +304,14 @@ func (pw *ProtectedWriter) handleStateGround(out *bytes.Buffer, b byte) {
 		// Control chars or unexpected bytes — pass through
 		out.WriteByte(b)
 	}
+}
+
+// flushUTF8 emits a held partial character as is. Its bytes are invalid
+// UTF-8 at this point; they are the child's, so they pass through.
+func (pw *ProtectedWriter) flushUTF8(out *bytes.Buffer) {
+	out.Write(pw.utf8Buf[:pw.utf8Len])
+	pw.utf8Len = 0
+	pw.utf8Need = 0
 }
 
 // handleStateEscape processes bytes after ESC.
