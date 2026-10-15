@@ -96,8 +96,8 @@ type ProxyDiagnostic struct {
 	Data      map[string]any       `json:"data,omitempty"`
 }
 
-// BroadcastActivityState sends an activity state update to all connected browser clients.
-// Returns the number of clients that received the update.
+// BroadcastActivityState sends an activity state update to the trusted browser
+// clients. Returns the number of clients that received the update.
 func (ps *ProxyServer) BroadcastActivityState(active bool) int {
 	message := map[string]interface{}{
 		"type": "activity",
@@ -112,7 +112,9 @@ func (ps *ProxyServer) BroadcastActivityState(active bool) int {
 		return 0
 	}
 
-	return ps.broadcastRaw(messageBytes)
+	// Whether the agent is working is the operator's session state: trusted
+	// connections only.
+	return ps.broadcastTrusted(messageBytes)
 }
 
 // ToastOptions describes a toast broadcast to browser clients. Input/Name

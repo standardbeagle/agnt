@@ -54,3 +54,18 @@ func TestTLSSkipNotice_TrustedOnlyAndWarningShaped(t *testing.T) {
 	assert.NotEmpty(t, msg.Payload.Message)
 	assert.Equal(t, 8000, msg.Payload.Duration)
 }
+
+// Whether the agent is working is the operator's session state, like the
+// output preview and tool events: a visitor on an unauthenticated tunnel must
+// not be told when the agent goes active or idle.
+func TestActivityState_NotSentToUntrustedConnections(t *testing.T) {
+	ps := newGateProxy(t)
+	_, pageStub := registerConn(t, ps, "conn-page", true)
+	_, visitorStub := registerConn(t, ps, "conn-visitor", false)
+
+	assert.Equal(t, 1, ps.BroadcastActivityState(true), "only the trusted connection is sent the frame")
+
+	require.Eventually(t, func() bool { return len(framesOfType(t, pageStub, "activity")) == 1 },
+		3*time.Second, 5*time.Millisecond, "premise: the trusted page receives activity")
+	assert.Zero(t, visitorStub.count(), "an untrusted connection must not receive activity")
+}

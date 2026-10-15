@@ -85,9 +85,9 @@ type ProxyServer struct {
 	// dir (saveLargeResult); capped there, removed at teardown.
 	largeResults largeResultFiles
 	// wsConns is the registry of live control WebSocket connections
-	// (connID → *asyncWSWriter). Readers: broadcastRaw (activity state),
-	// broadcastTrusted (toasts, chaos state, agent output — trusted
-	// connections only), exec targeting, and Stop. Entries are retired by identity
+	// (connID → *asyncWSWriter). Readers: broadcastTrusted (toasts, chaos
+	// state, activity state, agent output — trusted connections only), exec
+	// targeting, and Stop. Entries are retired by identity
 	// (CompareAndDelete), never by id alone.
 	wsConns sync.Map
 	// wsConnSeq and execSeq mint connection and exec ids. A counter, not the
