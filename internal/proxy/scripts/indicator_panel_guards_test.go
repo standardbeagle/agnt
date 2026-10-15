@@ -46,3 +46,23 @@ func TestIndicatorSend_KeepsMessageWhenNotSent(t *testing.T) {
 		t.Fatal("handleSend must capture core.send's result and return on failure before clearing the message")
 	}
 }
+
+// TestIndicatorTogglePanel_HideTimerIsCancellable — behaviour:
+// jstest/indicator-panel-toggle.test.js. Closing used to schedule an anonymous
+// 200ms display:none that nothing cancelled, so a close→reopen inside the fade
+// (startDesignMode / startResponsiveMode with the module missing) left the
+// panel hidden while isExpanded was true, and destroy() inside the fade threw.
+func TestIndicatorTogglePanel_HideTimerIsCancellable(t *testing.T) {
+	src := indicatorSrc(t)
+	body := funcBody(t, src, "function togglePanel(show)")
+	mustContain(t, "indicator.js togglePanel", body,
+		"state.panelHideTimeout = setTimeout(function() {",
+		"if (!state.panel || state.isExpanded) return;",
+		"if (!state.panel || !state.isExpanded) return;",
+	)
+	if n := strings.Count(body, "clearTimeout(state.panelHideTimeout);"); n != 2 {
+		t.Errorf("togglePanel clears panelHideTimeout at %d sites, want 2 (show and re-close)", n)
+	}
+	mustContain(t, "indicator.js destroy", funcBody(t, src, "function destroy()"),
+		"clearTimeout(state.panelHideTimeout);")
+}

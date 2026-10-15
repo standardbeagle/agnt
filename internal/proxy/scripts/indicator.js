@@ -3361,6 +3361,9 @@
       // Focus management: remember where the user was, move focus into the
       // panel; restored on close below.
       state.prevFocus = document.activeElement;
+      // A close still inside its fade must not hide the panel we reopen now.
+      clearTimeout(state.panelHideTimeout);
+      state.panelHideTimeout = null;
       updatePanelPosition();
       state.panel.style.display = 'flex'; // Changed to flex for column layout
       // Promote the panel to a compositor layer just for the duration of the
@@ -3370,6 +3373,8 @@
       // Re-render active tab now that panel is visible
       switchTab(state.activeTab);
       requestAnimationFrame(function() {
+        // destroy() or a close may land before this frame.
+        if (!state.panel || !state.isExpanded) return;
         state.panel.style.opacity = '1';
         state.panel.style.transform = 'translateY(0)';
       });
@@ -3395,11 +3400,14 @@
       state.panel.style.opacity = '0';
       state.panel.style.transform = 'translateY(8px)';
       clearTimeout(state.panelWillChangeTimeout);
-      setTimeout(function() {
+      // Stored so a reopen (or destroy) inside the fade can cancel it; the
+      // guard covers a callback already queued when that happens.
+      clearTimeout(state.panelHideTimeout);
+      state.panelHideTimeout = setTimeout(function() {
+        state.panelHideTimeout = null;
+        if (!state.panel || state.isExpanded) return;
         state.panel.style.display = 'none';
-        if (!state.isExpanded) {
-          state.panel.style.willChange = 'auto';
-        }
+        state.panel.style.willChange = 'auto';
       }, 200);
       // Stop tab updates
       if (state.tabUpdateInterval) {
@@ -3772,6 +3780,9 @@
       clearInterval(state.tabUpdateInterval);
       state.tabUpdateInterval = null;
     }
+    clearTimeout(state.panelHideTimeout);
+    clearTimeout(state.panelWillChangeTimeout);
+    state.panelHideTimeout = null;
     if (state.container && state.container.parentNode) {
       state.container.parentNode.removeChild(state.container);
     }
