@@ -31,6 +31,11 @@ func decodePageImage(page PageCapture) ([]byte, error) {
 type Manager struct {
 	storage *Storage
 	differ  *Differ
+	// projectDir is where git runs to stamp a baseline with its commit and
+	// branch. The manager has no project of its own: one is built per MCP
+	// server, so this is that server's working directory -- where the agent
+	// launched it, normally the project root.
+	projectDir string
 }
 
 // NewManager creates a new snapshot manager
@@ -42,9 +47,14 @@ func NewManager(storagePath string, diffThreshold float64) (*Manager, error) {
 
 	differ := NewDiffer(diffThreshold)
 
+	// An unreadable cwd leaves projectDir empty, which runs git in the
+	// process's working directory all the same.
+	projectDir, _ := os.Getwd()
+
 	return &Manager{
-		storage: storage,
-		differ:  differ,
+		storage:    storage,
+		differ:     differ,
+		projectDir: projectDir,
 	}, nil
 }
 
@@ -278,24 +288,24 @@ func (m *Manager) generateDiffDescription(diffPercentage float64) string {
 }
 
 func (m *Manager) getGitInfo() (commit, branch string) {
-	// Try to get git commit
-	if cmd := exec.Command("git", "rev-parse", "HEAD"); cmd.Run() == nil {
-		if output, err := cmd.Output(); err == nil {
-			commit = strings.TrimSpace(string(output))
-			if len(commit) > 7 {
-				commit = commit[:7]
-			}
-		}
+	commit = m.git("rev-parse", "HEAD")
+	if len(commit) > 7 {
+		commit = commit[:7]
 	}
+	branch = m.git("rev-parse", "--abbrev-ref", "HEAD")
+	return commit, branch
+}
 
-	// Try to get git branch
-	if cmd := exec.Command("git", "rev-parse", "--abbrev-ref", "HEAD"); cmd.Run() == nil {
-		if output, err := cmd.Output(); err == nil {
-			branch = strings.TrimSpace(string(output))
-		}
+// git runs one git command in projectDir and returns its trimmed stdout, or ""
+// when it fails (no git, not a repository, no commits yet).
+func (m *Manager) git(args ...string) string {
+	cmd := exec.Command("git", args...)
+	cmd.Dir = m.projectDir
+	out, err := cmd.Output()
+	if err != nil {
+		return ""
 	}
-
-	return
+	return strings.TrimSpace(string(out))
 }
 
 // PageCapture represents a page to capture or that was captured
