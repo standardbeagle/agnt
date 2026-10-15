@@ -729,3 +729,81 @@ func TestHasResourceExtension(t *testing.T) {
 		})
 	}
 }
+
+// TestPageTracker_RefererMatchesOriginFormSession: in production a page session
+// is keyed on the proxied request's origin-form URL ("/a"), while a resource's
+// Referer and telemetry's location.href are absolute. The lookup must match
+// them; it used to miss and attach every resource to the most recently active
+// session — here the other tab.
+func TestPageTracker_RefererMatchesOriginFormSession(t *testing.T) {
+	pt := NewPageTracker(100, 5*time.Minute)
+	defer pt.Stop()
+
+	doc := func(path, sid string) HTTPLogEntry {
+		return HTTPLogEntry{
+			Method:          "GET",
+			URL:             path,
+			RequestHeaders:  map[string]string{"Cookie": "__devtool_sid=" + sid},
+			ResponseHeaders: map[string]string{"Content-Type": "text/html"},
+			StatusCode:      200,
+		}
+	}
+	pt.TrackHTTPRequest(doc("/a", "tab-a"))
+	time.Sleep(2 * time.Millisecond) // /b is the most recently active session
+	pt.TrackHTTPRequest(doc("/b/", "tab-b"))
+
+	pt.TrackHTTPRequest(HTTPLogEntry{
+		Method:          "GET",
+		URL:             "/app.js",
+		RequestHeaders:  map[string]string{"Referer": "http://localhost:8080/a"},
+		ResponseHeaders: map[string]string{"Content-Type": "application/javascript"},
+		StatusCode:      200,
+	})
+
+	sessA := pt.ResolveSession("", "http://localhost:8080/a#top")
+	sessB := pt.ResolveSession("", "https://tunnel.example/b")
+	if sessA == "" || sessB == "" || sessA == sessB {
+		t.Fatalf("absolute URLs must resolve their origin-form sessions: a=%q b=%q", sessA, sessB)
+	}
+	a, _ := pt.GetSession(sessA)
+	b, _ := pt.GetSession(sessB)
+	if len(a.Resources) != 1 || len(b.Resources) != 0 {
+		t.Fatalf("resource attached by Referer to the wrong page: /a has %d, /b has %d (want 1, 0)",
+			len(a.Resources), len(b.Resources))
+	}
+}
+
+// TestPageTracker_LookupMapsBoundedWithinATab: one long-lived tab navigating
+// through many pages, each load in a fresh content frame, must not grow the
+// URL and frame lookup maps by one entry per page.
+func TestPageTracker_LookupMapsBoundedWithinATab(t *testing.T) {
+	pt := NewPageTracker(100, 5*time.Minute)
+	defer pt.Stop()
+
+	const pages = 500
+	for i := 0; i < pages; i++ {
+		pt.TrackHTTPRequest(HTTPLogEntry{
+			Method:          "GET",
+			URL:             "/page/" + itoa(i) + "?" + frameMarkerParam + "=f" + itoa(i),
+			RequestHeaders:  map[string]string{"Cookie": "__devtool_sid=one-tab"},
+			ResponseHeaders: map[string]string{"Content-Type": "text/html"},
+			StatusCode:      200,
+		})
+		pt.TrackError(FrontendError{Message: "x", URL: "http://localhost:8080/spa/" + itoa(i)}, "one-tab", "g"+itoa(i))
+	}
+
+	sizes := ptQuery(pt, func() [2]int {
+		return [2]int{len(pt.urlToSession), len(pt.frameToSession)}
+	})
+	urls, frames := sizes[0], sizes[1]
+	if urls != 1 {
+		t.Errorf("urlToSession has %d entries for one tab, want 1 (its current page)", urls)
+	}
+	if frames > maxFramesPerSession {
+		t.Errorf("frameToSession has %d entries for one tab, want <= %d", frames, maxFramesPerSession)
+	}
+	// The newest frame still resolves.
+	if sid := pt.ResolveSession("", "", "g"+itoa(pages-1)); sid == "" {
+		t.Error("most recent frame id no longer resolves")
+	}
+}

@@ -24,6 +24,12 @@ const (
 	// MaxNavigationsPerSession bounds the per-tab navigation history (each
 	// entry carries up to 10KB of captured request and response body).
 	MaxNavigationsPerSession = 100
+	// maxFramesPerSession bounds the content-frame ids mapped to one session.
+	// A tab that reloads or navigates gets a new frame id each time, and a
+	// responsive or design preview runs several live frames at once, so the
+	// oldest mappings past this cap are dropped (their telemetry still
+	// resolves through the browser session id, then the URL).
+	maxFramesPerSession = 16
 )
 
 // appendBounded appends an item to a slice while maintaining a maximum length.
@@ -88,9 +94,13 @@ type PageTracker struct {
 	urlToSession         map[string]string
 	browserSessionToPage map[string]string
 	frameToSession       map[string]string // content frame id -> session id (always-wrap model)
-	sessionSeq           int64
-	maxSessions          int
-	sessionTimeout       time.Duration
+	// sessionFrames lists each session's frame ids, oldest first. It bounds
+	// frameToSession per session (maxFramesPerSession) and retires a session's
+	// frame mappings when the session is evicted.
+	sessionFrames  map[string][]string
+	sessionSeq     int64
+	maxSessions    int
+	sessionTimeout time.Duration
 }
 
 // copyPageSession returns a snapshot of s safe to hand out of the actor. The
@@ -123,6 +133,7 @@ func NewPageTracker(maxSessions int, sessionTimeout time.Duration) *PageTracker 
 		urlToSession:         make(map[string]string),
 		browserSessionToPage: make(map[string]string),
 		frameToSession:       make(map[string]string),
+		sessionFrames:        make(map[string][]string),
 		maxSessions:          maxSessions,
 		sessionTimeout:       sessionTimeout,
 	}
@@ -260,14 +271,13 @@ func (pt *PageTracker) trackOnSession(browserSessionID, url string, mutate func(
 		if url != "" {
 			cleanURL := inSessionURLForm(session.URL, stripFrameMarker(url))
 			if cleanURL != session.URL {
-				delete(pt.urlToSession, normalizeURL(session.URL))
+				pt.rekeySessionURL(sessionID, session.URL, cleanURL)
 				session.URL = cleanURL
-				pt.urlToSession[normalizeURL(cleanURL)] = sessionID
 			}
 		}
 		if fid != "" {
 			session.FrameID = fid
-			pt.frameToSession[fid] = sessionID
+			pt.mapFrame(sessionID, fid)
 		}
 		mutate(session)
 		pt.updateSessionWithBrowserID(sessionID, session, browserSessionID)
@@ -415,6 +425,7 @@ func (pt *PageTracker) Clear() {
 		pt.urlToSession = make(map[string]string)
 		pt.browserSessionToPage = make(map[string]string)
 		pt.frameToSession = make(map[string]string)
+		pt.sessionFrames = make(map[string][]string)
 		pt.sessionSeq = 0
 	})
 }
@@ -432,15 +443,15 @@ func (pt *PageTracker) createOrUpdatePageSession(entry HTTPLogEntry, browserSess
 	normURL := normalizeURL(entry.URL)
 
 	updateExisting := func(sessionID string, session *PageSession) {
+		pt.rekeySessionURL(sessionID, session.URL, cleanURL)
 		session.URL = cleanURL
 		session.LastActivity = now
 		session.DocumentRequest = &entry
 		session.Navigations = appendBounded(session.Navigations, entry, MaxNavigationsPerSession)
 		session.Resources = make([]HTTPLogEntry, 0)
-		pt.urlToSession[normURL] = sessionID
 		if frameID != "" {
 			session.FrameID = frameID
-			pt.frameToSession[frameID] = sessionID
+			pt.mapFrame(sessionID, frameID)
 		}
 	}
 
@@ -486,7 +497,7 @@ func (pt *PageTracker) createOrUpdatePageSession(entry HTTPLogEntry, browserSess
 	pt.sessions[sessionID] = session
 	pt.urlToSession[normURL] = sessionID
 	if frameID != "" {
-		pt.frameToSession[frameID] = sessionID
+		pt.mapFrame(sessionID, frameID)
 	}
 
 	// Register browser session mapping
@@ -596,19 +607,52 @@ func (pt *PageTracker) cleanupOldSessions() {
 	for i := 0; i < toRemove && i < len(allSessions); i++ {
 		victim := allSessions[i].id
 		if session, ok := pt.sessions[victim]; ok {
-			delete(pt.urlToSession, normalizeURL(session.URL))
-			if session.BrowserSession != "" {
+			if key := normalizeURL(session.URL); pt.urlToSession[key] == victim {
+				delete(pt.urlToSession, key)
+			}
+			if session.BrowserSession != "" && pt.browserSessionToPage[session.BrowserSession] == victim {
 				delete(pt.browserSessionToPage, session.BrowserSession)
 			}
 		}
-		// Drop any frame mappings pointing at the evicted session.
-		for fid, sid := range pt.frameToSession {
-			if sid == victim {
+		// Drop the frame mappings that still point at the evicted session.
+		for _, fid := range pt.sessionFrames[victim] {
+			if pt.frameToSession[fid] == victim {
 				delete(pt.frameToSession, fid)
 			}
 		}
+		delete(pt.sessionFrames, victim)
 		delete(pt.sessions, victim)
 	}
+}
+
+// rekeySessionURL moves sessionID's urlToSession entry from oldURL to newURL.
+// A session holds exactly one URL key — its current page — so a tab that
+// navigates through many pages does not leave a key behind for each one. The
+// old key is removed only while it still names this session: another tab on
+// the same URL may have claimed it since.
+func (pt *PageTracker) rekeySessionURL(sessionID, oldURL, newURL string) {
+	oldKey, newKey := normalizeURL(oldURL), normalizeURL(newURL)
+	if oldKey != newKey && pt.urlToSession[oldKey] == sessionID {
+		delete(pt.urlToSession, oldKey)
+	}
+	pt.urlToSession[newKey] = sessionID
+}
+
+// mapFrame maps a content-frame id to sessionID, keeping at most
+// maxFramesPerSession of the session's frame ids (oldest dropped first).
+func (pt *PageTracker) mapFrame(sessionID, frameID string) {
+	if pt.frameToSession[frameID] == sessionID {
+		return
+	}
+	pt.frameToSession[frameID] = sessionID
+	frames := append(pt.sessionFrames[sessionID], frameID)
+	for len(frames) > maxFramesPerSession {
+		if old := frames[0]; pt.frameToSession[old] == sessionID {
+			delete(pt.frameToSession, old)
+		}
+		frames = frames[1:]
+	}
+	pt.sessionFrames[sessionID] = frames
 }
 
 // generateSessionID generates a unique session ID.
@@ -750,7 +794,6 @@ func hasResourceExtension(urlStr string) bool {
 	return false
 }
 
-// normalizeURL normalizes a URL for comparison.
 // stripFrameMarkerQuery removes the content-frame marker (frameMarkerParam,
 // defined in injector.go) from a raw query string, preserving order of the rest.
 func stripFrameMarkerQuery(rawQuery string) string {
@@ -815,11 +858,25 @@ func stripFrameMarker(urlStr string) string {
 	return parsed.String()
 }
 
+// normalizeURL reduces a URL to the key page lookups compare on: path and
+// query, without scheme, host, fragment, trailing slash or frame marker.
+//
+// Page sessions are created from the proxied document request, whose URL is
+// origin-form ("/app"), while the lookups carry absolute URLs: a resource's
+// Referer and telemetry's location.href ("http://localhost:8080/app"). Keyed
+// with the origin those never matched, so every resource fell through to the
+// most recently active session. One proxy serves one upstream, so the origin
+// adds nothing to the key (and differs between the loopback and tunnel
+// spellings of the same page).
 func normalizeURL(urlStr string) string {
 	parsed, err := url.Parse(urlStr)
 	if err != nil {
 		return urlStr
 	}
+	parsed.Scheme = ""
+	parsed.Opaque = ""
+	parsed.User = nil
+	parsed.Host = ""
 
 	// Drop the internal content-frame marker so the shell's top-level request
 	// and the content frame's marked request map to the same page session, and
@@ -837,7 +894,10 @@ func normalizeURL(urlStr string) string {
 	}
 	parsed.Path = path
 
-	return parsed.String()
+	if out := parsed.String(); out != "" {
+		return out
+	}
+	return "/"
 }
 
 // getOrigin extracts the origin (scheme + host) from a URL.
