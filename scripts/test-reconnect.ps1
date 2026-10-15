@@ -76,7 +76,7 @@ function Wait-DaemonStopped {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         try {
-            & $AgntPath daemon status --socket $SocketPath 2>$null
+            & $AgntPath daemon status --socket $SocketPath 2>$null | Out-Null
             if ($LASTEXITCODE -ne 0) {
                 return $true
             }
@@ -111,7 +111,7 @@ function Stop-TestDaemon {
     param($job)
 
     try {
-        & $AgntPath daemon stop --socket $SocketPath 2>$null
+        & $AgntPath daemon stop --socket $SocketPath 2>$null | Out-Null
     } catch {}
 
     Start-Sleep -Seconds 1
@@ -122,12 +122,14 @@ function Stop-TestDaemon {
     }
 }
 
-# Helper: Kill daemon process
+# Helper: Kill the test daemon. Only processes started on this script's own
+# socket are matched, never a developer's real daemon or any other agnt process.
 function Kill-Daemon {
-    $processes = Get-Process -Name "agnt*" -ErrorAction SilentlyContinue
+    $processes = Get-CimInstance Win32_Process -Filter "Name LIKE 'agnt%'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -and $_.CommandLine.Contains($SocketPath) }
     foreach ($proc in $processes) {
-        Write-Info "Killing daemon process: $($proc.Id)"
-        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        Write-Info "Killing test daemon process: $($proc.ProcessId)"
+        Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
     }
 
     # Wait for processes to be gone
@@ -140,7 +142,7 @@ function Cleanup {
 
     # Try graceful stop first
     try {
-        & $AgntPath daemon stop --socket $SocketPath 2>$null
+        & $AgntPath daemon stop --socket $SocketPath 2>$null | Out-Null
     } catch {}
 
     # Kill any remaining processes
@@ -210,7 +212,7 @@ function Test-GracefulRestart {
 
         # Graceful stop
         Write-Info "Stopping daemon gracefully..."
-        & $AgntPath daemon stop --socket $SocketPath 2>&1
+        & $AgntPath daemon stop --socket $SocketPath 2>&1 | Out-Null
 
         if (-not (Wait-DaemonStopped -TimeoutSeconds 5)) {
             throw "Daemon did not stop gracefully"
@@ -359,6 +361,17 @@ function Test-ClientOperationsDuringRestart {
     }
 }
 
+# A test function's result is its pass/fail verdict only when it is exactly one
+# boolean. Stray command output turns it into an array, which is truthy even
+# when the test returned $false, so anything else counts as a failure.
+function Get-TestVerdict($result) {
+    if ($result -is [bool]) {
+        return $result
+    }
+    Write-Failure "test returned stray output instead of a boolean: $($result | Out-String)"
+    return $false
+}
+
 # Main execution
 Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "   agnt Windows Reconnection Tests" -ForegroundColor Cyan
@@ -379,11 +392,11 @@ Cleanup
 
 # Run tests
 $results = @()
-$results += @{ Name = "Kill daemon reconnect"; Passed = (Test-KillDaemonReconnect) }
-$results += @{ Name = "Graceful restart"; Passed = (Test-GracefulRestart) }
-$results += @{ Name = "Socket deletion recovery"; Passed = (Test-SocketDeletion) }
-$results += @{ Name = "Rapid reconnections"; Passed = (Test-RapidReconnections) }
-$results += @{ Name = "Operations during restart"; Passed = (Test-ClientOperationsDuringRestart) }
+$results += @{ Name = "Kill daemon reconnect"; Passed = (Get-TestVerdict (Test-KillDaemonReconnect)) }
+$results += @{ Name = "Graceful restart"; Passed = (Get-TestVerdict (Test-GracefulRestart)) }
+$results += @{ Name = "Socket deletion recovery"; Passed = (Get-TestVerdict (Test-SocketDeletion)) }
+$results += @{ Name = "Rapid reconnections"; Passed = (Get-TestVerdict (Test-RapidReconnections)) }
+$results += @{ Name = "Operations during restart"; Passed = (Get-TestVerdict (Test-ClientOperationsDuringRestart)) }
 
 # Final cleanup
 Cleanup

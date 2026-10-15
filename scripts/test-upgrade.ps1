@@ -91,7 +91,7 @@ function Wait-DaemonStopped {
     $deadline = (Get-Date).AddSeconds($TimeoutSeconds)
     while ((Get-Date) -lt $deadline) {
         try {
-            & $AgntPath daemon status --socket $SocketPath 2>$null
+            & $AgntPath daemon status --socket $SocketPath 2>$null | Out-Null
             if ($LASTEXITCODE -ne 0) {
                 return $true
             }
@@ -123,12 +123,14 @@ function Start-TestDaemon {
     return $job
 }
 
-# Helper: Kill daemon process
+# Helper: Kill the test daemon. Only processes started on this script's own
+# socket are matched, never a developer's real daemon or any other agnt process.
 function Kill-Daemon {
-    $processes = Get-Process -Name "agnt*" -ErrorAction SilentlyContinue
+    $processes = Get-CimInstance Win32_Process -Filter "Name LIKE 'agnt%'" -ErrorAction SilentlyContinue |
+        Where-Object { $_.CommandLine -and $_.CommandLine.Contains($SocketPath) }
     foreach ($proc in $processes) {
-        Write-Info "Killing daemon process: $($proc.Id)"
-        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        Write-Info "Killing test daemon process: $($proc.ProcessId)"
+        Stop-Process -Id $proc.ProcessId -Force -ErrorAction SilentlyContinue
     }
     Start-Sleep -Milliseconds 500
 }
@@ -139,7 +141,7 @@ function Cleanup {
 
     # Try graceful stop
     try {
-        & $AgntPath daemon stop --socket $SocketPath 2>$null
+        & $AgntPath daemon stop --socket $SocketPath 2>$null | Out-Null
     } catch {}
 
     # Kill any remaining processes
@@ -408,6 +410,17 @@ function Test-OldToNewUpgrade {
     }
 }
 
+# A test function's result is its pass/fail verdict only when it is exactly one
+# boolean. Stray command output turns it into an array, which is truthy even
+# when the test returned $false, so anything else counts as a failure.
+function Get-TestVerdict($result) {
+    if ($result -is [bool]) {
+        return $result
+    }
+    Write-Failure "test returned stray output instead of a boolean: $($result | Out-String)"
+    return $false
+}
+
 # Main execution
 Write-Host "`n========================================" -ForegroundColor Cyan
 Write-Host "     agnt Windows Upgrade Tests" -ForegroundColor Cyan
@@ -429,12 +442,12 @@ Cleanup
 
 # Run tests
 $results = @()
-$results += @{ Name = "Basic upgrade"; Passed = (Test-BasicUpgrade) }
-$results += @{ Name = "Force upgrade"; Passed = (Test-ForceUpgrade) }
-$results += @{ Name = "Concurrent upgrade lock"; Passed = (Test-ConcurrentUpgradeLock) }
-$results += @{ Name = "Upgrade with processes"; Passed = (Test-UpgradeWithProcesses) }
-$results += @{ Name = "Upgrade timeout"; Passed = (Test-UpgradeTimeout) }
-$results += @{ Name = "Old to new upgrade"; Passed = (Test-OldToNewUpgrade) }
+$results += @{ Name = "Basic upgrade"; Passed = (Get-TestVerdict (Test-BasicUpgrade)) }
+$results += @{ Name = "Force upgrade"; Passed = (Get-TestVerdict (Test-ForceUpgrade)) }
+$results += @{ Name = "Concurrent upgrade lock"; Passed = (Get-TestVerdict (Test-ConcurrentUpgradeLock)) }
+$results += @{ Name = "Upgrade with processes"; Passed = (Get-TestVerdict (Test-UpgradeWithProcesses)) }
+$results += @{ Name = "Upgrade timeout"; Passed = (Get-TestVerdict (Test-UpgradeTimeout)) }
+$results += @{ Name = "Old to new upgrade"; Passed = (Get-TestVerdict (Test-OldToNewUpgrade)) }
 
 # Final cleanup
 Cleanup
