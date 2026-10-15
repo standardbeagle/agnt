@@ -128,28 +128,41 @@ func (dt *DaemonTools) handleStoreGet(input StoreInput) (*mcp.CallToolResult, St
 		return formatDaemonError(err, "store get"), emptyOutput, nil
 	}
 
-	// Check if entry exists
-	if entryRaw, ok := result["entry"]; ok && entryRaw != nil {
-		if entryMap, ok := entryRaw.(map[string]interface{}); ok {
-			entry := &StoreEntryOutput{
-				Value:     entryMap["value"],
-				Type:      getString(entryMap, "type"),
-				CreatedAt: getString(entryMap, "created_at"),
-				UpdatedAt: getString(entryMap, "updated_at"),
-			}
-			if metadata, ok := entryMap["metadata"].(map[string]interface{}); ok {
-				entry.Metadata = metadata
-			}
+	entry := storeGetEntry(result)
+	if entry == nil {
+		return errorResult("key not found"), emptyOutput, nil
+	}
+	return nil, StoreOutput{Success: true, Entry: entry}, nil
+}
 
-			output := StoreOutput{
-				Success: true,
-				Entry:   entry,
-			}
-			return nil, output, nil
+// storeGetEntry reads the entry out of a STORE GET reply. The daemon answers
+// with the entry object itself ({value, type, created_at, ...}) and reports a
+// missing key as an error, so the reply is the entry. An "entry"-wrapped reply
+// is read too.
+func storeGetEntry(result map[string]interface{}) *StoreEntryOutput {
+	if wrapped, ok := result["entry"].(map[string]interface{}); ok {
+		return storeEntryFromMap(wrapped)
+	}
+	if _, hasValue := result["value"]; !hasValue {
+		if _, hasType := result["type"]; !hasType {
+			return nil
 		}
 	}
+	return storeEntryFromMap(result)
+}
 
-	return errorResult("key not found"), emptyOutput, nil
+// storeEntryFromMap converts one decoded store entry.
+func storeEntryFromMap(m map[string]interface{}) *StoreEntryOutput {
+	entry := &StoreEntryOutput{
+		Value:     m["value"],
+		Type:      getString(m, "type"),
+		CreatedAt: getString(m, "created_at"),
+		UpdatedAt: getString(m, "updated_at"),
+	}
+	if metadata, ok := m["metadata"].(map[string]interface{}); ok {
+		entry.Metadata = metadata
+	}
+	return entry
 }
 
 func (dt *DaemonTools) handleStoreSet(input StoreInput) (*mcp.CallToolResult, StoreOutput, error) {
@@ -232,19 +245,15 @@ func (dt *DaemonTools) handleStoreList(input StoreInput) (*mcp.CallToolResult, S
 		return formatDaemonError(err, "store list"), emptyOutput, nil
 	}
 
-	count := getInt(result, "count")
-	keysRaw, _ := result["keys"].([]interface{})
-
-	keys := make([]string, 0, len(keysRaw))
-	for _, k := range keysRaw {
-		if keyStr, ok := k.(string); ok {
-			keys = append(keys, keyStr)
-		}
+	// The daemon sends the keys and no count; the count is how many came back.
+	keys := getStringSlice(result, "keys")
+	if keys == nil {
+		keys = []string{}
 	}
 
 	output := StoreOutput{
 		Success: true,
-		Count:   count,
+		Count:   len(keys),
 		Keys:    keys,
 	}
 
@@ -293,28 +302,19 @@ func (dt *DaemonTools) handleStoreGetAll(input StoreInput) (*mcp.CallToolResult,
 		return formatDaemonError(err, "store get_all"), emptyOutput, nil
 	}
 
-	count := getInt(result, "count")
 	entriesRaw, _ := result["entries"].(map[string]interface{})
 
 	entries := make(map[string]*StoreEntryOutput)
 	for key, entryRaw := range entriesRaw {
 		if entryMap, ok := entryRaw.(map[string]interface{}); ok {
-			entry := &StoreEntryOutput{
-				Value:     entryMap["value"],
-				Type:      getString(entryMap, "type"),
-				CreatedAt: getString(entryMap, "created_at"),
-				UpdatedAt: getString(entryMap, "updated_at"),
-			}
-			if metadata, ok := entryMap["metadata"].(map[string]interface{}); ok {
-				entry.Metadata = metadata
-			}
-			entries[key] = entry
+			entries[key] = storeEntryFromMap(entryMap)
 		}
 	}
 
+	// As for list, the daemon sends no count.
 	output := StoreOutput{
 		Success: true,
-		Count:   count,
+		Count:   len(entries),
 		Entries: entries,
 	}
 
