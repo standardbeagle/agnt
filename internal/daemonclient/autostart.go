@@ -61,7 +61,7 @@ func (c AutoStartConfig) toLibraryConfig() goclient.AutoStartConfig {
 	// failure, leaving the library's own copy-lookup + self-exec fallback.
 	hubPath := c.DaemonPath
 	if hubPath == "" {
-		hubPath = ensureDaemonBinary()
+		hubPath = provisionDaemonBinary()
 	}
 	return goclient.AutoStartConfig{
 		SocketPath:     c.SocketPath,

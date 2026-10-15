@@ -256,38 +256,28 @@ func (u *DaemonUpgrader) cleanupStaleFiles() {
 
 // startNewDaemon starts the new daemon binary.
 func (u *DaemonUpgrader) startNewDaemon(ctx context.Context) error {
-	binaryPath := u.config.NewBinaryPath
-	if binaryPath == "" {
-		// Use current executable
-		var err error
-		binaryPath, err = os.Executable()
-		if err != nil {
-			return fmt.Errorf("failed to get executable path: %w", err)
-		}
-
-		// Try to use dedicated daemon binary if it exists
-		daemonPath := binaryPath + "-daemon"
-		if _, err := os.Stat(daemonPath); err == nil {
-			binaryPath = daemonPath
-		}
-	}
-
-	// Use AutoStartClient to start daemon
-	config := AutoStartConfig{
-		SocketPath:    u.config.SocketPath,
-		DaemonPath:    binaryPath,
-		StartTimeout:  u.config.Timeout,
-		RetryInterval: 100 * time.Millisecond,
-		MaxRetries:    50,
-	}
-
-	client := NewAutoStartClient(config)
+	client := NewAutoStartClient(u.autoStartConfig())
 	if err := client.Connect(); err != nil {
 		return err
 	}
 	client.Close()
 
 	return nil
+}
+
+// autoStartConfig is the spawn configuration for the replacement daemon. With
+// no explicit NewBinaryPath, DaemonPath stays empty so toLibraryConfig
+// provisions the `agnt-daemon` copy exactly as autostart does: refreshed from
+// the current binary, named correctly on Windows (agnt-daemon.exe). Reusing
+// whatever `<exe>-daemon` was on disk restarted the stale pre-upgrade copy.
+func (u *DaemonUpgrader) autoStartConfig() AutoStartConfig {
+	return AutoStartConfig{
+		SocketPath:    u.config.SocketPath,
+		DaemonPath:    u.config.NewBinaryPath,
+		StartTimeout:  u.config.Timeout,
+		RetryInterval: 100 * time.Millisecond,
+		MaxRetries:    50,
+	}
 }
 
 // waitForDaemonReady waits for the new daemon to be ready and accepting connections.

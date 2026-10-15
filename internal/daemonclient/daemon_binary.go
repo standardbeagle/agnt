@@ -71,6 +71,11 @@ func ensureDaemonBinary() string {
 	return daemonPath
 }
 
+// provisionDaemonBinary is the provisioning step every spawner that leaves
+// DaemonPath empty goes through. A var only so a test can observe that a
+// spawner reaches it: the real ensureDaemonBinary refuses to copy a test binary.
+var provisionDaemonBinary = ensureDaemonBinary
+
 // ResolveDaemonBinary provisions (or refreshes) the `agnt-daemon` copy and
 // returns its path, or "" when the caller should fall back to spawning the
 // current executable itself. Exported for command-layer spawners (`agnt up`)
