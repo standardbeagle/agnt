@@ -51,6 +51,12 @@ func (s KDLSettings) validate() error {
 	if err := requireWholeSeconds("settings.default-timeout", s.DefaultTimeout); err != nil {
 		return err
 	}
+	// A negative default-timeout would fall through the `> 0` guard in
+	// ParseKDLConfig onto the "no timeout" sentinel. (graceful-timeout ≤ 0
+	// documentedly restores its positive default, so it needs no check.)
+	if s.DefaultTimeout < 0 {
+		return fmt.Errorf("settings.default-timeout must not be negative (got %v); use 0 for no timeout", s.DefaultTimeout)
+	}
 	return requireWholeSeconds("settings.graceful-timeout", s.GracefulTimeout)
 }
 

@@ -124,3 +124,20 @@ func TestResolveShell_WSL_LinuxOnlyStaysOnSh(t *testing.T) {
 	assert.Equal(t, "sh", shell, "WSL + pure Linux paths must stay on sh")
 	assert.Equal(t, []string{"-c", "go test ./..."}, args)
 }
+
+// TestResolveShell_DoesNotWriteIntoConfigSlice: the explicit shell-args branch
+// appended Run onto the config's own ShellArgs. With spare capacity that wrote
+// into the shared backing array, so concurrent starts of the same script raced
+// on it and an earlier caller's args could change under it.
+func TestResolveShell_DoesNotWriteIntoConfigSlice(t *testing.T) {
+	backing := make([]string, 1, 4)
+	backing[0] = "-lc"
+	s := &ScriptConfig{Run: "echo one", Shell: "bash", ShellArgs: backing}
+	_, first := s.ResolveShell()
+	s.Run = "echo two"
+	_, _ = s.ResolveShell()
+	assert.Equal(t, []string{"-lc", "echo one"}, first, "a later call rewrote an earlier result")
+	assert.Equal(t, []string{"-lc"}, s.ShellArgs)
+	assert.Equal(t, "-lc", backing[:2][0])
+	assert.Equal(t, "", backing[:2][1], "ResolveShell wrote into the config's backing array")
+}

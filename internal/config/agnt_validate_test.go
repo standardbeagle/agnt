@@ -97,6 +97,9 @@ func TestParseAgntConfig_RejectsInvalidValues(t *testing.T) {
 		// Both rule actions used to load and then do nothing at run time: an
 		// unknown shim action fell back to passthrough with only a debug log,
 		// an unknown hook action fell into the hook's allow branch.
+		// The scanner mapped any unknown severity to error without a word.
+		{"alert pattern severity typo", "alerts {\n    patterns {\n        oom {\n            pattern \"out of memory\"\n            severity \"critical\"\n        }\n    }\n}\n",
+			[]string{"alerts.patterns.oom", "critical", "error, warning, info"}},
 		{"shim rule action typo", "shims {\n    rules {\n        b {\n            match \"npm run build\"\n            action \"restart-wacth\"\n        }\n    }\n}\n",
 			[]string{"shims.rules.b", "restart-wacth", "route, restart-watch, reroute, quiesce, ignore, block, pass"}},
 		{"hook rule action typo", "hook-rules {\n    bash-patterns {\n        x {\n            pattern \"rm -rf\"\n            action \"blok\"\n        }\n    }\n}\n",
@@ -127,6 +130,10 @@ func TestParseAgntConfig_AcceptsValidValues(t *testing.T) {
 		assert.NoError(t, err, sev)
 	}
 
+	for _, sev := range []string{"", "error", "warning", "info"} {
+		_, err := ParseAgntConfig("alerts {\n    patterns {\n        p {\n            pattern \"x\"\n            severity \"" + sev + "\"\n        }\n    }\n}\n")
+		assert.NoError(t, err, "alert pattern severity %q", sev)
+	}
 	for _, action := range append([]string{""}, validShimActions...) {
 		_, err := ParseAgntConfig("shims {\n    rules {\n        r {\n            match \"x\"\n            action \"" + action + "\"\n        }\n    }\n}\n")
 		assert.NoError(t, err, "shim action %q", action)

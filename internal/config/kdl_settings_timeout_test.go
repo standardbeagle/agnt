@@ -73,3 +73,16 @@ func TestSettingsTimeout_WholeSecondsAccepted(t *testing.T) {
 		t.Errorf("graceful-timeout 10 = %v, want 10s", got)
 	}
 }
+
+// TestSettingsTimeout_NegativeDefaultTimeoutRefused: the `> 0` guard that keeps
+// 0 as "no timeout" also swallowed a negative value, so `default-timeout -30`
+// silently meant no limit at all.
+func TestSettingsTimeout_NegativeDefaultTimeoutRefused(t *testing.T) {
+	_, err := ParseKDLConfig(settingsKDL("    default-timeout -30"))
+	if err == nil {
+		t.Fatal("expected a negative default-timeout to be refused, got nil error (it would mean no timeout)")
+	}
+	if msg := err.Error(); !strings.Contains(msg, "default-timeout") || !strings.Contains(msg, "-30") {
+		t.Errorf("error should name the field and value; got: %s", msg)
+	}
+}

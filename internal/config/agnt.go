@@ -440,7 +440,9 @@ func (s *ScriptConfig) ResolveShell() (shell string, shellArgs []string) {
 	if s.Shell != "" {
 		shell = s.Shell
 		if len(s.ShellArgs) > 0 {
-			shellArgs = append(s.ShellArgs, s.Run)
+			// Copy: appending onto the config's own slice can write into its
+			// backing array, shared by every caller resolving this script.
+			shellArgs = append(append(make([]string, 0, len(s.ShellArgs)+1), s.ShellArgs...), s.Run)
 		} else {
 			// Infer shell args from shell name
 			base := strings.ToLower(filepath.Base(shell))
@@ -1489,7 +1491,7 @@ func validateChannelConfig(cfg *ChannelConfig) error {
 	}
 	for _, ev := range cfg.Events {
 		if _, ok := validEventTypes[ev]; !ok {
-			return fmt.Errorf("channel: unknown event type %q (valid: error, diagnostic, interaction)", ev)
+			return fmt.Errorf("channel: unknown event type %q (valid: %s)", ev, strings.Join(sortedKeys(validEventTypes), ", "))
 		}
 	}
 	return nil

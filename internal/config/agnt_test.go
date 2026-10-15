@@ -1831,6 +1831,10 @@ func TestParseChannelConfig_BadEventType(t *testing.T) {
 	_, err := ParseAgntConfig(input)
 	assert.Error(t, err, "unknown event type should fail validation")
 	assert.Contains(t, err.Error(), "event type")
+	// The message lists every accepted type, not just the first three.
+	for ev := range validEventTypes {
+		assert.Contains(t, err.Error(), ev)
+	}
 }
 
 func TestParseChannelConfig_EmptyBlock(t *testing.T) {

@@ -43,6 +43,11 @@ var validAutoForwardSources = []string{"browser", "http"}
 // special-cased), so rejecting it would fail configs that load today.
 var validAutoForwardSeverities = []string{"error", "warning", "warn"}
 
+// validAlertPatternSeverities is the closed set for
+// `alerts.patterns.<id>.severity` (empty means error). Kept in step with
+// compileCustomAlertPatterns in cmd/agnt, which maps anything else to error.
+var validAlertPatternSeverities = []string{"error", "warning", "info"}
+
 // validShimActions is the closed set for `shims.rules.<n>.action` (empty means
 // route). Kept in step with shims.ValidateAction; internal/shims cannot be
 // imported here (it imports config), so TestShimActionsAcceptedByConfig in
@@ -79,6 +84,14 @@ func validateAgntEnums(cfg *AgntConfig) error {
 		if !containsString(validAlertPresets, cfg.Alerts.Preset) {
 			return fmt.Errorf("alerts: unknown preset %q (accepted: %s)",
 				cfg.Alerts.Preset, strings.Join(validAlertPresets, ", "))
+		}
+	}
+	if cfg.Alerts != nil {
+		for _, id := range sortedKeys(cfg.Alerts.Patterns) {
+			if p := cfg.Alerts.Patterns[id]; p != nil && p.Severity != "" && !containsString(validAlertPatternSeverities, p.Severity) {
+				return fmt.Errorf("alerts.patterns.%s: unknown severity %q (accepted: %s)",
+					id, p.Severity, strings.Join(validAlertPatternSeverities, ", "))
+			}
 		}
 	}
 	if cfg.Shims != nil {
