@@ -643,8 +643,10 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Check for chaos rules that apply to this request
+	// Check for chaos rules that apply to this request. The match is made
+	// once, against the inbound path, and carried to ChaosTransport.
 	chaosRules := ps.chaosEngine.MatchingRules(r)
+	r = r.WithContext(withChaosMatch(r.Context(), chaosRules))
 
 	// HTTP error injection - return error without calling backend
 	if errorCode, errorMsg := ps.chaosEngine.GetHTTPError(chaosRules); errorCode != 0 {

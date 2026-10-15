@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"context"
 	mrand "math/rand/v2"
 	"net/http"
 	"regexp"
@@ -578,6 +579,22 @@ func (ce *ChaosEngine) MatchingRules(req *http.Request) []*ChaosRule {
 	}
 
 	return matches
+}
+
+// chaosMatchKey carries handleProxy's MatchingRules result to ChaosTransport.
+type chaosMatchKey struct{}
+
+// withChaosMatch records the rules the handler matched for this request
+// (possibly none), so the transport applies that one decision instead of
+// matching again.
+func withChaosMatch(ctx context.Context, rules []*ChaosRule) context.Context {
+	return context.WithValue(ctx, chaosMatchKey{}, rules)
+}
+
+// chaosMatchFrom returns the rules the handler matched, and whether it did.
+func chaosMatchFrom(ctx context.Context) ([]*ChaosRule, bool) {
+	rules, ok := ctx.Value(chaosMatchKey{}).([]*ChaosRule)
+	return rules, ok
 }
 
 // ruleMatches checks if a rule matches the request

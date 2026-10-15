@@ -130,3 +130,29 @@ func TestHandleProxy_DisconnectRuleStopsTheBody(t *testing.T) {
 		t.Fatalf("disconnect rule let %d bytes through, want exactly 1000", got)
 	}
 }
+
+// handleProxy and ChaosTransport each called MatchingRules, so every request
+// was counted twice and drew each rule's probability twice; the transport
+// matched against the absolute upstream URL, so an anchored pattern like
+// ^/api never injected its latency. The handler's match is now carried to
+// the transport.
+func TestHandleProxy_ChaosRulesMatchedOncePerRequest(t *testing.T) {
+	ps := newChaosTestProxy(t, `{}`, &ChaosRule{
+		ID: "lat", Type: ChaosLatency, Enabled: true, URLPattern: "^/api",
+		MinLatencyMs: 20, MaxLatencyMs: 21,
+	})
+
+	rr := serveThroughProxy(t, ps, "/api/items")
+	if rr.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	st := ps.chaosEngine.GetStats()
+	if st.TotalRequests != 1 || st.AffectedCount != 1 || st.RuleStats["lat"] != 1 {
+		t.Fatalf("one request counted as total=%d affected=%d applied=%d, want 1/1/1",
+			st.TotalRequests, st.AffectedCount, st.RuleStats["lat"])
+	}
+	if st.LatencyInjected < 20 {
+		t.Fatalf("latency_injected_ms = %d, want >= 20: the ^/api rule matched but its latency was never applied", st.LatencyInjected)
+	}
+}

@@ -39,8 +39,15 @@ func (ct *ChaosTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 		return ct.underlying.RoundTrip(req)
 	}
 
-	// Get matching chaos rules
-	rules := ct.engine.MatchingRules(req)
+	// Use the rules handleProxy matched for this request. Matching again
+	// here counted every request twice in the stats, drew each rule's
+	// probability a second time, and matched URL patterns against the
+	// absolute upstream URL, so an anchored pattern like ^/api never applied.
+	// A request that did not come through the handler is matched here.
+	rules, matched := chaosMatchFrom(req.Context())
+	if !matched {
+		rules = ct.engine.MatchingRules(req)
+	}
 	if len(rules) == 0 {
 		return ct.underlying.RoundTrip(req)
 	}
