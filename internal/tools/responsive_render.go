@@ -11,9 +11,9 @@ import (
 // responsiveViewportJSON mirrors one viewport entry of the formatJSON shape
 // produced by internal/proxy/scripts/responsive.js.
 type responsiveViewportJSON struct {
-	Width       int                     `json:"width"`
-	Issues      []AuditFinding          `json:"issues"`
-	Error       string                  `json:"error,omitempty"`
+	Width       int                      `json:"width"`
+	Issues      []AuditFinding           `json:"issues"`
+	Error       string                   `json:"error,omitempty"`
 	CheckErrors []responsiveCheckErrJSON `json:"checkErrors,omitempty"`
 }
 

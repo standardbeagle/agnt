@@ -20,14 +20,14 @@ type DiagnoseViewport struct {
 
 // DiagnoseInput defines input for the diagnose tool.
 type DiagnoseInput struct {
-	ProxyID  string `json:"proxy_id,omitempty" jsonschema:"Proxy ID to diagnose (preferred)"`
-	ID       string `json:"id,omitempty" jsonschema:"Alias for proxy_id"`
-	Action   string `json:"action" jsonschema:"Diagnosis to run: click (dead-click triage from recorded interactions) or layout (composite layout diagnosis + responsive risk at the current viewport, with stacking/container causes)"`
+	ProxyID  string            `json:"proxy_id,omitempty" jsonschema:"Proxy ID to diagnose (preferred)"`
+	ID       string            `json:"id,omitempty" jsonschema:"Alias for proxy_id"`
+	Action   string            `json:"action" jsonschema:"Diagnosis to run: click (dead-click triage from recorded interactions) or layout (composite layout diagnosis + responsive risk at the current viewport, with stacking/container causes)"`
 	Selector string            `json:"selector,omitempty" jsonschema:"Narrow the diagnosis: the element for action=click (default: last recorded click), the subtree root for action=layout"`
 	Viewport *DiagnoseViewport `json:"viewport,omitempty" jsonschema:"Layout action only: resize the viewport before diagnosing; the original viewport is restored afterwards"`
-	Target   string `json:"target,omitempty" jsonschema:"Frame in the always-wrap model: 'inner' (default) = active page content frame; 'outer' = chrome shell"`
-	FrameID  string `json:"frame_id,omitempty" jsonschema:"Diagnose a specific content frame by id (default: the active content frame). Rarely needed."`
-	Raw      bool   `json:"raw,omitempty" jsonschema:"Return full JSON instead of compact text"`
+	Target   string            `json:"target,omitempty" jsonschema:"Frame in the always-wrap model: 'inner' (default) = active page content frame; 'outer' = chrome shell"`
+	FrameID  string            `json:"frame_id,omitempty" jsonschema:"Diagnose a specific content frame by id (default: the active content frame). Rarely needed."`
+	Raw      bool              `json:"raw,omitempty" jsonschema:"Return full JSON instead of compact text"`
 }
 
 // DiagnoseOutput defines output for the diagnose tool.
@@ -51,7 +51,7 @@ type diagnoseClickResult struct {
 			ClientY float64 `json:"client_y"`
 		} `json:"position"`
 	} `json:"click"`
-	Element    map[string]any `json:"element,omitempty"`
+	Element map[string]any `json:"element,omitempty"`
 	// HitTestPoint records which point the helper hit-tested: "click" (the
 	// recorded click position, only when it targets the diagnosed element)
 	// or "center" (the element's own center — the named-element path).

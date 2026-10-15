@@ -11,14 +11,14 @@ import (
 // action=click). The scripts package has no embedded JS engine, so this pins
 // the contract statically:
 //
-//   1. diagnostics.js defines and exports diagnoseClick with a @devtool
-//      JSDoc block (so `make generate` surfaces it in apidocs_gen.go).
-//   2. api.js wires it onto window.__devtool.
-//   3. The helper composes EXISTING evidence only — every helper call inside
-//      its body must be one of the already-shipped primitives
-//      (__devtool_interactions.getLastClick, __devtool.getElementInfo /
-//      getStacking / getContainer, document.elementFromPoint, __devtool_utils
-//      helpers). No new detection, no querySelectorAll walks.
+//  1. diagnostics.js defines and exports diagnoseClick with a @devtool
+//     JSDoc block (so `make generate` surfaces it in apidocs_gen.go).
+//  2. api.js wires it onto window.__devtool.
+//  3. The helper composes EXISTING evidence only — every helper call inside
+//     its body must be one of the already-shipped primitives
+//     (__devtool_interactions.getLastClick, __devtool.getElementInfo /
+//     getStacking / getContainer, document.elementFromPoint, __devtool_utils
+//     helpers). No new detection, no querySelectorAll walks.
 func TestDiagnoseClickJSHelperEmbedded(t *testing.T) {
 	if !strings.Contains(diagnosticsJS, "function diagnoseClick(") {
 		t.Fatalf("diagnostics.js missing diagnoseClick definition")
