@@ -1,6 +1,7 @@
 package daemonclient
 
 import (
+	"os"
 	"path/filepath"
 	"testing"
 )
@@ -32,5 +33,23 @@ func TestUpgraderSpawnsExplicitNewBinary(t *testing.T) {
 	u := NewDaemonUpgrader(UpgradeConfig{SocketPath: filepath.Join(t.TempDir(), "d.sock"), NewBinaryPath: explicit})
 	if got := u.autoStartConfig().toLibraryConfig().HubPath; got != explicit {
 		t.Fatalf("upgrade spawns %q, want NewBinaryPath %q", got, explicit)
+	}
+}
+
+// go-cli-server's socket.Manager writes its PID file at <socket>.pid on every
+// platform. The upgrader's Windows branch derived <dir>/<name-without-.sock>.pid
+// instead, so it removed a file that never exists and left the real one behind.
+func TestUpgraderCleanupRemovesLibraryPIDFile(t *testing.T) {
+	dir := t.TempDir()
+	sock := filepath.Join(dir, "agnt.sock")
+	pidFile := sock + ".pid"
+	if err := os.WriteFile(pidFile, []byte("12345"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	NewDaemonUpgrader(UpgradeConfig{SocketPath: sock}).cleanupStaleFiles()
+
+	if _, err := os.Stat(pidFile); !os.IsNotExist(err) {
+		t.Fatalf("PID file %s still present after cleanup (stat err: %v)", pidFile, err)
 	}
 }
