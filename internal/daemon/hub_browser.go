@@ -3,10 +3,12 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/browser"
+	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/protocol"
 
 	"github.com/standardbeagle/agnt/internal/proxy"
@@ -25,6 +27,34 @@ func (d *Daemon) browserActions() map[string]handlerFn {
 
 func (d *Daemon) hubHandleBrowser(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	return newCommandRouter("BROWSER").dispatch(ctx, conn, cmd, d.browserActions())
+}
+
+// autoStartBrowserProxy creates the proxy BROWSER START fronts a browser with
+// when the named proxy does not exist yet.
+//
+// The incident owner is registered before wireProxyLogger, which captures it:
+// stampIncidentOwner fails closed for a proxy with no captured owner, so
+// without it every browser JS error and HTTP 5xx from this proxy was dropped
+// before the incident bus and never reached the agent.
+func (d *Daemon) autoStartBrowserProxy(ctx context.Context, proxyID, targetURL, projectPath, sessionCode string) (*proxy.ProxyServer, error) {
+	server, err := d.proxym.Create(ctx, proxy.ProxyConfig{
+		ID:          proxyID,
+		TargetURL:   targetURL,
+		ListenPort:  0, // Auto-assign
+		AutoRestart: true,
+		Path:        projectPath,
+	})
+	if err != nil {
+		return nil, err
+	}
+	d.registerIncidentProxyOwner(server.ID, sessionCode)
+	d.wireProxyLogger(server)
+
+	// Bind to this project's session overlay, not a global default.
+	if ep := d.overlayEndpointForProject(projectPath); ep != "" {
+		server.SetOverlayEndpoint(ep)
+	}
+	return server, nil
 }
 
 // hubHandleBrowserStart handles BROWSER START command.
@@ -69,27 +99,19 @@ func (d *Daemon) hubHandleBrowserStart(ctx context.Context, conn *hubpkg.Connect
 				return conn.WriteErr(hubproto.ErrInvalidArgs, "proxy_id specified but proxy not found and no URL provided to auto-start")
 			}
 
-			// Auto-start proxy with the provided URL
-			proxyConfig := proxy.ProxyConfig{
-				ID:          config.ProxyID,
-				TargetURL:   url,
-				ListenPort:  0, // Auto-assign
-				AutoRestart: true,
-				Path:        projectPath,
+			owner := conn.SessionCode()
+			if owner == "" {
+				owner = config.SessionCode
 			}
-
-			proxyServer, err = d.proxym.Create(ctx, proxyConfig)
+			if owner == "" && projectPath != "" {
+				if s, ok := d.sessionRegistry.FindByDirectory(projectPath); ok {
+					owner = s.Code
+				}
+			}
+			proxyServer, err = d.autoStartBrowserProxy(ctx, config.ProxyID, url, projectPath, owner)
 			if err != nil {
 				return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to auto-start proxy: %v", err))
 			}
-
-			d.wireProxyLogger(proxyServer)
-
-			// Bind to this project's session overlay, not a global default.
-			if ep := d.overlayEndpointForProject(projectPath); ep != "" {
-				proxyServer.SetOverlayEndpoint(ep)
-			}
-
 			proxyStarted = true
 		}
 
@@ -119,6 +141,14 @@ func (d *Daemon) hubHandleBrowserStart(ctx context.Context, conn *hubpkg.Connect
 
 	b, err := d.browserm.Start(ctx, config.ID, browserConfig)
 	if err != nil {
+		// A proxy started only to front this browser must not outlive the
+		// failed start: nothing reports it and nothing would stop it.
+		if proxyStarted {
+			if stopErr := d.proxym.Stop(ctx, config.ProxyID); stopErr != nil && !errors.Is(stopErr, proxy.ErrProxyNotFound) {
+				debug.Warn("daemon", "BROWSER START: stopping auto-started proxy %s: %v", config.ProxyID, stopErr)
+			}
+			d.retireIncidentProxyOwner(config.ProxyID)
+		}
 		return conn.WriteErr(hubproto.ErrInternal, err.Error())
 	}
 
