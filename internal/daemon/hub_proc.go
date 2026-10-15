@@ -277,7 +277,7 @@ func (d *Daemon) hubHandleProcStdin(_ context.Context, conn *hubpkg.Connection, 
 	return conn.WriteJSON(data)
 }
 
-// hubHandleProcStop handles PROC STOP <id>.
+// hubHandleProcStop handles PROC STOP <id> [force].
 
 func (d *Daemon) hubHandleProcStop(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	if len(cmd.Args) < 1 {
@@ -345,9 +345,27 @@ func (d *Daemon) hubHandleProcStop(ctx context.Context, conn *hubpkg.Connection,
 		d.autoRestarter.Unregister(processID)
 	}
 
+	// PROC STOP <id> force skips the graceful SIGTERM window. StopProcess
+	// honours an already-cancelled context by going straight to its
+	// force-kill path (after snapshotting the descendant tree), so a
+	// cancelled context is how force reaches it.
+	force := len(cmd.Args) > 1 && cmd.Args[1] == "force"
+	stopCtx := ctx
+	if force {
+		var cancel context.CancelFunc
+		stopCtx, cancel = context.WithCancel(ctx)
+		cancel()
+	}
+
 	// Stop the instance that was resolved, not whatever a second bare-ID
 	// lookup would find.
-	if err := d.hub.ProcessManager().StopProcess(ctx, proc); err != nil {
+	err = d.hub.ProcessManager().StopProcess(stopCtx, proc)
+	if force && errors.Is(err, context.Canceled) && ctx.Err() == nil {
+		// Another stop already owns the process (state Stopping) and will
+		// escalate on its own; wait for it like a plain stop would.
+		err = d.hub.ProcessManager().StopProcess(ctx, proc)
+	}
+	if err != nil {
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to stop: %v", err))
 	}
 	d.retireIncidentProcessOwner(processID)
@@ -356,6 +374,9 @@ func (d *Daemon) hubHandleProcStop(ctx context.Context, conn *hubpkg.Connection,
 	retired := d.maybeRetireOnProcStop(processID)
 
 	message := fmt.Sprintf("process %q stopped", processID)
+	if force {
+		message = fmt.Sprintf("process %q killed", processID)
+	}
 	if retired > 0 {
 		message = fmt.Sprintf("%s (%d stale error(s) cleared; pinned errors kept)", message, retired)
 	}
