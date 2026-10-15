@@ -197,8 +197,66 @@ func (ps *ProxyServer) saveLargeResult(execID string, result string) (string, er
 	if err != nil {
 		return "", fmt.Errorf("failed to write large result: %w", err)
 	}
+	for _, old := range ps.largeResults.add(filePath) {
+		removeLargeResult(old)
+	}
 
 	return filePath, nil
+}
+
+// maxLargeResultFiles bounds the large exec results one proxy keeps in the
+// temp dir. Each is at least LargeResultThreshold bytes and nothing else
+// deletes them, so without a bound a proxy left running filled the temp dir
+// one exec at a time. The newest are kept: an agent reads a result right
+// after the exec that produced it.
+const maxLargeResultFiles = 32
+
+// largeResultFiles is the set of large-result files a proxy has written,
+// oldest first. Its reader is the proxy itself: saveLargeResult retires the
+// oldest past maxLargeResultFiles, and teardown removes the rest.
+type largeResultFiles struct {
+	mu    sync.Mutex
+	paths []string
+}
+
+// add records path and returns the paths that fell past the cap.
+func (f *largeResultFiles) add(path string) []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, p := range f.paths {
+		if p == path {
+			return nil
+		}
+	}
+	f.paths = append(f.paths, path)
+	if over := len(f.paths) - maxLargeResultFiles; over > 0 {
+		evicted := append([]string(nil), f.paths[:over]...)
+		f.paths = append([]string(nil), f.paths[over:]...)
+		return evicted
+	}
+	return nil
+}
+
+// takeAll empties the set and returns what it held.
+func (f *largeResultFiles) takeAll() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	paths := f.paths
+	f.paths = nil
+	return paths
+}
+
+// removeLargeResults deletes every large-result file this proxy wrote.
+func (ps *ProxyServer) removeLargeResults() {
+	for _, p := range ps.largeResults.takeAll() {
+		removeLargeResult(p)
+	}
+}
+
+func removeLargeResult(path string) {
+	if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+		debug.Log("proxy", "failed to remove large exec result %s: %v", path, err)
+	}
 }
 
 // SetActiveFrame records the content frame the page reported as active. Empty

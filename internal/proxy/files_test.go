@@ -1,7 +1,9 @@
 package proxy
 
 import (
+	"context"
 	"encoding/base64"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -40,6 +42,37 @@ func TestSaveLargeResult_ExecIDCannotEscapeTempDir(t *testing.T) {
 	require.NotEqual(t, "..", rel)
 	require.NotContains(t, rel, ".."+string(filepath.Separator))
 	require.Equal(t, filepath.Base(filePath), rel, "large results must remain directly in the temp directory")
+}
+
+// Large exec results are written to the temp dir, and nothing used to delete
+// them: a long-lived proxy filled the temp dir one large exec at a time. A
+// proxy keeps its newest maxLargeResultFiles and removes them all at teardown.
+func TestSaveLargeResult_BoundedAndRemovedAtTeardown(t *testing.T) {
+	tempDir := t.TempDir()
+	redirectOSTempDir(t, tempDir)
+
+	ps, err := NewProxyServer(ProxyConfig{ID: "results", TargetURL: "http://localhost:9999", MaxLogSize: 10, Path: t.TempDir()})
+	require.NoError(t, err)
+	t.Cleanup(ps.StopChaos)
+
+	countResults := func() int {
+		matches, err := filepath.Glob(filepath.Join(tempDir, "agnt-result-results-*.json"))
+		require.NoError(t, err)
+		return len(matches)
+	}
+
+	result := string(make([]byte, LargeResultThreshold))
+	var last string
+	for i := 0; i < maxLargeResultFiles+5; i++ {
+		last, err = ps.saveLargeResult(fmt.Sprintf("exec-%d", i), result)
+		require.NoError(t, err)
+	}
+	require.Equal(t, maxLargeResultFiles, countResults(), "only the newest results stay on disk")
+	require.FileExists(t, last, "the newest result must be kept")
+	require.NoFileExists(t, filepath.Join(tempDir, "agnt-result-results-exec-0.json"), "the oldest result must be removed")
+
+	ps.teardown(context.Background())
+	require.Zero(t, countResults(), "a stopped proxy leaves no result files behind")
 }
 
 // --- screenshot cwd-containment tests ---

@@ -81,6 +81,9 @@ type ProxyServer struct {
 	// matching proxy_stopped diagnostic has been emitted.
 	started       bool
 	stopAnnounced bool
+	// largeResults are the exec-result files this proxy wrote to the temp
+	// dir (saveLargeResult); capped there, removed at teardown.
+	largeResults largeResultFiles
 	// wsConns is the registry of live control WebSocket connections
 	// (connID → *asyncWSWriter). Readers: broadcastRaw (activity state),
 	// broadcastTrusted (toasts, chaos state, agent output — trusted

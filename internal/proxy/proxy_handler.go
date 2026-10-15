@@ -91,6 +91,10 @@ func (ps *ProxyServer) teardownLocked(ctx context.Context) (wasRunning bool, err
 	// (no more TrackHTTPRequest senders).
 	ps.pageTracker.Stop()
 
+	// The large exec results this proxy saved die with it: their only
+	// pointers are its traffic log and the exec replies it already sent.
+	ps.removeLargeResults()
+
 	// Mirror the proxy_started diagnostic (server.go Start) so STREAM-EVENTS
 	// consumers can tear down a forward event-driven rather than only on the
 	// next periodic PROXY LIST poll. Once per started proxy: a crashed proxy
