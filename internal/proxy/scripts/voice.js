@@ -7,6 +7,7 @@
   'use strict';
 
   var core = window.__devtool_core;
+  var startSeq = 0;
 
   // Voice module state
   var voiceState = {
@@ -23,6 +24,7 @@
 
     // Proxy-based voice (Deepgram via proxy)
     proxy: {
+      pendingStart: 0,     // token of the start awaiting getUserMedia, 0 = none
       audioStream: null,
       audioContext: null,
       processor: null,
@@ -155,11 +157,40 @@
     }
   }
 
+  function stopTracks(stream) {
+    try {
+      stream.getTracks().forEach(function(track) { track.stop(); });
+    } catch (e) { /* already gone */ }
+  }
+
+  // Returns false when no capture was started (the caller reports why).
+  // getUserMedia can wait on a permission prompt for as long as the user
+  // likes, so a start is "pending" until it resolves. pendingStart holds the
+  // token of the one start allowed to complete: stop() (via
+  // cleanupProxyVoice) clears it, and a second start() while one is pending
+  // is a no-op. A stream that resolves for a cancelled start has its tracks
+  // stopped at once, so the microphone is never left open behind a stop.
   function startProxyVoice() {
-    // Request microphone access
+    if (voiceState.proxy.pendingStart || voiceState.proxy.audioStream) {
+      return true; // already starting or streaming
+    }
+    if (!navigator.mediaDevices || typeof navigator.mediaDevices.getUserMedia !== 'function') {
+      // No mediaDevices outside a secure context (plain http on a non-loopback host).
+      if (voiceState.onError) voiceState.onError({ error: 'mic-unavailable', message: 'Microphone capture is not available on this page (it needs https or localhost)' });
+      return false;
+    }
+    var token = ++startSeq;
+    var granted = null; // this start's stream, once it has one
+    voiceState.proxy.pendingStart = token;
     navigator.mediaDevices.getUserMedia({ audio: true })
       .then(function(stream) {
+        if (voiceState.proxy.pendingStart !== token) {
+          stopTracks(stream); // stopped (or superseded) while the prompt was open
+          return;
+        }
+        voiceState.proxy.pendingStart = 0;
         voiceState.proxy.audioStream = stream;
+        granted = stream;
 
         // Tell proxy to start voice session
         if (core && core.send) {
@@ -173,9 +204,24 @@
         startAudioStreaming(stream);
       })
       .catch(function(err) {
-        console.error('[DevTool Voice] Microphone access denied:', err);
-        if (voiceState.onError) voiceState.onError({ error: 'mic-denied', message: 'Microphone access denied' });
+        var live = granted !== null && voiceState.proxy.audioStream === granted;
+        if (voiceState.proxy.pendingStart !== token && !live) return; // cancelled: nothing to report
+        if (live) {
+          // Failed after the stream was granted and voice_start went out
+          // (AudioContext setup): end the session and release the microphone.
+          stopProxyVoice();
+        } else {
+          voiceState.proxy.pendingStart = 0;
+        }
+        var denied = err && (err.name === 'NotAllowedError' || err.name === 'SecurityError');
+        console.error('[DevTool Voice] Voice capture failed:', err);
+        if (voiceState.onError) {
+          voiceState.onError(denied ?
+            { error: 'mic-denied', message: 'Microphone access denied' } :
+            { error: 'voice-start-failed', message: 'Voice capture failed: ' + ((err && err.message) || err) });
+        }
       });
+    return true;
   }
 
   function startAudioStreaming(stream) {
@@ -222,6 +268,9 @@
   }
 
   function cleanupProxyVoice() {
+    // Cancels a start still waiting on getUserMedia (see startProxyVoice).
+    voiceState.proxy.pendingStart = 0;
+
     if (voiceState.proxy.processor) {
       voiceState.proxy.processor.disconnect();
       voiceState.proxy.processor = null;
@@ -439,7 +488,9 @@
     voiceState.interimTranscript = '';
 
     if (voiceState.provider === 'proxy') {
-      startProxyVoice();
+      if (!startProxyVoice()) {
+        return { error: 'Microphone capture is not available on this page (it needs https or localhost)' };
+      }
     } else if (voiceState.provider === 'webspeech') {
       startWebSpeech();
     }
@@ -461,7 +512,9 @@
   }
 
   function toggle(mode, position) {
-    if (voiceState.isListening) {
+    // A start waiting on the microphone prompt counts as on: the second
+    // press cancels it rather than starting a second capture.
+    if (voiceState.isListening || voiceState.proxy.pendingStart) {
       return stop();
     } else {
       return start(mode, position);
