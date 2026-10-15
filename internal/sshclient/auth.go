@@ -39,18 +39,82 @@ func BuildAuthMethods(identityFiles []string, prompter Prompter) []ssh.AuthMetho
 	return methods
 }
 
-// agentSigners connects to SSH_AUTH_SOCK and returns the function listing the
-// keys the agent holds, or nil if no agent socket is configured or reachable.
+// agentSigners returns the function listing the keys the ssh-agent at
+// SSH_AUTH_SOCK holds, or nil if no agent socket is configured or reachable.
+//
+// Every dial, and every ProxyJump hop of a dial, builds its auth methods, and
+// an agent signer needs its connection until the handshake has used it. One
+// connection per build was never closed, so each dial leaked one; the process
+// now shares a single agent connection instead (agent clients are safe for
+// concurrent use).
 func agentSigners() func() ([]ssh.Signer, error) {
 	sock := os.Getenv("SSH_AUTH_SOCK")
 	if sock == "" {
 		return nil
 	}
-	conn, err := net.Dial("unix", sock)
-	if err != nil {
+	if _, err := sharedAgent.get(sock); err != nil {
 		return nil
 	}
-	return agent.NewClient(conn).Signers
+	return func() ([]ssh.Signer, error) { return sharedAgent.signers(sock) }
+}
+
+// sharedAgent is the process's one connection to the ssh-agent.
+var sharedAgent agentConn
+
+type agentConn struct {
+	mu     sync.Mutex
+	sock   string
+	conn   net.Conn
+	client agent.ExtendedAgent
+}
+
+// get returns the shared agent client for sock, dialing it if there is none
+// or the socket changed.
+func (a *agentConn) get(sock string) (agent.ExtendedAgent, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.client != nil && a.sock == sock {
+		return a.client, nil
+	}
+	if a.conn != nil {
+		a.conn.Close()
+		a.conn, a.client = nil, nil
+	}
+	conn, err := net.Dial("unix", sock)
+	if err != nil {
+		return nil, err
+	}
+	a.sock, a.conn, a.client = sock, conn, agent.NewClient(conn)
+	return a.client, nil
+}
+
+// drop discards client if it is still the shared one, so the next get dials
+// afresh (the agent restarted, or the connection broke).
+func (a *agentConn) drop(client agent.ExtendedAgent) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.client == client && a.conn != nil {
+		a.conn.Close()
+		a.conn, a.client = nil, nil
+	}
+}
+
+// signers lists the agent's keys, redialing once if the shared connection
+// has gone bad.
+func (a *agentConn) signers(sock string) ([]ssh.Signer, error) {
+	client, err := a.get(sock)
+	if err != nil {
+		return nil, err
+	}
+	signers, err := client.Signers()
+	if err == nil {
+		return signers, nil
+	}
+	a.drop(client)
+	if client, err = a.get(sock); err != nil {
+		return nil, err
+	}
+	return client.Signers()
 }
 
 // publicKeyAuthMethod offers the agent's keys first, then the identity files,
