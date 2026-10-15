@@ -96,12 +96,28 @@ func buildDetectScripts(cmds []project.CommandDef) []DetectScript {
 		out = append(out, DetectScript{
 			Name:          cmd.Name,
 			Command:       full,
-			ProcRun:       fmt.Sprintf(`proc {action:"run", id:%q, command:%q}`, cmd.Name, full),
+			ProcRun:       detectProcRun(cmd),
 			ProcWait:      fmt.Sprintf(`proc {action:"wait", process_id:%q, signal:%q, timeout:%d}`, cmd.Name, waitSig, hints.TimeoutMs),
 			LikelySignals: hints.Signals,
 		})
 	}
 	return out
+}
+
+// detectProcRun renders the ready-to-paste proc run call for a detected script.
+// proc run's `command` is the executable and is started without a shell, so the
+// arguments go in `args`: `command:"npm run dev"` names a program called
+// "npm run dev", which does not exist.
+func detectProcRun(cmd project.CommandDef) string {
+	if len(cmd.Args) == 0 {
+		return fmt.Sprintf(`proc {action:"run", id:%q, command:%q}`, cmd.Name, cmd.Command)
+	}
+	quoted := make([]string, len(cmd.Args))
+	for i, a := range cmd.Args {
+		quoted[i] = fmt.Sprintf("%q", a)
+	}
+	return fmt.Sprintf(`proc {action:"run", id:%q, command:%q, args:[%s]}`,
+		cmd.Name, cmd.Command, strings.Join(quoted, ","))
 }
 
 // formatDetectCompact renders the human-readable compact output block.

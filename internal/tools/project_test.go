@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/standardbeagle/agnt/internal/project"
 	"github.com/standardbeagle/go-sdk/mcp"
 )
 
@@ -284,4 +285,42 @@ func signalsEqual(a, b []string) bool {
 		}
 	}
 	return true
+}
+
+// proc run starts `command` without a shell, so a suggestion that puts the
+// whole command line in `command` names a nonexistent program. The arguments
+// must travel in `args`, and the suggestion must decode to exactly the
+// executable and argv the detected script runs.
+func TestDetectProcRun_SplitsCommandAndArgs(t *testing.T) {
+	scripts := buildDetectScripts([]project.CommandDef{
+		{Name: "dev", Command: "npm", Args: []string{"run", "dev"}},
+		{Name: "test", Command: "go", Args: []string{"test", "./..."}},
+		{Name: "make", Command: "make"},
+	})
+	want := map[string]struct {
+		command string
+		args    []string
+	}{
+		"dev":  {"npm", []string{"run", "dev"}},
+		"test": {"go", []string{"test", "./..."}},
+		"make": {"make", nil},
+	}
+	for _, s := range scripts {
+		// The suggestion is JS-object syntax; quote the keys to decode it.
+		body := strings.TrimPrefix(s.ProcRun, "proc ")
+		for _, k := range []string{"action", "id", "command", "args"} {
+			body = strings.Replace(body, k+":", `"`+k+`":`, 1)
+		}
+		var got struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+		}
+		if err := json.Unmarshal([]byte(body), &got); err != nil {
+			t.Fatalf("%s: proc_run %q does not decode: %v", s.Name, s.ProcRun, err)
+		}
+		if got.Command != want[s.Name].command || strings.Join(got.Args, " ") != strings.Join(want[s.Name].args, " ") {
+			t.Errorf("%s: proc_run %q runs command=%q args=%q, want command=%q args=%q",
+				s.Name, s.ProcRun, got.Command, got.Args, want[s.Name].command, want[s.Name].args)
+		}
+	}
 }
