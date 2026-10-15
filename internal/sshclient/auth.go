@@ -5,6 +5,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
@@ -16,9 +17,10 @@ import (
 // BuildAuthMethods assembles the []ssh.AuthMethod chain in OpenSSH client
 // order: (a) ssh-agent (if SSH_AUTH_SOCK is set and connects), offering all
 // its keys; (b) IdentityFile(s) from resolved ssh_config, parsed as PEM,
-// prompting interactively for a passphrase when a key is encrypted; (c)
-// interactive keyboard-interactive/password fallback if the above yield no
-// methods.
+// prompting interactively for a passphrase when a key is encrypted (the
+// production dial passes the user's default ~/.ssh/id_* keys when ssh_config
+// names none, see identityFilesOrDefaults); (c) keyboard-interactive, then
+// (d) password, each prompting on prompter.
 //
 // Agent keys and identity files are ONE "publickey" method, not two. The ssh
 // library tries each method NAME once: after a first publickey method fails it
@@ -34,9 +36,43 @@ func BuildAuthMethods(identityFiles []string, prompter Prompter) []ssh.AuthMetho
 		methods = append(methods, am)
 	}
 
-	methods = append(methods, interactiveAuthMethod(prompter))
+	// keyboard-interactive before password, OpenSSH's default
+	// PreferredAuthentications order. They are distinct method names, so a
+	// server offering only "password" now gets one.
+	methods = append(methods, interactiveAuthMethod(prompter), passwordAuthMethod(prompter))
 
 	return methods
+}
+
+// defaultIdentityFiles returns the user's default private keys under
+// home/.ssh that exist, in preference order (ed25519, ecdsa, rsa). OpenSSH
+// offers these when ssh_config names no IdentityFile; clientConfigFor does
+// the same. Empty home yields none.
+func defaultIdentityFiles(home string) []string {
+	if home == "" {
+		return nil
+	}
+	var found []string
+	for _, name := range []string{"id_ed25519", "id_ecdsa", "id_rsa"} {
+		p := filepath.Join(home, ".ssh", name)
+		if info, err := os.Stat(p); err == nil && info.Mode().IsRegular() {
+			found = append(found, p)
+		}
+	}
+	return found
+}
+
+// identityFilesOrDefaults is configured unless ssh_config named none, in
+// which case it is the user's existing default keys.
+func identityFilesOrDefaults(configured []string) []string {
+	if len(configured) > 0 {
+		return configured
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+	return defaultIdentityFiles(home)
 }
 
 // agentSigners returns the function listing the keys the ssh-agent at
@@ -296,7 +332,25 @@ func promptPassphrase(prompter Prompter, keyPath string) string {
 	return strings.TrimRight(readLine(prompter.In), "\r\n")
 }
 
-// interactiveAuthMethod builds the keyboard-interactive/password fallback:
+// passwordAuthMethod builds the "password" method for servers that do not
+// offer keyboard-interactive. The password is read the same way as a
+// keyboard-interactive answer: without echo on a real terminal, a plain line
+// read otherwise.
+func passwordAuthMethod(prompter Prompter) ssh.AuthMethod {
+	return ssh.PasswordCallback(func() (string, error) {
+		fmt.Fprint(prompter.Out, "password: ")
+		if f, ok := prompter.In.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
+			pass, err := term.ReadPassword(int(f.Fd()))
+			fmt.Fprintln(prompter.Out)
+			if err == nil {
+				return string(pass), nil
+			}
+		}
+		return strings.TrimRight(readLine(prompter.In), "\r\n"), nil
+	})
+}
+
+// interactiveAuthMethod builds the keyboard-interactive fallback:
 // answers every prompt by reading a line from prompter.In without echo
 // when possible (falls back to a plain line read for non-terminal
 // prompter.In, matching promptPassphrase's approach).

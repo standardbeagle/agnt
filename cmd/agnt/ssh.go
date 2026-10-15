@@ -37,7 +37,8 @@ var sshCmd = &cobra.Command{
 	Long: `Connect to <host> over SSH (resolving ~/.ssh/config for HostName,
 User, Port, IdentityFile, and ProxyJump, exactly as the OpenSSH client
 would), verify the host key against ~/.ssh/known_hosts, authenticate via
-ssh-agent then IdentityFile(s) then interactive password/keyboard-interactive,
+ssh-agent then IdentityFile(s) (default ~/.ssh/id_ed25519, id_ecdsa, id_rsa
+when none is configured) then interactive keyboard-interactive/password,
 and attach a PTY to a remote session-host session by execing
 'agnt attach <name> --create-if-missing --cwd <path>' on the far side.
 

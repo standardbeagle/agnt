@@ -275,7 +275,7 @@ func clientConfigFor(cfg HostConfig, prompter Prompter, knownHostsPath string) (
 	}
 	return &ssh.ClientConfig{
 		User:            cfg.User,
-		Auth:            BuildAuthMethods(cfg.IdentityFile, prompter),
+		Auth:            BuildAuthMethods(identityFilesOrDefaults(cfg.IdentityFile), prompter),
 		HostKeyCallback: hkCallback,
 		// Ask for the key types known_hosts already records for this host, so
 		// the callback is offered a key it can actually compare (see

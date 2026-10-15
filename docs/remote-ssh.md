@@ -12,7 +12,7 @@ The argument is `host[:remote-project-path]`; the first colon separates host fro
 
 ## Bootstrap and authentication
 
-The client checks the remote `agnt` version before attaching. An interactive terminal prompts before an install or upgrade. In non-interactive use, pass `--bootstrap=yes`; `--no-bootstrap` skips provisioning. Host keys are verified against `~/.ssh/known_hosts`. Authentication tries ssh-agent, configured identity files, then interactive password or keyboard-interactive authentication.
+The client checks the remote `agnt` version before attaching. An interactive terminal prompts before an install or upgrade. In non-interactive use, pass `--bootstrap=yes`; `--no-bootstrap` skips provisioning. Host keys are verified against `~/.ssh/known_hosts`. Authentication tries ssh-agent keys and the configured identity files (when `~/.ssh/config` names no `IdentityFile`, the existing ones of `~/.ssh/id_ed25519`, `id_ecdsa` and `id_rsa`), then interactive keyboard-interactive, then password authentication.
 
 ## Sessions and reconnect
 
