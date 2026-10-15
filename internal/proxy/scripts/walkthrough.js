@@ -492,7 +492,11 @@
       next: function() { if (run) { gotoStep(run.index + 1, 'manual'); } return api.status(); },
       prev: function() { if (run) { gotoStep(run.index - 1, 'manual'); } return api.status(); },
       play: function() {
-        if (run) { run.playing = true; renderPanel(); armStep(); emit('play', { scriptId: run.script.id, stepIndex: run.index }); }
+        // disarm() first: a click-target or wait step is armed even while
+        // paused, and play() may be called while already playing. Arming on
+        // top would orphan the earlier listener/timer/poll, which then
+        // advances the run again later.
+        if (run) { run.playing = true; disarm(); renderPanel(); armStep(); emit('play', { scriptId: run.script.id, stepIndex: run.index }); }
         return api.status();
       },
       pause: function() {

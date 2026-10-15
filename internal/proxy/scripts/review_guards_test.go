@@ -175,6 +175,16 @@ func TestSession_FailsFastWhenNotSent(t *testing.T) {
 	)
 }
 
+// TestWalkthrough_PlayDisarmsBeforeRearming — behaviour:
+// jstest/walkthrough-play.test.js. play() must disarm the current step before
+// arming it again, or the earlier click listener / timer / poll is orphaned
+// and advances the run later.
+func TestWalkthrough_PlayDisarmsBeforeRearming(t *testing.T) {
+	mustContain(t, "walkthrough.js", walkthroughJS,
+		"if (run) { run.playing = true; disarm(); renderPanel(); armStep();",
+	)
+}
+
 // TestPanels_EscapePageDerivedStrings — behaviour: jstest/html-sinks.test.js.
 func TestPanels_EscapePageDerivedStrings(t *testing.T) {
 	mustContain(t, "diagnostics.js", diagnosticsJS,
