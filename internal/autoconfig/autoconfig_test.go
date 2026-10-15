@@ -165,6 +165,10 @@ func TestGenerate_RootIndexHTMLWithoutBuildSignal(t *testing.T) {
 	assert.True(t, cfg.Scripts["dev"].Autostart)
 	assert.Contains(t, cfg.Scripts["dev"].Run, "ThreadingHTTPServer")
 	assert.Contains(t, cfg.Scripts["dev"].Run, "http://localhost:8000")
+	// Exposure posture: every listener agnt sets up defaults to loopback. The
+	// generated server binds 127.0.0.1, never all interfaces.
+	assert.Contains(t, cfg.Scripts["dev"].Run, "ThreadingHTTPServer(('127.0.0.1',8000),H)")
+	assert.NotContains(t, cfg.Scripts["dev"].Run, "0.0.0.0")
 	require.Contains(t, cfg.Proxies, "dev")
 	assert.Equal(t, "dev", cfg.Proxies["dev"].Script)
 	assert.Equal(t, 8000, cfg.Proxies["dev"].FallbackPort)
