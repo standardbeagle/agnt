@@ -340,3 +340,36 @@ func TestPortKillTargets(t *testing.T) {
 		t.Fatalf("portKillTargets(nil) = %v, want nil", got)
 	}
 }
+
+// TestStartupPortKillPlan_NativeWindowsHoldersGoThroughGuard: on native
+// Windows the startup port cleanup sent every Windows-side holder — the daemon
+// itself and managed dev servers included — to per-PID taskkill, bypassing
+// killPortHoldersGuarded. They must land on the guarded local path, filtered
+// of self and managed PIDs, with nothing left for unguarded taskkill.
+func TestStartupPortKillPlan_NativeWindowsHoldersGoThroughGuard(t *testing.T) {
+	const self, managed, stranger = 100, 200, 300
+	managedSet := map[int]bool{managed: true}
+
+	t.Run("native Windows", func(t *testing.T) {
+		forceWindowsPIDsLocal(t, true)
+		local, remote := startupPortKillPlan(nil, []int{self, managed, stranger}, self, managedSet)
+		if len(remote) != 0 {
+			t.Fatalf("remoteWindows = %v, want none: native Windows holders must not reach unguarded taskkill", remote)
+		}
+		if len(local) != 1 || local[0] != stranger {
+			t.Fatalf("local = %v, want [%d]", local, stranger)
+		}
+	})
+
+	t.Run("WSL keeps Windows-kernel PIDs on taskkill, unfiltered", func(t *testing.T) {
+		forceWindowsPIDsLocal(t, false)
+		// Under WSL a Windows PID numerically equal to ours is a coincidence.
+		local, remote := startupPortKillPlan([]int{self, stranger}, []int{self, 400}, self, managedSet)
+		if len(local) != 1 || local[0] != stranger {
+			t.Fatalf("local = %v, want [%d]", local, stranger)
+		}
+		if len(remote) != 2 || remote[0] != self || remote[1] != 400 {
+			t.Fatalf("remoteWindows = %v, want [%d 400]", remote, self)
+		}
+	})
+}

@@ -125,21 +125,12 @@ func (d *Daemon) startupPortCleanup(ctx context.Context) int {
 
 	for _, port := range ports {
 		linuxPIDs, windowsPIDs := findPortHoldersWithRetry(ctx, port)
-		// Linux PIDs go through the managed-PID filter and self-exclusion
-		// gate; Windows PIDs (sourced from netstat.exe on WSL) are never
-		// in our managed set or our process tree, so they bypass both.
-		var unmanagedLinux []int
-		for _, pid := range linuxPIDs {
-			if pid == selfPID || managedPIDs[pid] {
-				continue
-			}
-			unmanagedLinux = append(unmanagedLinux, pid)
-		}
-		if len(unmanagedLinux) == 0 && len(windowsPIDs) == 0 {
+		unmanagedLocal, remoteWindows := startupPortKillPlan(linuxPIDs, windowsPIDs, selfPID, managedPIDs)
+		if len(unmanagedLocal) == 0 && len(remoteWindows) == 0 {
 			continue
 		}
 
-		all := append(append([]int{}, unmanagedLinux...), windowsPIDs...)
+		all := append(append([]int{}, unmanagedLocal...), remoteWindows...)
 		procName := config.ProcessNameByPID(all[0])
 		debug.Info("daemon", "startup port cleanup: port %d held by %s (PIDs: %v), killing", port, procName, all)
 		d.daemonStartupLogPort("info", "startup_port_cleanup",
@@ -147,16 +138,15 @@ func (d *Daemon) startupPortCleanup(ctx context.Context) int {
 
 		var killErrs []string
 
-		// Linux PIDs: ProcessManager re-discovers them via the vendored
-		// Linux-only port lookup at kill time (the filter above is void by
-		// then), so route through the guard that refuses to fire when the
-		// port is held by the daemon itself or a managed process. No-op for
-		// Windows-only holders; skip when there's nothing on the Linux side
-		// to avoid the redundant scan.
-		if len(unmanagedLinux) > 0 {
+		// Local PIDs: ProcessManager re-discovers them via the vendored
+		// port lookup at kill time (the filter above is void by then), so
+		// route through the guard that refuses to fire when the port is held
+		// by the daemon itself or a managed process (or a descendant). Skip
+		// when there's nothing local to avoid the redundant scan.
+		if len(unmanagedLocal) > 0 {
 			killed, protected, err := killPortHoldersGuarded(ctx, d.hub.ProcessManager(), port)
 			if err != nil {
-				killErrs = append(killErrs, fmt.Sprintf("linux kill: %v", err))
+				killErrs = append(killErrs, fmt.Sprintf("local kill: %v", err))
 			} else {
 				debug.Log("daemon", "startup port cleanup: killed %d process(es) on port %d", len(killed), port)
 			}
@@ -165,10 +155,10 @@ func (d *Daemon) startupPortCleanup(ctx context.Context) int {
 			}
 		}
 
-		// Windows PIDs: per-PID taskkill.exe via WSL interop. Each
+		// WSL Windows-side PIDs: per-PID taskkill.exe via interop. Each
 		// failure is surfaced as a warning event AND captured in the
 		// startupErrorStore so the AI agent sees it.
-		for _, pid := range windowsPIDs {
+		for _, pid := range remoteWindows {
 			if err := platform.KillWindowsPID(pid); err != nil {
 				msg := fmt.Sprintf("startup port cleanup: failed to kill Windows-side pid %d on port %d: %v", pid, port, err)
 				killErrs = append(killErrs, fmt.Sprintf("windows pid %d: %v", pid, err))
@@ -195,6 +185,32 @@ func (d *Daemon) startupPortCleanup(ctx context.Context) int {
 		debug.Info("daemon", "startup port cleanup: freed %d port(s)", cleaned)
 	}
 	return cleaned
+}
+
+// startupPortKillPlan splits a port probe result into the holders the guarded
+// local kill (killPortHoldersGuarded) covers and the WSL Windows-side PIDs that
+// are taskkill'd one by one. Both lists exclude this process and managed PIDs.
+//
+// On native Windows every holder comes back on the Windows side and those PIDs
+// are our own (windowsPIDsAreLocal): the daemon, its managed dev servers and
+// their children. They are local holders and go through the guard; sending
+// them down the per-PID taskkill path killed them unguarded. Under WSL the
+// Windows-side PIDs belong to the Windows kernel, are never ours, and cannot be
+// reached by the local kill, so they stay on the taskkill path.
+func startupPortKillPlan(linuxPIDs, windowsPIDs []int, self int, managed map[int]bool) (local, remoteWindows []int) {
+	candidates := linuxPIDs
+	if windowsPIDsAreLocal {
+		candidates = append(append([]int(nil), linuxPIDs...), windowsPIDs...)
+	} else {
+		remoteWindows = windowsPIDs
+	}
+	for _, pid := range candidates {
+		if pid == self || managed[pid] {
+			continue
+		}
+		local = append(local, pid)
+	}
+	return local, remoteWindows
 }
 
 // findPortHoldersWithRetry scans a port for holders, retrying a handful of
