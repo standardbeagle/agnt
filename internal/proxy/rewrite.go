@@ -633,6 +633,22 @@ func (ps *ProxyServer) getProxyScheme() string {
 	return "http"
 }
 
+// cutOriginPrefix reports whether value is a URL on origin (scheme://host:port)
+// and returns what follows the origin. The origin must end at a URL boundary
+// (end of value, '/', '?' or '#'): a bare prefix match would also take
+// http://localhost:30001 or http://localhost:3000.example.com for a target of
+// localhost:3000 and rewrite a different server's URL onto the proxy.
+func cutOriginPrefix(value, origin string) (string, bool) {
+	rest, ok := strings.CutPrefix(value, origin)
+	if !ok {
+		return "", false
+	}
+	if rest != "" && !strings.ContainsRune("/?#", rune(rest[0])) {
+		return "", false
+	}
+	return rest, true
+}
+
 // urlBearingAttrPatterns match HTML attributes whose value is a navigational
 // or resource-fetch URL (href/src/action/etc). Rewriting is scoped to these
 // attribute values only — never to the raw body — so JSON payloads, inline
@@ -696,12 +712,11 @@ func (ps *ProxyServer) rewriteURLsInBodyFor(req *http.Request, body []byte) []by
 		}
 
 		var rewritten string
-		switch {
-		case strings.HasPrefix(unescaped, targetHTTPS):
-			rewritten = httpsProxyURL + strings.TrimPrefix(unescaped, targetHTTPS)
-		case strings.HasPrefix(unescaped, targetHTTP):
-			rewritten = httpProxyURL + strings.TrimPrefix(unescaped, targetHTTP)
-		default:
+		if rest, ok := cutOriginPrefix(unescaped, targetHTTPS); ok {
+			rewritten = httpsProxyURL + rest
+		} else if rest, ok := cutOriginPrefix(unescaped, targetHTTP); ok {
+			rewritten = httpProxyURL + rest
+		} else {
 			return value
 		}
 

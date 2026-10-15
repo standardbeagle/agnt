@@ -259,6 +259,24 @@ func TestRewriteURLsInBody(t *testing.T) {
 			input:    `<a href="/page">Relative</a>`,
 			expected: `<a href="/page">Relative</a>`,
 		},
+		{
+			// Regression: the target origin must end at a URL boundary. A
+			// longer port or a host that merely starts with the target's
+			// host:port is a different server and must not be rewritten.
+			name:     "longer port is a different origin",
+			input:    `<a href="http://localhost:30001/page">Other</a><img src="https://localhost:30001/x.png">`,
+			expected: `<a href="http://localhost:30001/page">Other</a><img src="https://localhost:30001/x.png">`,
+		},
+		{
+			name:     "host suffix is a different origin",
+			input:    `<a href="http://localhost:3000.example.com/page">Other</a>`,
+			expected: `<a href="http://localhost:3000.example.com/page">Other</a>`,
+		},
+		{
+			name:     "origin followed by query, fragment, or nothing is rewritten",
+			input:    `<a href="http://localhost:3000?a=1">q</a><a href="http://localhost:3000#top">f</a><a href="http://localhost:3000">e</a>`,
+			expected: `<a href="http://localhost:8080?a=1">q</a><a href="http://localhost:8080#top">f</a><a href="http://localhost:8080">e</a>`,
+		},
 	}
 
 	for _, tt := range tests {
