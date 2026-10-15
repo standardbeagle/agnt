@@ -981,6 +981,15 @@ func (r *InputRouter) dispatchPaletteCommand(c PaletteCommand, args string) {
 		return
 	}
 
+	// :config rewrites panelItems and configEditor, which the status refresh
+	// rebuilds under the lock, so it does its file read here, lock held.
+	if c.Name == "config" {
+		if err := r.openConfigPanel(); err != nil {
+			r.overlay.notifyLocked(Notification{Level: LevelError, Text: fmt.Sprintf("config failed: %v", err)})
+		}
+		return
+	}
+
 	r.overlay.mu.Unlock()
 	// These are explicit user-invoked palette commands; a daemon-side failure
 	// must not vanish. Surface it as an error notification.
@@ -1045,10 +1054,6 @@ func (r *InputRouter) dispatchPaletteCommand(c PaletteCommand, args string) {
 	case "as":
 		if err := r.runAsCommand(args); err != nil {
 			fail("as", err)
-		}
-	case "config":
-		if err := r.openConfigPanel(); err != nil {
-			fail("config", err)
 		}
 	case "run":
 		if args != "" {

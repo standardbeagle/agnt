@@ -153,3 +153,61 @@ func TestPalette_MuteDoesNotFreezeInput(t *testing.T) {
 		})
 	}
 }
+
+// lockProbeController records whether the overlay lock was held when the
+// config panel asked for the project path.
+type lockProbeController struct {
+	fakeProxyController
+	ov       *Overlay
+	unlocked bool
+}
+
+func (c *lockProbeController) ProjectPath() string {
+	if c.ov.mu.TryLock() {
+		c.ov.mu.Unlock()
+		c.unlocked = true
+	}
+	return c.projectPath
+}
+
+// :config opens the editor by rewriting panelItems and configEditor, which the
+// status tick reads and rewrites under the overlay lock. Run outside it, the
+// palette command raced the 2s status refresh.
+func TestPalette_ConfigOpensTheEditorUnderTheLock(t *testing.T) {
+	r, ov, _, _ := menuRouterWithConfig(t, "scripts {\n}\n")
+	probe := &lockProbeController{fakeProxyController: fakeProxyController{projectPath: t.TempDir()}, ov: ov}
+	r.scriptController = probe
+	ov.mu.Lock()
+	ov.configEditor = nil
+	ov.panelItems = []PanelItem{{Type: "overview", Label: "overview"}}
+	ov.panelIndex = 0
+	ov.commandInput = true
+	ov.commandBuffer = "config"
+	ov.mu.Unlock()
+
+	pressKey(t, r, "\r")
+	if probe.unlocked {
+		t.Error(":config opened the editor without holding the overlay lock")
+	}
+	ov.mu.Lock()
+	defer ov.mu.Unlock()
+	if !r.isConfigPanel() || ov.configEditor == nil {
+		t.Error(":config did not open and focus the config panel")
+	}
+}
+
+func TestPalette_ConfigFailureIsReported(t *testing.T) {
+	r, ov, _, _ := menuRouterWithConfig(t, "scripts {\n}\n")
+	r.scriptController = &fakeProxyController{projectPath: ""}
+	ov.mu.Lock()
+	ov.configEditor = nil
+	ov.panelIndex = 0
+	ov.commandInput = true
+	ov.commandBuffer = "config"
+	ov.mu.Unlock()
+
+	pressKey(t, r, "\r")
+	if !hasToast(ov, "config failed") {
+		t.Errorf("a failed :config was silent; toasts = %q", toastTexts(ov))
+	}
+}
