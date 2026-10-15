@@ -32,11 +32,15 @@
 # is exactly the escape criterion 6 prohibits.
 #
 # Instead it snapshots the FULL file set INCLUDING ignored paths
-# (`git status --porcelain --ignored`) as a BASELINE before the runs, then after
-# each run flags any newly-appeared entry — tracked, untracked, OR ignored
-# (`!!`) — that the baseline did not already have. Adding a .gitignore entry
-# does not silence a leak: the artifact still shows up as a new `!!` entry that
-# is absent from the baseline, so the guard fails on it.
+# (`git status --porcelain --ignored --untracked-files=all`) as a BASELINE
+# before the runs, then after each run flags any newly-appeared entry —
+# tracked, untracked, OR ignored (`!!`) — that the baseline did not already
+# have. Adding a .gitignore entry does not silence a leak: the artifact still
+# shows up as a new `!!` entry that is absent from the baseline, so the guard
+# fails on it. `--untracked-files=all` is load-bearing: without it git
+# collapses a wholly-ignored directory to ONE `!! dir/` line, so a leak into a
+# directory that already existed at baseline (`.agnt/`, a cache dir) added no
+# new line and passed.
 #
 # ALLOWLIST BY BASELINE. Legitimate ignored churn that ALREADY EXISTS before the
 # runs (root binaries, coverage `*.out`, `.agnt/`, `*.original.md` backups, ...)
@@ -55,6 +59,8 @@
 #   1  a run left the tree DIRTY (the guard's own verdict) — pollution message.
 #   2  the tree stayed empty across all runs, but a suite run itself was RED
 #      (e.g. an unrelated flake). The tree-clean gate PASSED; the suite did not.
+#   3  a run produced no `go test` output at all (the PTY wrapper or the
+#      command failed to start), so the guard certified nothing — NOT a pass.
 
 set -uo pipefail
 
@@ -75,9 +81,11 @@ RUNS="${TREE_CLEAN_RUNS:-2}"
 porcelain() { git status --porcelain; }
 
 # snapshot: the full pre/post file set git knows is not committed-clean, INCLUDING
-# ignored paths (`!!`). This is what the baseline captures and what each post-run
-# state is diffed against, so a gitignored leak cannot hide (criterion 6).
-snapshot() { git status --porcelain --ignored; }
+# ignored paths (`!!`), listed file by file (`--untracked-files=all`) so a new
+# file inside an already-present ignored directory is a new line. This is what
+# the baseline captures and what each post-run state is diffed against, so a
+# gitignored leak cannot hide (criterion 6).
+snapshot() { git status --porcelain --ignored --untracked-files=all; }
 
 print_dirty_paths() { git status --porcelain | sed 's/^/    /'; }
 
@@ -129,10 +137,16 @@ snapshot | LC_ALL=C sort >"$BASELINE_FILE"
 # --- Run the suite under a PTY so PTY-gated tests EXECUTE ---------------------
 run_under_pty() {
   local logfile="$1"
-  if command -v script >/dev/null 2>&1; then
+  if script --version 2>/dev/null | grep -q util-linux; then
     # util-linux: `script -q -e -c CMD FILE`. -e returns the child's exit code;
     # -q suppresses start/stop noise; -c runs CMD with a PTY allocated.
     script -qec "$TEST_CMD" "$logfile"
+    return $?
+  fi
+  if command -v script >/dev/null 2>&1; then
+    # BSD/macOS: `script -q FILE CMD...` (no -c; a util-linux invocation is a
+    # usage error there). Exits with the child's status.
+    script -q "$logfile" sh -c "$TEST_CMD"
     return $?
   fi
   echo "WARNING: 'script' not found — running WITHOUT a PTY. PTY-gated tests"
@@ -158,6 +172,17 @@ for i in $(seq 1 "$RUNS"); do
   skips=$(grep -c -- '--- SKIP:' "$log" 2>/dev/null || true)
   skips=${skips:-0}
   echo "run $i: suite exit=$status, tests skipped=$skips"
+
+  # A run that printed no go test result line never ran the suite (e.g. the
+  # PTY wrapper rejected its arguments): a clean tree after it proves nothing.
+  if ! grep -Eq '^(=== RUN|--- (PASS|FAIL|SKIP)|ok[[:space:]]|FAIL[[:space:]]|\?[[:space:]])' "$log"; then
+    echo ""
+    echo "TREE-CLEAN GUARD: run $i produced no go test output (exit $status) —"
+    echo "the suite did not run, so this run certifies nothing. Output was:"
+    sed 's/^/    /' "$log" | tail -n 20
+    rm -f "$log"
+    exit 3
+  fi
   rm -f "$log"
 
   # The tree-dirty verdict is primary and checked on EVERY run, pass or fail.
