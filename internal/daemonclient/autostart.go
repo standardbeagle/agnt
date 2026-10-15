@@ -70,7 +70,7 @@ func (c AutoStartConfig) toLibraryConfig() goclient.AutoStartConfig {
 		StartTimeout:   c.StartTimeout,
 		RetryInterval:  c.RetryInterval,
 		MaxRetries:     c.MaxRetries,
-		ProcessMatcher: isAgntDaemonProcess,
+		ProcessMatcher: agntDaemonMatcher(c.SocketPath),
 	}
 }
 

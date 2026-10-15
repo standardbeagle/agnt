@@ -5,7 +5,7 @@ package daemonclient
 import (
 	"net"
 	"os"
-	"strings"
+	"unsafe"
 
 	"github.com/standardbeagle/go-cli-server/socket"
 	"golang.org/x/sys/windows"
@@ -66,7 +66,7 @@ func NewSocketManager(config SocketConfig) *SocketManager {
 		Path:           path,
 		Mode:           config.Mode,
 		Name:           SocketName,
-		ProcessMatcher: isAgntDaemonProcess,
+		ProcessMatcher: agntDaemonMatcher(path),
 	}
 
 	return &SocketManager{
@@ -108,32 +108,41 @@ func IsRunning(path string) bool {
 // CleanupZombieDaemons finds and kills zombie daemon processes.
 // This is a no-op on Windows.
 func CleanupZombieDaemons(socketPath string) int {
-	return socket.CleanupZombieDaemons(socketPath, isAgntDaemonProcess)
+	return socket.CleanupZombieDaemons(socketPath, agntDaemonMatcher(socketPath))
 }
 
-// isAgntDaemonProcess checks if the process with the given PID is an agnt daemon.
-// This is used as the ProcessMatcher callback for socket.Manager.
-func isAgntDaemonProcess(pid int) bool {
-	// On Windows, we use the Windows API to get process information
+// readProcessIdentity reads a process's image path and command line. The
+// command line comes from NtQueryInformationProcess(ProcessCommandLineInformation),
+// which needs only PROCESS_QUERY_LIMITED_INFORMATION (Windows 8.1+). Any failure
+// reports !ok, so the matcher declines rather than guessing.
+func readProcessIdentity(pid int) (exe string, argv []string, ok bool) {
 	handle, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
 	if err != nil {
-		return false
+		return "", nil, false
 	}
 	defer windows.CloseHandle(handle)
 
-	// Get the executable path
 	var exePath [windows.MAX_PATH]uint16
 	size := uint32(len(exePath))
-	err = windows.QueryFullProcessImageName(handle, 0, &exePath[0], &size)
-	if err != nil {
-		return false
+	if err := windows.QueryFullProcessImageName(handle, 0, &exePath[0], &size); err != nil {
+		return "", nil, false
 	}
+	exe = windows.UTF16ToString(exePath[:size])
 
-	path := windows.UTF16ToString(exePath[:size])
-	lowerPath := strings.ToLower(path)
-
-	// Check if it's one of our daemon processes
-	return strings.Contains(lowerPath, "agnt") ||
-		strings.Contains(lowerPath, "devtool-mcp") ||
-		strings.Contains(lowerPath, "agnt-daemon")
+	var need uint32
+	_ = windows.NtQueryInformationProcess(handle, windows.ProcessCommandLineInformation, nil, 0, &need)
+	if need < uint32(unsafe.Sizeof(windows.NTUnicodeString{})) || need > 1<<20 {
+		return "", nil, false
+	}
+	buf := make([]byte, need)
+	if err := windows.NtQueryInformationProcess(handle, windows.ProcessCommandLineInformation,
+		unsafe.Pointer(&buf[0]), need, &need); err != nil {
+		return "", nil, false
+	}
+	cmdline := (*windows.NTUnicodeString)(unsafe.Pointer(&buf[0])).String()
+	argv, err = windows.DecomposeCommandLine(cmdline)
+	if err != nil || len(argv) == 0 {
+		return "", nil, false
+	}
+	return exe, argv, true
 }

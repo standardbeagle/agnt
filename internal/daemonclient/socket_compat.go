@@ -71,7 +71,7 @@ func NewSocketManager(config SocketConfig) *SocketManager {
 		Path:           path,
 		Mode:           config.Mode,
 		Name:           SocketName,
-		ProcessMatcher: isAgntDaemonProcess,
+		ProcessMatcher: agntDaemonMatcher(path),
 	}
 
 	return &SocketManager{
@@ -112,24 +112,17 @@ func IsRunning(path string) bool {
 
 // CleanupZombieDaemons finds and kills zombie daemon processes.
 func CleanupZombieDaemons(socketPath string) int {
-	return socket.CleanupZombieDaemons(socketPath, isAgntDaemonProcess)
+	return socket.CleanupZombieDaemons(socketPath, agntDaemonMatcher(socketPath))
 }
 
-// isAgntDaemonProcess checks if the process with the given PID is an agnt daemon.
-// This is used as the ProcessMatcher callback for socket.Manager.
-func isAgntDaemonProcess(pid int) bool {
-	// Read the process cmdline from /proc
-	cmdline, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
-	if err != nil {
-		return false
+// readProcessIdentity reads a process's argv from /proc. The executable is
+// argv[0] (the daemon is always spawned by absolute path); /proc/<pid>/exe is
+// not used because an upgraded binary reads back as "<path> (deleted)".
+func readProcessIdentity(pid int) (exe string, argv []string, ok bool) {
+	raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/cmdline", pid))
+	if err != nil || len(raw) == 0 {
+		return "", nil, false
 	}
-
-	// cmdline is null-separated, convert to string
-	cmd := string(cmdline)
-
-	// Check if it's one of our daemon processes
-	// Look for "daemon" and "start" or "agnt" or "devtool-mcp" in cmdline
-	return (strings.Contains(cmd, "daemon") && strings.Contains(cmd, "start")) ||
-		strings.Contains(cmd, "agnt") ||
-		strings.Contains(cmd, "devtool-mcp")
+	argv = strings.Split(strings.TrimRight(string(raw), "\x00"), "\x00")
+	return argv[0], argv, true
 }
