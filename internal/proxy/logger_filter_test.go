@@ -81,3 +81,35 @@ func TestLogFilter_InteractionAndMutationTypes(t *testing.T) {
 	require.Len(t, added, 1)
 	assert.Equal(t, "added", added[0].Mutation.MutationType)
 }
+
+// TestLogFilter_HTTPFiltersExcludeNonHTTP: methods, url_pattern and
+// status_codes let every non-HTTP entry through, so with the newest-N limit a
+// burst of JS errors or diagnostics pushed the matching requests out of the
+// result entirely.
+func TestLogFilter_HTTPFiltersExcludeNonHTTP(t *testing.T) {
+	now := time.Now()
+	for name, f := range map[string]LogFilter{
+		"methods":      {Methods: []string{"POST"}},
+		"url_pattern":  {URLPattern: "/api/items/"},
+		"status_codes": {StatusCodes: []int{500}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tl := NewTrafficLogger(100)
+			tl.LogHTTP(HTTPLogEntry{Method: "POST", URL: "/api/items/1", StatusCode: 500, Timestamp: now})
+			tl.LogHTTP(HTTPLogEntry{Method: "GET", URL: "/other", StatusCode: 200, Timestamp: now})
+			for i := 0; i < 5; i++ {
+				tl.LogError(FrontendError{Message: "boom", Timestamp: now})
+				tl.LogDiagnostic(ProxyDiagnostic{Level: DiagnosticInfo, Message: "diag", Timestamp: now})
+			}
+
+			f.Limit = 1
+			got := tl.Query(f)
+			require.Len(t, got, 1)
+			require.NotNil(t, got[0].HTTP, "newest-1 result is a %s entry, not the matching request", got[0].Type)
+			assert.Equal(t, "/api/items/1", got[0].HTTP.URL)
+
+			f.Limit = 0
+			assert.Len(t, tl.Query(f), 1, "only the matching HTTP entry")
+		})
+	}
+}

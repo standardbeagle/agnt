@@ -2,6 +2,9 @@ package proxy
 
 import "time"
 
+// LogFilter selects traffic-log entries. Methods, URLPattern, StatusCodes and
+// MinDurationMs match HTTP entries only: when any is set, non-HTTP entries
+// never match.
 type LogFilter struct {
 	Types            []LogEntryType `json:"types,omitempty"`       // Filter by entry type
 	Methods          []string       `json:"methods,omitempty"`     // HTTP methods
@@ -71,8 +74,14 @@ func (f LogFilter) Matches(entry LogEntry) bool {
 		return false
 	}
 
-	// Type-specific filters
-	if entry.Type == LogTypeHTTP && entry.HTTP != nil {
+	// HTTP filters (methods, url_pattern, status_codes) describe HTTP entries
+	// only, so like min_duration_ms they exclude every entry that is not one.
+	// Letting other types through filled a newest-N result with entries the
+	// filter could not judge and pushed the matching requests out of it.
+	if len(f.Methods) > 0 || f.URLPattern != "" || len(f.StatusCodes) > 0 {
+		if entry.Type != LogTypeHTTP || entry.HTTP == nil {
+			return false
+		}
 		// Method filter
 		if len(f.Methods) > 0 {
 			match := false
