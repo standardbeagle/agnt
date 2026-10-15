@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
@@ -54,12 +55,15 @@ type wsConnState struct {
 	// refusal toast (read loop only).
 	refusalToastAt time.Time
 
-	// voiceMu guards voicePending (voice_start dials in flight) and
-	// voiceBacklog (audio frames held for them). It is the one piece of
-	// connection state shared between the read loop and a handler goroutine.
+	// voiceMu guards voicePending (voice_start dials in flight),
+	// voiceBacklog (audio frames held for them) and voiceStops (voice_stop
+	// count, so a dial that a stop overtook is closed instead of installed).
+	// It is the one piece of connection state shared between the read loop
+	// and a handler goroutine.
 	voiceMu      sync.Mutex
 	voicePending int
 	voiceBacklog [][]byte
+	voiceStops   uint64
 }
 
 // voiceBacklogMaxFrames bounds the audio held while a Deepgram dial is in
@@ -172,14 +176,43 @@ var wsMessageHandlers = map[string]func(c *wsConnState, msg *wsMessage){
 	"voice_stop":         (*wsConnState).handleVoiceStop,
 }
 
-// handleBinaryFrame processes a binary WebSocket message: voice audio when a
-// voice session is live, otherwise a screenshot PNG frame with the
-// [1 byte: idLen][id][PNG] layout.
+// pngSignature is the 8-byte magic every PNG file starts with.
+var pngSignature = []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n'}
+
+// parseScreenshotFrame splits a screenshot binary frame,
+// [1 byte: idLen][idLen bytes: id][PNG bytes], and reports whether rawMessage
+// is one. The PNG signature is what tells a capture from voice audio (raw
+// 16-bit PCM), so audio is never written to disk as a .png.
+func parseScreenshotFrame(rawMessage []byte) (captureID string, png []byte, ok bool) {
+	if len(rawMessage) < 1 {
+		return "", nil, false
+	}
+	idLen := int(rawMessage[0])
+	if idLen == 0 || len(rawMessage) < 1+idLen+len(pngSignature) {
+		return "", nil, false
+	}
+	png = rawMessage[1+idLen:]
+	if !bytes.HasPrefix(png, pngSignature) {
+		return "", nil, false
+	}
+	return string(rawMessage[1 : 1+idLen]), png, true
+}
+
+// handleBinaryFrame processes a binary WebSocket message: a screenshot PNG
+// frame ([1 byte: idLen][id][PNG]) when it carries the PNG signature,
+// otherwise voice audio for the live or dialling voice session. A frame that
+// is neither is dropped.
 func (c *wsConnState) handleBinaryFrame(rawMessage []byte) {
 	// A binary frame is voice audio (voice_start is refused to an untrusted
 	// connection, so it has no session) or a screenshot to write under the
 	// project's .agnt/audit. Neither is for an untrusted connection.
 	if c.refusePrivileged("binary capture") {
+		return
+	}
+	// A capture is routed by its content, not by the voice state: a
+	// screenshot taken while dictating is still a screenshot.
+	if captureID, imgBytes, ok := parseScreenshotFrame(rawMessage); ok {
+		c.saveCaptureFrame(captureID, imgBytes)
 		return
 	}
 	c.voiceMu.Lock()
@@ -196,19 +229,18 @@ func (c *wsConnState) handleBinaryFrame(rawMessage []byte) {
 	c.voiceMu.Unlock()
 
 	if session, ok := c.ps.voiceSessions.Load(c.connID); ok {
-		session.(*VoiceSession).SendAudio(rawMessage)
+		if err := session.(*VoiceSession).SendAudio(rawMessage); err != nil {
+			debug.Log("proxy", "voice audio frame dropped: %v", err)
+		}
 		return
 	}
-	// Screenshot binary frame: [1 byte: idLen][idLen bytes: id][PNG bytes]
-	if len(rawMessage) < 2 {
-		return
-	}
-	idLen := int(rawMessage[0])
-	if idLen <= 0 || len(rawMessage) < 1+idLen+1 {
-		return
-	}
-	captureID := string(rawMessage[1 : 1+idLen])
-	imgBytes := rawMessage[1+idLen:]
+	// Audio with no session to take it (sent after voice_stop, or after a
+	// failed dial) or a malformed frame: nothing to save it as.
+	debug.Log("proxy", "binary frame dropped: not a screenshot and no voice session (%d bytes)", len(rawMessage))
+}
+
+// saveCaptureFrame writes a screenshot frame's PNG bytes and acks it.
+func (c *wsConnState) saveCaptureFrame(captureID string, imgBytes []byte) {
 	filePath, err := c.ps.savePNGBytes("area-"+captureID, imgBytes)
 	if err != nil {
 		debug.Error("proxy", "Failed to save binary screenshot id=%s: %v", captureID, err)
@@ -934,6 +966,7 @@ func (c *wsConnState) handleVoiceStart(msg *wsMessage) {
 	// (handleBinaryFrame), not mistaken for screenshot frames.
 	c.voiceMu.Lock()
 	c.voicePending++
+	stopsAtStart := c.voiceStops
 	c.voiceMu.Unlock()
 
 	// The Deepgram dial runs off the read loop: it is a network handshake, and
@@ -952,13 +985,26 @@ func (c *wsConnState) handleVoiceStart(msg *wsMessage) {
 		if c.voicePending == 0 {
 			c.voiceBacklog = nil
 		}
-		if err == nil {
+		// A voice_stop that arrived while this dial was in flight stopped it:
+		// the session is closed, never installed.
+		stopped := err == nil && c.voiceStops != stopsAtStart
+		if stopped {
+			session.Close()
+		}
+		if err == nil && !stopped {
 			// A second voice_start replaces the session: close the one it
 			// replaces, or its Deepgram socket, reader and keepalive live on
 			// with nothing left that could reach them.
 			if prev, loaded := c.ps.voiceSessions.Swap(c.connID, session); loaded {
 				prev.(*VoiceSession).Close()
 			}
+			// When Deepgram drops the connection the session closes itself;
+			// retire it then, by identity, so a later session under this
+			// connection is never removed by an older one's close.
+			connID := c.connID
+			session.setOnClose(func() {
+				c.ps.voiceSessions.CompareAndDelete(connID, session)
+			})
 			if c.voicePending == 0 {
 				for _, frame := range backlog {
 					if sErr := session.SendAudio(frame); sErr != nil {
@@ -969,6 +1015,9 @@ func (c *wsConnState) handleVoiceStart(msg *wsMessage) {
 		}
 		c.voiceMu.Unlock()
 
+		if stopped {
+			return
+		}
 		if err != nil {
 			if wErr := c.asyncConn.WriteJSON(map[string]interface{}{
 				"type":  "voice_error",
@@ -997,11 +1046,21 @@ var newVoiceSession = NewVoiceSession
 
 // handleVoiceStop stops the voice transcription session.
 func (c *wsConnState) handleVoiceStop(msg *wsMessage) {
+	// A stop also stops any dial still in flight (handleVoiceStart checks
+	// voiceStops when it settles), and the audio held for it is discarded.
+	c.voiceMu.Lock()
+	c.voiceStops++
+	dialing := c.voicePending > 0
+	c.voiceBacklog = nil
+	c.voiceMu.Unlock()
+
 	session, ok := c.ps.voiceSessions.LoadAndDelete(c.connID)
-	if !ok {
+	if !ok && !dialing {
 		return
 	}
-	session.(*VoiceSession).Close()
+	if ok {
+		session.(*VoiceSession).Close()
+	}
 
 	if wErr := c.asyncConn.WriteJSON(map[string]interface{}{
 		"type":    "voice_stopped",

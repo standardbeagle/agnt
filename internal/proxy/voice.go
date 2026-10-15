@@ -20,6 +20,10 @@ type VoiceSession struct {
 	mu            sync.Mutex
 	closed        bool
 	keepAliveDone chan struct{}
+	// onClose runs once, after the session closes for any reason (a stop,
+	// a replacement, or Deepgram dropping the connection). Set by
+	// setOnClose; guarded by mu.
+	onClose func()
 }
 
 // DeepgramConfig holds configuration for Deepgram connection.
@@ -177,12 +181,32 @@ func (vs *VoiceSession) Close() {
 			}
 		}
 	}
+	onClose := vs.onClose
+	vs.onClose = nil
 	vs.mu.Unlock()
 
 	// Stop keepalive
 	close(vs.keepAliveDone)
 
 	vs.deepgramConn.Close()
+
+	if onClose != nil {
+		onClose()
+	}
+}
+
+// setOnClose registers fn to run once when the session closes. A session that
+// has already closed runs fn now, so a session that died before its owner
+// registered still gets retired.
+func (vs *VoiceSession) setOnClose(fn func()) {
+	vs.mu.Lock()
+	if !vs.closed {
+		vs.onClose = fn
+		vs.mu.Unlock()
+		return
+	}
+	vs.mu.Unlock()
+	fn()
 }
 
 // readDeepgramResponses reads transcription results from Deepgram and forwards to browser.

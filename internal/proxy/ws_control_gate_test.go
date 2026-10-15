@@ -373,6 +373,96 @@ func TestVoiceStart_ReplacesAndClosesPreviousSession(t *testing.T) {
 	assert.Empty(t, c.captures, "audio awaiting a voice session must not be saved as a screenshot")
 }
 
+// screenshotFrame builds a binary capture frame the way the browser does:
+// [1 byte: idLen][id][PNG bytes].
+func screenshotFrame(id string) []byte {
+	frame := append([]byte{byte(len(id))}, id...)
+	frame = append(frame, pngSignature...)
+	return append(frame, "IHDR-and-the-rest"...)
+}
+
+// installVoiceSession runs voice_start with the dial stubbed to return vs.
+func installVoiceSession(t *testing.T, c *wsConnState, vs *VoiceSession) {
+	t.Helper()
+	stubVoiceSessions(t, func(string, wsJSONWriter, DeepgramConfig) (*VoiceSession, error) { return vs, nil })
+	c.handleVoiceStart(&wsMessage{Type: "voice_start", Data: map[string]interface{}{}})
+	got, ok := c.ps.voiceSessions.Load(c.connID)
+	require.True(t, ok)
+	require.Same(t, vs, got.(*VoiceSession))
+}
+
+// Binary frames are routed by content: a frame carrying the PNG signature is
+// a screenshot even while dictating (it used to be fed to Deepgram and lost),
+// and audio with no session to take it is dropped, never saved as a .png.
+func TestBinaryFrame_RoutedByPNGSignature(t *testing.T) {
+	ps := newGateProxy(t)
+	c, _ := newGateConn(t, ps, true)
+
+	// Stray audio, no voice session: dropped. Raw PCM whose first byte reads
+	// as a plausible id length is the case that used to be written to disk.
+	c.handleBinaryFrame([]byte{3, 'p', 'c', 'm', 0x40, 0x50, 0x60, 0x70, 0x80, 0x90, 0xa0})
+	assert.Empty(t, c.captures, "audio must never be saved as a screenshot")
+	assert.Zero(t, captureFiles(t, ps))
+
+	// A screenshot taken while a voice session is live is still saved.
+	installVoiceSession(t, c, fakeDeepgramSession(t, c.asyncConn))
+	c.handleBinaryFrame(screenshotFrame("shot1"))
+	assert.Contains(t, c.captures, "shot1", "a screenshot during dictation must be saved, not sent to Deepgram")
+	assert.Equal(t, 1, captureFiles(t, ps))
+}
+
+// When Deepgram drops the connection the session closes itself; it must leave
+// the registry then (by identity), not linger as a dead session that later
+// frames are fed to.
+func TestVoiceSession_RetiredWhenDeepgramDrops(t *testing.T) {
+	ps := newGateProxy(t)
+	c, _ := newGateConn(t, ps, true)
+
+	first := fakeDeepgramSession(t, c.asyncConn)
+	installVoiceSession(t, c, first)
+	first.Close() // what readDeepgramResponses does when the socket drops
+
+	_, ok := ps.voiceSessions.Load(c.connID)
+	assert.False(t, ok, "a session Deepgram dropped must be unregistered")
+
+	// A replacement is not retired by an older session's close.
+	second := fakeDeepgramSession(t, c.asyncConn)
+	stale := fakeDeepgramSession(t, c.asyncConn)
+	installVoiceSession(t, c, stale)
+	installVoiceSession(t, c, second) // closes stale, whose hook must not remove second
+	got, ok := ps.voiceSessions.Load(c.connID)
+	require.True(t, ok)
+	assert.Same(t, second, got.(*VoiceSession))
+}
+
+// A voice_stop that arrives while the Deepgram dial is in flight stops it: the
+// dialled session is closed and never installed, and the stop is acknowledged.
+func TestVoiceStop_DuringDialCancelsInstall(t *testing.T) {
+	ps := newGateProxy(t)
+	c, stub := newGateConn(t, ps, true)
+
+	dialled := fakeDeepgramSession(t, c.asyncConn)
+	stubVoiceSessions(t, func(string, wsJSONWriter, DeepgramConfig) (*VoiceSession, error) {
+		// The read loop handles voice_stop while this dial is still running.
+		c.handleVoiceStop(&wsMessage{Type: "voice_stop"})
+		return dialled, nil
+	})
+	c.handleVoiceStart(&wsMessage{Type: "voice_start", Data: map[string]interface{}{}})
+
+	_, ok := ps.voiceSessions.Load(c.connID)
+	assert.False(t, ok, "a session stopped mid-dial must not be installed")
+	assert.True(t, voiceClosed(dialled), "the dialled session must be closed")
+	types := []interface{}{}
+	for _, f := range stub.frames(t) {
+		types = append(types, f["type"])
+	}
+	assert.Contains(t, types, "voice_stopped")
+	c.voiceMu.Lock()
+	defer c.voiceMu.Unlock()
+	assert.Zero(t, c.voicePending)
+	assert.Empty(t, c.voiceBacklog)
+}
+
 // A browser-supplied attachment path is forwarded to the agent only when it
 // names a capture this proxy wrote.
 func TestOwnedCapturePath(t *testing.T) {

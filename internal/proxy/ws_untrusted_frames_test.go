@@ -30,7 +30,7 @@ func captureFiles(t *testing.T, ps *ProxyServer) int {
 // judged by the effect it would have had. Every case first shows the effect
 // happening for a trusted connection, so "nothing happened" below is the gate.
 func TestUntrustedControlFrames_Refused(t *testing.T) {
-	binaryShot := append([]byte{1, 'x'}, []byte("png-bytes")...)
+	binaryShot := screenshotFrame("x")
 
 	cases := []struct {
 		name   string
