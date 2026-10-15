@@ -57,6 +57,10 @@ func (d *Daemon) restoreProxies() {
 		proxyServer, err := d.proxym.Create(d.ctx, config)
 		if err != nil {
 			debug.Log("daemon", "failed to restore proxy %s: %v", pc.ID, err)
+			// The proxy is about to vanish from state; say so where the
+			// agent and developer look, not only in the debug file.
+			d.startupLog(pc.Path).ErrorPort(stripProcessPrefix(pc.ID), "proxy_restore_failed",
+				fmt.Sprintf("cannot restore proxy %s (-> %s) after daemon restart; it was removed: %v", pc.ID, pc.TargetURL, err), pc.Port)
 			// Remove from state if it can't be restored
 			d.stateMgr.RemoveProxy(pc.ID)
 			continue
