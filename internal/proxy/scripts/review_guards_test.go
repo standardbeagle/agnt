@@ -216,6 +216,22 @@ func TestSketch_UndoRedoSwapTheLiveState(t *testing.T) {
 	)
 }
 
+// TestSketch_FromJSONResetsHistory — behaviour: jstest/sketch.test.js
+// ("starts a fresh history when a drawing is loaded"). Loading a drawing must
+// drop the undo history, or undo restores the drawing the load replaced.
+func TestSketch_FromJSONResetsHistory(t *testing.T) {
+	start := strings.Index(sketchJS, "function fromJSON(data) {")
+	end := strings.Index(sketchJS, "function toDataURL() {")
+	if start < 0 || end < start {
+		t.Fatalf("sketch.js: fromJSON body not found")
+	}
+	mustContain(t, "sketch.js fromJSON", sketchJS[start:end],
+		"sketchState.history = [];",
+		"sketchState.historyIndex = -1;",
+		"sketchState.selectedElements = [];",
+	)
+}
+
 // TestStore_FailsFastWhenNotSent — behaviour: jstest/store.test.js. A store
 // request rejects at once when core.send reports the frame unsent, instead of
 // waiting out its 10s response timeout.

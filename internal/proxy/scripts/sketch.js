@@ -1866,6 +1866,11 @@
       console.warn('[DevTool Sketch] Unknown version:', data.version);
     }
     sketchState.elements = data.elements || [];
+    // A loaded drawing starts a fresh history: undo must not restore the
+    // drawing it replaced, and a selection of replaced elements is stale.
+    sketchState.history = [];
+    sketchState.historyIndex = -1;
+    sketchState.selectedElements = [];
     if (data.settings) {
       sketchState.strokeColor = data.settings.strokeColor || sketchState.strokeColor;
       sketchState.fillColor = data.settings.fillColor || sketchState.fillColor;

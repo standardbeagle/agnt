@@ -109,4 +109,23 @@ describe('sketch undo / redo', () => {
     sketch.undo();
     expect(count()).toBe(2);
   });
+  it('starts a fresh history when a drawing is loaded', async () => {
+    const { sketch } = await boot();
+    sketch.fromJSON({ version: 1, elements: [rect('a1', 10)] });
+    sketch.clearAll(); // an edit before the load: undo could return to [a1]
+    sketch.state.selectedElements = [rect('a1', 10)];
+
+    sketch.fromJSON({ version: 1, elements: [rect('b1', 10), rect('b2', 80)] });
+    expect(sketch.state.selectedElements).toEqual([]);
+
+    sketch.undo();
+    expect(sketch.state.elements.map((e) => e.id)).toEqual(['b1', 'b2']);
+    sketch.redo();
+    expect(sketch.state.elements.map((e) => e.id)).toEqual(['b1', 'b2']);
+
+    // Edits after the load are still undoable, back to the loaded drawing.
+    sketch.clearAll();
+    sketch.undo();
+    expect(sketch.state.elements.map((e) => e.id)).toEqual(['b1', 'b2']);
+  });
 });
