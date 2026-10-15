@@ -2585,10 +2585,15 @@
         (attachment.data.text ? '"' + escapeHtml(String(attachment.data.text).substring(0, 100)) + '"' : '');
       popup.appendChild(info);
 
-      // Highlight the element on the page
+      // Highlight the element on the page. The page is the content frame's
+      // document (targetWindow()), not the chrome shell this runs in; the
+      // content frame is fullscreen, so its viewport rect maps 1:1 onto the
+      // shell's for the position:fixed highlight.
       if (attachment.data.selector) {
         try {
-          var el = document.querySelector(attachment.data.selector);
+          var pageWin = targetWindow();
+          var pageDoc = (pageWin && pageWin.document) ? pageWin.document : document;
+          var el = pageDoc.querySelector(attachment.data.selector);
           if (el) {
             var rect = el.getBoundingClientRect();
             var highlight = document.createElement('div');

@@ -86,3 +86,17 @@ func TestIndicatorCompose_RetiresMountRootNodes(t *testing.T) {
 		"measureEl.id = '__devtool-message-measure';",
 	)
 }
+
+// TestIndicatorPreview_HighlightsInContentFrame — behaviour:
+// jstest/indicator-preview-content-frame.test.js. Under always-wrap the
+// indicator runs in the chrome shell; the element preview used to look the
+// selector up in the shell's document, which never holds the page element.
+func TestIndicatorPreview_HighlightsInContentFrame(t *testing.T) {
+	body := funcBody(t, indicatorSrc(t), "function showAttachmentPreview(")
+	mustContain(t, "indicator.js showAttachmentPreview", body,
+		"var pageWin = targetWindow();",
+		"pageDoc.querySelector(attachment.data.selector)",
+	)
+	mustNotContain(t, "indicator.js showAttachmentPreview", body,
+		" document.querySelector(attachment.data.selector)")
+}
