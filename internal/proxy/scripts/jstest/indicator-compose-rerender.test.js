@@ -12,7 +12,10 @@ afterEach(() => { if (rt) { rt.close(); rt = null; } });
 
 const frame = (win) => new Promise((r) => win.requestAnimationFrame(() => r()));
 
-describe('compose re-render', () => {
+// Each case evaluates the whole indicator bundle in jsdom (~1s alone); under
+// the full parallel tier that can pass vitest's 5s default, so the ceiling is
+// a generous liveness bound, not a latency budget.
+describe('compose re-render', { timeout: 30_000 }, () => {
   it('keeps exactly one audit menu popover, the one the button targets', async () => {
     rt = await loadIndicator({
       // Force the native-popover path (jsdom has no Popover API): the menu is

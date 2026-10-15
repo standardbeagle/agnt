@@ -19,7 +19,10 @@ function compose(ind, root) {
   return { textarea, send };
 }
 
-describe('panel send', () => {
+// Each case evaluates the whole indicator bundle in jsdom (~1s alone); under
+// the full parallel tier that can pass vitest's 5s default, so the ceiling is
+// a generous liveness bound, not a latency budget.
+describe('panel send', { timeout: 30_000 }, () => {
   it('keeps the message, attachments and panel when the socket is not open', async () => {
     rt = await loadIndicator();
     const { ind, root } = rt;

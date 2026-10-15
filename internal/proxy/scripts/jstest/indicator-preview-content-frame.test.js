@@ -16,7 +16,10 @@ function preview(internal, selector) {
     { type: 'element', label: 'div', data: { tag: 'div', selector, text: 'x' } }, RECT);
 }
 
-describe('attachment preview from the chrome shell', () => {
+// Each case evaluates the whole indicator bundle in jsdom (~1s alone); under
+// the full parallel tier that can pass vitest's 5s default, so the ceiling is
+// a generous liveness bound, not a latency budget.
+describe('attachment preview from the chrome shell', { timeout: 30_000 }, () => {
   it('highlights the element found in the content frame document', async () => {
     rt = await loadIndicator();
     const { win, internal, root } = rt;

@@ -13,7 +13,10 @@ afterEach(() => { if (rt) { rt.close(); rt = null; } });
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-describe('panel close/reopen', () => {
+// Each case evaluates the whole indicator bundle in jsdom (~1s alone); under
+// the full parallel tier that can pass vitest's 5s default, so the ceiling is
+// a generous liveness bound, not a latency budget.
+describe('panel close/reopen', { timeout: 30_000 }, () => {
   it('a reopen inside the close transition leaves the panel shown', async () => {
     rt = await loadIndicator();
     const { ind } = rt;
