@@ -673,16 +673,12 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Create response recorder to capture response for non-WebSocket requests
-	recorder := &responseRecorder{
-		ResponseWriter: w,
-		statusCode:     http.StatusOK,
-		body:           &bytes.Buffer{},
-		reqID:          reqID,
-	}
-
-	// Wrap with chaos writers if needed
-	var chaosWriter http.ResponseWriter = recorder
+	// Body-shaping chaos writers wrap the client's writer, and the recorder
+	// sits on top of them: recorder → chaos writers → client. They must never
+	// wrap the recorder itself — pointing the recorder at a writer that wraps
+	// it made every Header/Write recurse between the two until the stack
+	// overflowed, a fatal error that took the daemon down.
+	var chaosWriter http.ResponseWriter = w
 
 	// Slow-drip chaos - stream bytes slowly
 	if bytesPerMs, chunkSize := ps.chaosEngine.GetSlowDripConfig(chaosRules); bytesPerMs > 0 {
@@ -703,14 +699,23 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		chaosWriter = NewTruncationWriter(chaosWriter, truncatePercent, expectedSize)
 	}
 
-	// Update recorder to use chaos writer for actual writes
-	if chaosWriter != recorder {
-		recorder.ResponseWriter = chaosWriter
+	// Create response recorder to capture response for non-WebSocket requests
+	recorder := &responseRecorder{
+		ResponseWriter: chaosWriter,
+		statusCode:     http.StatusOK,
+		body:           &bytes.Buffer{},
+		reqID:          reqID,
 	}
 
 	// Proxy the request
 	ps.proxy.ServeHTTP(recorder, r)
+	ps.logProxiedRequest(r, reqID, startTime, reqHeaders, reqBody, recorder)
+}
 
+// logProxiedRequest records one forwarded request: its traffic-log entry, its
+// page-tracker sample, and — for an error from a trusted caller — the overlay
+// forward.
+func (ps *ProxyServer) logProxiedRequest(r *http.Request, reqID string, startTime time.Time, reqHeaders map[string]string, reqBody string, recorder *responseRecorder) {
 	duration := time.Since(startTime)
 
 	// Capture response
