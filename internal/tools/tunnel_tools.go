@@ -214,8 +214,12 @@ func (dt *DaemonTools) handleTunnelList(input TunnelInput) (*mcp.CallToolResult,
 	if err != nil {
 		return formatDaemonError(err, "tunnel list"), TunnelOutput{Tunnels: []TunnelEntry{}}, nil
 	}
+	return nil, tunnelListOutput(result), nil
+}
 
-	count := getInt(result, "count")
+// tunnelListOutput shapes a TUNNEL LIST reply. The daemon sends only the
+// tunnels, no count, so the count is of the tunnels returned.
+func tunnelListOutput(result map[string]interface{}) TunnelOutput {
 	tunnelsRaw, _ := result["tunnels"].([]interface{})
 
 	tunnels := make([]TunnelEntry, 0, len(tunnelsRaw))
@@ -233,10 +237,8 @@ func (dt *DaemonTools) handleTunnelList(input TunnelInput) (*mcp.CallToolResult,
 		}
 	}
 
-	output := TunnelOutput{
-		Count:   count,
+	return TunnelOutput{
+		Count:   len(tunnels),
 		Tunnels: tunnels,
 	}
-
-	return nil, output, nil
 }
