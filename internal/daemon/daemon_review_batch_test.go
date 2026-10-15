@@ -458,3 +458,40 @@ func TestChaosRuleVerbs_UndecodablePayloadIsReportedAsInvalid(t *testing.T) {
 	require.Len(t, cfg.Rules, 1, "the rules must be left untouched")
 	assert.Equal(t, "slow", cfg.Rules[0].ID)
 }
+
+// StartScript normalized the project path for the process registry but handed
+// the auto-restarter the raw one. The monitor looks the process up by
+// (id, path), so an un-normalized path missed it and the monitor dropped the
+// registration without a word: the crash was never restarted.
+func TestStartScript_AutoRestartRegistersNormalizedProjectPath(t *testing.T) {
+	d := newReviewBatchDaemon(t)
+	dir := normalizePath(shortTempDir(t))
+	raw := dir + string(os.PathSeparator) + "."
+	require.NotEqual(t, dir, raw)
+	require.Equal(t, dir, normalizePath(raw))
+	id := makeProcessID(dir, "crasher")
+	cmd, args := failExec()
+
+	cfg := DefaultAutoRestartConfig()
+	cfg.Enabled = true
+	cfg.MaxRestarts = 1
+	cfg.RestartWindow = time.Minute
+	cfg.RestartDelay = 10 * time.Millisecond
+
+	_, err := d.StartScript(context.Background(), StartScriptConfig{
+		ProcessID:         id,
+		ProjectPath:       raw,
+		WorkingDir:        dir,
+		Command:           cmd,
+		Args:              args,
+		AutoRestart:       true,
+		AutoRestartConfig: &cfg,
+	})
+	require.NoError(t, err)
+
+	require.Eventually(t, func() bool {
+		return len(startupEvents(d, id, "restarted")) > 0
+	}, 30*time.Second, 25*time.Millisecond,
+		"the monitor must find the process under the normalized path and restart it")
+	t.Cleanup(func() { _ = d.hub.ProcessManager().Stop(context.Background(), id) })
+}

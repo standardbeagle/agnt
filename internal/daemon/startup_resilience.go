@@ -176,15 +176,17 @@ func (d *Daemon) StartScript(ctx context.Context, cfg StartScriptConfig) (*Start
 
 	// Register for auto-restart if enabled. When the process exits quickly
 	// (e.g. `exit 1`), startScriptWithRetry returns the already-failed proc.
-	// monitorProcess finds it via Get, receives from the already-closed
-	// proc.Done(), and proceeds with restart logic immediately.
+	// monitorProcess finds it via GetByPath, receives from the already-closed
+	// proc.Done(), and proceeds with restart logic immediately. It must get the
+	// normalized projectPath the process was registered under: with any other
+	// spelling the lookup misses and the monitor silently drops the entry.
 	if cfg.AutoRestart && d.autoRestarter != nil {
 		restartConfig := DefaultAutoRestartConfig()
 		restartConfig.Enabled = true
 		if cfg.AutoRestartConfig != nil {
 			restartConfig = *cfg.AutoRestartConfig
 		}
-		d.autoRestarter.Register(cfg.ProcessID, restartConfig, cfg.Command, cfg.Args, cfg.Env, cfg.ExpectedPorts, cfg.ProjectPath, cfg.WorkingDir)
+		d.autoRestarter.Register(cfg.ProcessID, restartConfig, cfg.Command, cfg.Args, cfg.Env, cfg.ExpectedPorts, projectPath, cfg.WorkingDir)
 		debug.Log("daemon", "Registered %s for auto-restart", cfg.ProcessID)
 	}
 
