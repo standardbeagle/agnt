@@ -134,6 +134,7 @@ func TestBuildNotices_Severity(t *testing.T) {
 		"port_conflict_abort":           "error",
 		"port_conflict_failed":          "error",
 		"proxy_listen_port_conflict":    "error",
+		"proxy_restore_failed":          "error",
 	}
 	for ev, wantSev := range cases {
 		entries := []*StartupLogEntry{entry("p-0000:x", "x", wantSev, ev, "msg", at(1))}

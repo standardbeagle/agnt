@@ -425,9 +425,16 @@ func pgidOwnershipCheck(
 // clipped. Prevents unbounded log lines for pathological cmdlines.
 func truncateForLog(s string, n int) string {
 	if n <= 0 || len(s) <= n {
-		return s
+		return s // len(s) bytes >= rune count, so this never clips early
 	}
-	return s[:n] + "…"
+	runes := 0
+	for i := range s {
+		if runes == n {
+			return s[:i] + "…"
+		}
+		runes++
+	}
+	return s
 }
 
 // resolvedDaemonBinary returns the path of the running daemon binary,

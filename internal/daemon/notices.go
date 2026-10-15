@@ -42,6 +42,9 @@ var noticeClassification = map[string]noticeRole{
 	"proxy_skipped":                 {domain: "proxy", failure: true, severity: "warning"},
 	"startup_proxy_fallback_failed": {domain: "proxy", failure: true, severity: "warning"},
 	"proxy_event_dropped":           {domain: "proxy", failure: true, severity: "warning"},
+	// A persisted proxy could not be recreated after a daemon restart and
+	// was dropped from state.
+	"proxy_restore_failed": {domain: "proxy", failure: true, severity: "error"},
 	// The fallback's port could not be kept when detection replaced it.
 	"startup_proxy_fallback_replace_failed": {domain: "proxy", failure: true, severity: "error"},
 	// proxy resolvers
