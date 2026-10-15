@@ -344,9 +344,16 @@
       };
     }
 
-    // Remove excess toasts
-    while (state.toasts.length >= config.maxVisible) {
-      dismiss(state.toasts[0].id);
+    // Remove excess toasts, oldest first — but never an open secret prompt:
+    // it persists until the user submits or dismisses it, and evicting it
+    // would throw away what they are typing. Prompts alone may exceed the cap.
+    var evictAt = 0;
+    while (state.toasts.length >= config.maxVisible && evictAt < state.toasts.length) {
+      if (state.toasts[evictAt].secretPrompt) {
+        evictAt++;
+      } else {
+        dismiss(state.toasts[evictAt].id);
+      }
     }
 
     // Create toast
@@ -354,7 +361,8 @@
     var toastObj = {
       id: id,
       element: toastData.element,
-      timer: null
+      timer: null,
+      secretPrompt: options.input === 'secret' && !!options.name
     };
 
     // Close button handler

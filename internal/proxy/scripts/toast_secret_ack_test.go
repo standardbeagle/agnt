@@ -36,3 +36,23 @@ func TestToastSecretSavedOnlyOnAck(t *testing.T) {
 		t.Fatalf("toast.js reports %q outside the ack.ok === true branch", saved)
 	}
 }
+
+// TestToastSecretPromptNeverEvicted guards maxVisible eviction in toast.js. A
+// secret-entry prompt persists (duration 0) until submitted or dismissed; the
+// eviction loop used to dismiss state.toasts[0] unconditionally, so three
+// ordinary toasts arriving while the user typed a secret threw the prompt away.
+//
+// Source guard only: the behaviour (prompts survive a burst, ordinary toasts
+// still evict oldest-first, prompts alone may exceed the cap) is proven in
+// jstest/toast-secret-evict.test.js (make test-js).
+func TestToastSecretPromptNeverEvicted(t *testing.T) {
+	src := moduleScript["toast"]
+	if src == "" {
+		t.Fatal("toast module source not embedded")
+	}
+	mustContain(t, "toast.js", src,
+		"secretPrompt: options.input === 'secret' && !!options.name",
+		"if (state.toasts[evictAt].secretPrompt) {",
+	)
+	mustNotContain(t, "toast.js", src, "dismiss(state.toasts[0].id);")
+}
