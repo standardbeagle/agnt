@@ -4,12 +4,8 @@ package config
 
 import (
 	"context"
-	"fmt"
 	"os/exec"
 	"path/filepath"
-	"sort"
-	"strconv"
-	"strings"
 
 	"golang.org/x/sys/windows"
 )
@@ -22,41 +18,24 @@ type PortOwner struct {
 	Windows bool   `json:"windows"`
 }
 
-// ListListeningPorts enumerates every LISTENING TCP port via netstat -ano,
-// deduped per port across IPv4/IPv6 rows. On native Windows every owner is a
-// Windows process, so Windows is true throughout. Returns ports sorted ascending.
+// netstatOutput runs `netstat -ano`. A variable so tests can feed localized
+// output without depending on the host's display language.
+var netstatOutput = func(ctx context.Context) ([]byte, error) {
+	return exec.CommandContext(ctx, "netstat", "-ano").Output()
+}
+
+// ListListeningPorts enumerates every listening TCP port via netstat -ano,
+// deduped per port across IPv4/IPv6 rows. Listener rows are recognised by
+// shape, not by the state word, which netstat localizes (ABHÖREN on German
+// Windows). On native Windows every owner is a Windows process, so Windows is
+// true throughout. Returns ports sorted ascending.
 func ListListeningPorts(ctx context.Context) []PortOwner {
-	output, err := exec.CommandContext(ctx, "netstat", "-ano").Output()
+	output, err := netstatOutput(ctx)
 	if err != nil {
 		return nil
 	}
-	seen := make(map[int]bool)
-	var out []PortOwner
-	for _, line := range strings.Split(string(output), "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "TCP") || !strings.Contains(line, "LISTENING") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 5 {
-			continue
-		}
-		idx := strings.LastIndex(fields[1], ":")
-		if idx < 0 {
-			continue
-		}
-		port, err := strconv.Atoi(fields[1][idx+1:])
-		if err != nil || port <= 0 || port > 65535 || seen[port] {
-			continue
-		}
-		pid, err := strconv.Atoi(fields[4])
-		if err != nil || pid <= 0 {
-			continue
-		}
-		seen[port] = true
-		out = append(out, PortOwner{Port: port, PID: pid, Windows: true})
-	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Port < out[j].Port })
+	out := parseNetstatExeAllListeners(output)
+	sortPortOwners(out)
 	return out
 }
 
@@ -102,35 +81,11 @@ func FindPIDsByPortTagged(ctx context.Context, port int) (linuxPIDs, windowsPIDs
 }
 
 // FindPIDsByPort returns PIDs of processes listening on the given TCP port.
-// Uses netstat -ano on Windows.
+// Uses netstat -ano on Windows; see parseNetstatExePIDs for the row rules.
 func FindPIDsByPort(ctx context.Context, port int) []int {
-	cmd := exec.CommandContext(ctx, "netstat", "-ano")
-	output, err := cmd.Output()
+	output, err := netstatOutput(ctx)
 	if err != nil {
 		return nil
 	}
-
-	var pids []int
-	seen := make(map[int]struct{})
-	portSuffix := fmt.Sprintf(":%d", port)
-
-	for _, line := range strings.Split(string(output), "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.HasPrefix(line, "TCP") || !strings.Contains(line, "LISTENING") {
-			continue
-		}
-		fields := strings.Fields(line)
-		if len(fields) < 5 || !strings.HasSuffix(fields[1], portSuffix) {
-			continue
-		}
-		pid, err := strconv.Atoi(fields[4])
-		if err != nil || pid <= 0 {
-			continue
-		}
-		if _, ok := seen[pid]; !ok {
-			seen[pid] = struct{}{}
-			pids = append(pids, pid)
-		}
-	}
-	return pids
+	return parseNetstatExePIDs(output, port)
 }
