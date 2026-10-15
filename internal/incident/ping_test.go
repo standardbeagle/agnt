@@ -433,3 +433,39 @@ func TestPing_Escalation_EmptyCoalescer_StillEmits(t *testing.T) {
 		t.Errorf("escalation ping should report the error entry, got error=%d", last.payload.Summary.Error)
 	}
 }
+
+// TestPing_NoEmitAfterStop pins that a delta already in flight on the run
+// goroutine when Stop is called cannot produce a ping afterwards. Stop cleared
+// the coalescer, but handleDelta then re-armed it (or, for critical, emitted
+// synchronously), so a torn-down session's sinks — or, after AddSession
+// replaced a pipeline under the same id, the old pipeline's — were still
+// called after teardown.
+func TestPing_NoEmitAfterStop(t *testing.T) {
+	t.Parallel()
+	pe, _, pings, mu := newTestEmitter(t)
+
+	// Capture the coalescer's timer callback instead of letting it run on a
+	// real timer, so the post-Stop fire is driven deterministically.
+	var armed []func()
+	pe.coalesce.mu.Lock()
+	pe.coalesce.afterFunc = func(_ time.Duration, f func()) coalesceTimer {
+		armed = append(armed, f)
+		return time.NewTimer(time.Hour)
+	}
+	pe.coalesce.mu.Unlock()
+
+	pe.Stop()
+
+	// The deltas the run goroutine could have been holding when Stop ran.
+	pe.handleDelta(InboxDelta{Entry: makeEntry("fp-after-stop", SeverityWarning), IsNew: true})
+	pe.handleDelta(InboxDelta{Entry: makeEntry("fp-crit-after-stop", SeverityCritical), IsNew: true})
+	for _, f := range armed {
+		f()
+	}
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(*pings) != 0 {
+		t.Fatalf("emitter pinged %d time(s) after Stop; want 0", len(*pings))
+	}
+}

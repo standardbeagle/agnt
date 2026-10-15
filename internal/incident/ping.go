@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"sync/atomic"
 
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/selflog"
@@ -77,6 +78,13 @@ type PingEmitter struct {
 	ptyInject     PTYInjectFn
 
 	cancel func() // unsubscribe from Inbox
+
+	// stopped is set first thing in Stop. A delta the run goroutine was already
+	// handling when Stop ran would otherwise re-arm the just-cleared coalescer
+	// (or, for critical, emit synchronously) and call this torn-down session's
+	// sinks after teardown — after a same-id AddSession, alongside the new
+	// pipeline's pinger.
+	stopped atomic.Bool
 }
 
 // NewPingEmitter creates and starts a PingEmitter. Stop() must be called to
@@ -117,6 +125,7 @@ func NewPingEmitter(
 
 // Stop unsubscribes from the inbox and cancels all pending pings.
 func (pe *PingEmitter) Stop() {
+	pe.stopped.Store(true)
 	pe.cancel()
 	pe.coalesce.Stop()
 }
@@ -128,6 +137,9 @@ func (pe *PingEmitter) run(ch <-chan InboxDelta) {
 }
 
 func (pe *PingEmitter) handleDelta(delta InboxDelta) {
+	if pe.stopped.Load() {
+		return
+	}
 	sev := delta.Entry.Severity
 
 	// A repeat of an incident the agent has already been pinged about and has
@@ -175,6 +187,11 @@ func (pe *PingEmitter) handleDelta(delta InboxDelta) {
 }
 
 func (pe *PingEmitter) emit() {
+	// A timer armed by a delta that raced Stop still fires; it must not reach
+	// the sinks of a stopped emitter.
+	if pe.stopped.Load() {
+		return
+	}
 	// Top must mirror Stats' unread-only semantics: re-surfacing entries the
 	// agent already marked read makes every ping "shout" about acknowledged
 	// incidents until they age out of the inbox.
