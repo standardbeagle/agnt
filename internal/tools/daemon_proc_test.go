@@ -213,6 +213,14 @@ func TestBuildWhatPattern(t *testing.T) {
 		require.NoError(t, reErr)
 		assert.True(t, re.MatchString("--- FAIL: TestFoo (0.01s)"), "must match go test failure")
 		assert.True(t, re.MatchString("FAILED"), "must match FAILED line")
+		// The failure marks used to sit inside \b(...)\b, and Go's \b only
+		// matches beside an ASCII word character, so none of them matched.
+		assert.True(t, re.MatchString("  ✕ adds two numbers (5 ms)"), "must match jest ✕")
+		assert.True(t, re.MatchString("  ✗ rejects empty input"), "must match ✗")
+		assert.True(t, re.MatchString(" × src/sum.test.ts > adds 1ms"), "must match vitest ×")
+		assert.False(t, re.MatchString("  ✓ adds two numbers"), "a pass line must not match")
+		assert.False(t, re.MatchString("grid is 3×4"), "a product sign must not match")
+		assert.False(t, re.MatchString("failover complete"), "FAIL inside a word must not match")
 	})
 
 	t.Run("compile-errors is alias for build-errors", func(t *testing.T) {

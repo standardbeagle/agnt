@@ -409,7 +409,11 @@ func buildWhatPattern(what, command string) (string, error) {
 		return `(?i)type.?error|TS\d+`, nil
 
 	case "test-failures":
-		return `(?i)\b(FAIL|FAILED|FAILURE|✗|✕|× )\b`, nil
+		// \b only matches beside an ASCII word character, so the failure
+		// marks (jest/mocha ✕ ✗, vitest ×) sit outside the \b group.
+		// vitest's × keeps its trailing space so a product such as 3×4 does
+		// not match.
+		return `(?i)\b(?:FAIL|FAILED|FAILURE)\b|✗|✕|× `, nil
 
 	default:
 		return "", fmt.Errorf("unknown what %q: use build-warnings, build-errors, compile-errors, type-errors, test-failures", what)
