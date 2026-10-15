@@ -485,11 +485,12 @@ func (dt *DaemonTools) handleProcWait(ctx context.Context, input ProcInput) (*mc
 	// waitForSignal blocks (polling the daemon) until a signal appears or
 	// the timeout elapses. Run it in a goroutine and honor the handler ctx
 	// so a cancelled MCP call returns promptly. The buffered channel lets
-	// the poll goroutine finish its send after we've returned; it
-	// self-terminates at the wait timeout.
+	// the poll goroutine finish its send after we've returned; it stops
+	// polling on the same ctx, so an abandoned wait does not keep querying
+	// the daemon until its timeout.
 	ch := make(chan WaitResult, 1)
 	go func() {
-		ch <- waitForSignal(fetch, wanted, input.TimeoutMs, input.PollMs)
+		ch <- waitForSignal(ctx, fetch, wanted, input.TimeoutMs, input.PollMs)
 	}()
 
 	select {

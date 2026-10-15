@@ -1,8 +1,11 @@
 package tools
 
 import (
+	"context"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/standardbeagle/agnt/internal/daemonclient"
 )
@@ -347,7 +350,7 @@ func TestWaitForSignal_HitImmediately(t *testing.T) {
 		calls++
 		return []string{"Server listening on port 3000"}, nil
 	}
-	res := waitForSignal(fetch, []string{"ready"}, 1000, 50)
+	res := waitForSignal(context.Background(), fetch, []string{"ready"}, 1000, 50)
 	if res.TimedOut {
 		t.Error("should not have timed out")
 	}
@@ -373,7 +376,7 @@ func TestWaitForSignal_HitAfterPolls(t *testing.T) {
 		}
 		return []string{"compiling...", "ready in 432 ms"}, nil
 	}
-	res := waitForSignal(fetch, []string{"ready"}, 2000, 20)
+	res := waitForSignal(context.Background(), fetch, []string{"ready"}, 2000, 20)
 	if res.TimedOut {
 		t.Errorf("should have matched after %d polls, timed out instead", calls)
 	}
@@ -391,7 +394,7 @@ func TestWaitForSignal_Timeout(t *testing.T) {
 	fetch := func() ([]string, error) {
 		return []string{"still compiling..."}, nil
 	}
-	res := waitForSignal(fetch, []string{"ready"}, 100, 30)
+	res := waitForSignal(context.Background(), fetch, []string{"ready"}, 100, 30)
 	if !res.TimedOut {
 		t.Error("expected timed_out=true")
 	}
@@ -403,6 +406,35 @@ func TestWaitForSignal_Timeout(t *testing.T) {
 	}
 }
 
+// TestWaitForSignal_StopsPollingOnCancel verifies a cancelled wait stops
+// querying the daemon. handleProcWait returns as soon as its ctx is done,
+// but the poll loop used to keep calling ProcOutput until the caller's
+// timeout (default 30s) elapsed.
+func TestWaitForSignal_StopsPollingOnCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var calls atomic.Int32
+	fetch := func() ([]string, error) {
+		if calls.Add(1) == 2 {
+			cancel()
+		}
+		return []string{"still compiling..."}, nil
+	}
+	done := make(chan WaitResult, 1)
+	go func() { done <- waitForSignal(ctx, fetch, []string{"ready"}, 60000, 10) }()
+
+	select {
+	case res := <-done:
+		if res.Signal != "" {
+			t.Errorf("signal=%q after cancel, want none", res.Signal)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatalf("waitForSignal kept polling after ctx cancel (%d fetches)", calls.Load())
+	}
+	if n := calls.Load(); n != 2 {
+		t.Errorf("fetches=%d, want 2 (none after cancel)", n)
+	}
+}
+
 // TestWaitForSignal_FirstWins verifies "wait for whichever comes first"
 // when multiple signals are requested.
 func TestWaitForSignal_FirstWins(t *testing.T) {
@@ -411,7 +443,7 @@ func TestWaitForSignal_FirstWins(t *testing.T) {
 		calls++
 		return []string{"ERROR in build"}, nil
 	}
-	res := waitForSignal(fetch, []string{"ready", "error"}, 500, 30)
+	res := waitForSignal(context.Background(), fetch, []string{"ready", "error"}, 500, 30)
 	if res.TimedOut {
 		t.Error("should have matched 'error', timed out instead")
 	}

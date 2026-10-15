@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"regexp"
@@ -352,8 +353,9 @@ type WaitResult struct {
 //
 // timeoutMs / pollIntervalMs are millisecond budgets. A pollIntervalMs
 // of 0 falls back to 200ms (the conservative default that keeps the
-// daemon load bounded for short waits).
-func waitForSignal(fetchLines func() ([]string, error), wanted []string, timeoutMs, pollIntervalMs int) WaitResult {
+// daemon load bounded for short waits). It returns as soon as ctx is
+// done, with no signal and TimedOut false.
+func waitForSignal(ctx context.Context, fetchLines func() ([]string, error), wanted []string, timeoutMs, pollIntervalMs int) WaitResult {
 	if pollIntervalMs <= 0 {
 		pollIntervalMs = 200
 	}
@@ -365,6 +367,11 @@ func waitForSignal(fetchLines func() ([]string, error), wanted []string, timeout
 	pollInterval := time.Duration(pollIntervalMs) * time.Millisecond
 
 	for {
+		// A cancelled wait (the MCP call was abandoned) stops querying the
+		// daemon now rather than at the caller's timeout.
+		if ctx.Err() != nil {
+			return WaitResult{ElapsedMs: time.Since(start).Milliseconds()}
+		}
 		lines, err := fetchLines()
 		if err == nil {
 			signals := extractSignals(lines, wantedToExtractList(wanted))
@@ -392,7 +399,13 @@ func waitForSignal(fetchLines func() ([]string, error), wanted []string, timeout
 			sleep = remaining
 		}
 		if sleep > 0 {
-			time.Sleep(sleep)
+			timer := time.NewTimer(sleep)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return WaitResult{ElapsedMs: time.Since(start).Milliseconds()}
+			case <-timer.C:
+			}
 		}
 	}
 }
