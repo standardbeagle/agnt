@@ -591,10 +591,7 @@ func (d *Daemon) restartProcess(ctx context.Context, proc *goprocess.ManagedProc
 	// injection — startScriptWithRetry injects the current secrets again.
 	command := proc.Command
 	args := proc.Args
-	env := proc.Env
-	if launched, ok := d.launchEnv.Load(processID); ok {
-		env = launched.([]string)
-	}
+	env := d.envAsLaunched(proc)
 	projectPath := proc.ProjectPath
 	workingDir := proc.WorkingDir
 
@@ -762,6 +759,19 @@ func (d *Daemon) writeProcLookupErr(conn *hubpkg.Connection, processID string, e
 		processID, len(projects), strings.Join(projects, ", ")))
 }
 
+// envAsLaunched returns the env proc was launched with, before secret
+// injection (launchEnv, written by startScriptWithRetry). proc.Env already
+// holds the injected secrets, so a relaunch from it would replay deleted
+// secrets and append a second copy of every injected pair. A process that did
+// not go through startScriptWithRetry has no injected secrets; its proc.Env is
+// returned as is.
+func (d *Daemon) envAsLaunched(proc *goprocess.ManagedProcess) []string {
+	if launched, ok := d.launchEnv.Load(proc.ID); ok {
+		return launched.([]string)
+	}
+	return proc.Env
+}
+
 // hubHandleProcAutoRestart handles PROC AUTORESTART <id> [enable|disable|status].
 // Enables or disables automatic restart for a process when it exits.
 
@@ -801,14 +811,17 @@ func (d *Daemon) hubHandleProcAutoRestart(ctx context.Context, conn *hubpkg.Conn
 			}
 		}
 
-		// Register for auto-restart with the env the process is running with
+		// Register for auto-restart with the env the process was launched with
 		// and the port it is known to use: a restart without them comes back
-		// without its configured environment and skips port cleanup.
+		// without its configured environment and skips port cleanup. The env
+		// is the pre-injection one — every auto-restart injects the current
+		// secrets again, so registering proc.Env would replay deleted secrets
+		// and append a second copy of each injected pair.
 		var expectedPorts []int
 		if port := d.getExpectedPortForProcess(proc); port > 0 {
 			expectedPorts = []int{port}
 		}
-		d.autoRestarter.Register(processID, config, proc.Command, proc.Args, proc.Env, expectedPorts, proc.ProjectPath, proc.WorkingDir)
+		d.autoRestarter.Register(processID, config, proc.Command, proc.Args, d.envAsLaunched(proc), expectedPorts, proc.ProjectPath, proc.WorkingDir)
 
 		resp := map[string]interface{}{
 			"id":            processID,

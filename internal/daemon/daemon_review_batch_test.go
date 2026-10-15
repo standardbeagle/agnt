@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
+	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/store"
 	goprocess "github.com/standardbeagle/go-cli-server/process"
 	"github.com/stretchr/testify/assert"
@@ -160,6 +161,35 @@ func TestRestartProcess_ReinjectsCurrentSecrets(t *testing.T) {
 	t.Cleanup(func() { _ = d.hub.ProcessManager().StopProcess(context.Background(), newProc) })
 	assert.Equal(t, []string{"BASE=1"}, newProc.Env,
 		"a deleted secret must not survive a restart, and nothing may be appended twice")
+}
+
+// PROC AUTORESTART enable registered proc.Env, which already held the injected
+// secrets: every auto-restart injected them again on top, so a deleted secret
+// came back and each injected pair was doubled.
+func TestProcAutoRestartEnable_RegistersPreInjectionEnv(t *testing.T) {
+	d := newReviewBatchDaemon(t)
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(d.config.SocketPath))
+	require.NoError(t, client.Connect())
+	t.Cleanup(func() { _ = client.Close() })
+
+	dir := normalizePath(shortTempDir(t))
+	id := makeProcessID(dir, "api")
+	require.NoError(t, d.storem.Set(dir, store.ScopeGlobal, "", "API_KEY", "v1-secret-value",
+		map[string]any{store.MetaSecret: true}))
+
+	cmd, args := stayAliveExec()
+	proc, startupErr := d.startScriptWithRetry(context.Background(), id, dir, dir, cmd, args, []string{"BASE=1"}, nil, false)
+	require.Nil(t, startupErr)
+	t.Cleanup(func() { _ = d.hub.ProcessManager().StopProcess(context.Background(), proc) })
+	require.Equal(t, []string{"BASE=1", "API_KEY=v1-secret-value"}, proc.Env)
+
+	_, err := client.ProcAutoRestart(id, "enable", nil)
+	require.NoError(t, err)
+
+	reg, ok := d.autoRestarter.Take(id)
+	require.True(t, ok, "AUTORESTART enable must register the process")
+	assert.Equal(t, []string{"BASE=1"}, reg.Env,
+		"the registration holds the env as launched; each auto-restart injects the current secrets itself")
 }
 
 // A store read failure launched the process without its secrets and said so
