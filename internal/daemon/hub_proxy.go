@@ -522,9 +522,13 @@ func (d *Daemon) hubHandleProxyRestart(ctx context.Context, conn *hubpkg.Connect
 }
 
 // restartProxy stops p and recreates it with everything it was running with:
-// target, bound port, bind address, public URL, TLS verification, named
-// tunnel, pending readiness dependencies, config snapshot, admin entry, overlay
-// binding, incident owner and persisted state. PROXY RESTART and RESTART-ALL
+// target, bound port (strict when the user declared it), bind address, public
+// URL, display-only status URL, TLS verification, auto-restart, named tunnel,
+// pending readiness dependencies, config snapshot, admin entry, overlay
+// binding, incident owner and persisted state. Project-level settings
+// (auth-breakout, dev-oidc) are re-read from .agnt.kdl by wireProxyLogger.
+// Health-check tuning is not carried: no daemon path sets it, so the new
+// server's defaults are the old server's values. PROXY RESTART and RESTART-ALL
 // both go through it so the two cannot drift.
 //
 // callerSession becomes the new server's incident owner; when the caller has
@@ -549,7 +553,9 @@ func (d *Daemon) restartProxy(ctx context.Context, p *proxy.ProxyServer, callerS
 	bindAddress := p.BindAddress
 	allowExternal := p.AllowExternal
 	publicURL := p.GetPublicURL()
+	statusURL := p.GetStatusURL()
 	skipTLSVerify := p.SkipTLSVerify
+	strictListenPort := p.StrictListenPort
 	autoRestart := p.AutoRestart()
 	namedTunnel := p.NamedTunnelConfig()
 	boundPort := p.BoundPort()
@@ -597,24 +603,28 @@ func (d *Daemon) restartProxy(ctx context.Context, p *proxy.ProxyServer, callerS
 		waitPortFree(boundPort, 2*time.Second)
 	}
 
-	// Recreate on the SAME port (best-effort). Preserving the port is the
-	// point of a restart, but it must NOT be strict: if the port cannot be
-	// reclaimed in time (the OS is slow to release it, or something else
-	// grabbed it during the restart window), drifting to a fresh port is far
-	// better than hard-failing the restart and leaving the proxy down. Start()
-	// falls back to auto-assign when boundPort is in use.
+	// Recreate on the SAME port. For a port the daemon picked this is
+	// best-effort: if the port cannot be reclaimed in time (the OS is slow to
+	// release it, or something else grabbed it during the restart window),
+	// drifting to a fresh port is far better than hard-failing the restart and
+	// leaving the proxy down, and Start() falls back to auto-assign. A port the
+	// user declared (`listen-port`) stays strict: it means "this port or
+	// nothing", so the restart fails loud rather than drift, and the new
+	// server's own crash auto-restart keeps refusing to drift too.
 	newProxy, err := d.proxym.Create(ctx, proxy.ProxyConfig{
-		ID:            proxyID,
-		TargetURL:     targetURL,
-		ListenPort:    boundPort,
-		MaxLogSize:    maxLogSize,
-		Path:          projectPath,
-		BindAddress:   bindAddress,
-		AllowExternal: allowExternal,
-		PublicURL:     publicURL,
-		SkipTLSVerify: skipTLSVerify,
-		AutoRestart:   autoRestart,
-		NamedTunnel:   namedTunnel,
+		ID:               proxyID,
+		TargetURL:        targetURL,
+		ListenPort:       boundPort,
+		StrictListenPort: strictListenPort,
+		MaxLogSize:       maxLogSize,
+		Path:             projectPath,
+		BindAddress:      bindAddress,
+		AllowExternal:    allowExternal,
+		PublicURL:        publicURL,
+		StatusURL:        statusURL,
+		SkipTLSVerify:    skipTLSVerify,
+		AutoRestart:      autoRestart,
+		NamedTunnel:      namedTunnel,
 	})
 	if err != nil {
 		return nil, err
