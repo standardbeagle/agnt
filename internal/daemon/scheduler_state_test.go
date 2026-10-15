@@ -508,3 +508,88 @@ func TestSchedulerState_CloseIdempotent(t *testing.T) {
 	require.NoError(t, sm.Close())
 	require.NoError(t, sm.Close())
 }
+
+// A write snapshotted before RemoveTask must not land after RemoveTask
+// deleted the state file: that resurrects the removed task on disk and
+// re-delivers it after a daemon restart.
+func TestSchedulerState_WriteInFlightDoesNotResurrectRemovedTask(t *testing.T) {
+	tmpDir := t.TempDir()
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	persist := func(path string, data []byte) error {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release
+		return writeFileAtomic(path, data)
+	}
+	sm := newSchedulerStateManager(time.Hour, persist)
+	defer sm.Close()
+
+	task := NewScheduledTask("t1", "s1", "msg", tmpDir,
+		time.Now().Add(time.Hour), time.Now(), TaskStatusPending)
+	require.NoError(t, sm.SaveTask(task))
+
+	flushDone := make(chan error, 1)
+	go func() { flushDone <- sm.Flush() }()
+	<-entered // the write has its snapshot and is about to hit the disk
+
+	removeDone := make(chan error, 1)
+	go func() { removeDone <- sm.RemoveTask("t1", tmpDir) }()
+	select {
+	case err := <-removeDone:
+		removeDone <- err // ran before the write landed (the defect)
+	case <-time.After(100 * time.Millisecond):
+	}
+	close(release)
+	require.NoError(t, <-flushDone)
+	require.NoError(t, <-removeDone)
+
+	statePath := filepath.Join(tmpDir, SchedulerStateDir, SchedulerStateFile)
+	_, err := os.Stat(statePath)
+	assert.True(t, os.IsNotExist(err), "removed task's state file was resurrected by an in-flight write")
+}
+
+// A failed state write must reach the registered handler (the daemon routes
+// it to the startup log) and be retried, not silently dropped.
+func TestSchedulerState_WriteFailureIsReportedAndRetried(t *testing.T) {
+	tmpDir := t.TempDir()
+	var fail sync.Mutex
+	failing := true
+	persist := func(path string, data []byte) error {
+		fail.Lock()
+		defer fail.Unlock()
+		if failing {
+			return os.ErrPermission
+		}
+		return writeFileAtomic(path, data)
+	}
+	sm := newSchedulerStateManager(time.Hour, persist)
+	defer sm.Close()
+
+	var reported []string
+	var repMu sync.Mutex
+	sm.SetWriteErrorHandler(func(projectPath string, err error) {
+		repMu.Lock()
+		reported = append(reported, projectPath)
+		repMu.Unlock()
+	})
+
+	task := NewScheduledTask("t1", "s1", "msg", tmpDir,
+		time.Now().Add(time.Hour), time.Now(), TaskStatusPending)
+	require.NoError(t, sm.SaveTask(task))
+	require.Error(t, sm.Flush())
+
+	repMu.Lock()
+	assert.Equal(t, []string{tmpDir}, reported)
+	repMu.Unlock()
+
+	fail.Lock()
+	failing = false
+	fail.Unlock()
+	require.NoError(t, sm.Flush())
+	statePath := filepath.Join(tmpDir, SchedulerStateDir, SchedulerStateFile)
+	_, err := os.Stat(statePath)
+	assert.NoError(t, err, "failed write was dropped instead of retried")
+}

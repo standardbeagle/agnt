@@ -627,6 +627,13 @@ func New(config DaemonConfig) *Daemon {
 	d.eventHub.SetProxyBroadcaster(newProxyManagerBroadcaster(d.proxym))
 	d.eventHub.AddAgentNoticeSink(sessionHostAgentNoticeSink{registry: d.sessionHosts})
 
+	// A scheduled task whose state file cannot be written is alive in memory
+	// but will not survive a restart; say so in the project's startup log.
+	schedulerStateMgr.SetWriteErrorHandler(func(projectPath string, err error) {
+		d.startupLog(projectPath).Error("", "scheduled_task_persist_failed",
+			fmt.Sprintf("failed to save scheduled tasks (they will not survive a daemon restart): %v", err))
+	})
+
 	// health.HealthTracker is initialised after the struct so it can capture `d`
 	// in its lookup closures. Its emitDiagnostic routes back through the
 	// EventHub directly so suppression markers always bypass the gate.

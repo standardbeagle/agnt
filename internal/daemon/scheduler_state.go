@@ -38,6 +38,20 @@ type schedulerPersister func(path string, data []byte) error
 type SchedulerStateManager struct {
 	mu sync.RWMutex
 
+	// ioMu serializes the disk side of the state files: doWriteAll holds it
+	// from its snapshot through the last persister call, and every path that
+	// deletes a state file (RemoveTask, ClearProject) holds it around the
+	// delete. Without it a write snapshotted before a RemoveTask could land
+	// after the delete and resurrect a task that was already delivered or
+	// cancelled, re-delivering it after a daemon restart.
+	// Lock order: ioMu before mu.
+	ioMu sync.Mutex
+
+	// onWriteError, when set, is told about every failed state-file write
+	// so the failure reaches a visible log (the daemon wires it to the
+	// project's startup log). Guarded by mu.
+	onWriteError func(projectPath string, err error)
+
 	// In-memory cache of per-project state. Keyed by project path.
 	cache map[string]*PersistedTaskState
 
@@ -106,6 +120,15 @@ func writeFileAtomic(path string, data []byte) error {
 		return fmt.Errorf("failed to rename state file: %w", err)
 	}
 	return nil
+}
+
+// SetWriteErrorHandler registers fn to be called (outside every lock) for each
+// state-file write that fails. A failed write leaves the task alive in memory
+// but not on disk, so it would silently not survive a restart.
+func (m *SchedulerStateManager) SetWriteErrorHandler(fn func(projectPath string, err error)) {
+	m.mu.Lock()
+	m.onWriteError = fn
+	m.mu.Unlock()
 }
 
 // getStatePath returns the path to the state file for a project.
@@ -195,6 +218,8 @@ func (m *SchedulerStateManager) RemoveTask(taskID string, projectPath string) er
 		return fmt.Errorf("project path is required")
 	}
 
+	m.ioMu.Lock()
+	defer m.ioMu.Unlock()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -220,8 +245,11 @@ func (m *SchedulerStateManager) RemoveTask(taskID string, projectPath string) er
 	// If empty, remove from cache and delete file
 	if len(state.Tasks) == 0 {
 		delete(m.cache, projectPath)
+		delete(m.pendingWrites, projectPath)
 		statePath := m.getStatePath(projectPath)
-		os.Remove(statePath)
+		if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("failed to remove state file: %w", err)
+		}
 		return nil
 	}
 
@@ -298,6 +326,8 @@ func (m *SchedulerStateManager) ListProjectsWithTasks() []string {
 
 // ClearProject removes all tasks for a project.
 func (m *SchedulerStateManager) ClearProject(projectPath string) error {
+	m.ioMu.Lock()
+	defer m.ioMu.Unlock()
 	m.mu.Lock()
 	delete(m.cache, projectPath)
 	delete(m.pendingWrites, projectPath)
@@ -424,14 +454,21 @@ func (m *SchedulerStateManager) doWriteAll() (err error) {
 		}
 	}()
 
+	// Hold ioMu from the snapshot through the last write so RemoveTask or
+	// ClearProject cannot delete a state file between our snapshot and our
+	// write, which would resurrect the removed task on disk.
+	m.ioMu.Lock()
+	defer m.ioMu.Unlock()
+
 	// Snapshot pending writes and their state under lock
 	m.mu.Lock()
 	pending := m.pendingWrites
 	m.pendingWrites = make(map[string]struct{})
 
 	type writeJob struct {
-		path string
-		data []byte
+		project string
+		path    string
+		data    []byte
 	}
 	var jobs []writeJob
 
@@ -452,18 +489,33 @@ func (m *SchedulerStateManager) doWriteAll() (err error) {
 			m.mu.Unlock()
 			return fmt.Errorf("failed to marshal state for %s: %w", projectPath, merr)
 		}
-		jobs = append(jobs, writeJob{path: m.getStatePath(projectPath), data: data})
+		jobs = append(jobs, writeJob{project: projectPath, path: m.getStatePath(projectPath), data: data})
 	}
+	onWriteError := m.onWriteError
 	m.mu.Unlock()
 
-	// Write all files without holding the lock, via the pluggable persister.
+	// Write all files without holding mu, via the pluggable persister.
 	// Each job is isolated: if one persister call returns an error we return
-	// that error but do NOT abort remaining jobs — the next flush tick will
-	// retry pending projects that were re-dirtied while we were writing.
+	// that error but do NOT abort remaining jobs. A failed project is marked
+	// pending again without waking the writer (a persistent error must not
+	// spin), so the next mutation, Flush, or Close retries it.
 	var firstErr error
 	for _, job := range jobs {
-		if perr := m.persister(job.path, job.data); perr != nil && firstErr == nil {
+		perr := m.persister(job.path, job.data)
+		if perr == nil {
+			continue
+		}
+		if firstErr == nil {
 			firstErr = perr
+		}
+		debug.Warn("scheduler-state", "failed to persist scheduled tasks for %s: %v", job.project, perr)
+		m.mu.Lock()
+		if _, ok := m.cache[job.project]; ok {
+			m.pendingWrites[job.project] = struct{}{}
+		}
+		m.mu.Unlock()
+		if onWriteError != nil {
+			onWriteError(job.project, perr)
 		}
 	}
 	return firstErr
