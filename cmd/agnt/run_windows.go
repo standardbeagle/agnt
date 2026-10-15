@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"os/signal"
 	"syscall"
@@ -97,7 +96,7 @@ func runConPTYChild(ctx context.Context, args []string, socketPath string, sessi
 	}
 	defer ptmx.Close()
 	if err := ptmx.Resize(width, childHeight); err != nil {
-		log.Printf("warning: failed to set initial PTY size: %v", err)
+		notifyUser(overlay.LevelWarn, "error setting pty size: %s", err)
 	}
 
 	resolvedPath, shellWrap, err := resolveCommand(command)

@@ -211,3 +211,25 @@ func keysOf(m map[string]string) []string {
 // init touches runtime so the import is real (we may add runtime checks
 // later — currently the test is platform-neutral by design).
 var _ = runtime.GOOS
+
+// TestRunSessionFilesDoNotLogToStderr guards the session entrypoints against
+// the standard logger. Package log writes to stderr, and while `agnt run` is
+// live the terminal is in raw mode under the overlay, so a log line lands
+// mid-screen without a carriage return and garbles the agent's display.
+// User-facing warnings go through notifyUser; diagnostics through
+// debug.Warn/debug.Log. Build-tag-neutral like the budget test, so the
+// Windows files are checked on every CI run.
+func TestRunSessionFilesDoNotLogToStderr(t *testing.T) {
+	fset := token.NewFileSet()
+	for _, name := range []string{"run.go", "run_windows.go", "signals_unix.go", "signals_windows.go"} {
+		f, err := parser.ParseFile(fset, name, nil, parser.SkipObjectResolution)
+		if err != nil {
+			t.Fatalf("parse %s: %v", name, err)
+		}
+		for _, imp := range f.Imports {
+			if imp.Path.Value == `"log"` {
+				t.Errorf("%s imports package log; during a session use notifyUser or debug.Warn instead (raw-mode terminal)", name)
+			}
+		}
+	}
+}

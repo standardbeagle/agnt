@@ -4,8 +4,9 @@ package main
 
 import (
 	"context"
-	"log"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/debug"
 )
 
 // reapSessionPGID is a no-op on Windows: the setup child's process tree is
@@ -40,7 +41,7 @@ func watchResize(ctx context.Context, done <-chan struct{}, handle *ptyHandle, r
 				ch = h - 1
 			}
 			if err := handle.Resize(w, ch); err != nil {
-				log.Printf("error resizing PTY: %s", err)
+				debug.Warn("run", "error resizing pty: %s", err)
 			}
 			if am := rt.activityMon.Load(); am != nil {
 				// Keep the preview's virtual screen matched to the child PTY.
