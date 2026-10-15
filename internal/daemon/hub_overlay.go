@@ -118,7 +118,9 @@ func (d *Daemon) hubHandleOverlayActivity(conn *hubpkg.Connection, cmd *hubproto
 	if len(proxyIDs) > 0 {
 		// Broadcast to specific proxies
 		for _, proxyID := range proxyIDs {
-			p, err := d.proxym.Get(proxyID)
+			// Fuzzy ids resolve inside the caller's project only; exact ids
+			// always work (ID-scoped verb contract).
+			p, err := getSessionScoped(d, conn, proxyID, d.proxym.GetWithPathFilter)
 			if err != nil {
 				debug.Warn("daemon", "Proxy %s not found for activity broadcast: %v", proxyID, err)
 				continue
@@ -173,7 +175,7 @@ func (d *Daemon) hubHandleOverlayOutputPreview(conn *hubpkg.Connection, cmd *hub
 	var proxiesToBroadcast []*proxy.ProxyServer
 	if len(payload.ProxyIDs) > 0 {
 		for _, proxyID := range payload.ProxyIDs {
-			p, err := d.proxym.Get(proxyID)
+			p, err := getSessionScoped(d, conn, proxyID, d.proxym.GetWithPathFilter)
 			if err != nil {
 				// Best-effort UI broadcast: a requested proxy may have been torn
 				// down between the caller's list and this send. Skip it, but log
