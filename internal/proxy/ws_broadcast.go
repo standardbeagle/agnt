@@ -135,8 +135,7 @@ func (ps *ProxyServer) BroadcastToast(toastType, title, message string, duration
 // BroadcastToastOpts is BroadcastToast with the full option set, including
 // the secret-entry input mode.
 func (ps *ProxyServer) BroadcastToastOpts(o ToastOptions) (int, error) {
-	toastType, title, message, duration := o.Type, o.Title, o.Message, o.Duration
-	debug.Log("proxy", "BroadcastToast called: proxy=%s type=%s title=%q message=%q input=%s", ps.ID, toastType, title, message, o.Input)
+	debug.Log("proxy", "BroadcastToast called: proxy=%s type=%s title=%q message=%q input=%s", ps.ID, o.Type, o.Title, o.Message, o.Input)
 
 	// Count connected clients first for debugging
 	connCount := 0
@@ -146,30 +145,7 @@ func (ps *ProxyServer) BroadcastToastOpts(o ToastOptions) (int, error) {
 	})
 	debug.Log("proxy", "BroadcastToast: %d WebSocket clients connected to proxy %s", connCount, ps.ID)
 
-	// Build toast message
-	toast := map[string]interface{}{
-		"type": "toast",
-		"payload": map[string]interface{}{
-			"type":    toastType,
-			"title":   title,
-			"message": message,
-		},
-	}
-
-	// Only include duration if non-zero
-	if duration > 0 {
-		toast["payload"].(map[string]interface{})["duration"] = duration
-	}
-
-	// Secret-entry input mode: the browser renders a masked field and routes
-	// the submitted value via "secret_submit" (never through panel events).
-	if o.Input != "" {
-		payload := toast["payload"].(map[string]interface{})
-		payload["input"] = o.Input
-		payload["name"] = o.Name
-	}
-
-	messageBytes, err := json.Marshal(toast)
+	messageBytes, err := toastFrame(o)
 	if err != nil {
 		debug.Error("proxy", "BroadcastToast: failed to marshal: %v", err)
 		return 0, fmt.Errorf("failed to marshal toast: %w", err)
@@ -183,6 +159,27 @@ func (ps *ProxyServer) BroadcastToastOpts(o ToastOptions) (int, error) {
 	// Return success even with no clients - caller can check sent_count
 	// This makes toast a "best effort" operation that doesn't fail builds/workflows
 	return sentCount, nil
+}
+
+// toastFrame encodes a toast in the shape toast.js reads:
+// {"type":"toast","payload":{"type":<severity>,"title","message"[,"duration"][,"input","name"]}}.
+func toastFrame(o ToastOptions) ([]byte, error) {
+	payload := map[string]interface{}{
+		"type":    o.Type,
+		"title":   o.Title,
+		"message": o.Message,
+	}
+	// Only include duration if non-zero
+	if o.Duration > 0 {
+		payload["duration"] = o.Duration
+	}
+	// Secret-entry input mode: the browser renders a masked field and routes
+	// the submitted value via "secret_submit" (never through panel events).
+	if o.Input != "" {
+		payload["input"] = o.Input
+		payload["name"] = o.Name
+	}
+	return json.Marshal(map[string]interface{}{"type": "toast", "payload": payload})
 }
 
 // BroadcastOutputPreview sends output preview lines to all connected browser clients.

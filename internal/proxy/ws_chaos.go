@@ -16,16 +16,19 @@ func (ps *ProxyServer) chaosStateMessage() map[string]interface{} {
 	}
 }
 
-// BroadcastChaosState pushes the current chaos engine state to all connected
+// BroadcastChaosState pushes the current chaos engine state to the trusted
 // browser clients. Wired to ChaosEngine.onChange so MCP/hub-driven changes
-// reach the indicator UI too. Returns the number of clients reached.
+// reach the indicator UI too. The state is the operator's fault-injection
+// configuration and chaos control is refused to untrusted connections
+// (refusePrivileged), so a visitor on a public tunnel is not sent it either.
+// Returns the number of clients reached.
 func (ps *ProxyServer) BroadcastChaosState() int {
 	messageBytes, err := json.Marshal(ps.chaosStateMessage())
 	if err != nil {
 		debug.Error("proxy", "BroadcastChaosState: marshal failed: %v", err)
 		return 0
 	}
-	return ps.broadcastRaw(messageBytes)
+	return ps.broadcastTrusted(messageBytes)
 }
 
 // handleChaosRequest processes chaos control requests from the browser
