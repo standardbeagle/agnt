@@ -2,6 +2,7 @@ package agentadapter
 
 import (
 	"os/exec"
+	"sort"
 	"strings"
 	"time"
 
@@ -31,6 +32,8 @@ type Override struct {
 	// They let a project map an opaque wrapper / shell-alias target (e.g.
 	// "cdsp") onto a known agent ("claude") so it gets the right injection
 	// mechanism instead of falling through to the universal stdin adapter.
+	// When two adapters declare the same alias, the adapter whose name sorts
+	// first (lowercased, byte order) keeps it — see [Registry.SetOverrides].
 	Aliases []string
 }
 
@@ -94,23 +97,43 @@ func (r *Registry) Register(a Adapter) {
 // SetOverrides replaces the per-adapter override map. Keys are adapter
 // names (matched against [Adapter.Name]); unknown keys are ignored.
 // Passing nil clears all overrides.
+//
+// The result does not depend on map iteration order. Keys are applied in
+// sorted order, so when two keys lowercase to the same adapter name the one
+// that sorts last supplies its override, and when two adapters declare the
+// same alias the adapter whose name sorts first keeps it (the later
+// declaration is ignored and logged).
 func (r *Registry) SetOverrides(overrides map[string]Override) {
 	if overrides == nil {
 		r.overrides = make(map[string]Override)
 		r.aliases = make(map[string]string)
 		return
 	}
+	keys := make([]string, 0, len(overrides))
+	for k := range overrides {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
 	// Copy so callers can't mutate after the fact, and rebuild the alias index
 	// (command base name → adapter name) from each override's Aliases.
 	cp := make(map[string]Override, len(overrides))
 	al := make(map[string]string)
-	for k, v := range overrides {
-		name := strings.ToLower(k)
-		cp[name] = v
-		for _, alias := range v.Aliases {
+	for _, k := range keys {
+		cp[strings.ToLower(k)] = overrides[k]
+	}
+	names := make([]string, 0, len(cp))
+	for name := range cp {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		for _, alias := range cp[name].Aliases {
 			if base := baseNameOf(alias); base != "" {
 				if prev, dup := al[base]; dup {
-					debug.Log("agentadapter", "alias %q redeclared by %q: was %q, last wins", base, name, prev)
+					if prev != name {
+						debug.Log("agentadapter", "alias %q also declared by %q; %q keeps it (first adapter name in sort order wins)", base, name, prev)
+					}
+					continue
 				}
 				al[base] = name
 			}

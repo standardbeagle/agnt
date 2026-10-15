@@ -101,6 +101,7 @@ Fields:
 | `disabled` | bool | all | Skip prompt injection for this agent on every channel. `BuildArgs` returns `baseArgs` unchanged, `InitialStdin` returns nil, and the persistent context file (`AGENTS.md`, `GEMINI.md`, …) is not written. Code that delivers the prompt some other way must check `agentadapter.InjectionDisabled`. |
 | `flag-name` | string | flag-based | Replace the injection flag. Ignored by stdin adapters. |
 | `stdin-delay-ms` | int | stdin-capable | Delay in milliseconds before writing setup-mode stdin. Ignored by flag adapters and normal coding sessions. A value of 0 inherits the adapter default (500ms). |
+| `aliases` | strings | all | Extra command base names that resolve to this adapter, checked before built-in matching. If two adapters declare the same alias, the adapter whose name sorts first alphabetically keeps it. |
 
 Unknown adapter names in the config are silently ignored — they do not error out autostart.
 

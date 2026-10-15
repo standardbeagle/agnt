@@ -183,25 +183,22 @@ func TestRegistry_AliasToUnknownAdapterFallsThrough(t *testing.T) {
 	}
 }
 
-func TestRegistry_DuplicateAliasLastWins(t *testing.T) {
-	// When two adapters declare the same alias base name, the last one
-	// applied wins. (debug.Log warns; behavior we pin here is the resolve.)
+func TestRegistry_DuplicateAliasFirstNameWins(t *testing.T) {
+	// When two adapters declare the same alias base name, the adapter whose
+	// name sorts first keeps it, whatever order the map iterates in. Repeat
+	// SetOverrides so a map-order dependence shows up as a flip.
 	r := DefaultRegistry()
-	r.SetOverrides(map[string]Override{
-		"claude": {Aliases: []string{"dup"}},
-		"gemini": {Aliases: []string{"dup"}},
-	})
-	a := r.Lookup("dup")
-	if a == nil {
-		t.Fatal("Lookup(dup) = nil, want an adapter")
-	}
-	// Map iteration order is non-deterministic, so assert the invariant
-	// that actually matters: exactly one adapter owns the alias, and it is
-	// a known adapter — never a half-resolved or nil result.
-	switch a.Name() {
-	case "claude", "gemini":
-	default:
-		t.Errorf("Lookup(dup) = %q, want claude or gemini", a.Name())
+	for i := 0; i < 50; i++ {
+		r.SetOverrides(map[string]Override{
+			"gemini": {Aliases: []string{"dup"}},
+			"claude": {Aliases: []string{"dup"}},
+			"aider":  {Aliases: []string{"other"}},
+			"codex":  {Aliases: []string{"DUP.exe"}},
+		})
+		a := r.Lookup("dup")
+		if a == nil || a.Name() != "claude" {
+			t.Fatalf("iteration %d: Lookup(dup) = %v, want claude (first adapter name in sort order)", i, a)
+		}
 	}
 }
 
