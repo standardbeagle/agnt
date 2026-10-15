@@ -128,7 +128,7 @@ type ProxyInput struct {
 	// Chaos-related fields
 	ChaosOperation string            `json:"chaos_operation,omitempty" jsonschema:"For chaos: enable, disable, status, set, preset, add_rule, remove_rule, list_rules, stats, clear"`
 	ChaosPreset    string            `json:"chaos_preset,omitempty" jsonschema:"For chaos preset: mobile-3g, mobile-4g, flaky-api, race-condition, stale-tab, slow-connection, connection-drops, etc."`
-	ChaosRules     []ChaosRuleInput  `json:"chaos_rules,omitempty" jsonschema:"For chaos set: array of chaos rules to configure"`
+	ChaosRules     []ChaosRuleInput  `json:"chaos_rules,omitempty" jsonschema:"For chaos set: the rule set (replaces any existing rules), as an alternative to chaos_config.rules; giving both is an error. chaos_config is still required."`
 	ChaosRule      *ChaosRuleInput   `json:"chaos_rule,omitempty" jsonschema:"For chaos add_rule: single rule to add"`
 	ChaosRuleID    string            `json:"chaos_rule_id,omitempty" jsonschema:"For chaos remove_rule: ID of rule to remove"`
 	ChaosConfig    *ChaosConfigInput `json:"chaos_config,omitempty" jsonschema:"For chaos set: full chaos configuration"`

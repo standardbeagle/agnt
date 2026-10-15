@@ -493,13 +493,23 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 		if input.ChaosConfig == nil {
 			return fail[ProxyOutput]("chaos_config required for set operation")
 		}
+		// The rule set comes from chaos_config.rules or, as the top-level
+		// shorthand, chaos_rules. Both at once is ambiguous: refuse it rather
+		// than silently drop one of them.
+		rules := input.ChaosConfig.Rules
+		if len(input.ChaosRules) > 0 {
+			if len(rules) > 0 {
+				return fail[ProxyOutput]("chaos set: give the rules in chaos_config.rules or chaos_rules, not both")
+			}
+			rules = input.ChaosRules
+		}
 		config := protocol.ChaosConfigPayload{
 			Enabled:     input.ChaosConfig.Enabled,
 			GlobalOdds:  input.ChaosConfig.GlobalOdds,
 			Seed:        input.ChaosConfig.Seed,
 			LoggingMode: input.ChaosConfig.LoggingMode,
 		}
-		for _, r := range input.ChaosConfig.Rules {
+		for _, r := range rules {
 			rule := inputRuleToProtocol(r)
 			config.Rules = append(config.Rules, &rule)
 		}

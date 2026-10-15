@@ -149,6 +149,9 @@ func validateProxyInput(input ProxyInput) error {
 		validatePositiveLimit("toast_duration", input.ToastDuration, maxTimeoutMs),
 		validateArrayLen("chaos_rules", input.ChaosRules, maxChaosRules),
 	}
+	if input.ChaosConfig != nil {
+		checks = append(checks, validateArrayLen("chaos_config.rules", input.ChaosConfig.Rules, maxChaosRules))
+	}
 	for _, err := range checks {
 		if err != nil {
 			return err
@@ -157,6 +160,13 @@ func validateProxyInput(input ProxyInput) error {
 	for i, rule := range input.ChaosRules {
 		if err := validateChaosRuleInput(fmt.Sprintf("chaos_rules[%d]", i), rule); err != nil {
 			return err
+		}
+	}
+	if input.ChaosConfig != nil {
+		for i, rule := range input.ChaosConfig.Rules {
+			if err := validateChaosRuleInput(fmt.Sprintf("chaos_config.rules[%d]", i), rule); err != nil {
+				return err
+			}
 		}
 	}
 	if input.ChaosRule != nil {
