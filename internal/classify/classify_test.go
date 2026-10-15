@@ -132,3 +132,83 @@ func TestIsStructuralPrefix(t *testing.T) {
 		t.Error("normal line must not be a structural prefix")
 	}
 }
+
+// TestParseBuildErrors_WindowsDrivePaths pins that every located parser
+// accepts an absolute Windows path. The path groups exclude ':' so they
+// used to stop at the colon in `C:` and never match a `C:\...` location.
+func TestParseBuildErrors_WindowsDrivePaths(t *testing.T) {
+	cases := []struct {
+		name  string
+		lines []string
+		tool  string
+		file  string
+		line  int
+		col   int
+	}{
+		{"tsc colon", []string{`C:\proj\src\foo.ts:12:3 - error TS2322: Type 'x' is not assignable`}, "tsc", `C:\proj\src\foo.ts`, 12, 3},
+		{"tsc paren", []string{`C:\proj\src\foo.ts(12,3): error TS2322: Type 'x'`}, "tsc", `C:\proj\src\foo.ts`, 12, 3},
+		{"eslint", []string{`C:\proj\src\app.ts`, "  4:7  error  Unexpected console statement  no-console"}, "eslint", `C:\proj\src\app.ts`, 4, 7},
+		{"eslint forward slash", []string{`D:/proj/src/app.tsx`, "  4:7  error  Unexpected console statement  no-console"}, "eslint", `D:/proj/src/app.tsx`, 4, 7},
+		{"vite", []string{"✘ [ERROR] Expected \";\" but found \"}\"", `    C:\proj\src\main.ts:9:2:`}, "vite", `C:\proj\src\main.ts`, 9, 2},
+		{"go compile", []string{`C:\proj\pkg\svc.go:42:5: undefined: Bar`}, "go", `C:\proj\pkg\svc.go`, 42, 5},
+		{"rust", []string{"error[E0308]: mismatched types", `  --> C:\proj\src\main.rs:7:9`}, "rust", `C:\proj\src\main.rs`, 7, 9},
+		{"pytest", []string{`FAILED C:\proj\tests\test_foo.py::test_bar - AssertionError: boom`}, "pytest", `C:\proj\tests\test_foo.py`, 0, 0},
+		{"jest", []string{"  ● suite › works", `      at Object.<anonymous> (C:\proj\src\foo.test.ts:12:3)`}, "jest", `C:\proj\src\foo.test.ts`, 12, 3},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			errs := ParseBuildErrors(c.lines)
+			if len(errs) != 1 {
+				t.Fatalf("expected 1 build error, got %d: %+v", len(errs), errs)
+			}
+			e := errs[0]
+			if e.Tool != c.tool || e.File != c.file || e.Line != c.line || e.Col != c.col {
+				t.Errorf("got tool=%q file=%q line=%d col=%d, want tool=%q file=%q line=%d col=%d",
+					e.Tool, e.File, e.Line, e.Col, c.tool, c.file, c.line, c.col)
+			}
+		})
+	}
+}
+
+// TestParseBuildErrors_DriveNearMisses pins that the drive prefix needs a
+// single letter, a colon and a path separator: a URL scheme or a clock time
+// is never read as a drive path.
+func TestParseBuildErrors_DriveNearMisses(t *testing.T) {
+	cases := []struct {
+		name  string
+		lines []string
+	}{
+		{"tsc colon url", []string{"http://localhost:5173/src/foo.ts:12:3 - error TS2322: Type 'x'"}},
+		{"tsc colon timestamp", []string{"a:12:34:56 - error TS2322: Type 'x'"}},
+		{"go compile url", []string{"http://example.com/x.go:1:2: nope"}},
+		{"go compile timestamp", []string{"T:12:34.go:1:2: nope"}},
+		{"pytest timestamp", []string{"FAILED a:12:34::test_bar"}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if errs := ParseBuildErrors(c.lines); len(errs) != 0 {
+				t.Fatalf("near-miss parsed as a build error: %+v", errs)
+			}
+		})
+	}
+
+	// A header without a valid drive location still emits, but with no file.
+	for _, lines := range [][]string{
+		{"error[E0308]: mismatched types", "  --> x:12:34:56"},
+		{"✘ [ERROR] bad", "    a:12:34:56:"},
+		{"  ● suite › works", "      at fn (a:12:34:56)"},
+		{"  ● suite › works", "      at fn (http://localhost/x.js:1:2)"},
+	} {
+		errs := ParseBuildErrors(lines)
+		if len(errs) != 1 || errs[0].File != "" {
+			t.Errorf("near-miss location %q must not yield a file: %+v", lines[1], errs)
+		}
+	}
+	// An eslint row under a URL or clock-time header is not attributed.
+	for _, hdr := range []string{"http://localhost/app.ts", "12:34"} {
+		errs := ParseBuildErrors([]string{hdr, "  4:7  error  Unexpected console statement  no-console"})
+		if len(errs) != 0 {
+			t.Errorf("eslint header %q must not be accepted: %+v", hdr, errs)
+		}
+	}
+}

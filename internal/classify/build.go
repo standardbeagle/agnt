@@ -29,22 +29,30 @@ type BuildError struct {
 //
 // Naming convention: <tool>_<form>Re. Some tools have multiple forms
 // (tsc has --pretty and default; go has ./-prefixed and bare).
+//
+// Path groups exclude ':' (it separates file from line), so each one takes
+// an optional Windows drive prefix (driveRe) to accept `C:\...` and `C:/...`.
+// The prefix needs a letter, a colon and a separator, so a URL scheme
+// (`http://`) or a clock time (`12:34`) is never read as a drive.
+const driveRe = `(?:[A-Za-z]:[\\/])?`
+
 var (
 	// tsc default: src/foo.ts(12,3): error TS2322: Type 'x' ...
 	tscParenRe = regexp.MustCompile(`^([^\s()]+)\((\d+),(\d+)\):\s+(error|warning)\s+(TS\d+):\s+(.+)$`)
 	// tsc --pretty: src/foo.ts:12:3 - error TS2322: Type 'x' ...
-	tscColonRe = regexp.MustCompile(`^([^\s:]+):(\d+):(\d+)\s+-\s+(error|warning)\s+(TS\d+):\s+(.+)$`)
+	tscColonRe = regexp.MustCompile(`^(` + driveRe + `[^\s:]+):(\d+):(\d+)\s+-\s+(error|warning)\s+(TS\d+):\s+(.+)$`)
 
-	// eslint stylish: file header on its own line (absolute path or relative
-	// starting with / or ./ or alphabetic). Followed by indented rows:
+	// eslint stylish: file header on its own line (absolute path, Windows
+	// drive path, or relative starting with / or ./ or alphabetic). Followed
+	// by indented rows:
 	//   12:3  error  Unexpected console statement  no-console
-	eslintFileHeaderRe = regexp.MustCompile(`^(/[^\s]+|\.\.?/[^\s]+|[A-Za-z][^\s:]*\.(ts|tsx|js|jsx|mjs|cjs|vue|svelte))$`)
+	eslintFileHeaderRe = regexp.MustCompile(`^(/[^\s]+|[A-Za-z]:[\\/][^\s]+|\.\.?/[^\s]+|[A-Za-z][^\s:]*\.(ts|tsx|js|jsx|mjs|cjs|vue|svelte))$`)
 	eslintRowRe        = regexp.MustCompile(`^\s+(\d+):(\d+)\s+(error|warning)\s+(.+?)\s\s+([A-Za-z0-9@/_-]+)\s*$`)
 
 	// vite/esbuild: header `✗ [ERROR] msg` or `✘ [ERROR] msg`, followed
 	// by indented `    file:line:col:` on the next line.
 	viteHeaderRe   = regexp.MustCompile(`^[✗✘]\s+\[(ERROR|WARNING)\]\s+(.+)$`)
-	viteLocationRe = regexp.MustCompile(`^\s+([^\s:]+):(\d+):(\d+):?\s*$`)
+	viteLocationRe = regexp.MustCompile(`^\s+(` + driveRe + `[^\s:]+):(\d+):(\d+):?\s*$`)
 
 	// webpack: `ERROR in ./src/foo.ts` then `Module build failed: ...`
 	// Also matches WARNING in ... for warning surfacing.
@@ -52,18 +60,18 @@ var (
 
 	// Go compiler: ./foo.go:12:3: undefined: Bar
 	// Path may have leading ./ or be relative; must end in .go before the colon.
-	goCompileRe = regexp.MustCompile(`^(\.{1,2}/)?([^\s:]+\.go):(\d+):(\d+):\s+(.+)$`)
+	goCompileRe = regexp.MustCompile(`^(\.{1,2}/)?(` + driveRe + `[^\s:]+\.go):(\d+):(\d+):\s+(.+)$`)
 
 	// Rust/cargo: "error[E0308]: mismatched types" then "  --> src/main.rs:12:3"
 	rustHeaderRe   = regexp.MustCompile(`^(error|warning)\[([A-Z]\d+)\]:\s+(.+)$`)
-	rustLocationRe = regexp.MustCompile(`^\s*-->\s+([^\s:]+):(\d+):(\d+)\s*$`)
+	rustLocationRe = regexp.MustCompile(`^\s*-->\s+(` + driveRe + `[^\s:]+):(\d+):(\d+)\s*$`)
 
 	// pytest: "FAILED tests/test_foo.py::test_bar - AssertionError: ..."
-	pytestRe = regexp.MustCompile(`^FAILED\s+([^\s:]+)::([^\s]+)(?:\s+-\s+(.+))?$`)
+	pytestRe = regexp.MustCompile(`^FAILED\s+(` + driveRe + `[^\s:]+)::([^\s]+)(?:\s+-\s+(.+))?$`)
 
 	// jest/vitest: "  ● TestName › subtest" then "    at … (file:line:col)"
 	jestHeaderRe   = regexp.MustCompile(`^\s*●\s+(.+)$`)
-	jestLocationRe = regexp.MustCompile(`\s+at\s+[^\s]+\s+\(([^():]+):(\d+):(\d+)\)`)
+	jestLocationRe = regexp.MustCompile(`\s+at\s+[^\s]+\s+\((` + driveRe + `[^():]+):(\d+):(\d+)\)`)
 
 	// go test: "--- FAIL: TestFoo (0.01s)" then "    foo_test.go:12: msg"
 	goTestHeaderRe   = regexp.MustCompile(`^---\s+FAIL:\s+([^\s]+)`)
