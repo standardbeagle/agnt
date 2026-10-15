@@ -481,22 +481,39 @@ func (pw *ProtectedWriter) handleStateOSCString(out *bytes.Buffer, b byte) {
 	if b == '\\' { // ST (String Terminator)
 		out.Write(pw.escBuf)
 		pw.state = stateGround
-	} else {
-		pw.oscBuf = append(pw.oscBuf, 0x1b, b)
-		pw.state = stateOSC
+		return
 	}
+	pw.endStringAtESC(out, b)
+}
+
+// endStringAtESC handles the byte after an ESC inside an OSC, DCS, SOS, PM or
+// APC string when that byte is not the backslash of ST. A terminal ends the
+// string at the ESC and reads the ESC as the start of the next sequence.
+// Staying in the string instead held every later byte until some BEL or ST
+// turned up: one stray "ESC ]" blanked the child's output, and grew escBuf,
+// for as long as none did. escBuf ends with ESC b on entry.
+func (pw *ProtectedWriter) endStringAtESC(out *bytes.Buffer, b byte) {
+	out.Write(pw.escBuf[:len(pw.escBuf)-2])
+	pw.escBuf = append(pw.escBuf[:0], 0x1b)
+	pw.state = stateEscape
+	pw.handleStateEscape(out, b)
 }
 
 // handleStateStringTerminated processes bytes in DCS, SOS, PM, APC states.
 func (pw *ProtectedWriter) handleStateStringTerminated(out *bytes.Buffer, b byte) {
 	pw.escBuf = append(pw.escBuf, b)
-	// Look for ST (ESC \) or single-byte terminator
-	if b == 0x1b {
-		// Might be start of ST
-	} else if b == '\\' && len(pw.escBuf) > 1 && pw.escBuf[len(pw.escBuf)-2] == 0x1b {
+	// escBuf starts with the two-byte introducer, so an ESC inside the
+	// payload is at index 2 or later.
+	afterESC := len(pw.escBuf) > 3 && pw.escBuf[len(pw.escBuf)-2] == 0x1b
+	switch {
+	case afterESC && b == '\\': // ST
 		out.Write(pw.escBuf)
 		pw.state = stateGround
-	} else if b == 0x9c { // Single-byte ST
+	case afterESC:
+		pw.endStringAtESC(out, b)
+	case b == 0x1b:
+		// Might be start of ST
+	case b == 0x9c: // Single-byte ST
 		out.Write(pw.escBuf)
 		pw.state = stateGround
 	}
