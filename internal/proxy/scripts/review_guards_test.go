@@ -147,6 +147,22 @@ func TestAPITracker_NeverChangesRequestSemantics(t *testing.T) {
 	)
 }
 
+// TestAPITracker_XHRListenerInstalledOncePerObject — behaviour:
+// jstest/api-tracker.test.js ("records each request on a reused XHR exactly
+// once"). send() installs the loadend listener only on an XHR's first send and
+// the listener reads the current request's metadata, so a reused XHR is not
+// recorded once per earlier send.
+func TestAPITracker_XHRListenerInstalledOncePerObject(t *testing.T) {
+	mustContain(t, "api-tracker.js", apiTrackerJS,
+		"if (!xhr.__devtool_api_listening) {",
+		"xhr.__devtool_api_listening = true;",
+		"var meta = xhr.__devtool_api;",
+	)
+	if got := strings.Count(apiTrackerJS, "addEventListener('loadend'"); got != 1 {
+		t.Errorf("api-tracker.js adds a loadend listener at %d sites, want 1 (guarded by __devtool_api_listening)", got)
+	}
+}
+
 // TestPanels_EscapePageDerivedStrings — behaviour: jstest/html-sinks.test.js.
 func TestPanels_EscapePageDerivedStrings(t *testing.T) {
 	mustContain(t, "diagnostics.js", diagnosticsJS,

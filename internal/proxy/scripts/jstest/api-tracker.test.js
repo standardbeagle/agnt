@@ -120,4 +120,44 @@ describe('XHR interception', () => {
     try { xhr.open({ toString() { return 'GET'; } }, '/api/x'); } catch (e) { thrown = e; }
     expect(thrown).toBeNull();
   });
+
+  // A page may reuse one XHR object for several requests. Each request must
+  // be recorded exactly once, with its own URL.
+  it('records each request on a reused XHR exactly once', () => {
+    const { win } = bootXHR();
+    const xhr = new win.XMLHttpRequest();
+    for (const [i, status] of [[1, 200], [2, 404], [3, 200]]) {
+      xhr.open('GET', `/api/page/${i}`);
+      xhr.send();
+      xhr.finish(status);
+    }
+    expect(win.__devtool_api.getCalls().map((c) => [c.url, c.status])).toEqual([
+      ['http://proxy.test/api/page/1', 200],
+      ['http://proxy.test/api/page/2', 404],
+      ['http://proxy.test/api/page/3', 200],
+    ]);
+  });
 });
+
+// bootXHR replaces the platform XHR with a stand-in the test finishes by hand
+// (jsdom's would hit the network). It is installed before api-tracker loads,
+// so the tracker wraps it exactly as it wraps the browser's.
+function bootXHR() {
+  rt = loadModules(['frames', 'api-tracker'], {
+    url: 'http://proxy.test/app/',
+    before: (win) => {
+      class FakeXHR extends win.EventTarget {
+        open(method, url) { this.status = 0; this.statusText = ''; this.url = url; }
+        send() {}
+        finish(status) {
+          this.status = status;
+          this.responseText = '';
+          this.dispatchEvent(new win.Event('loadend'));
+        }
+      }
+      win.XMLHttpRequest = FakeXHR;
+    },
+  });
+  expect(rt.errors).toEqual({});
+  return { win: rt.window };
+}

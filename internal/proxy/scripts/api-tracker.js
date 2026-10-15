@@ -169,35 +169,46 @@
 
     try {
       if (xhr.__devtool_api) {
-        var meta = xhr.__devtool_api;
-        meta.startTime = Date.now();
+        xhr.__devtool_api.startTime = Date.now();
 
-        xhr.addEventListener('loadend', function() {
-          try {
-            var call = {
-              timestamp: meta.startTime,
-              url: meta.url,
-              method: meta.method,
-              status: xhr.status,
-              statusText: xhr.statusText,
-              duration: Date.now() - meta.startTime,
-              ok: xhr.status >= 200 && xhr.status < 300,
-              error: xhr.status === 0 ? 'Network error' : null
-            };
-            // Capture error response body (first 1KB) for 4xx/5xx
-            if (xhr.status >= 400) {
-              try {
-                var body = xhr.responseText || '';
-                call.responseBody = body.substring(0, 1024);
+        // One loadend listener per XHR object, installed on its first send.
+        // A page may reuse an XHR (open() + send() again); a listener added
+        // per send would pile up and record every later request once per
+        // earlier send, the stale ones with the earlier URL. The listener
+        // reads the metadata of the request that just ended, which open()
+        // replaced for this send.
+        if (!xhr.__devtool_api_listening) {
+          xhr.__devtool_api_listening = true;
+          xhr.addEventListener('loadend', function() {
+            var meta = xhr.__devtool_api;
+            if (!meta || meta.startTime === null) return;
+            try {
+              var call = {
+                timestamp: meta.startTime,
+                url: meta.url,
+                method: meta.method,
+                status: xhr.status,
+                statusText: xhr.statusText,
+                duration: Date.now() - meta.startTime,
+                ok: xhr.status >= 200 && xhr.status < 300,
+                error: xhr.status === 0 ? 'Network error' : null
+              };
+              meta.startTime = null;
+              // Capture error response body (first 1KB) for 4xx/5xx
+              if (xhr.status >= 400) {
                 try {
-                  var json = JSON.parse(body);
-                  call.errorMessage = json.error || json.message || json.detail || json.title || null;
+                  var body = xhr.responseText || '';
+                  call.responseBody = body.substring(0, 1024);
+                  try {
+                    var json = JSON.parse(body);
+                    call.errorMessage = json.error || json.message || json.detail || json.title || null;
+                  } catch (e) {}
                 } catch (e) {}
-              } catch (e) {}
-            }
-            recordCall(call);
-          } catch (e) { /* recording is best-effort */ }
-        });
+              }
+              recordCall(call);
+            } catch (e) { /* recording is best-effort */ }
+          });
+        }
       }
     } catch (e) { /* never let bookkeeping stop the request */ }
 
