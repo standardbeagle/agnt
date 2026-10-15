@@ -401,13 +401,13 @@ func (rc *ResilientClient) CurrentPageClear(proxyID string) error {
 // Chaos methods
 
 // ChaosEnable enables chaos injection on a proxy.
-func (rc *ResilientClient) ChaosEnable(proxyID string) (map[string]interface{}, error) {
-	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ChaosEnable(proxyID) })
+func (rc *ResilientClient) ChaosEnable(proxyID string) error {
+	return rc.WithClient(func(c *Client) error { return c.ChaosEnable(proxyID) })
 }
 
 // ChaosDisable disables chaos injection on a proxy.
-func (rc *ResilientClient) ChaosDisable(proxyID string) (map[string]interface{}, error) {
-	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ChaosDisable(proxyID) })
+func (rc *ResilientClient) ChaosDisable(proxyID string) error {
+	return rc.WithClient(func(c *Client) error { return c.ChaosDisable(proxyID) })
 }
 
 // ChaosStatus gets the chaos status of a proxy.
@@ -416,23 +416,23 @@ func (rc *ResilientClient) ChaosStatus(proxyID string) (map[string]interface{}, 
 }
 
 // ChaosPreset applies a preset chaos configuration to a proxy.
-func (rc *ResilientClient) ChaosPreset(proxyID, preset string) (map[string]interface{}, error) {
-	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ChaosPreset(proxyID, preset) })
+func (rc *ResilientClient) ChaosPreset(proxyID, preset string) error {
+	return rc.WithClient(func(c *Client) error { return c.ChaosPreset(proxyID, preset) })
 }
 
 // ChaosSet sets the full chaos configuration on a proxy.
-func (rc *ResilientClient) ChaosSet(proxyID string, config protocol.ChaosConfigPayload) (map[string]interface{}, error) {
-	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ChaosSet(proxyID, config) })
+func (rc *ResilientClient) ChaosSet(proxyID string, config protocol.ChaosConfigPayload) error {
+	return rc.WithClient(func(c *Client) error { return c.ChaosSet(proxyID, config) })
 }
 
 // ChaosAddRule adds a single rule to a proxy's chaos engine.
-func (rc *ResilientClient) ChaosAddRule(proxyID string, rule protocol.ChaosRuleConfig) (map[string]interface{}, error) {
-	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ChaosAddRule(proxyID, rule) })
+func (rc *ResilientClient) ChaosAddRule(proxyID string, rule protocol.ChaosRuleConfig) error {
+	return rc.WithClient(func(c *Client) error { return c.ChaosAddRule(proxyID, rule) })
 }
 
 // ChaosRemoveRule removes a rule from a proxy's chaos engine.
-func (rc *ResilientClient) ChaosRemoveRule(proxyID, ruleID string) (map[string]interface{}, error) {
-	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ChaosRemoveRule(proxyID, ruleID) })
+func (rc *ResilientClient) ChaosRemoveRule(proxyID, ruleID string) error {
+	return rc.WithClient(func(c *Client) error { return c.ChaosRemoveRule(proxyID, ruleID) })
 }
 
 // ChaosListRules lists all chaos rules for a proxy.
@@ -446,8 +446,8 @@ func (rc *ResilientClient) ChaosStats(proxyID string) (map[string]interface{}, e
 }
 
 // ChaosClear clears all chaos rules and resets stats for a proxy.
-func (rc *ResilientClient) ChaosClear(proxyID string) (map[string]interface{}, error) {
-	return withResult(rc, func(c *Client) (map[string]interface{}, error) { return c.ChaosClear(proxyID) })
+func (rc *ResilientClient) ChaosClear(proxyID string) error {
+	return rc.WithClient(func(c *Client) error { return c.ChaosClear(proxyID) })
 }
 
 // ChaosListPresets returns the list of available chaos presets.

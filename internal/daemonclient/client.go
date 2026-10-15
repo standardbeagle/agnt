@@ -595,14 +595,19 @@ func (c *Client) AutomationEvaluate(config protocol.AutomationEvaluateConfig) (m
 	return c.conn.Request(protocol.VerbAutomation, protocol.SubVerbEvaluate).WithJSON(config).JSON()
 }
 
+// The CHAOS mutations (ENABLE, DISABLE, PRESET, SET, ADD-RULE, REMOVE-RULE,
+// CLEAR) reply OK, not JSON, and PRESET, ADD-RULE and REMOVE-RULE take their
+// argument in the JSON payload (chaos_preset, chaos_rule, chaos_rule_id), not
+// as a positional arg. See internal/daemon/hub_chaos.go.
+
 // ChaosEnable enables chaos injection on a proxy.
-func (c *Client) ChaosEnable(proxyID string) (map[string]interface{}, error) {
-	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbEnable, proxyID).JSON()
+func (c *Client) ChaosEnable(proxyID string) error {
+	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbEnable, proxyID).OK()
 }
 
 // ChaosDisable disables chaos injection on a proxy.
-func (c *Client) ChaosDisable(proxyID string) (map[string]interface{}, error) {
-	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbDisable, proxyID).JSON()
+func (c *Client) ChaosDisable(proxyID string) error {
+	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbDisable, proxyID).OK()
 }
 
 // ChaosStatus gets the chaos status of a proxy.
@@ -611,23 +616,26 @@ func (c *Client) ChaosStatus(proxyID string) (map[string]interface{}, error) {
 }
 
 // ChaosPreset applies a preset chaos configuration to a proxy.
-func (c *Client) ChaosPreset(proxyID, preset string) (map[string]interface{}, error) {
-	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbPreset, proxyID, preset).JSON()
+func (c *Client) ChaosPreset(proxyID, preset string) error {
+	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbPreset, proxyID).
+		WithJSON(map[string]string{"chaos_preset": preset}).OK()
 }
 
 // ChaosSet sets the full chaos configuration on a proxy.
-func (c *Client) ChaosSet(proxyID string, config protocol.ChaosConfigPayload) (map[string]interface{}, error) {
-	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbSet, proxyID).WithJSON(config).JSON()
+func (c *Client) ChaosSet(proxyID string, config protocol.ChaosConfigPayload) error {
+	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbSet, proxyID).WithJSON(config).OK()
 }
 
 // ChaosAddRule adds a single rule to a proxy's chaos engine.
-func (c *Client) ChaosAddRule(proxyID string, rule protocol.ChaosRuleConfig) (map[string]interface{}, error) {
-	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbAddRule, proxyID).WithJSON(rule).JSON()
+func (c *Client) ChaosAddRule(proxyID string, rule protocol.ChaosRuleConfig) error {
+	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbAddRule, proxyID).
+		WithJSON(map[string]protocol.ChaosRuleConfig{"chaos_rule": rule}).OK()
 }
 
 // ChaosRemoveRule removes a rule from a proxy's chaos engine.
-func (c *Client) ChaosRemoveRule(proxyID, ruleID string) (map[string]interface{}, error) {
-	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbRemoveRule, proxyID, ruleID).JSON()
+func (c *Client) ChaosRemoveRule(proxyID, ruleID string) error {
+	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbRemoveRule, proxyID).
+		WithJSON(map[string]string{"chaos_rule_id": ruleID}).OK()
 }
 
 // ChaosListRules lists all chaos rules for a proxy.
@@ -641,8 +649,8 @@ func (c *Client) ChaosStats(proxyID string) (map[string]interface{}, error) {
 }
 
 // ChaosClear clears all chaos rules and resets stats for a proxy.
-func (c *Client) ChaosClear(proxyID string) (map[string]interface{}, error) {
-	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbClear, proxyID).JSON()
+func (c *Client) ChaosClear(proxyID string) error {
+	return c.conn.Request(protocol.VerbChaos, protocol.SubVerbClear, proxyID).OK()
 }
 
 // ChaosListPresets returns the list of available chaos presets.

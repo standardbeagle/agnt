@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -572,69 +573,107 @@ func TestResilientClient_ChaosMethods(t *testing.T) {
 		}
 	})
 
-	// Test ChaosEnable
-	// Note: These chaos methods exercise the code path even if the response format mismatches
+	// The mutations reply OK and take their argument in the JSON payload.
+	// The client used to expect a JSON reply (and sent preset, rule and rule
+	// id positionally), so every one of them failed; each must now succeed
+	// and take effect.
+	enabled := func(t *testing.T) bool {
+		t.Helper()
+		result, err := rc.ChaosStatus("rc-chaos-proxy")
+		if err != nil {
+			t.Fatalf("ChaosStatus failed: %v", err)
+		}
+		on, _ := result["enabled"].(bool)
+		return on
+	}
+	ruleIDs := func(t *testing.T) []string {
+		t.Helper()
+		result, err := rc.ChaosListRules("rc-chaos-proxy")
+		if err != nil {
+			t.Fatalf("ChaosListRules failed: %v", err)
+		}
+		var ids []string
+		rules, _ := result["rules"].([]interface{})
+		for _, r := range rules {
+			if m, ok := r.(map[string]interface{}); ok {
+				id, _ := m["id"].(string)
+				ids = append(ids, id)
+			}
+		}
+		return ids
+	}
+
 	t.Run("ChaosEnable", func(t *testing.T) {
-		_, err := rc.ChaosEnable("rc-chaos-proxy")
-		// Known issue: handler returns OK but client expects JSON
-		if err != nil {
-			t.Logf("ChaosEnable error (may be OK/JSON mismatch): %v", err)
+		if err := rc.ChaosEnable("rc-chaos-proxy"); err != nil {
+			t.Fatalf("ChaosEnable failed: %v", err)
+		}
+		if !enabled(t) {
+			t.Error("chaos not enabled after ChaosEnable")
 		}
 	})
 
-	// Test ChaosDisable
 	t.Run("ChaosDisable", func(t *testing.T) {
-		_, err := rc.ChaosDisable("rc-chaos-proxy")
-		if err != nil {
-			t.Logf("ChaosDisable error (may be OK/JSON mismatch): %v", err)
+		if err := rc.ChaosDisable("rc-chaos-proxy"); err != nil {
+			t.Fatalf("ChaosDisable failed: %v", err)
+		}
+		if enabled(t) {
+			t.Error("chaos still enabled after ChaosDisable")
 		}
 	})
 
-	// Test ChaosPreset
 	t.Run("ChaosPreset", func(t *testing.T) {
-		_, err := rc.ChaosPreset("rc-chaos-proxy", "mobile-3g")
-		if err != nil {
-			t.Logf("ChaosPreset error (may be parameter issue): %v", err)
+		if err := rc.ChaosPreset("rc-chaos-proxy", "mobile-3g"); err != nil {
+			t.Fatalf("ChaosPreset failed: %v", err)
+		}
+		if !enabled(t) {
+			t.Error("chaos not enabled after applying a preset")
 		}
 	})
 
-	// Test ChaosSet
 	t.Run("ChaosSet", func(t *testing.T) {
-		_, err := rc.ChaosSet("rc-chaos-proxy", protocol.ChaosConfigPayload{
+		err := rc.ChaosSet("rc-chaos-proxy", protocol.ChaosConfigPayload{
 			Enabled:    true,
 			GlobalOdds: 0.5,
+			Rules:      []*protocol.ChaosRuleConfig{{ID: "set-rule", Type: "latency", Enabled: true}},
 		})
 		if err != nil {
-			t.Logf("ChaosSet error (may be OK/JSON mismatch): %v", err)
+			t.Fatalf("ChaosSet failed: %v", err)
+		}
+		if ids := ruleIDs(t); len(ids) != 1 || ids[0] != "set-rule" {
+			t.Errorf("rules after ChaosSet = %v, want [set-rule]", ids)
 		}
 	})
 
-	// Test ChaosAddRule
 	t.Run("ChaosAddRule", func(t *testing.T) {
-		_, err := rc.ChaosAddRule("rc-chaos-proxy", protocol.ChaosRuleConfig{
+		err := rc.ChaosAddRule("rc-chaos-proxy", protocol.ChaosRuleConfig{
 			ID:          "test-rule",
 			Type:        "latency",
 			Enabled:     true,
 			Probability: 0.5,
 		})
 		if err != nil {
-			t.Logf("ChaosAddRule error (may be parameter issue): %v", err)
+			t.Fatalf("ChaosAddRule failed: %v", err)
+		}
+		if ids := ruleIDs(t); !slices.Contains(ids, "test-rule") {
+			t.Errorf("rules after ChaosAddRule = %v, want test-rule among them", ids)
 		}
 	})
 
-	// Test ChaosRemoveRule
 	t.Run("ChaosRemoveRule", func(t *testing.T) {
-		_, err := rc.ChaosRemoveRule("rc-chaos-proxy", "test-rule")
-		if err != nil {
-			t.Logf("ChaosRemoveRule error (may be parameter issue): %v", err)
+		if err := rc.ChaosRemoveRule("rc-chaos-proxy", "test-rule"); err != nil {
+			t.Fatalf("ChaosRemoveRule failed: %v", err)
+		}
+		if ids := ruleIDs(t); slices.Contains(ids, "test-rule") {
+			t.Errorf("rules after ChaosRemoveRule = %v, want test-rule gone", ids)
 		}
 	})
 
-	// Test ChaosClear
 	t.Run("ChaosClear", func(t *testing.T) {
-		_, err := rc.ChaosClear("rc-chaos-proxy")
-		if err != nil {
-			t.Logf("ChaosClear error (may be OK/JSON mismatch): %v", err)
+		if err := rc.ChaosClear("rc-chaos-proxy"); err != nil {
+			t.Fatalf("ChaosClear failed: %v", err)
+		}
+		if ids := ruleIDs(t); len(ids) != 0 {
+			t.Errorf("rules after ChaosClear = %v, want none", ids)
 		}
 	})
 }

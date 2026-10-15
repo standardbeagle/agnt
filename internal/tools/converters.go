@@ -45,7 +45,7 @@ func parseChaosRules(rules []interface{}) []ChaosRuleOutput {
 				Enabled:      getBool(rm, "enabled"),
 				URLPattern:   getString(rm, "url_pattern"),
 				Probability:  getFloat64(rm, "probability"),
-				TimesApplied: getInt64(rm, "times_applied"),
+				TimesApplied: getInt64(rm, "applied"),
 			})
 		}
 	}

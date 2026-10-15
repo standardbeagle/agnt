@@ -83,11 +83,15 @@ func (d *Daemon) hubHandleChaosStatus(conn *hubpkg.Connection, cmd *hubproto.Com
 
 	engine := p.ChaosEngine()
 	config := engine.GetConfig()
+	snap := engine.Snapshot()
 
+	// rules is the live rule set (Snapshot): config.Rules holds only what the
+	// last SET or PRESET installed, not rules added or removed since.
 	resp := map[string]interface{}{
 		"enabled": engine.IsEnabled(),
 		"config":  config,
-		"stats":   engine.GetStats(),
+		"rules":   snap.Rules,
+		"stats":   snap.Stats,
 	}
 
 	data, _ := json.Marshal(resp)
@@ -232,7 +236,9 @@ func (d *Daemon) hubHandleChaosRemoveRule(conn *hubpkg.Connection, cmd *hubproto
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "chaos_rule_id is required")
 	}
 
-	p.ChaosEngine().RemoveRule(config.RuleID)
+	if !p.ChaosEngine().RemoveRule(config.RuleID) {
+		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("no chaos rule %q on proxy %s", config.RuleID, proxyID))
+	}
 	return conn.WriteOK("rule removed")
 }
 
@@ -249,14 +255,9 @@ func (d *Daemon) hubHandleChaosListRules(conn *hubpkg.Connection, cmd *hubproto.
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
 
-	config := p.ChaosEngine().GetConfig()
-	var rules []*proxy.ChaosRule
-	if config != nil {
-		rules = config.Rules
-	}
-	if rules == nil {
-		rules = []*proxy.ChaosRule{}
-	}
+	// The live rule set: config.Rules holds only what the last SET or PRESET
+	// installed, and misses rules added (ADD-RULE) or removed since.
+	rules := p.ChaosEngine().Snapshot().Rules
 
 	data, _ := json.Marshal(map[string]interface{}{"rules": rules})
 	return conn.WriteJSON(data)

@@ -425,24 +425,22 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 
 	switch operation {
 	case "enable":
-		result, err := dt.client.ChaosEnable(input.ID)
-		if err != nil {
+		if err := dt.client.ChaosEnable(input.ID); err != nil {
 			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
 		}
 		return nil, ProxyOutput{
 			Success:      true,
-			ChaosEnabled: getBool(result, "enabled"),
+			ChaosEnabled: true,
 			Message:      "Chaos injection enabled",
 		}, nil
 
 	case "disable":
-		result, err := dt.client.ChaosDisable(input.ID)
-		if err != nil {
+		if err := dt.client.ChaosDisable(input.ID); err != nil {
 			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
 		}
 		return nil, ProxyOutput{
 			Success:      true,
-			ChaosEnabled: getBool(result, "enabled"),
+			ChaosEnabled: false,
 			Message:      "Chaos injection disabled",
 		}, nil
 
@@ -481,13 +479,13 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 			return nil, ProxyOutput{}, nil
 		}
 
-		result, err := dt.client.ChaosPreset(input.ID, input.ChaosPreset)
-		if err != nil {
+		if err := dt.client.ChaosPreset(input.ID, input.ChaosPreset); err != nil {
 			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
 		}
+		// Every preset is an enabled config: applying one enables chaos.
 		return nil, ProxyOutput{
 			Success:      true,
-			ChaosEnabled: getBool(result, "enabled"),
+			ChaosEnabled: true,
 			Message:      fmt.Sprintf("Chaos preset %q applied", input.ChaosPreset),
 		}, nil
 
@@ -505,13 +503,12 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 			rule := inputRuleToProtocol(r)
 			config.Rules = append(config.Rules, &rule)
 		}
-		result, err := dt.client.ChaosSet(input.ID, config)
-		if err != nil {
+		if err := dt.client.ChaosSet(input.ID, config); err != nil {
 			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
 		}
 		return nil, ProxyOutput{
 			Success:      true,
-			ChaosEnabled: getBool(result, "enabled"),
+			ChaosEnabled: config.Enabled,
 			Message:      "Chaos configuration applied",
 		}, nil
 
@@ -520,21 +517,19 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 			return fail[ProxyOutput]("chaos_rule required for add_rule operation")
 		}
 		rule := inputRuleToProtocol(*input.ChaosRule)
-		result, err := dt.client.ChaosAddRule(input.ID, rule)
-		if err != nil {
+		if err := dt.client.ChaosAddRule(input.ID, rule); err != nil {
 			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
 		}
 		return nil, ProxyOutput{
 			Success: true,
-			Message: fmt.Sprintf("Rule %q added", getString(result, "rule_id")),
+			Message: fmt.Sprintf("Rule %q added", rule.ID),
 		}, nil
 
 	case "remove_rule":
 		if input.ChaosRuleID == "" {
 			return fail[ProxyOutput]("chaos_rule_id required for remove_rule operation")
 		}
-		_, err := dt.client.ChaosRemoveRule(input.ID, input.ChaosRuleID)
-		if err != nil {
+		if err := dt.client.ChaosRemoveRule(input.ID, input.ChaosRuleID); err != nil {
 			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
 		}
 		return nil, ProxyOutput{
@@ -558,15 +553,11 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 		if err != nil {
 			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
 		}
-		output := ProxyOutput{}
-		if stats, ok := result["stats"].(map[string]interface{}); ok {
-			output.ChaosStats = parseChaosStats(stats)
-		}
-		return nil, output, nil
+		// CHAOS STATS replies with the stats object itself.
+		return nil, ProxyOutput{ChaosStats: parseChaosStats(result)}, nil
 
 	case "clear":
-		_, err := dt.client.ChaosClear(input.ID)
-		if err != nil {
+		if err := dt.client.ChaosClear(input.ID); err != nil {
 			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
 		}
 		return nil, ProxyOutput{
