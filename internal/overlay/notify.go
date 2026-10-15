@@ -222,9 +222,22 @@ func (s *notifyStore) len() int {
 // visible. Expiry is driven by a single timer armed for the earliest
 // pending TTL, re-armed on every paint, so no per-notification goroutine
 // exists and an idle overlay runs no ticker.
+//
+// Notify takes o.mu to repaint, so it must not be called with o.mu held:
+// that is a self-deadlock which freezes all overlay input. Code that holds
+// o.mu (the panel key handlers) calls notifyLocked instead.
 func (o *Overlay) Notify(n Notification) {
 	o.notifications.add(n, time.Now())
 	o.repaintNotifications()
+}
+
+// notifyLocked is Notify for a caller that already holds o.mu: it adds n
+// and repaints in place, under the same rules as repaintNotifications.
+func (o *Overlay) notifyLocked(n Notification) {
+	o.notifications.add(n, time.Now())
+	if o.notificationsOnScreen() {
+		o.draw()
+	}
 }
 
 // ClearNotification removes the notification with the given ID (or
@@ -246,22 +259,30 @@ func (o *Overlay) HasNotifications() bool {
 // the panel case, a message raised by a key pressed inside a panel (a failed
 // palette command, the config editor's unsaved-changes warning) could expire
 // before anyone saw it.
+// Must be called without o.mu held.
 func (o *Overlay) repaintNotifications() {
-	if o.redrawPaused.Load() {
-		return
-	}
-	switch o.State() {
-	case StateIndicator:
-		if !o.showBar.Load() {
-			return
-		}
-	case StateMenu:
-	default:
+	if !o.notificationsOnScreen() {
 		return
 	}
 	o.mu.Lock()
 	o.draw()
 	o.mu.Unlock()
+}
+
+// notificationsOnScreen reports whether a notification change needs a
+// repaint now: the indicator bar is up, or a panel view is open.
+func (o *Overlay) notificationsOnScreen() bool {
+	if o.redrawPaused.Load() {
+		return false
+	}
+	switch o.State() {
+	case StateIndicator:
+		return o.showBar.Load()
+	case StateMenu:
+		return true
+	default:
+		return false
+	}
 }
 
 // drawNotificationsLocked paints the stack (indicator state only) and arms

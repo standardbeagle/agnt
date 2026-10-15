@@ -329,10 +329,11 @@ func (r *InputRouter) openConfigPanel() error {
 // closeConfigPanel drops the panel and its buffer. A dirty buffer is refused
 // once: losing typed config to a stray Escape would be a poor trade, so the
 // first press reports the unsaved state and the second one discards.
+// Must be called with the overlay lock held.
 func (r *InputRouter) closeConfigPanel() {
 	if e := r.overlay.configEditor; e != nil && e.Dirty() && !r.configDiscardArmed {
 		r.configDiscardArmed = true
-		r.overlay.Notify(Notification{
+		r.overlay.notifyLocked(Notification{
 			Level: LevelWarn,
 			Text:  "unsaved config changes — ^S to save, Esc again to discard",
 		})
@@ -353,6 +354,8 @@ func (r *InputRouter) closeConfigPanel() {
 
 // handleConfigKey routes one parsed key into the editor. It returns false for
 // keys the editor does not consume, so panel navigation still works.
+// Must be called with the overlay lock held, so messages go out through
+// notifyLocked: Notify would take the lock again and freeze all input.
 //
 // Everything printable is consumed: a config panel that let 'q' or 'x' fall
 // through to the panel browser would close itself the moment someone typed a
@@ -382,12 +385,12 @@ func (r *InputRouter) handleConfigKey(key string) bool {
 	// cannot silently unbind saving.
 	case "\x13", "Ctrl+S":
 		if err := e.Save(); err != nil {
-			r.overlay.Notify(Notification{Level: LevelError, Text: err.Error()})
+			r.overlay.notifyLocked(Notification{Level: LevelError, Text: err.Error()})
 		} else {
-			r.overlay.Notify(Notification{Level: LevelInfo, Text: e.Status()})
+			r.overlay.notifyLocked(Notification{Level: LevelInfo, Text: e.Status()})
 			// A saved config is only useful once the daemon has it.
 			if err := r.scriptController.ReconcileConfig(); err != nil {
-				r.overlay.Notify(Notification{
+				r.overlay.notifyLocked(Notification{
 					Level: LevelWarn,
 					Text:  "saved, but could not apply live: " + err.Error(),
 				})

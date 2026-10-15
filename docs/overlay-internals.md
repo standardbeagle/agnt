@@ -106,6 +106,10 @@ tear the screen:
   repaint clears rows it no longer uses. No per-notification goroutine, no ticker while idle.
 - **Splash arbitration**: the startup splash `YieldTo(overlay.HasNotifications)` and clears
   its row while notifications are up.
+- **Locking**: `Notify` takes the overlay lock to repaint, so code already holding it (every
+  panel key handler runs under it) calls `notifyLocked`. Calling `Notify` there deadlocks the
+  input goroutine on itself and freezes all overlay input; a handler that must call something
+  which notifies (`setForwarding`) releases the lock around it.
 
 Trade-off, shared with the splash: the rows belong to the child, so a toast overwrites
 whatever the agent drew there until the agent repaints (interactive agents redraw their

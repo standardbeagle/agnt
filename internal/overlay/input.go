@@ -229,9 +229,9 @@ func (r *InputRouter) SetForwardingToggle(fn func(paused bool)) {
 }
 
 // setForwarding applies a forwarding pause state: invokes the toggle, updates
-// the persistent indicator, and shows a transient confirmation. Caller need not
-// hold overlay.mu — this acquires nothing that conflicts (the toggle does its
-// own IPC; the overlay setters lock internally).
+// the persistent indicator, and shows a transient confirmation. Must be called
+// without overlay.mu held: the toggle does IPC and Notify takes the lock to
+// repaint.
 func (r *InputRouter) setForwarding(paused bool) {
 	r.forwardPaused = paused
 	if r.forwardingToggle != nil {
@@ -588,9 +588,7 @@ func (r *InputRouter) handlePaste(text string) {
 		o.configEditor.Paste(text)
 		o.draw()
 	default:
-		// Notify would re-take o.mu to repaint; add the toast and draw here.
-		o.notifications.add(Notification{ID: "paste", Level: LevelInfo, Text: "paste ignored: this panel has no text input"}, time.Now())
-		o.draw()
+		o.notifyLocked(Notification{ID: "paste", Level: LevelInfo, Text: "paste ignored: this panel has no text input"})
 	}
 }
 
@@ -964,11 +962,10 @@ func (r *InputRouter) dispatchPaletteCommand(c PaletteCommand, args string) {
 	case "toggle-ports":
 		r.overlay.showAllPorts = !r.overlay.showAllPorts
 		return
-	case "mute":
-		r.setForwarding(true)
-		return
-	case "unmute":
-		r.setForwarding(false)
+	case "mute", "unmute":
+		r.overlay.mu.Unlock()
+		r.setForwarding(c.Name == "mute")
+		r.overlay.mu.Lock()
 		return
 	case "dismiss":
 		if n, err := strconv.Atoi(strings.TrimSpace(args)); err == nil {
