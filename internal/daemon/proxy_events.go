@@ -286,11 +286,17 @@ func (d *Daemon) handleExplicitStart(event ProxyEvent) {
 		d.proxyConfigs.Store(server.ID, configuredProxy{name: event.ProxyName, signature: proxySignature(event.Config)})
 	}
 	if d.stateMgr != nil {
+		// Persist the port actually bound: the requested one is -1 (allocate)
+		// when no listen-port is declared, which a restore cannot honour.
+		port := server.BoundPort()
+		if port <= 0 {
+			port = proxyServerConfig.ListenPort
+		}
 		d.stateMgr.AddProxy(PersistentProxyConfig{
 			ID:         server.ID,
 			ConfigName: event.ProxyName,
 			TargetURL:  server.TargetURL.String(),
-			Port:       proxyServerConfig.ListenPort,
+			Port:       port,
 			MaxLogSize: proxyServerConfig.MaxLogSize,
 			Path:       event.Path,
 		})

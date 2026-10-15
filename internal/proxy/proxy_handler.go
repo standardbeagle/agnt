@@ -177,6 +177,11 @@ func (ps *ProxyServer) SetOverlayEndpoint(endpoint string) {
 	ps.overlayNotifier.SetEndpoint(endpoint)
 }
 
+// AutoRestart reports whether the proxy restarts its listener after a crash.
+func (ps *ProxyServer) AutoRestart() bool {
+	return ps.autoRestart
+}
+
 // OverlayEndpoint returns the overlay endpoint this proxy is bound to, or "".
 func (ps *ProxyServer) OverlayEndpoint() string {
 	return ps.overlayNotifier.GetEndpoint()

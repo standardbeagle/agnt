@@ -550,6 +550,7 @@ func (d *Daemon) restartProxy(ctx context.Context, p *proxy.ProxyServer, callerS
 	allowExternal := p.AllowExternal
 	publicURL := p.GetPublicURL()
 	skipTLSVerify := p.SkipTLSVerify
+	autoRestart := p.AutoRestart()
 	namedTunnel := p.NamedTunnelConfig()
 	boundPort := p.BoundPort()
 	// Capture any still-pending readiness dependencies so the gate is re-armed
@@ -612,6 +613,7 @@ func (d *Daemon) restartProxy(ctx context.Context, p *proxy.ProxyServer, callerS
 		AllowExternal: allowExternal,
 		PublicURL:     publicURL,
 		SkipTLSVerify: skipTLSVerify,
+		AutoRestart:   autoRestart,
 		NamedTunnel:   namedTunnel,
 	})
 	if err != nil {
