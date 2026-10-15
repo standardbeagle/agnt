@@ -26,7 +26,7 @@ func (ps *ProxyServer) Stop(ctx context.Context) error {
 	wasRunning, err := ps.teardownLocked(ctx)
 	if !wasRunning {
 		debug.Log("proxy", "Stop: proxy %s not running", ps.ID)
-		return fmt.Errorf("proxy server not running")
+		return errProxyNotRunning
 	}
 	return err
 }

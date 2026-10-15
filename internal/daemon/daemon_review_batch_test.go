@@ -13,6 +13,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/daemonclient"
+	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/store"
 	goprocess "github.com/standardbeagle/go-cli-server/process"
 	"github.com/stretchr/testify/assert"
@@ -346,4 +347,47 @@ func TestScheduler_OverlayClientDoesNotPoolConnections(t *testing.T) {
 	tr, ok := client.Transport.(*http.Transport)
 	require.True(t, ok)
 	assert.True(t, tr.DisableKeepAlives)
+}
+
+// PROXY STOP on a crashed proxy answered "not found" before its cleanup ran:
+// the proxy stayed in persisted state (back on the next daemon start), and its
+// admin entry and incident owner went stale.
+func TestProxyStop_CrashedProxyIsCleanedUp(t *testing.T) {
+	d := NewForTest(t, DaemonConfig{
+		SocketPath:             shortSockPath(t),
+		MaxClients:             4,
+		WriteTimeout:           2 * time.Second,
+		EnableStatePersistence: true,
+		StatePath:              filepath.Join(t.TempDir(), "state.json"),
+	})
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(d.config.SocketPath))
+	require.NoError(t, client.Connect())
+	t.Cleanup(func() { _ = client.Close() })
+
+	dir := normalizePath(shortTempDir(t))
+	id := makeProcessID(dir, "web")
+	d.handleExplicitStart(ProxyEvent{
+		Type:    ExplicitStart,
+		ProxyID: id,
+		Config:  &config.ProxyConfig{URL: "http://127.0.0.1:65043"},
+		Path:    dir,
+	})
+	p, err := d.proxym.Get(id)
+	require.NoError(t, err)
+	d.registerIncidentProxyOwner(id, "sess-crash")
+	require.NotNil(t, d.stateMgr)
+	_, persisted := d.stateMgr.GetProxy(id)
+	require.True(t, persisted, "precondition: the proxy is persisted")
+	require.Len(t, d.proxyEntries.List(dir), 1, "precondition: the proxy has an admin entry")
+
+	proxy.MarkCrashedForTest(t, p)
+
+	require.NoError(t, client.ProxyStop(id), "stopping a crashed proxy succeeds")
+	_, err = d.proxym.Get(id)
+	assert.ErrorIs(t, err, proxy.ErrProxyNotFound)
+	_, persisted = d.stateMgr.GetProxy(id)
+	assert.False(t, persisted, "a stopped proxy must not come back on the next daemon start")
+	assert.Empty(t, d.proxyEntries.List(dir), "the admin entry must be retired")
+	_, owned := d.incidentProxyOwner.Load(id)
+	assert.False(t, owned, "the incident owner must be retired")
 }

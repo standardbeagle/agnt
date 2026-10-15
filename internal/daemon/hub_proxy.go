@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
@@ -196,10 +197,11 @@ func (d *Daemon) hubHandleProxyStop(ctx context.Context, conn *hubpkg.Connection
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
 
-	// Stop using the resolved full ID
-	if err := d.proxym.Stop(ctx, p.ID); err != nil {
-		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
-	}
+	// Stop using the resolved full ID. The manager deregisters the proxy even
+	// when its shutdown reports an error, so the rest of the cleanup runs
+	// either way: skipping it left the proxy in persisted state (back on the
+	// next daemon start) with a stale admin entry and incident owner.
+	stopErr := d.proxym.Stop(ctx, p.ID)
 	d.retireIncidentProxyOwner(p.ID)
 	d.retireExplicitProxyEntry(p.Path, p.ID)
 
@@ -208,6 +210,11 @@ func (d *Daemon) hubHandleProxyStop(ctx context.Context, conn *hubpkg.Connection
 		d.stateMgr.RemoveProxy(p.ID)
 	}
 
+	// Not found here means a concurrent stop retired it first: the stop
+	// intent is met.
+	if stopErr != nil && !errors.Is(stopErr, proxy.ErrProxyNotFound) {
+		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("proxy %s removed, but its shutdown failed: %v", p.ID, stopErr))
+	}
 	return conn.WriteOK("proxy stopped")
 }
 

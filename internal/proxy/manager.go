@@ -20,6 +20,9 @@ var (
 	ErrProxyNotFound = errors.New("proxy not found")
 	// ErrProxyAmbiguous is returned when a fuzzy lookup matches multiple proxies.
 	ErrProxyAmbiguous = errors.New("proxy ID is ambiguous - multiple matches")
+	// errProxyNotRunning is what ProxyServer.Stop reports for a proxy whose
+	// server had already stopped serving (crashed). Stop still tears it down.
+	errProxyNotRunning = errors.New("proxy server not running")
 )
 
 // ProxyManager manages multiple reverse proxy servers with lock-free access.
@@ -163,8 +166,17 @@ func (pm *ProxyManager) Stop(ctx context.Context, id string) error {
 // The delete is guarded by identity rather than by id: a proxy created again
 // under the same id while this one is stopping — which is what PROXY RESTART
 // does — must not be retired by the stop it does not belong to.
+//
+// A crashed proxy is stopped successfully: Stop tears it down in full and the
+// entry is retired, so it is reported stopped like any other. Reporting the
+// "not running" error made every caller skip the rest of its cleanup —
+// persisted state, admin entry, incident owner — and the proxy came back on
+// the next daemon start.
 func (pm *ProxyManager) stopProxy(ctx context.Context, proxy *ProxyServer) error {
 	stopErr := proxy.Stop(ctx)
+	if errors.Is(stopErr, errProxyNotRunning) {
+		stopErr = nil
+	}
 
 	// Deregister even when Stop fails: a crashed proxy fails Stop with
 	// "not running", and leaving it registered keeps ActiveCount inflated,

@@ -80,3 +80,37 @@ func TestProxyManager_StopDoesNotRetireARestartedProxy(t *testing.T) {
 		t.Error("the registry holds the old proxy, not the replacement")
 	}
 }
+
+// Stopping a crashed proxy tore it down and retired it, but reported "not
+// running": Stop callers skipped the rest of their cleanup, and StopAll /
+// StopByProjectPath left it out of the stopped ids the daemon removes from
+// persisted state, so the proxy came back on the next daemon start.
+func TestProxyManager_StopReportsACrashedProxyStopped(t *testing.T) {
+	pm := NewProxyManager()
+	ctx := context.Background()
+
+	single, err := pm.Create(ctx, ProxyConfig{ID: "app:single", TargetURL: "http://localhost:9999", MaxLogSize: 100, Path: "/work/single"})
+	if err != nil {
+		t.Fatalf("creating the proxy: %v", err)
+	}
+	MarkCrashedForTest(t, single)
+	if err := pm.Stop(ctx, "app:single"); err != nil {
+		t.Errorf("stopping a crashed proxy: %v, want success", err)
+	}
+
+	bulk, err := pm.Create(ctx, ProxyConfig{ID: "app:bulk", TargetURL: "http://localhost:9999", MaxLogSize: 100, Path: "/work/bulk"})
+	if err != nil {
+		t.Fatalf("creating the proxy: %v", err)
+	}
+	MarkCrashedForTest(t, bulk)
+	stopped, err := pm.StopByProjectPath(ctx, "/work/bulk")
+	if err != nil {
+		t.Errorf("StopByProjectPath over a crashed proxy: %v, want success", err)
+	}
+	if len(stopped) != 1 || stopped[0] != "app:bulk" {
+		t.Errorf("stopped ids = %v, want [app:bulk]", stopped)
+	}
+	if got := pm.ActiveCount(); got != 0 {
+		t.Errorf("active count = %d, want 0", got)
+	}
+}
