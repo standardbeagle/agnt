@@ -38,8 +38,9 @@ The daemon reads the global file once, when it starts. Restart it
 `settings`, `feedback` or `public-plane`.
 
 A value outside what a key accepts fails the parse with the accepted values in
-the message: an unknown `port-conflict` or `alerts.preset`, a fractional or
-out-of-range port, a misspelt `depends-on` property. A few keys are still
+the message: an unknown `port-conflict`, `alerts.preset`, shim rule `action` or
+hook rule `action`, a fractional or out-of-range port, a misspelt `depends-on`
+property. A few keys are still
 accepted but do nothing (`proxies.<id>.websocket`, `ai.skill`, `ai.env`; in the
 global file, `version` and `languages`); each is reported as a `config_warning`
 rather than failing, and none of them is documented below.
@@ -861,7 +862,7 @@ shims {
 
 Actions: `route` (default for dev-server/build/test/kill/port classes — run
 through the managed-process pipeline), `restart-watch`, `reroute`, `quiesce`,
-`ignore`, `block`, `pass`. Rule precedence is most-literal-wins (count of
+`ignore`, `block`, `pass`; any other value fails the config load. Rule precedence is most-literal-wins (count of
 non-`*` characters, then fewest `*`), not insertion order. Unmatched commands in known
 classes route by default; unknown commands (e.g. `npm install`, `go mod tidy`)
 pass through unless a rule says otherwise — an explicit `route` rule on such a

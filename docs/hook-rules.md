@@ -105,8 +105,9 @@ hook-rules {
 }
 ```
 
-- `action` must be `"allow"`, `"soft-warn"`, or `"block"`. Empty defaults
-  to `"block"` to match builtin semantics.
+- `action` must be `"allow"`, `"soft-warn"`, or `"block"` (any case). Empty
+  defaults to `"block"` to match builtin semantics. Any other value fails the
+  config load.
 - Pattern strings are Go regexes. `(?m)` multiline mode is common for
   Bash rules so `^` matches after `;` / `&&` separators.
 - Prompt patterns are compiled with `(?i)` case-insensitive prefix by

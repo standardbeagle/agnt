@@ -94,6 +94,13 @@ func TestParseAgntConfig_RejectsInvalidValues(t *testing.T) {
 			[]string{"auto-forward", "htttp", "browser, http"}},
 		{"auto-forward severity typo", "alerts {\n    auto-forward {\n        severity \"errror\"\n    }\n}\n",
 			[]string{"auto-forward", "errror", "error, warning"}},
+		// Both rule actions used to load and then do nothing at run time: an
+		// unknown shim action fell back to passthrough with only a debug log,
+		// an unknown hook action fell into the hook's allow branch.
+		{"shim rule action typo", "shims {\n    rules {\n        b {\n            match \"npm run build\"\n            action \"restart-wacth\"\n        }\n    }\n}\n",
+			[]string{"shims.rules.b", "restart-wacth", "route, restart-watch, reroute, quiesce, ignore, block, pass"}},
+		{"hook rule action typo", "hook-rules {\n    bash-patterns {\n        x {\n            pattern \"rm -rf\"\n            action \"blok\"\n        }\n    }\n}\n",
+			[]string{"hook-rules.bash-patterns.x", "blok", "allow, soft-warn, block"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -118,6 +125,19 @@ func TestParseAgntConfig_AcceptsValidValues(t *testing.T) {
 	for _, sev := range validAutoForwardSeverities {
 		_, err := ParseAgntConfig("alerts {\n    auto-forward {\n        sources \"browser\" \"http\"\n        severity \"" + sev + "\"\n    }\n}\n")
 		assert.NoError(t, err, sev)
+	}
+
+	for _, action := range append([]string{""}, validShimActions...) {
+		_, err := ParseAgntConfig("shims {\n    rules {\n        r {\n            match \"x\"\n            action \"" + action + "\"\n        }\n    }\n}\n")
+		assert.NoError(t, err, "shim action %q", action)
+	}
+	// The hook-rules doc promises a case-insensitive action; the value is
+	// normalised so the hook's exact-match switch sees the canonical form.
+	for _, action := range []string{"", "allow", "soft-warn", "block", "Block", "SOFT-WARN"} {
+		hc, err := ParseAgntConfig("hook-rules {\n    bash-patterns {\n        r {\n            pattern \"x\"\n            action \"" + action + "\"\n        }\n    }\n}\n")
+		if assert.NoError(t, err, "hook action %q", action) {
+			assert.Equal(t, strings.ToLower(action), hc.HookRules.BashPatterns["r"].Action)
+		}
 	}
 
 	cfg, err := ParseAgntConfig("scripts {\n    dev {\n        run \"x\"\n        ports 3000 3001\n    }\n}\n" +

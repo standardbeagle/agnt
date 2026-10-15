@@ -171,3 +171,19 @@ func TestWatchScriptName(t *testing.T) {
 	cfg = &config.AgntConfig{Scripts: map[string]*config.ScriptConfig{"build": {}}}
 	assert.Equal(t, "", WatchScriptName(cfg))
 }
+
+// TestShimActionsAcceptedByConfig pins config's parse-time list of shim
+// actions (which cannot import this package) to the actions this package runs.
+func TestShimActionsAcceptedByConfig(t *testing.T) {
+	t.Parallel()
+	rule := func(action string) string {
+		return "shims {\n    rules {\n        r {\n            match \"x\"\n            action \"" + action + "\"\n        }\n    }\n}\n"
+	}
+	for _, a := range []Action{ActionRoute, ActionRestartWatch, ActionReroute, ActionQuiesce, ActionIgnore, ActionBlock, ActionPass} {
+		assert.NoError(t, ValidateAction(string(a)))
+		_, err := config.ParseAgntConfig(rule(string(a)))
+		assert.NoError(t, err, "config rejects shim action %q", a)
+	}
+	_, err := config.ParseAgntConfig(rule("explode"))
+	assert.Error(t, err, "config accepts an action ValidateAction refuses")
+}

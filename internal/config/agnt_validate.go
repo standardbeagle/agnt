@@ -43,6 +43,17 @@ var validAutoForwardSources = []string{"browser", "http"}
 // special-cased), so rejecting it would fail configs that load today.
 var validAutoForwardSeverities = []string{"error", "warning", "warn"}
 
+// validShimActions is the closed set for `shims.rules.<n>.action` (empty means
+// route). Kept in step with shims.ValidateAction; internal/shims cannot be
+// imported here (it imports config), so TestShimActionsAcceptedByConfig in
+// that package pins the two lists together.
+var validShimActions = []string{"route", "restart-watch", "reroute", "quiesce", "ignore", "block", "pass"}
+
+// validHookActions is the closed set for `hook-rules.bash-patterns.<n>.action`
+// (empty means block), matched case-insensitively as docs/hook-rules.md
+// promises. Kept in step with the hookrules Action constants.
+var validHookActions = []string{"allow", "soft-warn", "block"}
+
 // validateAgntEnums rejects values outside the closed sets above.
 func validateAgntEnums(cfg *AgntConfig) error {
 	if cfg.Alerts != nil && cfg.Alerts.AutoForward != nil {
@@ -68,6 +79,28 @@ func validateAgntEnums(cfg *AgntConfig) error {
 		if !containsString(validAlertPresets, cfg.Alerts.Preset) {
 			return fmt.Errorf("alerts: unknown preset %q (accepted: %s)",
 				cfg.Alerts.Preset, strings.Join(validAlertPresets, ", "))
+		}
+	}
+	if cfg.Shims != nil {
+		for _, name := range sortedKeys(cfg.Shims.Rules) {
+			if r := cfg.Shims.Rules[name]; r != nil && r.Action != "" && !containsString(validShimActions, r.Action) {
+				return fmt.Errorf("shims.rules.%s: unknown action %q (accepted: %s)",
+					name, r.Action, strings.Join(validShimActions, ", "))
+			}
+		}
+	}
+	if cfg.HookRules != nil {
+		for _, name := range sortedKeys(cfg.HookRules.BashPatterns) {
+			r := cfg.HookRules.BashPatterns[name]
+			if r == nil || r.Action == "" {
+				continue
+			}
+			// The hook matches the action exactly; store the canonical form.
+			r.Action = strings.ToLower(r.Action)
+			if !containsString(validHookActions, r.Action) {
+				return fmt.Errorf("hook-rules.bash-patterns.%s: unknown action %q (accepted: %s)",
+					name, r.Action, strings.Join(validHookActions, ", "))
+			}
 		}
 	}
 	return nil

@@ -1,11 +1,14 @@
 package hookrules
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/standardbeagle/agnt/internal/config"
 )
 
 // TestBuiltinRuleSet confirms every builtin pattern compiles. A panic here
@@ -201,6 +204,22 @@ func TestMatchBash_IgnoresQuotedLiterals(t *testing.T) {
 	for _, c := range blocked {
 		if d := rs.MatchBash(c); d.Action != ActionBlock {
 			t.Errorf("real dev-server command should block, got %q for: %s", d.Action, c)
+		}
+	}
+}
+
+// TestHookActionsAcceptedByConfig pins config's parse-time list of hook rule
+// actions to the actions the hook acts on, and checks the parsed value reaches
+// the rule in the form the hook's switch matches.
+func TestHookActionsAcceptedByConfig(t *testing.T) {
+	for _, a := range []Action{ActionAllow, ActionSoftWarn, ActionBlock} {
+		cfg, err := config.ParseAgntConfig("hook-rules {\n    bash-patterns {\n        r {\n            pattern \"zzz-cmd\"\n            action \"" + strings.ToUpper(string(a)) + "\"\n        }\n    }\n}\n")
+		if err != nil {
+			t.Fatalf("config rejects hook action %q: %v", a, err)
+		}
+		rs := MergeOverrides(&RuleSet{}, cfg.HookRules)
+		if got := rs.MatchBash("zzz-cmd").Action; got != a {
+			t.Errorf("action %q reached the hook as %q", a, got)
 		}
 	}
 }
