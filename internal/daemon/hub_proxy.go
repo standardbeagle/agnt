@@ -116,22 +116,30 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 	default:
 	}
 
-	d.handleExplicitStart(ProxyEvent{
-		Type:         ExplicitStart,
-		ProxyID:      proxyID,
-		Config:       proxyConfig,
-		Path:         normalizedPath,
-		OwnerSession: conn.SessionCode(),
-	})
+	// A start under an id that is already running is idempotent and says so.
+	// The lookups are exact: a fuzzy Get matched a short id ("dev") against
+	// another project's compound id, skipped the start, and reported that
+	// project's proxy back as this one.
+	_, alreadyRunning := d.exactProxy(proxyID)
+	if !alreadyRunning {
+		d.handleExplicitStart(ProxyEvent{
+			Type:         ExplicitStart,
+			ProxyID:      proxyID,
+			Config:       proxyConfig,
+			Path:         normalizedPath,
+			OwnerSession: conn.SessionCode(),
+		})
+	}
 
-	// If proxym.Get fails, handleExplicitStart's Create() path hit an
-	// error. The Get error itself is just "not found"; the real cause is the
-	// proxy_creation_failed entry handleExplicitStart recorded in the startup
-	// log. Inline that detail so the MCP caller sees the root cause instead of
-	// a bare "not created", and point at the durable surfaces for the full
-	// record rather than swallowing it.
-	proxyServer, err := d.proxym.Get(proxyID)
-	if err != nil {
+	// If the lookup fails, handleExplicitStart's Create() path hit an
+	// error. The real cause is the proxy_creation_failed entry
+	// handleExplicitStart recorded in the startup log. Inline that detail so
+	// the MCP caller sees the root cause instead of a bare "not created", and
+	// point at the durable surfaces for the full record rather than
+	// swallowing it.
+	proxyServer, found := d.exactProxy(proxyID)
+	if !found {
+		err := proxy.ErrProxyNotFound
 		detail := ""
 		if d.startupErrorStore != nil {
 			for _, e := range d.startupErrorStore.Query(StartupLogFilter{ProcessID: proxyID, Level: "error", Limit: 5}) {
@@ -154,6 +162,9 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 		"url":         proxyServer.URL(),
 		"target_url":  proxyServer.TargetURL.String(),
 		"status":      "running",
+	}
+	if alreadyRunning {
+		resp["already_running"] = true
 	}
 	if proxyServer.BindAddress != "" {
 		resp["bind_address"] = proxyServer.BindAddress

@@ -252,8 +252,9 @@ func (d *Daemon) handleExplicitStart(event ProxyEvent) {
 		return
 	}
 
-	// Check if already exists
-	if _, err := d.proxym.Get(event.ProxyID); err == nil {
+	// Check if already exists — by exact id. A fuzzy Get would let a short id
+	// ("dev") match another project's compound id and skip this start.
+	if _, ok := d.exactProxy(event.ProxyID); ok {
 		debug.Log("daemon", "Proxy %s already exists, skipping", event.ProxyID)
 		return
 	}
@@ -359,6 +360,18 @@ func (d *Daemon) handleExplicitStart(event ProxyEvent) {
 	}
 
 	debug.Log("daemon", "Created explicit proxy %s targeting %s", event.ProxyID, targetURL)
+}
+
+// exactProxy returns the proxy registered under exactly id. ProxyManager.Get
+// also resolves a single component of a compound id ("dev" finds
+// "myapp-1a2b:dev:localhost-3000", in any project), which suits a caller
+// naming a proxy to act on but is wrong for "does this id exist".
+func (d *Daemon) exactProxy(id string) (*proxy.ProxyServer, bool) {
+	p, err := d.proxym.Get(id)
+	if err != nil || p == nil || p.ID != id {
+		return nil, false
+	}
+	return p, true
 }
 
 // handleFallbackPortCheck handles delayed fallback-port checks for script-linked
