@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/hookrules"
@@ -455,10 +456,7 @@ func (d *Daemon) broadcastStopToast(ev HookEvent) {
 		return
 	}
 
-	message := payload.LastAssistantMsg
-	if len(message) > 200 {
-		message = message[:197] + "..."
-	}
+	message := truncateHookText(payload.LastAssistantMsg, 200)
 	if message == "" {
 		message = "completed"
 	}
@@ -496,9 +494,7 @@ func (d *Daemon) broadcastStopFailureToast(ev HookEvent) {
 	} else {
 		message = "API error: " + payload.Error
 	}
-	if len(message) > 300 {
-		message = message[:297] + "..."
-	}
+	message = truncateHookText(message, 300)
 
 	d.toastProjectProxies(ev.ProjectPath, "error", "Claude Error", message, 0)
 }
@@ -613,12 +609,28 @@ func buildBashRedirectMessage(d *hookrules.Decision) string {
 		sb.WriteString(" — ")
 		sb.WriteString(d.Reason)
 	}
-	const maxLen = 300
-	out := sb.String()
-	if len(out) > maxLen {
-		out = out[:maxLen-3] + "..."
+	return truncateHookText(sb.String(), 300)
+}
+
+// truncateHookText caps hook-derived display text at maxRunes runes, ending a
+// clipped string with "...". It cuts on rune boundaries: a byte cut could split
+// a multi-byte character and put invalid UTF-8 in the toast.
+func truncateHookText(s string, maxRunes int) string {
+	if utf8.RuneCountInString(s) <= maxRunes {
+		return s
 	}
-	return out
+	keep := maxRunes - 3
+	if keep < 0 {
+		keep = 0
+	}
+	n := 0
+	for i := range s {
+		if n == keep {
+			return s[:i] + "..."
+		}
+		n++
+	}
+	return s + "..."
 }
 
 // toolEventHookPayload mirrors the Claude Code PreToolUse/PostToolUse JSON
@@ -671,9 +683,7 @@ func buildToolEvent(event string, payload []byte) (name, action, detail string, 
 	if detail == "" {
 		detail = toolInputDetail(p.ToolInput)
 	}
-	if len(detail) > toolEventDetailMax {
-		detail = detail[:toolEventDetailMax-3] + "..."
-	}
+	detail = truncateHookText(detail, toolEventDetailMax)
 	return name, action, detail, true
 }
 
