@@ -501,6 +501,33 @@ func TestStripANSI(t *testing.T) {
 			input:    "",
 			expected: "",
 		},
+		// A CSI ends at any final byte 0x40-0x7E, not only a letter: the
+		// text after a "~"-terminated sequence must survive.
+		{
+			name:     "CSI with tilde final byte",
+			input:    "\x1b[2~Text",
+			expected: "Text",
+		},
+		{
+			name:     "Bracketed paste markers",
+			input:    "\x1b[200~pasted\x1b[201~ after",
+			expected: "pasted after",
+		},
+		{
+			name:     "OSC 8 hyperlink with ST",
+			input:    "\x1b]8;;http://example.com\x1b\\link\x1b]8;;\x1b\\ text",
+			expected: "link text",
+		},
+		{
+			name:     "Two-byte escape with digit final",
+			input:    "\x1b7Saved\x1b8",
+			expected: "Saved",
+		},
+		{
+			name:     "Charset designation",
+			input:    "\x1b(BText",
+			expected: "Text",
+		},
 	}
 
 	for _, tt := range tests {

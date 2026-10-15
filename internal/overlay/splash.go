@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 // Default splash messages shown while the child process is starting.
@@ -183,8 +184,10 @@ func (s *StartupSplash) render(msg string) {
 	if maxLen < 10 {
 		maxLen = 10
 	}
-	if len(msg) > maxLen {
-		msg = msg[:maxLen-1] + "..."
+	// Count and cut runes, not bytes: a byte cut splits multibyte glyphs
+	// such as the "←/→" in the panel tip and writes invalid UTF-8.
+	if utf8.RuneCountInString(msg) > maxLen {
+		msg = TruncateRunes(msg, maxLen-3, "...")
 	}
 
 	if s.yieldTo != nil && s.yieldTo() {

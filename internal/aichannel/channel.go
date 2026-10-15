@@ -415,53 +415,75 @@ func (c *Channel) SendAndParse(ctx context.Context, prompt string, inputContext 
 	return resp, nil
 }
 
-// stripANSI removes ANSI escape sequences from a string.
+// stripANSI removes terminal escape sequences and carriage returns from s.
 func stripANSI(s string) string {
 	var result strings.Builder
-	inEscape := false
-	for i := 0; i < len(s); i++ {
-		if s[i] == '\x1b' {
-			inEscape = true
-			continue
+	result.Grow(len(s))
+	for i := 0; i < len(s); {
+		switch s[i] {
+		case '\x1b':
+			i = SkipEscape(s, i)
+		case '\r': // terminal line endings
+			i++
+		default:
+			result.WriteByte(s[i])
+			i++
 		}
-		if inEscape {
-			// Check for CSI sequences (ESC [)
-			if s[i] == '[' {
-				// Skip until we hit a letter (the command byte)
-				for i++; i < len(s); i++ {
-					if (s[i] >= 'A' && s[i] <= 'Z') || (s[i] >= 'a' && s[i] <= 'z') {
-						break
-					}
-				}
-				inEscape = false
-				continue
-			}
-			// Check for OSC sequences (ESC ])
-			if s[i] == ']' {
-				// Skip until BEL or ST
-				for i++; i < len(s); i++ {
-					if s[i] == '\x07' { // BEL
-						break
-					}
-					if s[i] == '\x1b' && i+1 < len(s) && s[i+1] == '\\' { // ST
-						i++
-						break
-					}
-				}
-				inEscape = false
-				continue
-			}
-			// Single character escape
-			inEscape = false
-			continue
-		}
-		// Skip carriage returns (terminal line endings)
-		if s[i] == '\r' {
-			continue
-		}
-		result.WriteByte(s[i])
 	}
 	return result.String()
+}
+
+// SkipEscape returns the index just past the escape sequence that starts with
+// the ESC at s[i], following ECMA-48:
+//
+//   - CSI (ESC [): parameter and intermediate bytes up to a final byte
+//     0x40-0x7E — "~" and "@" end a sequence as much as a letter does.
+//   - OSC, DCS, SOS, PM, APC (ESC ] P X ^ _): a string up to BEL or ST
+//     (ESC \), so a window title or hyperlink target is skipped whole.
+//   - Any other escape: intermediate bytes 0x20-0x2F, then one final byte
+//     0x30-0x7E (ESC 7, ESC =, ESC ( B).
+//
+// A sequence with no terminator is skipped to the end of s, so its tail is
+// never read as text. An ESC inside a sequence aborts it (as a terminal
+// does) and the returned index points at that ESC. Shared with the overlay's
+// line cleaner so both parse escapes the same way.
+func SkipEscape(s string, i int) int {
+	i++ // the ESC
+	if i >= len(s) {
+		return i
+	}
+	switch s[i] {
+	case '[':
+		for i++; i < len(s); i++ {
+			switch c := s[i]; {
+			case c == '\x1b':
+				return i
+			case c >= 0x40 && c <= 0x7e:
+				return i + 1
+			}
+		}
+		return i
+	case ']', 'P', 'X', '^', '_':
+		for i++; i < len(s); i++ {
+			if s[i] == '\a' {
+				return i + 1
+			}
+			if s[i] == '\x1b' {
+				if i+1 < len(s) && s[i+1] == '\\' {
+					return i + 2
+				}
+				return i
+			}
+		}
+		return i
+	}
+	for i < len(s) && s[i] >= 0x20 && s[i] <= 0x2f {
+		i++
+	}
+	if i < len(s) && s[i] >= 0x30 && s[i] <= 0x7e {
+		i++
+	}
+	return i
 }
 
 // buildArgs constructs the command arguments based on configuration.

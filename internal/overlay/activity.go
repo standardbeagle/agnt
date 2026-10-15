@@ -10,6 +10,8 @@ import (
 	"unicode"
 
 	"github.com/standardbeagle/vt10x"
+
+	"github.com/standardbeagle/agnt/internal/aichannel"
 )
 
 // ActivityState represents the current activity state.
@@ -333,26 +335,19 @@ func (am *ActivityMonitor) cleanLine(line string) string {
 	// Remove trailing newline/carriage return
 	line = strings.TrimRight(line, "\r\n")
 
-	// Remove ANSI escape sequences (simple pattern)
+	// Remove escape sequences whole (an OSC title or hyperlink target is
+	// skipped up to its terminator, a CSI up to its final byte), then the
+	// remaining control characters.
 	result := make([]byte, 0, len(line))
-	inEscape := false
-	for i := 0; i < len(line); i++ {
+	for i := 0; i < len(line); {
 		if line[i] == '\x1b' {
-			inEscape = true
+			i = aichannel.SkipEscape(line, i)
 			continue
 		}
-		if inEscape {
-			// End of escape sequence at letter
-			if (line[i] >= 'A' && line[i] <= 'Z') || (line[i] >= 'a' && line[i] <= 'z') {
-				inEscape = false
-			}
-			continue
+		if line[i] >= 32 || line[i] == '\t' {
+			result = append(result, line[i])
 		}
-		// Skip other control characters
-		if line[i] < 32 && line[i] != '\t' {
-			continue
-		}
-		result = append(result, line[i])
+		i++
 	}
 
 	cleaned := strings.TrimSpace(string(result))
