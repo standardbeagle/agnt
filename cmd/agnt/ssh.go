@@ -164,6 +164,25 @@ func runSSH(cmd *cobra.Command, args []string) error {
 // connect, every ProxyJump hop, key exchange and authentication.
 const sshReconnectDialTimeout = 45 * time.Second
 
+// sshTransportProbeTimeout bounds the liveness probe sent when a relay ends
+// without keepalive having declared the transport dead.
+const sshTransportProbeTimeout = 5 * time.Second
+
+// sshRelayEndedByTransportLoss decides why a relay iteration ended. A local
+// cancellation is a clean stop. Otherwise the session channel closed on its
+// own, which is either the remote session exiting or a hard drop (RST, sshd
+// restart) that closed every channel before keepalive noticed; the client
+// probes the transport to tell them apart.
+func sshRelayEndedByTransportLoss(ctx context.Context, client *sshclient.Client) bool {
+	if isClosedChan(client.Dead()) {
+		return true
+	}
+	if ctx.Err() != nil {
+		return false
+	}
+	return client.TransportLost(sshTransportProbeTimeout)
+}
+
 func localSSHUser(getenv func(string) string) string {
 	if user := getenv("USER"); user != "" {
 		return user
@@ -173,9 +192,10 @@ func localSSHUser(getenv func(string) string) string {
 
 // runSSHRelayLoop owns the CONNECTED<->RECONNECTING cycle (task 09c). Each
 // iteration: relay bytes until either the local ctx is cancelled (clean
-// end) or client.Dead() fires (transport confirmed dead, task 04b's bounded
-// keepalive probe — this function never re-implements that detection, only
-// consumes the channel). On a confirmed-dead transport it tears down the
+// end), client.Dead() fires (transport confirmed dead, task 04b's bounded
+// keepalive probe), or the session channel closes on its own, in which case
+// sshRelayEndedByTransportLoss asks the client whether the transport went
+// with it (a hard drop). On a confirmed-dead transport it tears down the
 // old client/forwards and drives sshclient.Reconnector.Run to get a fresh
 // client+session attached to the SAME named remote session, then resumes
 // relaying. A single InputPump owns the real stdin for the whole loop so
@@ -230,8 +250,7 @@ func runSSHRelayLoop(ctx context.Context, host, remotePath, attachName string, c
 		pr.Close()
 		session.Close()
 
-		transportDead := isClosedChan(client.Dead())
-		if !transportDead {
+		if !sshRelayEndedByTransportLoss(ctx, client) {
 			control.Stop()
 			forwarding.Stop()
 			client.Close()
@@ -241,7 +260,7 @@ func runSSHRelayLoop(ctx context.Context, host, remotePath, attachName string, c
 			return nil
 		}
 
-		fmt.Fprintln(os.Stderr, "\nagnt ssh: connection lost (keepalive timeout)")
+		fmt.Fprintln(os.Stderr, "\nagnt ssh: connection lost")
 		if forwarding.status != nil {
 			forwarding.status.Disconnected()
 			forwarding.renderStatus()

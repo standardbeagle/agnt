@@ -32,6 +32,9 @@ type Client struct {
 	// closes clients in several places) is a no-op instead of a
 	// close-of-closed-channel panic.
 	closeOnce sync.Once
+	// deadOnce guards dead: the keepalive goroutine and TransportLost can
+	// both decide the transport is gone.
+	deadOnce sync.Once
 }
 
 // Dial is DialContext with a background context.
@@ -319,9 +322,10 @@ func (c *Client) Close() error {
 
 // Dead returns a channel that is closed when the keepalive detector
 // determines the transport is no longer responsive (3 consecutive
-// unanswered keepalives, ~45s). Reconnect logic itself belongs to a later
-// task; this channel is the hook that task uses to learn the transport
-// died.
+// unanswered keepalives, ~45s), or when TransportLost finds it gone. A hard
+// drop ends session channels with a plain EOF before keepalive notices, so a
+// caller whose relay ended on its own must ask TransportLost, not just
+// check this channel.
 func (c *Client) Dead() <-chan struct{} {
 	return c.dead
 }
@@ -391,10 +395,26 @@ func (c *Client) sendKeepaliveRequest(timeout time.Duration) error {
 var errKeepaliveTimeout = fmt.Errorf("sshclient: keepalive request timed out")
 
 func closeDeadOnce(c *Client) {
+	c.deadOnce.Do(func() { close(c.dead) })
+}
+
+// TransportLost reports whether the transport under c is gone. Callers ask
+// it when a session channel ended on its own: a hard drop (RST, sshd
+// restart) closes every channel at once, so a relay sees a plain EOF tens of
+// seconds before keepalive would fire Dead(), and that EOF looks exactly like
+// the remote session exiting. An already-fired Dead() answers true; otherwise
+// one keepalive request bounded by timeout decides, and a closed transport
+// fails it at once. A lost transport also fires Dead() and closes c.SSH.
+func (c *Client) TransportLost(timeout time.Duration) bool {
 	select {
 	case <-c.dead:
-		// already closed
+		return true
 	default:
-		close(c.dead)
 	}
+	if c.sendKeepaliveRequest(timeout) == nil {
+		return false
+	}
+	closeDeadOnce(c)
+	c.SSH.Close()
+	return true
 }

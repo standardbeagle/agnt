@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/user"
 	"path/filepath"
@@ -382,5 +383,111 @@ func TestReconnectHarness_SSHDFreezeBlocksResponses(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("SendRequest did not complete after Resume(); sshd did not come back")
+	}
+}
+
+// dialHardCloseHarness dials h and wraps the connection in a Client whose
+// keepalive is never started, so nothing but TransportLost can fire Dead().
+func dialHardCloseHarness(t *testing.T, h *HardCloseHarness) *Client {
+	t.Helper()
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "id_test")
+	privPEM, _ := generateClientKey(t)
+	if err := os.WriteFile(keyPath, privPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	prompter := Prompter{In: strings.NewReader("yes\n"), Out: &discardWriter{}}
+	hkCallback, err := HostKeyCallback(filepath.Join(dir, "known_hosts"), prompter)
+	if err != nil {
+		t.Fatalf("HostKeyCallback: %v", err)
+	}
+	sshClient, err := ssh.Dial("tcp", h.Addr(), &ssh.ClientConfig{
+		User:            "tester",
+		Auth:            BuildAuthMethods([]string{keyPath}, prompter),
+		HostKeyCallback: hkCallback,
+	})
+	if err != nil {
+		t.Fatalf("dialing harness: %v", err)
+	}
+	c := &Client{SSH: sshClient, stopKeepalive: make(chan struct{}), dead: make(chan struct{})}
+	t.Cleanup(func() { _ = c.Close() })
+	return c
+}
+
+// A hard drop ends an open session channel with a plain EOF, exactly like a
+// remote exit, long before keepalive would notice. TransportLost must tell
+// the two apart so agnt ssh reconnects instead of exiting.
+func TestTransportLost_HardDropDetectedBeforeKeepalive(t *testing.T) {
+	harness := NewHardCloseHarness(t)
+	c := dialHardCloseHarness(t, harness)
+	channel, reqs, err := c.SSH.OpenChannel("session", nil)
+	if err != nil {
+		t.Fatalf("OpenChannel: %v", err)
+	}
+	go ssh.DiscardRequests(reqs)
+
+	harness.Drop()
+
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := channel.Read(make([]byte, 1))
+		readDone <- err
+	}()
+	select {
+	case err := <-readDone:
+		if !errors.Is(err, io.EOF) {
+			t.Fatalf("channel read after drop = %v, want io.EOF (the case that looks like a remote exit)", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("channel read did not end after the drop")
+	}
+	select {
+	case <-c.Dead():
+		t.Fatal("Dead() already fired; the test no longer models the keepalive gap")
+	default:
+	}
+
+	if !c.TransportLost(2 * time.Second) {
+		t.Fatal("TransportLost = false after a hard drop; agnt ssh would exit instead of reconnecting")
+	}
+	select {
+	case <-c.Dead():
+	default:
+		t.Fatal("TransportLost found the transport gone but did not fire Dead()")
+	}
+}
+
+func TestTransportLost_FalseWhileTransportHealthy(t *testing.T) {
+	fixture := newFixtureServer(t)
+	stop := fixture.serve(t)
+	defer stop()
+
+	dir := t.TempDir()
+	keyPath := filepath.Join(dir, "id_test")
+	privPEM, _ := generateClientKey(t)
+	os.WriteFile(keyPath, privPEM, 0o600)
+	prompter := Prompter{In: strings.NewReader("yes\n"), Out: &discardWriter{}}
+	hkCallback, err := HostKeyCallback(filepath.Join(dir, "known_hosts"), prompter)
+	if err != nil {
+		t.Fatalf("HostKeyCallback: %v", err)
+	}
+	sshClient, err := ssh.Dial("tcp", fixture.addr, &ssh.ClientConfig{
+		User:            "tester",
+		Auth:            BuildAuthMethods([]string{keyPath}, prompter),
+		HostKeyCallback: hkCallback,
+	})
+	if err != nil {
+		t.Fatalf("dialing fixture: %v", err)
+	}
+	c := &Client{SSH: sshClient, stopKeepalive: make(chan struct{}), dead: make(chan struct{})}
+	defer c.Close()
+
+	if c.TransportLost(2 * time.Second) {
+		t.Fatal("TransportLost = true on a healthy transport; a remote exit would be treated as a drop")
+	}
+	select {
+	case <-c.Dead():
+		t.Fatal("Dead() fired on a healthy transport")
+	default:
 	}
 }
