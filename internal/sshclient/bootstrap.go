@@ -129,11 +129,11 @@ func InstallRemoteBinary(client *ssh.Client, opts BootstrapOptions, decision Boo
 		return UploadFile(client, f, decision.FinalPath, 0o755)
 
 	case SourceGoInstall:
-		return remoteGoInstall(client, decision.FinalPath)
+		return remoteGoInstall(client, opts.LocalVersion, decision.FinalPath)
 
 	default: // SourceReleaseDownload
 		url := ReleaseDownloadURL(opts.GitHubRepo, opts.LocalVersion, decision.RemoteGOOS, decision.RemoteGOARCH)
-		return remoteDownloadInstall(client, url, decision.FinalPath)
+		return remoteDownloadInstall(client, url, opts.LocalVersion, decision.FinalPath)
 	}
 }
 
@@ -146,54 +146,134 @@ func ReleaseDownloadURL(repo, version, goos, goarch string) string {
 		repo, strings.TrimPrefix(version, "v"), goos, goarch)
 }
 
-// remoteGoInstall runs 'go install .../cmd/agnt@latest' remote-side with
-// GOBIN pointed at finalPath's directory. Go's own install step already
-// writes to a temp file in GOBIN and renames (its build cache/output
-// discipline), so this does not duplicate UploadFile's manual
-// temp+sha256+rename dance — that atomicity is Go toolchain's job here, not
-// ours.
-func remoteGoInstall(client *ssh.Client, finalPath string) error {
-	session, err := client.NewSession()
-	if err != nil {
-		return fmt.Errorf("sshclient: opening go-install session: %w", err)
+// agntModule is the package path 'go install' builds remote-side.
+const agntModule = "github.com/standardbeagle/agnt/cmd/agnt"
+
+// releaseVersion returns version without its "v" prefix after checking it
+// is a release version that can be pinned: X.Y.Z with an optional
+// pre-release/build suffix of [0-9A-Za-z.-+] characters. A dev build's
+// version is refused rather than replaced by @latest.
+func releaseVersion(version string) (string, error) {
+	v := strings.TrimPrefix(version, "v")
+	if _, _, _, err := updater.ParseVersion(v); err != nil {
+		return "", fmt.Errorf("sshclient: client version %q is not a release version, so the remote install cannot be pinned to it: %w", version, err)
 	}
-	defer session.Close()
+	for _, r := range v {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r == '.' || r == '-' || r == '+') {
+			return "", fmt.Errorf("sshclient: client version %q contains %q, not a release version", version, r)
+		}
+	}
+	return v, nil
+}
 
-	var stderr bytes.Buffer
-	session.Stderr = &stderr
+// remoteGoInstall builds this client's exact version remote-side with
+// 'go install <module>@v<version>' (never @latest: the remote must run the
+// version the client was released with, and a pinned module version is what
+// the Go checksum database authenticates). The binary is built into a
+// staging GOBIN beside finalPath, its reported version is checked, and only
+// then is it renamed onto finalPath (lessons-ssh-transport.md §6: verify
+// before rename-to-activate).
+func remoteGoInstall(client *ssh.Client, version, finalPath string) error {
+	want, err := releaseVersion(version)
+	if err != nil {
+		return err
+	}
+	stageDir := fmt.Sprintf("%s.goinstall.%d", finalPath, time.Now().UnixNano())
+	staged := path.Join(stageDir, "agnt")
 
-	dir := path.Dir(finalPath)
-	cmd := fmt.Sprintf("mkdir -p %s && GOBIN=%s go install github.com/standardbeagle/agnt/cmd/agnt@latest",
-		platform.ShellQuote(dir), platform.ShellQuote(dir))
-	if err := session.Run(cmd); err != nil {
-		return fmt.Errorf("sshclient: remote go install failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+	cmd := fmt.Sprintf("mkdir -p %s && GOBIN=%s go install %s",
+		platform.ShellQuote(stageDir), platform.ShellQuote(stageDir), platform.ShellQuote(agntModule+"@v"+want))
+	if err := runRemote(client, cmd); err != nil {
+		cleanupRemoteDir(client, stageDir)
+		return fmt.Errorf("sshclient: remote go install failed: %w", err)
+	}
+	if err := verifyRemoteBinaryVersion(client, staged, want); err != nil {
+		cleanupRemoteDir(client, stageDir)
+		return err
+	}
+	if err := runRemote(client, fmt.Sprintf("mv %s %s && rmdir %s",
+		platform.ShellQuote(staged), platform.ShellQuote(finalPath), platform.ShellQuote(stageDir))); err != nil {
+		cleanupRemoteDir(client, stageDir)
+		return fmt.Errorf("sshclient: activating go-installed binary: %w", err)
 	}
 	return nil
 }
 
-// remoteDownloadInstall downloads url to a temp name via curl and only then
-// chmod+renames onto finalPath, remote-side, in a single shell invocation —
-// same avoid-partial-writes discipline as UploadFile, just curl-driven
-// instead of exec-channel-piped since the bytes are already on GitHub, not
-// local to this process.
-func remoteDownloadInstall(client *ssh.Client, url, finalPath string) error {
+// remoteDownloadInstall downloads url to a temp name via curl, checks the
+// downloaded binary reports the client's version, and only then renames it
+// onto finalPath, remote-side.
+//
+// Integrity gap: the release workflow publishes no checksums, so the bytes
+// are trusted on GitHub's TLS alone, as install.sh trusts them. The version
+// check catches a wrong or stale asset, not a tampered one. See
+// lessons-ssh-transport.md §6.
+func remoteDownloadInstall(client *ssh.Client, url, version, finalPath string) error {
+	want, err := releaseVersion(version)
+	if err != nil {
+		return err
+	}
 	tmpPath := fmt.Sprintf("%s.download.%d", finalPath, time.Now().UnixNano())
 	dir := path.Dir(finalPath)
 
-	session, err := client.NewSession()
-	if err != nil {
-		return fmt.Errorf("sshclient: opening download-install session: %w", err)
-	}
-	defer session.Close()
-
-	var stderr bytes.Buffer
-	session.Stderr = &stderr
-
-	cmd := fmt.Sprintf("mkdir -p %s && curl -fsSL %s -o %s && chmod 755 %s && mv %s %s",
-		platform.ShellQuote(dir), platform.ShellQuote(url), platform.ShellQuote(tmpPath), platform.ShellQuote(tmpPath), platform.ShellQuote(tmpPath), platform.ShellQuote(finalPath))
-	if err := session.Run(cmd); err != nil {
+	cmd := fmt.Sprintf("mkdir -p %s && curl -fsSL %s -o %s && chmod 755 %s",
+		platform.ShellQuote(dir), platform.ShellQuote(url), platform.ShellQuote(tmpPath), platform.ShellQuote(tmpPath))
+	if err := runRemote(client, cmd); err != nil {
 		cleanupRemotePath(client, tmpPath)
-		return fmt.Errorf("sshclient: remote release download failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+		return fmt.Errorf("sshclient: remote release download failed: %w", err)
+	}
+	if err := verifyRemoteBinaryVersion(client, tmpPath, want); err != nil {
+		cleanupRemotePath(client, tmpPath)
+		return err
+	}
+	if err := runRemote(client, fmt.Sprintf("mv %s %s", platform.ShellQuote(tmpPath), platform.ShellQuote(finalPath))); err != nil {
+		cleanupRemotePath(client, tmpPath)
+		return fmt.Errorf("sshclient: activating downloaded binary: %w", err)
 	}
 	return nil
+}
+
+// verifyRemoteBinaryVersion runs '<binPath> --version' remote-side and
+// requires it to report exactly want.
+func verifyRemoteBinaryVersion(client *ssh.Client, binPath, want string) error {
+	session, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("sshclient: opening version-verify session: %w", err)
+	}
+	defer session.Close()
+	var stdout, stderr bytes.Buffer
+	session.Stdout = &stdout
+	session.Stderr = &stderr
+	if err := session.Run(platform.ShellQuote(binPath) + " --version"); err != nil {
+		return fmt.Errorf("sshclient: installed binary %s did not run: %w (stderr: %s)", binPath, err, strings.TrimSpace(stderr.String()))
+	}
+	got, err := parseAgntVersionOutput(stdout.String())
+	if err != nil {
+		return err
+	}
+	if got != want {
+		return fmt.Errorf("sshclient: installed binary reports version %s, want %s — not activated", got, want)
+	}
+	return nil
+}
+
+// runRemote runs cmd on a fresh session, folding stderr into the error.
+func runRemote(client *ssh.Client, cmd string) error {
+	session, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("opening session: %w", err)
+	}
+	defer session.Close()
+	var stderr bytes.Buffer
+	session.Stderr = &stderr
+	if err := session.Run(cmd); err != nil {
+		return fmt.Errorf("%w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
+// cleanupRemoteDir best-effort removes a staging directory after a failed
+// install; like cleanupRemotePath, the invariant is only that finalPath was
+// never replaced.
+func cleanupRemoteDir(client *ssh.Client, dir string) {
+	_ = runRemote(client, "rm -rf "+platform.ShellQuote(dir))
 }

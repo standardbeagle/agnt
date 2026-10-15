@@ -33,6 +33,8 @@ A `pass_with_changes` verdict's `new_acceptance_criteria` are follow-up debt for
 
 The integrity check gates the rename. Verifying after activation is too late. `UploadFile` (§5) is the reference.
 
+The other two bootstrap sources (`bootstrap.go`) stage, check that the binary reports the client's exact version, then rename. `remoteGoInstall` pins `@v<client version>`, never `@latest`, so the Go checksum database authenticates the module. `remoteDownloadInstall` has no integrity check: the release workflow publishes no checksums, and the version check catches a wrong asset, not a tampered one. That gap is open. Closing it: `release.yml` publishes a `SHA256SUMS` asset; the client fetches it locally over TLS, and the remote compares the downloaded temp file's digest (`remoteSHA256Command`) before the rename, failing closed when the release has no `SHA256SUMS`.
+
 `cmd/agnt/upgrade.go` does **not** follow this order and must not be cited as an example: for a direct install it pipes `install.sh` from the `main` branch into `bash` with no integrity check, and its only "verify" step reads the new binary's version after it is already active. That gap is open.
 
 ## 7. Non-interactive install needs explicit consent

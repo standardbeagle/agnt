@@ -9,7 +9,7 @@ const (
 	// the remote is the same GOOS/GOARCH, since a binary built for one
 	// platform/architecture can't run on a mismatched one.
 	SourceLocalCopy Source = iota
-	// SourceGoInstall runs 'go install .../cmd/agnt@latest' on the remote,
+	// SourceGoInstall runs 'go install .../cmd/agnt@v<client version>' on the remote,
 	// when it already has a Go toolchain — avoids a network binary
 	// download and always matches the remote's own arch by construction.
 	SourceGoInstall
