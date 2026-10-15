@@ -731,11 +731,10 @@ func (d *Daemon) hubHandleSessionTasks(conn *hubpkg.Connection, cmd *hubproto.Co
 // SESSION FIND <directory>
 
 func (d *Daemon) hubHandleSessionFind(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	if len(cmd.Args) < 1 {
+	directory, err := commandPath(cmd)
+	if err != nil || directory == "" {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "SESSION FIND requires: <directory>")
 	}
-
-	directory := cmd.Args[0]
 
 	session, found := d.sessionRegistry.FindByDirectory(directory)
 	if !found {
@@ -750,11 +749,10 @@ func (d *Daemon) hubHandleSessionFind(conn *hubpkg.Connection, cmd *hubproto.Com
 // SESSION ATTACH <directory>
 
 func (d *Daemon) hubHandleSessionAttach(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	if len(cmd.Args) < 1 {
+	directory, err := commandPath(cmd)
+	if err != nil || directory == "" {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "SESSION ATTACH requires: <directory>")
 	}
-
-	directory := cmd.Args[0]
 
 	session, found := d.sessionRegistry.FindByDirectory(directory)
 	if !found {

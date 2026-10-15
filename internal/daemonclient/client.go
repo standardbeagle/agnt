@@ -761,14 +761,23 @@ func (c *Client) SessionGenerateCode(command string) (string, error) {
 	return fmt.Sprintf("%s-%s", command, hex.EncodeToString(suffix[:])), nil
 }
 
+// pathRequest builds a request for a command that takes a project path. The
+// path travels in the JSON payload, which the daemon reads first, and also as
+// the positional argument when the wire format can carry it: a path with a
+// space cannot be an argument, and sending it as one failed client-side.
+func (c *Client) pathRequest(verb, subVerb, path string) *client.RequestBuilder {
+	args := append([]string{subVerb}, protocol.PathArgs(path)...)
+	return c.conn.Request(verb, args...).WithJSON(protocol.PathPayload{Directory: path})
+}
+
 // SessionFind finds a session by directory ancestry.
 func (c *Client) SessionFind(directory string) (map[string]interface{}, error) {
-	return c.conn.Request(protocol.VerbSession, protocol.SubVerbFind, directory).JSON()
+	return c.pathRequest(protocol.VerbSession, protocol.SubVerbFind, directory).JSON()
 }
 
 // SessionAttach attaches to a session found by directory ancestry.
 func (c *Client) SessionAttach(directory string) (map[string]interface{}, error) {
-	return c.conn.Request(protocol.VerbSession, protocol.SubVerbAttach, directory).JSON()
+	return c.pathRequest(protocol.VerbSession, protocol.SubVerbAttach, directory).JSON()
 }
 
 // SessionURL reports a detected URL from an agnt run session.
@@ -1241,12 +1250,12 @@ func (c *Client) ScriptStop(name, projectPath string) (map[string]interface{}, e
 
 // AutostartClearPorts kills port blockers and resumes autostart for a project.
 func (c *Client) AutostartClearPorts(projectPath string) (map[string]interface{}, error) {
-	return c.conn.Request(protocol.VerbAutostart, protocol.SubVerbClearPorts, projectPath).JSON()
+	return c.pathRequest(protocol.VerbAutostart, protocol.SubVerbClearPorts, projectPath).JSON()
 }
 
 // AutostartContinue resumes autostart without killing port blockers.
 func (c *Client) AutostartContinue(projectPath string) (map[string]interface{}, error) {
-	return c.conn.Request(protocol.VerbAutostart, protocol.SubVerbContinue, projectPath).JSON()
+	return c.pathRequest(protocol.VerbAutostart, protocol.SubVerbContinue, projectPath).JSON()
 }
 
 // AutostartRun triggers a non-interactive autostart run for a project path.
@@ -1264,7 +1273,7 @@ func (c *Client) AutostartRun(projectPath string) (map[string]interface{}, error
 // scripts (start added, stop removed, restart changed) without a daemon or
 // session restart. Returns the reconcile plan the daemon executed.
 func (c *Client) AutostartReconcile(projectPath string) (map[string]interface{}, error) {
-	return c.conn.Request(protocol.VerbAutostart, protocol.SubVerbReconcile, projectPath).JSON()
+	return c.pathRequest(protocol.VerbAutostart, protocol.SubVerbReconcile, projectPath).JSON()
 }
 
 // HookSend enqueues a Claude Code hook event in the daemon's ring buffer and

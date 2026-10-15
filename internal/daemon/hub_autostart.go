@@ -40,10 +40,11 @@ func (d *Daemon) hubHandleAutostart(ctx context.Context, conn *hubpkg.Connection
 // without a daemon or session restart. This is what lets first-run setup (and
 // hand edits) take effect in place rather than via a relaunch.
 func (d *Daemon) hubHandleAutostartReconcile(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	if len(cmd.Args) < 1 {
+	projectPath, err := commandPath(cmd)
+	if err != nil || projectPath == "" {
 		return conn.WriteErr(hubproto.ErrMissingParam, "project path required")
 	}
-	plan, err := d.ReconcileProjectConfig(ctx, cmd.Args[0])
+	plan, err := d.ReconcileProjectConfig(ctx, projectPath)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("reconcile failed: %v", err))
 	}
@@ -63,10 +64,11 @@ func (d *Daemon) hubHandleAutostartReconcile(ctx context.Context, conn *hubpkg.C
 // Kills processes blocking declared ports, then resumes the pending autostart.
 
 func (d *Daemon) hubHandleAutostartClearPorts(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	if len(cmd.Args) < 1 {
+	rawPath, err := commandPath(cmd)
+	if err != nil || rawPath == "" {
 		return conn.WriteErr(hubproto.ErrMissingParam, "project path required")
 	}
-	projectPath := normalizePath(cmd.Args[0])
+	projectPath := normalizePath(rawPath)
 
 	val, ok := d.pendingAutostarts.Load(projectPath)
 	if !ok {
@@ -103,10 +105,11 @@ func (d *Daemon) hubHandleAutostartClearPorts(ctx context.Context, conn *hubpkg.
 // Resumes the pending autostart without killing port blockers.
 
 func (d *Daemon) hubHandleAutostartContinue(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	if len(cmd.Args) < 1 {
+	rawPath, err := commandPath(cmd)
+	if err != nil || rawPath == "" {
 		return conn.WriteErr(hubproto.ErrMissingParam, "project path required")
 	}
-	projectPath := normalizePath(cmd.Args[0])
+	projectPath := normalizePath(rawPath)
 
 	// Log that user declined to kill blockers
 	if val, ok := d.pendingAutostarts.Load(projectPath); ok {

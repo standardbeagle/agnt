@@ -722,7 +722,8 @@ func (c *DaemonScriptController) StartTunnel(provider, proxyID string, localPort
 // ReconcileConfig asks the daemon to live-apply the current .agnt.kdl. Called
 // after an overlay-side config edit so the change lands without a restart.
 func (c *DaemonScriptController) ReconcileConfig() error {
-	_, err := c.conn.RequestJSON(protocol.VerbAutostart, map[string]interface{}{"directory": c.projectPath}, protocol.SubVerbReconcile, c.projectPath)
+	args := append([]string{protocol.SubVerbReconcile}, protocol.PathArgs(c.projectPath)...)
+	_, err := c.conn.RequestJSON(protocol.VerbAutostart, protocol.PathPayload{Directory: c.projectPath}, args...)
 	return err
 }
 

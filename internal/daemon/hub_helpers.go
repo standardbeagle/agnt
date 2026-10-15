@@ -42,6 +42,24 @@ func unmarshalCommand[T any](cmd *hubproto.Command) (T, error) {
 	return v, nil
 }
 
+// commandPath returns the project path a path-taking command names: the JSON
+// payload's "directory", else the first positional argument, else "". The
+// payload is the only carrier for a path the wire format cannot hold as an
+// argument, such as one containing a space (see protocol.PathArgs).
+func commandPath(cmd *hubproto.Command) (string, error) {
+	payload, err := unmarshalCommand[protocol.PathPayload](cmd)
+	if err != nil {
+		return "", err
+	}
+	if payload.Directory != "" {
+		return payload.Directory, nil
+	}
+	if len(cmd.Args) > 0 {
+		return cmd.Args[0], nil
+	}
+	return "", nil
+}
+
 // writeStructuredErr writes a structured error as an ERR frame whose message is
 // the error's JSON, and logs it for debugging.
 //
