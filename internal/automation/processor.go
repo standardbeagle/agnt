@@ -183,7 +183,21 @@ func (p *Processor) Process(ctx context.Context, task Task) (*Result, error) {
 			if m.Usage != nil {
 				result.Tokens = m.Usage.InputTokens + m.Usage.OutputTokens
 			}
+			if m.IsError {
+				detail := m.Result
+				if detail == "" {
+					detail = "no detail"
+				}
+				result.Error = fmt.Errorf("claude run ended in error after %d turn(s): %s", m.NumTurns, detail)
+			}
 		}
+	}
+
+	// A run that ended in error (over budget, out of turns, an API error) is
+	// a failed task, whatever text it produced before failing.
+	if result.Error != nil {
+		p.recordResult(result, false)
+		return result, nil
 	}
 
 	// Try to parse as JSON for structured output

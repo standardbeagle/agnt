@@ -185,6 +185,33 @@ func TestProcessQueryError(t *testing.T) {
 	assert.Equal(t, int64(0), s.TasksSucceeded)
 }
 
+// TestProcessResultIsError: a run whose ResultMessage carries is_error (over
+// budget, max turns, an API error) is a failed task, not a success, even when
+// an assistant message came before it. Its cost and tokens are still counted.
+func TestProcessResultIsError(t *testing.T) {
+	p, err := New(DefaultConfig())
+	require.NoError(t, err)
+
+	failed := resultMessage(0.011, 50, 10)
+	failed.IsError = true
+	failed.Result = "budget exceeded"
+	p.queryFn = fakeQuery([]claude.MessageType{assistantWithText("partial"), failed}, nil, nil, nil)
+
+	res, err := p.Process(context.Background(), NewSummarizeTask("x", nil))
+	require.NoError(t, err, "a failed run is surfaced via Result, not the Go error")
+	require.NotNil(t, res)
+
+	require.Error(t, res.Error, "an is_error result must not be reported as success")
+	assert.Contains(t, res.Error.Error(), "budget exceeded")
+	assert.Nil(t, res.Output, "no output from a failed run")
+	assert.InDelta(t, 0.011, res.Cost, 1e-9, "cost of the failed run still counted")
+
+	s := p.Stats()
+	assert.Equal(t, int64(1), s.TasksFailed, "failure counted")
+	assert.Equal(t, int64(0), s.TasksSucceeded)
+	assert.InDelta(t, 0.011, s.TotalCostUSD, 1e-9)
+}
+
 // TestProcessBatchOrdering asserts batch results land at their task index
 // regardless of completion order, lengths match, and an empty input yields an
 // empty (non-nil) result slice.
