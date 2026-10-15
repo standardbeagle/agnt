@@ -616,15 +616,26 @@ func (dt *DaemonTools) makeProxyLogHandler() func(context.Context, *mcp.CallTool
 	}
 }
 
-func (dt *DaemonTools) handleProxyLogQuery(input ProxyLogInput) (*mcp.CallToolResult, ProxyLogOutput, error) {
-	filter := protocol.LogQueryFilter{
+// defaultProxyLogQueryLimit is the documented default for proxylog query.
+const defaultProxyLogQueryLimit = 100
+
+// proxyLogQueryFilter builds the PROXYLOG QUERY filter for the query action.
+// The daemon treats Limit 0 as "no cap" and would return the whole ring buffer
+// (up to 1000 entries, bodies included), so the documented default is applied
+// here, where the pagination block reports it.
+func proxyLogQueryFilter(input ProxyLogInput) protocol.LogQueryFilter {
+	limit := input.Limit
+	if limit <= 0 {
+		limit = defaultProxyLogQueryLimit
+	}
+	return protocol.LogQueryFilter{
 		Types:            input.Types,
 		Methods:          input.Methods,
 		URLPattern:       input.URLPattern,
 		StatusCodes:      input.StatusCodes,
 		Since:            input.Since,
 		Until:            input.Until,
-		Limit:            input.Limit,
+		Limit:            limit,
 		ErrorsOnly:       input.ErrorsOnly,
 		DiagnosticLevels: input.DiagnosticLevels,
 		InteractionTypes: input.InteractionTypes,
@@ -633,17 +644,17 @@ func (dt *DaemonTools) handleProxyLogQuery(input ProxyLogInput) (*mcp.CallToolRe
 		MessagePattern:   input.MessagePattern,
 		MinDurationMs:    input.MinDurationMs,
 	}
+}
+
+func (dt *DaemonTools) handleProxyLogQuery(input ProxyLogInput) (*mcp.CallToolResult, ProxyLogOutput, error) {
+	filter := proxyLogQueryFilter(input)
 
 	entries, totalAvailable, dropped, err := dt.client.ProxyLogQueryFull(input.ProxyID, filter)
 	if err != nil {
 		return formatDaemonError(err, "proxylog"), ProxyLogOutput{}, nil
 	}
 
-	limit := input.Limit
-	if limit == 0 {
-		limit = 100
-	}
-	pag := NewPagination(len(entries), int(totalAvailable), limit, input.hasFilters())
+	pag := NewPagination(len(entries), int(totalAvailable), filter.Limit, input.hasFilters())
 	pag.Dropped = int(dropped)
 
 	// Honor `raw`: full JSON dumps when requested, terse one-line compact
