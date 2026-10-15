@@ -96,6 +96,27 @@ func TestStorage_DeleteBaseline_TraversalInName(t *testing.T) {
 	}
 }
 
+// A baseline name that resolves to the base directory itself must be refused:
+// `snapshot delete name:"."` used to RemoveAll every baseline.
+func TestStorage_DeleteBaseline_NameResolvingToBaseIsRefused(t *testing.T) {
+	for _, name := range []string{".", "", "x/..", "./"} {
+		t.Run(name, func(t *testing.T) {
+			tmpDir := t.TempDir()
+			store, err := NewStorage(tmpDir)
+			require.NoError(t, err)
+			require.NoError(t, store.SaveBaseline(&Baseline{Name: "keep"}))
+
+			assert.Error(t, store.DeleteBaseline(name), "a name resolving to the base dir must be refused")
+			_, err = store.LoadBaseline("keep")
+			assert.NoError(t, err, "other baselines must survive")
+
+			assert.Error(t, store.SaveBaseline(&Baseline{Name: name}), "save into the base dir itself must be refused")
+			_, statErr := os.Stat(filepath.Join(tmpDir, "metadata.json"))
+			assert.True(t, os.IsNotExist(statErr), "no metadata written into the base dir")
+		})
+	}
+}
+
 func TestStorage_SaveScreenshot_TraversalInFilename(t *testing.T) {
 	tmpDir := t.TempDir()
 	store, err := NewStorage(tmpDir)

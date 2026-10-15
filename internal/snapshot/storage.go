@@ -33,16 +33,29 @@ func NewStorage(basePath string) (*Storage, error) {
 	return &Storage{basePath: basePath}, nil
 }
 
-// containedPath resolves a path component relative to basePath and verifies
-// the result stays within basePath. Returns the resolved path or an error
-// if the path would escape.
+// containedPath resolves a baseline name (the first component) and an optional
+// file within it relative to basePath. Returns the resolved path or an error
+// if it would escape.
+//
+// The baseline name must resolve strictly below basePath: a name such as ".",
+// "" or "x/.." resolves to basePath itself, and DeleteBaseline would then
+// RemoveAll every baseline (and SaveBaseline write into the base directory).
 func (s *Storage) containedPath(components ...string) (string, error) {
-	joined := filepath.Join(append([]string{s.basePath}, components...)...)
-	resolved := filepath.Clean(joined)
-	// Ensure resolved path is within basePath (with trailing separator to
-	// avoid prefix-of-longer-name matches like /base matching /baseline).
-	base := filepath.Clean(s.basePath) + string(filepath.Separator)
-	if !strings.HasPrefix(resolved+string(filepath.Separator), base) && resolved != filepath.Clean(s.basePath) {
+	cleanBase := filepath.Clean(s.basePath)
+	within := func(p string) bool {
+		return strings.HasPrefix(p, cleanBase+string(filepath.Separator))
+	}
+	name := ""
+	if len(components) > 0 {
+		name = components[0]
+	}
+	if !within(filepath.Clean(filepath.Join(cleanBase, name))) {
+		return "", fmt.Errorf("baseline name %q does not name a directory inside the base directory", name)
+	}
+	resolved := filepath.Clean(filepath.Join(append([]string{cleanBase}, components...)...))
+	// The trailing separator avoids prefix-of-longer-name matches like /base
+	// matching /baseline.
+	if !within(resolved) {
 		return "", fmt.Errorf("path %q escapes base directory", filepath.Join(components...))
 	}
 	return resolved, nil
