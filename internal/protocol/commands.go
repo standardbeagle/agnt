@@ -890,8 +890,9 @@ type InboxStatsRecord struct {
 const (
 	// MaxInvestigationFindings caps Findings; appends evict the oldest (FIFO).
 	MaxInvestigationFindings = 32
-	// MaxInvestigationFailedAreas caps FailedAreas; merges set-union and keep
-	// the most recently named areas when the union exceeds the cap.
+	// MaxInvestigationFailedAreas caps FailedAreas; merges set-union (an area
+	// named again moves to the most-recent end) and keep the most recently
+	// named areas when the union exceeds the cap.
 	MaxInvestigationFailedAreas = 8
 )
 
@@ -984,13 +985,23 @@ func MergeInvestigation(cur *Investigation, patch InvestigationPatch, now time.T
 		next.Findings = next.Findings[overflow:]
 	}
 	if len(patch.FailedAreas) > 0 {
-		seen := make(map[string]bool, len(next.FailedAreas)+len(patch.FailedAreas))
-		for _, a := range next.FailedAreas {
-			seen[a] = true
-		}
+		// An area named again is refreshed, not kept at its old position:
+		// drop it from where it was and re-append it in patch order, so the
+		// cap below evicts areas nobody has named recently.
+		named := make(map[string]bool, len(patch.FailedAreas))
 		for _, a := range patch.FailedAreas {
-			if !seen[a] {
-				seen[a] = true
+			named[a] = true
+		}
+		kept := next.FailedAreas[:0]
+		for _, a := range next.FailedAreas {
+			if !named[a] {
+				kept = append(kept, a)
+			}
+		}
+		next.FailedAreas = kept
+		for _, a := range patch.FailedAreas {
+			if named[a] {
+				delete(named, a)
 				next.FailedAreas = append(next.FailedAreas, a)
 			}
 		}

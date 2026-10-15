@@ -98,3 +98,42 @@ func TestProtocolInvestigationCommandsRoundTrip(t *testing.T) {
 		t.Errorf("result mismatch: %+v", result)
 	}
 }
+
+// TestMergeInvestigation_RenamedFailedAreaIsRefreshed pins that naming an
+// area again moves it to the most-recent end, so a cap overflow in the same
+// merge evicts genuinely older areas instead of the one just re-reported.
+func TestMergeInvestigation_RenamedFailedAreaIsRefreshed(t *testing.T) {
+	now := time.Date(2026, 10, 15, 12, 0, 0, 0, time.UTC)
+	var initial []string
+	for i := 0; i < MaxInvestigationFailedAreas; i++ {
+		initial = append(initial, string(rune('a'+i)))
+	}
+	cur := MergeInvestigation(nil, InvestigationPatch{FailedAreas: initial}, now)
+
+	// "a" is the oldest; re-name it alongside one new area.
+	next := MergeInvestigation(cur, InvestigationPatch{FailedAreas: []string{"a", "new"}}, now)
+
+	if len(next.FailedAreas) != MaxInvestigationFailedAreas {
+		t.Fatalf("len = %d, want %d: %v", len(next.FailedAreas), MaxInvestigationFailedAreas, next.FailedAreas)
+	}
+	has := func(area string) bool {
+		for _, a := range next.FailedAreas {
+			if a == area {
+				return true
+			}
+		}
+		return false
+	}
+	if !has("a") {
+		t.Errorf("re-named area %q was evicted: %v", "a", next.FailedAreas)
+	}
+	if has("b") {
+		t.Errorf("oldest un-renamed area %q survived the overflow: %v", "b", next.FailedAreas)
+	}
+	if got := next.FailedAreas[len(next.FailedAreas)-1]; got != "new" {
+		t.Errorf("last area = %q, want %q (patch order kept): %v", got, "new", next.FailedAreas)
+	}
+	if len(cur.FailedAreas) != MaxInvestigationFailedAreas || cur.FailedAreas[0] != "a" {
+		t.Errorf("merge wrote through into the previous record: %v", cur.FailedAreas)
+	}
+}
