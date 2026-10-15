@@ -20,6 +20,8 @@ func TestVoiceStartIsCancellable(t *testing.T) {
 	if src == "" {
 		t.Fatal("voice module source not embedded")
 	}
+	// The snippets span lines; a CRLF checkout (Windows CI) must still match.
+	src = strings.ReplaceAll(src, "\r\n", "\n")
 	for _, want := range []struct{ snippet, why string }{
 		{"if (voiceState.proxy.pendingStart !== token) {\n          stopTracks(stream);", "a stream resolved for a cancelled start must be stopped"},
 		{"voiceState.proxy.pendingStart = 0;\n\n    if (voiceState.proxy.processor)", "cleanupProxyVoice (stop) must cancel a pending start"},

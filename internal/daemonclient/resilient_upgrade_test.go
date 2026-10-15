@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/standardbeagle/go-cli-server/protocol"
+
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 )
 
 // fakeHub is a minimal daemon on a Unix socket that answers PING and
@@ -105,7 +107,8 @@ func (h *fakeHub) stop() {
 // shut down. Connect must hand back a connection to the replacement, so the
 // first request succeeds instead of failing with EOF.
 func TestResilientClientConnectsToReplacementAfterUpgrade(t *testing.T) {
-	sock := filepath.Join(t.TempDir(), "d.sock")
+	// sockdir.Short: t.TempDir() on macOS overruns the 104-byte socket path limit.
+	sock := filepath.Join(sockdir.Short(t), "d.sock")
 	old := startFakeHub(t, sock, "0.0.1")
 
 	upgraded := false
