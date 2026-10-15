@@ -152,7 +152,7 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 			// holds the shared connection's per-request mutex only briefly. Using
 			// that connection keeps its reconnect/retry behavior and avoids a
 			// connect/close round trip on the hot path.
-			r, err := send(dt.client)
+			r, err := send(dt.currentClient())
 			if err != nil {
 				return formatDaemonError(err, "run"), RunOutput{}, nil
 			}
@@ -285,7 +285,7 @@ func (dt *DaemonTools) handleProcStatus(input ProcInput) (*mcp.CallToolResult, P
 		return fail[ProcOutput]("process_id required for status")
 	}
 
-	result, err := dt.client.ProcStatus(input.ProcessID)
+	result, err := dt.currentClient().ProcStatus(input.ProcessID)
 	if err != nil {
 		return formatDaemonError(err, "proc"), ProcOutput{}, nil
 	}
@@ -348,12 +348,12 @@ func (dt *DaemonTools) handleProcOutput(input ProcInput) (*mcp.CallToolResult, P
 		GrepV:  input.GrepV,
 	}
 
-	output, err := dt.client.ProcOutput(input.ProcessID, filter)
+	output, err := dt.currentClient().ProcOutput(input.ProcessID, filter)
 	if err != nil {
 
 		projectPath := getProjectPath()
 		if projectPath != "" {
-			scriptResult, scriptErr := dt.client.ScriptOutput(input.ProcessID, projectPath, input.Tail)
+			scriptResult, scriptErr := dt.currentClient().ScriptOutput(input.ProcessID, projectPath, input.Tail)
 			if scriptErr == nil {
 				lines := getStringSlice(scriptResult, "lines")
 				// ScriptOutput only honors Tail (applied daemon-side). Apply
@@ -427,7 +427,7 @@ func (dt *DaemonTools) handleProcOutputMulti(input ProcInput) (*mcp.CallToolResu
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			output, err := dt.client.ProcOutput(id, filter)
+			output, err := dt.currentClient().ProcOutput(id, filter)
 			if err != nil {
 				streams[i].Err = err.Error()
 				return
@@ -475,7 +475,7 @@ func (dt *DaemonTools) handleProcWait(ctx context.Context, input ProcInput) (*mc
 		Tail:   200,
 	}
 	fetch := func() ([]string, error) {
-		out, err := dt.client.ProcOutput(input.ProcessID, filter)
+		out, err := dt.currentClient().ProcOutput(input.ProcessID, filter)
 		if err != nil {
 			return nil, err
 		}
@@ -513,7 +513,7 @@ func (dt *DaemonTools) handleProcFind(input ProcInput) (*mcp.CallToolResult, Pro
 	}
 
 	// First get the process command so we can pick the right pattern.
-	statusResult, err := dt.client.ProcStatus(input.ProcessID)
+	statusResult, err := dt.currentClient().ProcStatus(input.ProcessID)
 	if err != nil {
 		return formatDaemonError(err, "proc"), ProcOutput{}, nil
 	}
@@ -530,12 +530,12 @@ func (dt *DaemonTools) handleProcFind(input ProcInput) (*mcp.CallToolResult, Pro
 		Tail:   input.Tail,
 	}
 
-	output, err := dt.client.ProcOutput(input.ProcessID, filter)
+	output, err := dt.currentClient().ProcOutput(input.ProcessID, filter)
 	if err != nil {
 		// Fall back to script_output if the process isn't directly tracked.
 		projectPath := getProjectPath()
 		if projectPath != "" {
-			scriptResult, scriptErr := dt.client.ScriptOutput(input.ProcessID, projectPath, input.Tail)
+			scriptResult, scriptErr := dt.currentClient().ScriptOutput(input.ProcessID, projectPath, input.Tail)
 			if scriptErr == nil {
 				lines := getStringSlice(scriptResult, "lines")
 				re, reErr := regexp.Compile(pattern)
@@ -580,7 +580,7 @@ func (dt *DaemonTools) handleProcStop(input ProcInput) (*mcp.CallToolResult, Pro
 		return fail[ProcOutput]("process_id required for stop")
 	}
 
-	result, err := dt.client.ProcStop(input.ProcessID, input.Force)
+	result, err := dt.currentClient().ProcStop(input.ProcessID, input.Force)
 	if err != nil {
 		return formatDaemonError(err, "proc"), ProcOutput{}, nil
 	}
@@ -597,7 +597,7 @@ func (dt *DaemonTools) handleProcRestart(input ProcInput) (*mcp.CallToolResult, 
 		return fail[ProcOutput]("process_id required for restart")
 	}
 
-	result, err := dt.client.ProcRestart(input.ProcessID)
+	result, err := dt.currentClient().ProcRestart(input.ProcessID)
 	if err != nil {
 		return formatDaemonError(err, "proc"), ProcOutput{}, nil
 	}
@@ -629,7 +629,7 @@ func (dt *DaemonTools) handleProcAutoRestart(input ProcInput) (*mcp.CallToolResu
 		}
 	}
 
-	result, err := dt.client.ProcAutoRestart(input.ProcessID, action, config)
+	result, err := dt.currentClient().ProcAutoRestart(input.ProcessID, action, config)
 	if err != nil {
 		return formatDaemonError(err, "proc"), ProcOutput{}, nil
 	}
@@ -645,7 +645,7 @@ func (dt *DaemonTools) handleProcList(input ProcInput) (*mcp.CallToolResult, Pro
 
 	dirFilter := dt.scopeFilter(input.Global)
 
-	result, err := dt.client.ProcList(dirFilter)
+	result, err := dt.currentClient().ProcList(dirFilter)
 	if err != nil {
 		return formatDaemonError(err, "proc"), ProcOutput{}, nil
 	}
@@ -714,7 +714,7 @@ func (dt *DaemonTools) handleProcCleanupPort(input ProcInput) (*mcp.CallToolResu
 		return fail[ProcOutput]("valid port number required (1-65535)")
 	}
 
-	result, err := dt.client.ProcCleanupPort(input.Port)
+	result, err := dt.currentClient().ProcCleanupPort(input.Port)
 	if err != nil {
 		return formatDaemonError(err, "proc"), ProcOutput{}, nil
 	}
@@ -778,7 +778,7 @@ func (dt *DaemonTools) handleProcRun(input ProcInput) (*mcp.CallToolResult, Proc
 		DependsOnTimeout: input.DependsOnTimeout,
 	}
 
-	result, err := dt.client.ProcRun(id, cfg)
+	result, err := dt.currentClient().ProcRun(id, cfg)
 	if err != nil {
 		return formatDaemonError(err, "proc"), ProcOutput{}, nil
 	}
@@ -842,7 +842,7 @@ func (dt *DaemonTools) handleProcRunGroup(input ProcInput) (*mcp.CallToolResult,
 		Processes:        groupProcs,
 	}
 
-	result, err := dt.client.ProcRunGroup(cfg)
+	result, err := dt.currentClient().ProcRunGroup(cfg)
 	if err != nil {
 		return formatDaemonError(err, "proc"), ProcOutput{}, nil
 	}
@@ -878,7 +878,7 @@ func (dt *DaemonTools) handleScriptList(input ProcInput) (*mcp.CallToolResult, P
 		return fail[ProcOutput]("could not determine project path")
 	}
 
-	result, err := dt.client.ScriptList(projectPath)
+	result, err := dt.currentClient().ScriptList(projectPath)
 	if err != nil {
 		return formatDaemonError(err, "proc"), ProcOutput{}, nil
 	}
@@ -932,7 +932,7 @@ func (dt *DaemonTools) handleScriptOutput(input ProcInput) (*mcp.CallToolResult,
 		return fail[ProcOutput]("could not determine project path")
 	}
 
-	result, err := dt.client.ScriptOutput(input.ScriptName, projectPath, input.Tail)
+	result, err := dt.currentClient().ScriptOutput(input.ScriptName, projectPath, input.Tail)
 	if err != nil {
 		return formatDaemonError(err, "proc"), ProcOutput{}, nil
 	}
@@ -954,7 +954,7 @@ func (dt *DaemonTools) handleScriptHistory(input ProcInput) (*mcp.CallToolResult
 		return fail[ProcOutput]("could not determine project path")
 	}
 
-	result, err := dt.client.ScriptGet(input.ScriptName, projectPath)
+	result, err := dt.currentClient().ScriptGet(input.ScriptName, projectPath)
 	if err != nil {
 		return formatDaemonError(err, "proc"), ProcOutput{}, nil
 	}

@@ -314,7 +314,7 @@ func makeVerifyChangeHandler(dt *DaemonTools) func(context.Context, *mcp.CallToo
 func defaultVerifyDeps(dt *DaemonTools, since string) verifyDeps {
 	return verifyDeps{
 		investigation: func(ctx context.Context) (*protocol.Investigation, error) {
-			res, err := dt.client.InvestigationGet(dt.SessionCode())
+			res, err := dt.currentClient().InvestigationGet(dt.SessionCode())
 			if err != nil {
 				return nil, err
 			}
@@ -324,7 +324,7 @@ func defaultVerifyDeps(dt *DaemonTools, since string) verifyDeps {
 			return res.Investigation, nil
 		},
 		merge: func(ctx context.Context, patch protocol.InvestigationPatch) error {
-			_, err := dt.client.InvestigationMerge(dt.SessionCode(), patch)
+			_, err := dt.currentClient().InvestigationMerge(dt.SessionCode(), patch)
 			return err
 		},
 		producers:  defaultVerifyProducers(dt, since),
@@ -537,14 +537,14 @@ func defaultVerifyScreenshot(dt *DaemonTools) func(ctx context.Context, proxyID,
 		if proxyID == "" {
 			return "", fmt.Errorf("no proxy_id for visual screenshot")
 		}
-		result, err := dt.client.ProxyExec(proxyID, buildScreenshotExecCode(name, false, ""))
+		result, err := dt.currentClient().ProxyExec(proxyID, buildScreenshotExecCode(name, false, ""))
 		if err != nil {
 			return "", err
 		}
 		if !getBool(result, "success") {
 			return "", fmt.Errorf("screenshot failed: %s", getString(result, "error"))
 		}
-		entries, _, _, err := dt.client.ProxyLogQueryFull(proxyID, protocol.LogQueryFilter{Types: []string{"screenshot"}, Limit: 1})
+		entries, _, _, err := dt.currentClient().ProxyLogQueryFull(proxyID, protocol.LogQueryFilter{Types: []string{"screenshot"}, Limit: 1})
 		if err != nil {
 			return "", err
 		}

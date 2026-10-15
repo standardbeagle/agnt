@@ -431,7 +431,7 @@ func (dt *DaemonTools) releaseQAFlowStep(proxyID string) func(ctx context.Contex
 		if err != nil {
 			return err
 		}
-		result, err := dt.client.ProxyExec(proxyID, code)
+		result, err := dt.currentClient().ProxyExec(proxyID, code)
 		if err != nil {
 			return err
 		}
@@ -485,7 +485,7 @@ func (dt *DaemonTools) releaseQABroadAudit(proxyID string) func(ctx context.Cont
 		switch tool {
 		case "quality":
 			code := releaseQAQualityAuditCode()
-			result, err := dt.client.ProxyExec(proxyID, code)
+			result, err := dt.currentClient().ProxyExec(proxyID, code)
 			if err != nil {
 				return nil, fmt.Errorf("audit exec failed: %v", err)
 			}

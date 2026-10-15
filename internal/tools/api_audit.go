@@ -118,7 +118,7 @@ func (dt *DaemonTools) runBufferAudit(spec bufferAuditSpec, proxyID, target, fra
 	if err != nil {
 		return fail[string](err.Error())
 	}
-	result, err := dt.client.ProxyExec(proxyID, code, execTarget)
+	result, err := dt.currentClient().ProxyExec(proxyID, code, execTarget)
 	if err != nil {
 		return fail[string](fmt.Sprintf("failed to execute audit: %v", err))
 	}

@@ -88,7 +88,7 @@ func (dt *DaemonTools) makeChannelReplyHandler() func(context.Context, *mcp.Call
 
 		// Specific proxy targeting.
 		if input.ProxyID != "" {
-			_, err := dt.client.ProxyToast(input.ProxyID, toastConfig)
+			_, err := dt.currentClient().ProxyToast(input.ProxyID, toastConfig)
 			if err != nil {
 				return fail[ChannelReplyOutput](fmt.Sprintf("proxy %q not found or unavailable: %v", input.ProxyID, err))
 			}
@@ -101,7 +101,7 @@ func (dt *DaemonTools) makeChannelReplyHandler() func(context.Context, *mcp.Call
 		// Fan-out: list proxies for the current session/project directory.
 		dirFilter := dt.scopeFilter(nil)
 
-		listResult, err := dt.client.ProxyList(dirFilter)
+		listResult, err := dt.currentClient().ProxyList(dirFilter)
 		if err != nil {
 			return fail[ChannelReplyOutput](fmt.Sprintf("failed to list proxies: %v", err))
 		}
@@ -113,7 +113,7 @@ func (dt *DaemonTools) makeChannelReplyHandler() func(context.Context, *mcp.Call
 
 		delivered := 0
 		for _, pid := range proxyIDs {
-			_, err := dt.client.ProxyToast(pid, toastConfig)
+			_, err := dt.currentClient().ProxyToast(pid, toastConfig)
 			if err == nil {
 				delivered++
 			}

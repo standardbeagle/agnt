@@ -333,7 +333,7 @@ func (dt *DaemonTools) runDemoEngine(input DemoInput, eng demoEngine, absPath, k
 		ProjectPath: absPath,
 		AutoRestart: false,
 	}
-	result, err := dt.client.ProcRun(id, cfg)
+	result, err := dt.currentClient().ProcRun(id, cfg)
 	if err != nil {
 		return formatDaemonError(err, "demo"), DemoOutput{}, nil
 	}

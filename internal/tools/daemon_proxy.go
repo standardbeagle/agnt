@@ -94,7 +94,7 @@ func (dt *DaemonTools) handleProxyStart(input ProxyInput) (*mcp.CallToolResult, 
 		SkipTLSVerify: input.SkipTLSVerify,
 	}
 
-	result, err := dt.client.ProxyStartWithConfig(input.ID, input.TargetURL, port, input.MaxLogSize, config)
+	result, err := dt.currentClient().ProxyStartWithConfig(input.ID, input.TargetURL, port, input.MaxLogSize, config)
 	if err != nil {
 		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
 	}
@@ -120,7 +120,7 @@ func (dt *DaemonTools) handleProxyStop(input ProxyInput) (*mcp.CallToolResult, P
 		return fail[ProxyOutput]("id required for stop")
 	}
 
-	err := dt.client.ProxyStop(input.ID)
+	err := dt.currentClient().ProxyStop(input.ID)
 	if err != nil {
 		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
 	}
@@ -136,7 +136,7 @@ func (dt *DaemonTools) handleProxyRestart(input ProxyInput) (*mcp.CallToolResult
 		return fail[ProxyOutput]("id required for restart")
 	}
 
-	result, err := dt.client.ProxyRestart(input.ID)
+	result, err := dt.currentClient().ProxyRestart(input.ID)
 	if err != nil {
 		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
 	}
@@ -155,7 +155,7 @@ func (dt *DaemonTools) handleProxyStatus(input ProxyInput) (*mcp.CallToolResult,
 		return fail[ProxyOutput]("id required for status")
 	}
 
-	result, err := dt.client.ProxyStatus(input.ID)
+	result, err := dt.currentClient().ProxyStatus(input.ID)
 	if err != nil {
 		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
 	}
@@ -200,7 +200,7 @@ func (dt *DaemonTools) handleProxyList(input ProxyInput) (*mcp.CallToolResult, P
 
 	dirFilter := dt.scopeFilter(input.Global)
 
-	result, err := dt.client.ProxyList(dirFilter)
+	result, err := dt.currentClient().ProxyList(dirFilter)
 	if err != nil {
 		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
 	}
@@ -285,7 +285,7 @@ func (dt *DaemonTools) handleProxyExec(input ProxyInput) (*mcp.CallToolResult, P
 		return fail[ProxyOutput](err.Error())
 	}
 
-	result, err := dt.client.ProxyExec(input.ID, input.Code, execTarget)
+	result, err := dt.currentClient().ProxyExec(input.ID, input.Code, execTarget)
 	if err != nil {
 		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
 	}
@@ -347,7 +347,7 @@ func (dt *DaemonTools) handleProxyNavigate(input ProxyInput) (*mcp.CallToolResul
 	if execTarget == "@chrome" {
 		return fail[ProxyOutput]("navigate cannot target the outer chrome shell; it drives the page content frame (omit target, or use target:\"inner\")")
 	}
-	result, err := dt.client.ProxyExec(input.ID, code, execTarget)
+	result, err := dt.currentClient().ProxyExec(input.ID, code, execTarget)
 	if err != nil {
 		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
 	}
@@ -364,7 +364,7 @@ func (dt *DaemonTools) handleProxyResize(input ProxyInput) (*mcp.CallToolResult,
 	if input.ID == "" {
 		return fail[ProxyOutput]("id required for resize")
 	}
-	result, err := dt.client.ProxyExec(input.ID, buildResizeJS(input.Width, input.Height), "@chrome")
+	result, err := dt.currentClient().ProxyExec(input.ID, buildResizeJS(input.Width, input.Height), "@chrome")
 	if err != nil {
 		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
 	}
@@ -400,7 +400,7 @@ func (dt *DaemonTools) handleProxyToast(input ProxyInput) (*mcp.CallToolResult, 
 		toastConfig.Type = "info"
 	}
 
-	result, err := dt.client.ProxyToast(input.ID, toastConfig)
+	result, err := dt.currentClient().ProxyToast(input.ID, toastConfig)
 	if err != nil {
 		return formatDaemonError(err, "proxy"), ProxyOutput{}, nil
 	}
@@ -425,7 +425,7 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 
 	switch operation {
 	case "enable":
-		if err := dt.client.ChaosEnable(input.ID); err != nil {
+		if err := dt.currentClient().ChaosEnable(input.ID); err != nil {
 			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
 		}
 		return nil, ProxyOutput{
@@ -435,7 +435,7 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 		}, nil
 
 	case "disable":
-		if err := dt.client.ChaosDisable(input.ID); err != nil {
+		if err := dt.currentClient().ChaosDisable(input.ID); err != nil {
 			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
 		}
 		return nil, ProxyOutput{
@@ -445,7 +445,7 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 		}, nil
 
 	case "status":
-		result, err := dt.client.ChaosStatus(input.ID)
+		result, err := dt.currentClient().ChaosStatus(input.ID)
 		if err != nil {
 			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
 		}
@@ -463,7 +463,7 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 	case "preset":
 		if input.ChaosPreset == "" {
 
-			result, err := dt.client.ChaosListPresets()
+			result, err := dt.currentClient().ChaosListPresets()
 			if err != nil {
 				return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
 			}
@@ -479,7 +479,7 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 			return nil, ProxyOutput{}, nil
 		}
 
-		if err := dt.client.ChaosPreset(input.ID, input.ChaosPreset); err != nil {
+		if err := dt.currentClient().ChaosPreset(input.ID, input.ChaosPreset); err != nil {
 			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
 		}
 		// Every preset is an enabled config: applying one enables chaos.
@@ -513,7 +513,7 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 			rule := inputRuleToProtocol(r)
 			config.Rules = append(config.Rules, &rule)
 		}
-		if err := dt.client.ChaosSet(input.ID, config); err != nil {
+		if err := dt.currentClient().ChaosSet(input.ID, config); err != nil {
 			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
 		}
 		return nil, ProxyOutput{
@@ -527,7 +527,7 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 			return fail[ProxyOutput]("chaos_rule required for add_rule operation")
 		}
 		rule := inputRuleToProtocol(*input.ChaosRule)
-		if err := dt.client.ChaosAddRule(input.ID, rule); err != nil {
+		if err := dt.currentClient().ChaosAddRule(input.ID, rule); err != nil {
 			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
 		}
 		return nil, ProxyOutput{
@@ -539,7 +539,7 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 		if input.ChaosRuleID == "" {
 			return fail[ProxyOutput]("chaos_rule_id required for remove_rule operation")
 		}
-		if err := dt.client.ChaosRemoveRule(input.ID, input.ChaosRuleID); err != nil {
+		if err := dt.currentClient().ChaosRemoveRule(input.ID, input.ChaosRuleID); err != nil {
 			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
 		}
 		return nil, ProxyOutput{
@@ -548,7 +548,7 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 		}, nil
 
 	case "list_rules":
-		result, err := dt.client.ChaosListRules(input.ID)
+		result, err := dt.currentClient().ChaosListRules(input.ID)
 		if err != nil {
 			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
 		}
@@ -559,7 +559,7 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 		return nil, output, nil
 
 	case "stats":
-		result, err := dt.client.ChaosStats(input.ID)
+		result, err := dt.currentClient().ChaosStats(input.ID)
 		if err != nil {
 			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
 		}
@@ -567,7 +567,7 @@ func (dt *DaemonTools) handleProxyChaos(input ProxyInput) (*mcp.CallToolResult, 
 		return nil, ProxyOutput{ChaosStats: parseChaosStats(result)}, nil
 
 	case "clear":
-		if err := dt.client.ChaosClear(input.ID); err != nil {
+		if err := dt.currentClient().ChaosClear(input.ID); err != nil {
 			return formatDaemonError(err, "chaos"), ProxyOutput{}, nil
 		}
 		return nil, ProxyOutput{
@@ -650,7 +650,7 @@ func proxyLogQueryFilter(input ProxyLogInput) protocol.LogQueryFilter {
 func (dt *DaemonTools) handleProxyLogQuery(input ProxyLogInput) (*mcp.CallToolResult, ProxyLogOutput, error) {
 	filter := proxyLogQueryFilter(input)
 
-	entries, totalAvailable, dropped, err := dt.client.ProxyLogQueryFull(input.ProxyID, filter)
+	entries, totalAvailable, dropped, err := dt.currentClient().ProxyLogQueryFull(input.ProxyID, filter)
 	if err != nil {
 		return formatDaemonError(err, "proxylog"), ProxyLogOutput{}, nil
 	}
@@ -689,7 +689,7 @@ func (dt *DaemonTools) handleProxyLogSummary(input ProxyLogInput) (*mcp.CallTool
 		OmitBodies: true,
 	}
 
-	result, err := dt.client.ProxyLogQuery(input.ProxyID, filter)
+	result, err := dt.currentClient().ProxyLogQuery(input.ProxyID, filter)
 	if err != nil {
 		return formatDaemonError(err, "proxylog"), ProxyLogOutput{}, nil
 	}
@@ -732,7 +732,7 @@ func (dt *DaemonTools) handleProxyLogSummary(input ProxyLogInput) (*mcp.CallTool
 }
 
 func (dt *DaemonTools) handleProxyLogClear(input ProxyLogInput) (*mcp.CallToolResult, ProxyLogOutput, error) {
-	err := dt.client.ProxyLogClear(input.ProxyID)
+	err := dt.currentClient().ProxyLogClear(input.ProxyID)
 	if err != nil {
 		return formatDaemonError(err, "proxylog"), ProxyLogOutput{}, nil
 	}
@@ -744,7 +744,7 @@ func (dt *DaemonTools) handleProxyLogClear(input ProxyLogInput) (*mcp.CallToolRe
 }
 
 func (dt *DaemonTools) handleProxyLogStats(input ProxyLogInput) (*mcp.CallToolResult, ProxyLogOutput, error) {
-	result, err := dt.client.ProxyLogStats(input.ProxyID)
+	result, err := dt.currentClient().ProxyLogStats(input.ProxyID)
 	if err != nil {
 		return formatDaemonError(err, "proxylog"), ProxyLogOutput{}, nil
 	}

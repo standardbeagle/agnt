@@ -268,7 +268,7 @@ func handleSnapshotScreenshot(dt *DaemonTools, input SnapshotInput) (*mcp.CallTo
 	if err != nil {
 		return fail[SnapshotOutput](err.Error())
 	}
-	result, err := dt.client.ProxyExec(input.ProxyID, code, execTarget)
+	result, err := dt.currentClient().ProxyExec(input.ProxyID, code, execTarget)
 	if err != nil {
 		return fail[SnapshotOutput](fmt.Sprintf("proxy exec failed: %v", err))
 	}

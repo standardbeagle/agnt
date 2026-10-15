@@ -27,7 +27,7 @@ func (dt *DaemonTools) makeCurrentPageHandler() func(context.Context, *mcp.CallT
 		if input.ProxyID == "" {
 			// Candidates come from the caller's project only, like proxy
 			// list: another project's proxy ids are not the caller's to read.
-			proxies, listErr := dt.client.ProxyList(dt.scopeFilter(nil))
+			proxies, listErr := dt.currentClient().ProxyList(dt.scopeFilter(nil))
 			if listErr != nil {
 				return fail[CurrentPageOutput](fmt.Sprintf("proxy_id required (could not list this project's proxies: %v)", listErr))
 			}
@@ -62,7 +62,7 @@ func (dt *DaemonTools) makeCurrentPageHandler() func(context.Context, *mcp.CallT
 }
 
 func (dt *DaemonTools) handleCurrentPageList(input CurrentPageInput) (*mcp.CallToolResult, CurrentPageOutput, error) {
-	result, err := dt.client.CurrentPageList(input.ProxyID)
+	result, err := dt.currentClient().CurrentPageList(input.ProxyID)
 	if err != nil {
 		return formatDaemonError(err, "currentpage"), CurrentPageOutput{}, nil
 	}
@@ -81,7 +81,7 @@ func (dt *DaemonTools) handleCurrentPageList(input CurrentPageInput) (*mcp.CallT
 
 	if *output.Count == 0 {
 
-		proxyStatus, statusErr := dt.client.ProxyStatus(input.ProxyID)
+		proxyStatus, statusErr := dt.currentClient().ProxyStatus(input.ProxyID)
 		proxyURL := ""
 		if statusErr == nil {
 			proxyURL = getString(proxyStatus, "url")
@@ -104,7 +104,7 @@ func (dt *DaemonTools) handleCurrentPageGet(input CurrentPageInput) (*mcp.CallTo
 		return fail[CurrentPageOutput]("session_id required for get")
 	}
 
-	result, err := dt.client.CurrentPageGet(input.ProxyID, input.SessionID)
+	result, err := dt.currentClient().CurrentPageGet(input.ProxyID, input.SessionID)
 	if err != nil {
 		return formatDaemonError(err, "currentpage"), CurrentPageOutput{}, nil
 	}
@@ -129,7 +129,7 @@ func (dt *DaemonTools) handleCurrentPageSummary(input CurrentPageInput) (*mcp.Ca
 		return fail[CurrentPageOutput]("session_id required for summary")
 	}
 
-	result, err := dt.client.CurrentPageGet(input.ProxyID, input.SessionID)
+	result, err := dt.currentClient().CurrentPageGet(input.ProxyID, input.SessionID)
 	if err != nil {
 		return formatDaemonError(err, "currentpage"), CurrentPageOutput{}, nil
 	}
@@ -160,7 +160,7 @@ func (dt *DaemonTools) handleCurrentPageSummary(input CurrentPageInput) (*mcp.Ca
 func (dt *DaemonTools) handleCurrentPageTriage(input CurrentPageInput) (*mcp.CallToolResult, CurrentPageOutput, error) {
 	sessionID := input.SessionID
 	if sessionID == "" {
-		list, err := dt.client.CurrentPageList(input.ProxyID)
+		list, err := dt.currentClient().CurrentPageList(input.ProxyID)
 		if err != nil {
 			return formatDaemonError(err, "currentpage"), CurrentPageOutput{}, nil
 		}
@@ -172,7 +172,7 @@ func (dt *DaemonTools) handleCurrentPageTriage(input CurrentPageInput) (*mcp.Cal
 		}
 	}
 
-	result, err := dt.client.CurrentPageGet(input.ProxyID, sessionID)
+	result, err := dt.currentClient().CurrentPageGet(input.ProxyID, sessionID)
 	if err != nil {
 		return formatDaemonError(err, "currentpage"), CurrentPageOutput{}, nil
 	}
@@ -239,7 +239,7 @@ func (dt *DaemonTools) handleCurrentPageLayout(input CurrentPageInput) (*mcp.Cal
 		return JSON.stringify(window.__devtool.diagnoseLayoutIssues());
 	})()`
 
-	result, err := dt.client.ProxyExec(input.ProxyID, code)
+	result, err := dt.currentClient().ProxyExec(input.ProxyID, code)
 	if err != nil {
 		return formatDaemonError(err, "currentpage"), CurrentPageOutput{}, nil
 	}
@@ -255,7 +255,7 @@ func (dt *DaemonTools) handleCurrentPageLayout(input CurrentPageInput) (*mcp.Cal
 }
 
 func (dt *DaemonTools) handleCurrentPageClear(input CurrentPageInput) (*mcp.CallToolResult, CurrentPageOutput, error) {
-	err := dt.client.CurrentPageClear(input.ProxyID)
+	err := dt.currentClient().CurrentPageClear(input.ProxyID)
 	if err != nil {
 		return formatDaemonError(err, "currentpage"), CurrentPageOutput{}, nil
 	}

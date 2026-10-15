@@ -123,7 +123,7 @@ func (dt *DaemonTools) handleStoreGet(input StoreInput) (*mcp.CallToolResult, St
 		Key:      input.Key,
 	}
 
-	result, err := dt.client.StoreGet(req)
+	result, err := dt.currentClient().StoreGet(req)
 	if err != nil {
 		return formatDaemonError(err, "store get"), emptyOutput, nil
 	}
@@ -186,7 +186,7 @@ func (dt *DaemonTools) handleStoreSet(input StoreInput) (*mcp.CallToolResult, St
 		Metadata: input.Metadata,
 	}
 
-	err := dt.client.StoreSet(req)
+	err := dt.currentClient().StoreSet(req)
 	if err != nil {
 		return formatDaemonError(err, "store set"), emptyOutput, nil
 	}
@@ -215,7 +215,7 @@ func (dt *DaemonTools) handleStoreDelete(input StoreInput) (*mcp.CallToolResult,
 		Key:      input.Key,
 	}
 
-	err := dt.client.StoreDelete(req)
+	err := dt.currentClient().StoreDelete(req)
 	if err != nil {
 		return formatDaemonError(err, "store delete"), emptyOutput, nil
 	}
@@ -240,7 +240,7 @@ func (dt *DaemonTools) handleStoreList(input StoreInput) (*mcp.CallToolResult, S
 		ScopeKey: input.ScopeKey,
 	}
 
-	result, err := dt.client.StoreList(req)
+	result, err := dt.currentClient().StoreList(req)
 	if err != nil {
 		return formatDaemonError(err, "store list"), emptyOutput, nil
 	}
@@ -272,7 +272,7 @@ func (dt *DaemonTools) handleStoreClear(input StoreInput) (*mcp.CallToolResult, 
 		ScopeKey: input.ScopeKey,
 	}
 
-	err := dt.client.StoreClear(req)
+	err := dt.currentClient().StoreClear(req)
 	if err != nil {
 		return formatDaemonError(err, "store clear"), emptyOutput, nil
 	}
@@ -297,7 +297,7 @@ func (dt *DaemonTools) handleStoreGetAll(input StoreInput) (*mcp.CallToolResult,
 		ScopeKey: input.ScopeKey,
 	}
 
-	result, err := dt.client.StoreGetAll(req)
+	result, err := dt.currentClient().StoreGetAll(req)
 	if err != nil {
 		return formatDaemonError(err, "store get_all"), emptyOutput, nil
 	}

@@ -645,7 +645,7 @@ func (dt *DaemonTools) collectProcessAlerts(processID, since string, global *boo
 		filter.SessionCode, filter.Directory = dt.sessionScope()
 	}
 
-	result, err := dt.client.AlertQuery(filter)
+	result, err := dt.currentClient().AlertQuery(filter)
 	if err != nil {
 		// Non-fatal, but must be visible: a failed alert-store query would
 		// otherwise be indistinguishable from "no process errors".
@@ -677,7 +677,7 @@ func (dt *DaemonTools) collectProcessAlerts(processID, since string, global *boo
 // session/project so other projects' startup events don't leak in.
 func (dt *DaemonTools) collectStartupErrors(processID, since string, global *bool) ([]unifiedError, string) {
 	dirFilter := dt.scopeFilter(global)
-	result, err := dt.client.StartupLog(50, dirFilter)
+	result, err := dt.currentClient().StartupLog(50, dirFilter)
 	if err != nil {
 		// Non-fatal, but must be visible rather than reported as no errors.
 		return nil, "startup log query failed: " + err.Error()
@@ -735,7 +735,7 @@ func (dt *DaemonTools) collectProxyErrors(proxyID, since string, global *bool) (
 		proxyIDs = []string{proxyID}
 	} else {
 		// List all active proxies
-		result, err := dt.client.ProxyList(dirFilter)
+		result, err := dt.currentClient().ProxyList(dirFilter)
 		if err != nil {
 			// Non-fatal, but visible: without the proxy list we cannot tell
 			// "no proxy errors" from "could not enumerate proxies".
@@ -765,7 +765,7 @@ func (dt *DaemonTools) collectProxyErrors(proxyID, since string, global *bool) (
 			Since: since,
 		}
 
-		result, err := dt.client.ProxyLogQuery(pid, filter)
+		result, err := dt.currentClient().ProxyLogQuery(pid, filter)
 		if err != nil {
 			// Tolerate a single bad proxy, but count it so the caller knows
 			// this proxy's errors are missing from the view.

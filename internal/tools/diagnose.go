@@ -157,7 +157,7 @@ func (dt *DaemonTools) executeDiagnoseClick(input DiagnoseInput) (*mcp.CallToolR
 	if err != nil {
 		return fail[DiagnoseOutput](err.Error())
 	}
-	result, err := dt.client.ProxyExec(input.ProxyID, code, execTarget)
+	result, err := dt.currentClient().ProxyExec(input.ProxyID, code, execTarget)
 	if err != nil {
 		return fail[DiagnoseOutput](fmt.Sprintf("diagnose exec failed: %v", err))
 	}
@@ -192,7 +192,7 @@ func (dt *DaemonTools) executeDiagnoseClick(input DiagnoseInput) (*mcp.CallToolR
 	incidentWarning := ""
 	if parsed.Click != nil && parsed.Click.Timestamp != nil && *parsed.Click.Timestamp > 0 && helperErr == "" {
 		since := time.UnixMilli(*parsed.Click.Timestamp).UTC().Format(time.RFC3339)
-		res, qerr := dt.client.IncidentQuery(protocol.IncidentQueryFilter{
+		res, qerr := dt.currentClient().IncidentQuery(protocol.IncidentQueryFilter{
 			Since:   since,
 			Sources: []string{"browser_js"},
 			ProxyID: input.ProxyID,

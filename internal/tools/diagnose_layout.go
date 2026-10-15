@@ -88,7 +88,7 @@ type layoutProxyExec interface {
 
 // executeDiagnoseLayout runs the layout composite through the daemon client.
 func (dt *DaemonTools) executeDiagnoseLayout(input DiagnoseInput) (*mcp.CallToolResult, DiagnoseOutput, error) {
-	return runDiagnoseLayout(dt.client, input)
+	return runDiagnoseLayout(dt.currentClient(), input)
 }
 
 // runDiagnoseLayout executes __devtool.diagnoseLayoutComposite in the page.

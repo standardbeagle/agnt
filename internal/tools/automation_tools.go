@@ -168,7 +168,7 @@ func (dt *DaemonTools) handleAutomationStart(input AutomationInput) (*mcp.CallTo
 	}
 	config.SessionCode, config.Directory = dt.sessionScope()
 
-	result, err := dt.client.AutomationStart(config)
+	result, err := dt.currentClient().AutomationStart(config)
 	if err != nil {
 		return formatDaemonError(err, "automation start"), emptyOutput, nil
 	}
@@ -192,7 +192,7 @@ func (dt *DaemonTools) handleAutomationStop(input AutomationInput) (*mcp.CallToo
 		return errorResult("id required"), emptyOutput, nil
 	}
 
-	if err := dt.client.AutomationStop(input.ID); err != nil {
+	if err := dt.currentClient().AutomationStop(input.ID); err != nil {
 		return formatDaemonError(err, "automation stop"), emptyOutput, nil
 	}
 
@@ -213,7 +213,7 @@ func (dt *DaemonTools) handleAutomationStatus(input AutomationInput) (*mcp.CallT
 		return errorResult("id required"), emptyOutput, nil
 	}
 
-	result, err := dt.client.AutomationStatus(input.ID)
+	result, err := dt.currentClient().AutomationStatus(input.ID)
 	if err != nil {
 		return formatDaemonError(err, "automation status"), emptyOutput, nil
 	}
@@ -236,7 +236,7 @@ func (dt *DaemonTools) handleAutomationStatus(input AutomationInput) (*mcp.CallT
 func (dt *DaemonTools) handleAutomationList(input AutomationInput) (*mcp.CallToolResult, AutomationOutput, error) {
 	dirFilter := dt.scopeFilter(input.Global)
 
-	result, err := dt.client.AutomationList(dirFilter)
+	result, err := dt.currentClient().AutomationList(dirFilter)
 	if err != nil {
 		return formatDaemonError(err, "automation list"), AutomationOutput{Sessions: []AutomationEntry{}}, nil
 	}
@@ -296,7 +296,7 @@ func (dt *DaemonTools) handleAutomationScreenshot(input AutomationInput) (*mcp.C
 		Height:    input.Height,
 	}
 
-	result, err := dt.client.AutomationScreenshot(config)
+	result, err := dt.currentClient().AutomationScreenshot(config)
 	if err != nil {
 		return formatDaemonError(err, "automation screenshot"), emptyOutput, nil
 	}
@@ -336,7 +336,7 @@ func (dt *DaemonTools) handleAutomationNavigate(input AutomationInput) (*mcp.Cal
 		URL:       input.URL,
 	}
 
-	result, err := dt.client.AutomationNavigate(config)
+	result, err := dt.currentClient().AutomationNavigate(config)
 	if err != nil {
 		return formatDaemonError(err, "automation navigate"), emptyOutput, nil
 	}
@@ -372,7 +372,7 @@ func (dt *DaemonTools) handleAutomationEvaluate(input AutomationInput) (*mcp.Cal
 		Frame:     input.Frame,
 	}
 
-	result, err := dt.client.AutomationEvaluate(config)
+	result, err := dt.currentClient().AutomationEvaluate(config)
 	if err != nil {
 		return formatDaemonError(err, "automation evaluate"), emptyOutput, nil
 	}

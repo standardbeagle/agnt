@@ -95,7 +95,7 @@ func (dt *DaemonTools) tryAutoAttach() {
 	dt.attachAttempted = true
 	dt.sessionMu.Unlock()
 
-	dt.attach(dt.client.SessionAttach)
+	dt.attach(dt.currentClient().SessionAttach)
 }
 
 // attach binds a daemon connection to the session for the current directory
@@ -194,10 +194,11 @@ func (dt *DaemonTools) ensureClient() error {
 
 	// A client that is present but not connected is replaced, not reused:
 	// close it so its reconnect loop does not outlive it, and forget the
-	// session binding that lived on its connection.
+	// session binding that lived on its connection. It stays in dt.client
+	// (closed) until a replacement connects, so a handler racing this never
+	// reads nil — see currentClient.
 	if dt.client != nil {
 		dt.client.Close()
-		dt.client = nil
 		dt.forgetAttachment()
 	}
 
@@ -251,23 +252,30 @@ func (dt *DaemonTools) ensureClient() error {
 	return nil
 }
 
-// resetClient closes and drops the daemon client so the next ensureConnected
-// rebuilds it. Used by the daemon stop/restart tools, which invalidate the
-// connection out from under every other in-flight tool call.
+// resetClient closes the daemon client so the next ensureConnected rebuilds
+// it. Used by the daemon stop/restart tools, which invalidate the connection
+// out from under every other in-flight tool call.
+//
+// The closed client is left in place rather than set to nil: a handler that
+// passed ensureConnected just before this ran then gets the client's
+// "shut down" error from its request instead of a nil-pointer panic.
+// ensureClient replaces it because a closed client never reports connected.
 func (dt *DaemonTools) resetClient() {
 	dt.clientMu.Lock()
 	defer dt.clientMu.Unlock()
 
 	if dt.client != nil {
 		dt.client.Close()
-		dt.client = nil
 	}
 	// The session binding went with the connection.
 	dt.forgetAttachment()
 }
 
 // currentClient returns the daemon client as of now, read under clientMu so
-// it cannot race resetClient or ensureClient swapping it. May be nil.
+// it cannot race resetClient or ensureClient swapping it. Every read of
+// dt.client outside those two goes through here. It is nil only before the
+// first successful ensureConnected; after that it may be a closed client
+// (resetClient), whose requests fail with an error rather than panic.
 func (dt *DaemonTools) currentClient() *daemonclient.ResilientClient {
 	dt.clientMu.Lock()
 	defer dt.clientMu.Unlock()
@@ -276,8 +284,8 @@ func (dt *DaemonTools) currentClient() *daemonclient.ResilientClient {
 
 // Close closes the daemon client connection.
 func (dt *DaemonTools) Close() error {
-	if dt.client != nil {
-		return dt.client.Close()
+	if c := dt.currentClient(); c != nil {
+		return c.Close()
 	}
 	return nil
 }
@@ -289,7 +297,7 @@ func (dt *DaemonTools) RunAutostart(projectDir string) (map[string]interface{}, 
 	if err := dt.ensureConnected(); err != nil {
 		return nil, err
 	}
-	return dt.client.Client().AutostartRun(projectDir)
+	return dt.currentClient().Client().AutostartRun(projectDir)
 }
 
 // ReplaytestLogClient lazily resolves a connected daemon client for the
@@ -299,7 +307,7 @@ func (dt *DaemonTools) ReplaytestLogClient() (replaytestLogClient, error) {
 	if err := dt.ensureConnected(); err != nil {
 		return nil, err
 	}
-	return dt.client.Client(), nil
+	return dt.currentClient().Client(), nil
 }
 
 // StartChannelSink starts a goroutine that subscribes to daemon StreamEvents
@@ -957,7 +965,7 @@ func (dt *DaemonTools) makeDetectHandler() func(context.Context, *mcp.CallToolRe
 
 		// Daemon roundtrip — keeps the daemon authoritative for type/package_manager
 		// and lets it surface any daemon-side errors (permission, missing path, ...).
-		if _, err := dt.client.Detect(absPath); err != nil {
+		if _, err := dt.currentClient().Detect(absPath); err != nil {
 			return formatDaemonError(err, "detect"), emptyOutput, nil
 		}
 

@@ -112,3 +112,60 @@ func TestDaemonTools_ReattachDropsStaleSession(t *testing.T) {
 	dt.sessionMu.Unlock()
 	assert.False(t, attempted, "the next tool call must retry the attach")
 }
+
+// A handler that passed ensureConnected just before the daemon stop/restart
+// tool reset the client used to read dt.client without clientMu and could get
+// nil, panicking on the call. The reset now leaves the closed client in place,
+// so the request fails with an error instead.
+func TestDaemonTools_HandlerAfterResetFailsWithoutPanic(t *testing.T) {
+	dt, _ := attachTestDaemon(t)
+	require.NoError(t, dt.ensureConnected())
+
+	dt.resetClient()
+
+	c := dt.currentClient()
+	require.NotNil(t, c, "a reset must not leave a racing handler a nil client")
+	_, err := c.ProcList(protocol.DirectoryFilter{Global: true})
+	assert.Error(t, err, "a request on a reset client fails rather than reaching the daemon")
+
+	// The next tool call still rebuilds a live client.
+	require.NoError(t, dt.ensureConnected())
+	assert.True(t, dt.currentClient().IsConnected())
+}
+
+// resetClient racing handler calls: every call returns (result or error
+// result), none panics, and the wrapper ends usable. This asserts behaviour;
+// it cannot prove the data race is gone without -race, which needs cgo and is
+// not available on every development host.
+func TestDaemonTools_ResetConcurrentWithHandlers(t *testing.T) {
+	dt, _ := attachTestDaemon(t)
+	require.NoError(t, dt.ensureConnected())
+	global := true
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for i := 0; i < 20; i++ {
+			dt.resetClient()
+		}
+	}()
+	for i := 0; i < 20; i++ {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Fatalf("handler panicked while the client was reset: %v", r)
+				}
+			}()
+			if err := dt.ensureConnected(); err != nil {
+				return // a reset landed mid-connect; the caller would retry
+			}
+			_, _, err := dt.handleProcList(ProcInput{Global: &global})
+			assert.NoError(t, err, "tool errors travel in the result, never as a Go error")
+		}()
+	}
+	<-done
+
+	require.NoError(t, dt.ensureConnected())
+	_, _, err := dt.handleProcList(ProcInput{Global: &global})
+	require.NoError(t, err)
+}

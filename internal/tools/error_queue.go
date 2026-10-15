@@ -76,7 +76,7 @@ func (dt *DaemonTools) makeErrorQueueHandler() func(context.Context, *mcp.CallTo
 			ProjectPath: projectPath,
 			Timestamp:   time.Now().Format(time.RFC3339),
 		}
-		if err := dt.client.Client().AlertReport(payload); err != nil {
+		if err := dt.currentClient().Client().AlertReport(payload); err != nil {
 			return fail[ErrorQueueOutput](fmt.Sprintf("failed to queue error: %v", err))
 		}
 		return nil, ErrorQueueOutput{

@@ -111,7 +111,7 @@ func (dt *DaemonTools) handleProcSnapshot(input ProcInput) (*mcp.CallToolResult,
 	wg.Add(3)
 	go func() {
 		defer wg.Done()
-		result, err := dt.client.ProcList(dirFilter)
+		result, err := dt.currentClient().ProcList(dirFilter)
 		if err != nil {
 			procs.err = err
 			return
@@ -131,7 +131,7 @@ func (dt *DaemonTools) handleProcSnapshot(input ProcInput) (*mcp.CallToolResult,
 
 	go func() {
 		defer wg.Done()
-		result, err := dt.client.ProxyList(dirFilter)
+		result, err := dt.currentClient().ProxyList(dirFilter)
 		if err != nil {
 			proxies.err = err
 			return

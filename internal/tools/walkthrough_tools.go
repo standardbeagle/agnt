@@ -97,7 +97,7 @@ func (dt *DaemonTools) makeWalkthroughHandler() func(context.Context, *mcp.CallT
 			return fail[WalkthroughOutput](err.Error())
 		}
 
-		result, err := dt.client.ProxyExec(input.ProxyID, code)
+		result, err := dt.currentClient().ProxyExec(input.ProxyID, code)
 		if err != nil {
 			return fail[WalkthroughOutput](fmt.Sprintf("proxy exec failed: %v", err))
 		}

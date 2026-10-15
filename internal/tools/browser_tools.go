@@ -132,7 +132,7 @@ func (dt *DaemonTools) handleBrowserStart(input BrowserInput) (*mcp.CallToolResu
 	}
 	config.SessionCode, config.Directory = dt.sessionScope()
 
-	result, err := dt.client.BrowserStart(config)
+	result, err := dt.currentClient().BrowserStart(config)
 	if err != nil {
 		return formatDaemonError(err, "browser start"), emptyOutput, nil
 	}
@@ -157,7 +157,7 @@ func (dt *DaemonTools) handleBrowserStop(input BrowserInput) (*mcp.CallToolResul
 		return errorResult("id required"), emptyOutput, nil
 	}
 
-	if err := dt.client.BrowserStop(input.ID); err != nil {
+	if err := dt.currentClient().BrowserStop(input.ID); err != nil {
 		return formatDaemonError(err, "browser stop"), emptyOutput, nil
 	}
 
@@ -178,7 +178,7 @@ func (dt *DaemonTools) handleBrowserStatus(input BrowserInput) (*mcp.CallToolRes
 		return errorResult("id required"), emptyOutput, nil
 	}
 
-	result, err := dt.client.BrowserStatus(input.ID)
+	result, err := dt.currentClient().BrowserStatus(input.ID)
 	if err != nil {
 		return formatDaemonError(err, "browser status"), emptyOutput, nil
 	}
@@ -203,7 +203,7 @@ func (dt *DaemonTools) handleBrowserStatus(input BrowserInput) (*mcp.CallToolRes
 func (dt *DaemonTools) handleBrowserList(input BrowserInput) (*mcp.CallToolResult, BrowserOutput, error) {
 	dirFilter := dt.scopeFilter(input.Global)
 
-	result, err := dt.client.BrowserList(dirFilter)
+	result, err := dt.currentClient().BrowserList(dirFilter)
 	if err != nil {
 		return formatDaemonError(err, "browser list"), BrowserOutput{Browsers: []BrowserEntry{}}, nil
 	}

@@ -139,7 +139,7 @@ func (dt *DaemonTools) handleTunnelStart(input TunnelInput) (*mcp.CallToolResult
 		URLTimeoutMs: input.URLTimeout,
 	}
 
-	result, err := dt.client.TunnelStart(config)
+	result, err := dt.currentClient().TunnelStart(config)
 	if err != nil {
 		return formatDaemonError(err, "tunnel start"), emptyOutput, nil
 	}
@@ -164,7 +164,7 @@ func (dt *DaemonTools) handleTunnelStop(input TunnelInput) (*mcp.CallToolResult,
 		return errorResult("id required"), emptyOutput, nil
 	}
 
-	if err := dt.client.TunnelStop(input.ID); err != nil {
+	if err := dt.currentClient().TunnelStop(input.ID); err != nil {
 		return formatDaemonError(err, "tunnel stop"), emptyOutput, nil
 	}
 
@@ -185,7 +185,7 @@ func (dt *DaemonTools) handleTunnelStatus(input TunnelInput) (*mcp.CallToolResul
 		return errorResult("id required"), emptyOutput, nil
 	}
 
-	result, err := dt.client.TunnelStatus(input.ID)
+	result, err := dt.currentClient().TunnelStatus(input.ID)
 	if err != nil {
 		return formatDaemonError(err, "tunnel status"), emptyOutput, nil
 	}
@@ -210,7 +210,7 @@ func (dt *DaemonTools) handleTunnelList(input TunnelInput) (*mcp.CallToolResult,
 	// handleProxyList / handleProcList.
 	dirFilter := dt.scopeFilter(input.Global)
 
-	result, err := dt.client.TunnelList(dirFilter)
+	result, err := dt.currentClient().TunnelList(dirFilter)
 	if err != nil {
 		return formatDaemonError(err, "tunnel list"), TunnelOutput{Tunnels: []TunnelEntry{}}, nil
 	}

@@ -63,7 +63,7 @@ func (dt *DaemonTools) makeDevAuthHandler() func(context.Context, *mcp.CallToolR
 		if err := dt.ensureConnected(); err != nil {
 			return fail[DevAuthOutput](err.Error())
 		}
-		status, err := dt.client.ProxyStatus(in.ProxyID)
+		status, err := dt.currentClient().ProxyStatus(in.ProxyID)
 		if err != nil {
 			return fail[DevAuthOutput](fmt.Sprintf("proxy %s: %v", in.ProxyID, err))
 		}
@@ -153,7 +153,7 @@ func (dt *DaemonTools) devAuthAs(origin string, in DevAuthInput) (*mcp.CallToolR
 	if !st.Has(in.Persona) {
 		return fail[DevAuthOutput](fmt.Sprintf("unknown persona %q; available: %s", in.Persona, strings.Join(st.Names(), ", ")))
 	}
-	result, err := dt.client.ProxyExec(in.ProxyID, devoidc.SwitchScript(in.Persona, in.Client))
+	result, err := dt.currentClient().ProxyExec(in.ProxyID, devoidc.SwitchScript(in.Persona, in.Client))
 	if err != nil {
 		return fail[DevAuthOutput](fmt.Sprintf("switch exec failed: %v", err))
 	}

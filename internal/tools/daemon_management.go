@@ -138,7 +138,7 @@ func handleDaemonInfo(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, error
 		return fail[DaemonOutput](fmt.Sprintf("daemon not running: %v", err))
 	}
 
-	info, err := dt.client.Info()
+	info, err := dt.currentClient().Info()
 	if err != nil {
 		return fail[DaemonOutput](fmt.Sprintf("failed to get info: %v", err))
 	}
@@ -265,7 +265,7 @@ func handleDaemonStopAll(dt *DaemonTools, global *bool) (*mcp.CallToolResult, Da
 		return fail[DaemonOutput](fmt.Sprintf("daemon not running: %v", err))
 	}
 
-	result, err := dt.client.StopAllScoped(dt.scopeFilter(global))
+	result, err := dt.currentClient().StopAllScoped(dt.scopeFilter(global))
 	if err != nil {
 		return fail[DaemonOutput](fmt.Sprintf("failed to stop all: %v", err))
 	}
@@ -287,7 +287,7 @@ func handleDaemonRestartAll(dt *DaemonTools, global *bool) (*mcp.CallToolResult,
 		return fail[DaemonOutput](fmt.Sprintf("daemon not running: %v", err))
 	}
 
-	result, err := dt.client.RestartAllScoped(dt.scopeFilter(global))
+	result, err := dt.currentClient().RestartAllScoped(dt.scopeFilter(global))
 	if err != nil {
 		return fail[DaemonOutput](fmt.Sprintf("failed to restart all: %v", err))
 	}
@@ -313,7 +313,7 @@ func handleDaemonDoctor(dt *DaemonTools) (*mcp.CallToolResult, DaemonOutput, err
 		return fail[DaemonOutput](fmt.Sprintf("daemon not running: %v", err))
 	}
 
-	result, err := dt.client.Doctor(getProjectPath())
+	result, err := dt.currentClient().Doctor(getProjectPath())
 	if err != nil {
 		return fail[DaemonOutput](fmt.Sprintf("failed to run doctor: %v", err))
 	}
@@ -365,7 +365,7 @@ func handleDaemonStartupLog(dt *DaemonTools, global *bool) (*mcp.CallToolResult,
 	// non-global contextless call is rejected daemon-side rather than leaking
 	// every project's startup events.
 	dirFilter := dt.scopeFilter(global)
-	result, err := dt.client.StartupLog(50, dirFilter)
+	result, err := dt.currentClient().StartupLog(50, dirFilter)
 	if err != nil {
 		return fail[DaemonOutput](fmt.Sprintf("failed to query startup log: %v", err))
 	}

@@ -158,7 +158,7 @@ func makeGetIncidentsHandler(dt *DaemonTools) func(context.Context, *mcp.CallToo
 		if isIncidentRetentionAction(input.Action) {
 			return dt.handleIncidentRetentionAction(input)
 		}
-		result, err := dt.client.IncidentQuery(filter)
+		result, err := dt.currentClient().IncidentQuery(filter)
 		if err != nil {
 			return fail[GetIncidentsOutput]("incident query failed: " + err.Error())
 		}
@@ -263,7 +263,7 @@ func (dt *DaemonTools) handleIncidentRetentionAction(input GetIncidentsInput) (*
 		payload := protocol.IncidentPinPayload{Fingerprint: input.ErrorID, Tag: input.Tag}
 
 		if input.Action == "unpin" {
-			res, err := dt.client.IncidentUnpin(payload)
+			res, err := dt.currentClient().IncidentUnpin(payload)
 			if err != nil {
 				return fail[GetIncidentsOutput]("unpin failed: " + err.Error())
 			}
@@ -271,7 +271,7 @@ func (dt *DaemonTools) handleIncidentRetentionAction(input GetIncidentsInput) (*
 				fmt.Sprintf("Incident %s unpinned — normal retention applies again.", input.ErrorID))), GetIncidentsOutput{}, nil
 		}
 
-		res, err := dt.client.IncidentPin(payload)
+		res, err := dt.currentClient().IncidentPin(payload)
 		if err != nil {
 			return fail[GetIncidentsOutput]("pin failed: " + err.Error())
 		}
@@ -282,7 +282,7 @@ func (dt *DaemonTools) handleIncidentRetentionAction(input GetIncidentsInput) (*
 		return mcpText(msg), GetIncidentsOutput{}, nil
 
 	case "clear":
-		res, err := dt.client.IncidentClear()
+		res, err := dt.currentClient().IncidentClear()
 		if err != nil {
 			return fail[GetIncidentsOutput]("clear failed: " + err.Error())
 		}

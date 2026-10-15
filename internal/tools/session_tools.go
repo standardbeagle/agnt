@@ -173,7 +173,7 @@ func (dt *DaemonTools) handleSessionList(input SessionInput) (*mcp.CallToolResul
 	// session-bound, so cwd is not the caller's project.
 	dirFilter := dt.scopeFilter(input.Global)
 
-	result, err := dt.client.SessionList(dirFilter)
+	result, err := dt.currentClient().SessionList(dirFilter)
 	if err != nil {
 		return formatDaemonError(err, "session"), SessionOutput{}, nil
 	}
@@ -224,7 +224,7 @@ func (dt *DaemonTools) handleSessionGet(input SessionInput) (*mcp.CallToolResult
 		return fail[SessionOutput]("code required for get")
 	}
 
-	result, err := dt.client.SessionGet(input.Code)
+	result, err := dt.currentClient().SessionGet(input.Code)
 	if err != nil {
 		return formatDaemonError(err, "session"), SessionOutput{}, nil
 	}
@@ -265,7 +265,7 @@ func (dt *DaemonTools) handleSessionSend(input SessionInput) (*mcp.CallToolResul
 		return fail[SessionOutput]("message required for send")
 	}
 
-	result, err := dt.client.SessionSend(input.Code, input.Message)
+	result, err := dt.currentClient().SessionSend(input.Code, input.Message)
 	if err != nil {
 		return formatDaemonError(err, "session"), SessionOutput{}, nil
 	}
@@ -287,7 +287,7 @@ func (dt *DaemonTools) handleSessionSchedule(input SessionInput) (*mcp.CallToolR
 		return fail[SessionOutput]("message required for schedule")
 	}
 
-	result, err := dt.client.SessionSchedule(input.Code, input.Duration, input.Message)
+	result, err := dt.currentClient().SessionSchedule(input.Code, input.Duration, input.Message)
 	if err != nil {
 		return formatDaemonError(err, "session"), SessionOutput{}, nil
 	}
@@ -311,7 +311,7 @@ func (dt *DaemonTools) handleSessionTasks(input SessionInput) (*mcp.CallToolResu
 	// Same SessionCode-first scoping as handleSessionList.
 	dirFilter := dt.scopeFilter(input.Global)
 
-	result, err := dt.client.SessionTasks(dirFilter)
+	result, err := dt.currentClient().SessionTasks(dirFilter)
 	if err != nil {
 		return formatDaemonError(err, "session"), SessionOutput{}, nil
 	}
@@ -357,7 +357,7 @@ func (dt *DaemonTools) handleSessionCancel(input SessionInput) (*mcp.CallToolRes
 		return fail[SessionOutput]("task_id required for cancel")
 	}
 
-	err := dt.client.SessionCancel(input.TaskID)
+	err := dt.currentClient().SessionCancel(input.TaskID)
 	if err != nil {
 		return formatDaemonError(err, "session"), SessionOutput{}, nil
 	}

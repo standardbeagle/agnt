@@ -124,7 +124,7 @@ func makePublishHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolRequ
 			if err != nil {
 				return fail[PublishOutput]("publish create: " + err.Error())
 			}
-			res, err := dt.client.PublishCreate(protocol.PublishCreateRequest{Walkthrough: artifact})
+			res, err := dt.currentClient().PublishCreate(protocol.PublishCreateRequest{Walkthrough: artifact})
 			if err != nil {
 				return fail[PublishOutput]("publish create failed: " + err.Error())
 			}
@@ -135,7 +135,7 @@ func makePublishHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolRequ
 			if input.ID == "" {
 				return fail[PublishOutput]("publish rotate: id is required")
 			}
-			res, err := dt.client.PublishRotate(input.ID)
+			res, err := dt.currentClient().PublishRotate(input.ID)
 			if err != nil {
 				return fail[PublishOutput]("publish rotate failed: " + err.Error())
 			}
@@ -146,7 +146,7 @@ func makePublishHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolRequ
 			if input.ID == "" {
 				return fail[PublishOutput]("publish revoke: id is required")
 			}
-			if err := dt.client.PublishRevoke(input.ID); err != nil {
+			if err := dt.currentClient().PublishRevoke(input.ID); err != nil {
 				return fail[PublishOutput]("publish revoke failed: " + err.Error())
 			}
 			out := PublishOutput{Action: action, ID: input.ID}
@@ -156,7 +156,7 @@ func makePublishHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolRequ
 			if input.ID == "" {
 				return fail[PublishOutput]("publish status: id is required")
 			}
-			info, err := dt.client.PublishStatus(input.ID)
+			info, err := dt.currentClient().PublishStatus(input.ID)
 			if err != nil {
 				return fail[PublishOutput]("publish status failed: " + err.Error())
 			}
@@ -164,7 +164,7 @@ func makePublishHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolRequ
 			return renderPublish(out, input.Raw), out, nil
 
 		case "list":
-			res, err := dt.client.PublishList()
+			res, err := dt.currentClient().PublishList()
 			if err != nil {
 				return fail[PublishOutput]("publish list failed: " + err.Error())
 			}
@@ -175,7 +175,7 @@ func makePublishHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolRequ
 			if input.ID == "" {
 				return fail[PublishOutput]("publish feedback: id is required")
 			}
-			res, err := dt.client.PublishFeedback(input.ID, input.Cursor, input.Limit)
+			res, err := dt.currentClient().PublishFeedback(input.ID, input.Cursor, input.Limit)
 			if err != nil {
 				return fail[PublishOutput]("publish feedback failed: " + err.Error())
 			}
