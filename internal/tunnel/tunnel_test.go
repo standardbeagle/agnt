@@ -56,6 +56,18 @@ func TestNgrokURLPattern(t *testing.T) {
 			expected: "https://abcd-1234-wxyz.ngrok-free.app",
 		},
 		{
+			input:    `t=x lvl=info msg="started tunnel" obj=tunnels addr=http://localhost:3000 url=https://abcd-1234.ngrok-free.dev`,
+			expected: "https://abcd-1234.ngrok-free.dev",
+		},
+		{
+			input:    "url=https://abcd.ngrok.app",
+			expected: "https://abcd.ngrok.app",
+		},
+		{
+			input:    "url=https://abcd.example.com addr=http://localhost:3000",
+			expected: "",
+		},
+		{
 			input:    "no url here",
 			expected: "",
 		},

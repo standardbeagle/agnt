@@ -401,45 +401,8 @@ func (t *Tunnel) startCloudflare(ctx context.Context) error {
 		t.closeDone()
 		return err
 	}
-	cmd := exec.CommandContext(ctx, binary, args...)
-
-	// Capture stderr (cloudflared logs to stderr)
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		err = fmt.Errorf("failed to create stderr pipe: %w", err)
-		t.setState(StateFailed)
-		t.setError(err)
-		t.closeDone()
-		return err
-	}
-
-	if err := cmd.Start(); err != nil {
-		err = fmt.Errorf("failed to start cloudflared: %w", err)
-		t.setState(StateFailed)
-		t.setError(err)
-		t.closeDone()
-		return err
-	}
-
-	t.procMu.Lock()
-	t.cmd = cmd
-	t.procMu.Unlock()
-
-	// Parse output in goroutine
-	go t.parseCloudflareOutput(stderr)
-
-	// Wait for process in goroutine
-	go func() {
-		defer t.closeDone()
-		if err := cmd.Wait(); err != nil {
-			if ctx.Err() == nil { // Not cancelled
-				t.setError(fmt.Errorf("cloudflared exited: %w", err))
-				t.setState(StateFailed)
-			}
-		}
-	}()
-
-	return nil
+	// cloudflared logs to stderr.
+	return t.launch(ctx, "cloudflared", exec.CommandContext(ctx, binary, args...), t.cloudflareLine)
 }
 
 // cloudflareArgs builds the cloudflared command line: a quick tunnel when
@@ -487,19 +450,21 @@ func checkCredentialsFile(path string) error {
 const cloudflaredRegistered = "Registered tunnel connection"
 
 func (t *Tunnel) parseCloudflareOutput(r io.Reader) {
-	forEachLine(r, func(line string) {
-		if named := t.config.Named; named != nil {
-			if strings.Contains(line, cloudflaredRegistered) && t.PublicURL() == "" {
-				t.setPublicURL("https://" + named.Hostname)
-				t.markConnected()
-			}
-			return
-		}
-		if match := cloudflareURLPattern.FindString(line); match != "" {
-			t.setPublicURL(match)
+	forEachLine(r, t.cloudflareLine)
+}
+
+func (t *Tunnel) cloudflareLine(line string) {
+	if named := t.config.Named; named != nil {
+		if strings.Contains(line, cloudflaredRegistered) && t.PublicURL() == "" {
+			t.setPublicURL("https://" + named.Hostname)
 			t.markConnected()
 		}
-	})
+		return
+	}
+	if match := cloudflareURLPattern.FindString(line); match != "" {
+		t.setPublicURL(match)
+		t.markConnected()
+	}
 }
 
 // maxTunnelLineBytes is the longest provider output line that is parsed.
@@ -543,10 +508,99 @@ func forEachLine(r io.Reader, fn func(line string)) {
 	}
 }
 
+// providerWaitDelay bounds how long Wait keeps reading a provider's output
+// after the process itself has exited, in case a descendant still holds the
+// pipe open.
+const providerWaitDelay = 2 * time.Second
+
+// maxExitTailBytes caps the provider output line quoted in an exit error.
+const maxExitTailBytes = 512
+
+// launch starts a provider process with its stdout and stderr both read, line
+// by line, into handle, and supervises it until it exits.
+//
+// Output goes through a pipe launch owns rather than StdoutPipe/StderrPipe:
+// with those, Wait closes the read end as soon as the process exits, racing
+// the reader for the last lines — which are exactly the lines that say why a
+// tunnel died. Here Wait returns only once everything the process wrote has
+// been handed to the reader (bounded by providerWaitDelay), so the last line
+// is known when the exit is reported.
+//
+// Any exit the caller did not ask for (ctx still live) marks the tunnel
+// failed, including a clean exit status: a tunnel provider that stops on its
+// own has stopped tunnelling, whatever its status says. The error quotes the
+// provider's last output line, which is where cloudflared, ngrok and
+// tailscale state the reason (a missing authtoken, an unreachable edge).
+func (t *Tunnel) launch(ctx context.Context, name string, cmd *exec.Cmd, handle func(line string)) error {
+	pr, pw := io.Pipe()
+	cmd.Stdout = pw
+	cmd.Stderr = pw
+	cmd.WaitDelay = providerWaitDelay
+
+	if err := cmd.Start(); err != nil {
+		_ = pw.Close()
+		_ = pr.Close()
+		return t.fail(fmt.Errorf("failed to start %s: %w", name, err))
+	}
+
+	t.procMu.Lock()
+	t.cmd = cmd
+	t.procMu.Unlock()
+
+	var lastLine atomic.Pointer[string]
+	parsed := make(chan struct{})
+	go func() {
+		defer close(parsed)
+		forEachLine(pr, func(line string) {
+			if trimmed := strings.TrimSpace(line); trimmed != "" {
+				lastLine.Store(&trimmed)
+			}
+			handle(line)
+		})
+	}()
+
+	go func() {
+		defer t.closeDone()
+		waitErr := cmd.Wait()
+		_ = pw.Close()
+		<-parsed
+		if ctx.Err() != nil {
+			return // Stop (or the caller's context) ended it: not a failure.
+		}
+		if waitErr == nil {
+			waitErr = errors.New("exited unexpectedly with status 0")
+		}
+		err := fmt.Errorf("%s exited: %w", name, waitErr)
+		if last := lastLine.Load(); last != nil {
+			tail := *last
+			if len(tail) > maxExitTailBytes {
+				tail = tail[:maxExitTailBytes] + "…"
+			}
+			err = fmt.Errorf("%w (last output: %s)", err, tail)
+		}
+		t.setError(err)
+		t.setState(StateFailed)
+	}()
+
+	return nil
+}
+
+// fail records a start-time failure as the tunnel's terminal state and
+// returns it.
+func (t *Tunnel) fail(err error) error {
+	t.setState(StateFailed)
+	t.setError(err)
+	t.closeDone()
+	return err
+}
+
 // ngrok output patterns
 var (
-	// Matches ngrok URLs like https://abc123.ngrok.io or https://abc123.ngrok-free.app
-	ngrokURLPattern = regexp.MustCompile(`https://[a-z0-9-]+\.ngrok(?:-free)?\.(?:io|app)`)
+	// Matches a URL on one of ngrok's own domains: https://abc123.ngrok.io,
+	// .ngrok.app, .ngrok.dev, .ngrok-free.app, or .ngrok-free.dev (the free
+	// domain current accounts get). The set is the one the proxy's control
+	// WebSocket recognises for an ngrok tunnel (tunnelKindDomains).
+	ngrokURLPattern = regexp.MustCompile(`https://[a-z0-9-]+\.(?:ngrok-free\.(?:app|dev)|ngrok\.(?:app|dev|io))`)
 )
 
 func (t *Tunnel) startNgrok(ctx context.Context) error {
@@ -564,45 +618,18 @@ func (t *Tunnel) startNgrok(ctx context.Context) error {
 		return err
 	}
 
-	cmd := exec.CommandContext(ctx, binary, "http", ngrokTarget(t.config.LocalHost, t.config.LocalPort))
+	cmd := exec.CommandContext(ctx, binary, ngrokArgs(t.config.LocalHost, t.config.LocalPort)...)
+	return t.launch(ctx, "ngrok", cmd, t.ngrokLine)
+}
 
-	// ngrok outputs to stdout
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		err = fmt.Errorf("failed to create stdout pipe: %w", err)
-		t.setState(StateFailed)
-		t.setError(err)
-		t.closeDone()
-		return err
-	}
-
-	if err := cmd.Start(); err != nil {
-		err = fmt.Errorf("failed to start ngrok: %w", err)
-		t.setState(StateFailed)
-		t.setError(err)
-		t.closeDone()
-		return err
-	}
-
-	t.procMu.Lock()
-	t.cmd = cmd
-	t.procMu.Unlock()
-
-	// Parse output in goroutine
-	go t.parseNgrokOutput(stdout)
-
-	// Wait for process in goroutine
-	go func() {
-		defer t.closeDone()
-		if err := cmd.Wait(); err != nil {
-			if ctx.Err() == nil { // Not cancelled
-				t.setError(fmt.Errorf("ngrok exited: %w", err))
-				t.setState(StateFailed)
-			}
-		}
-	}()
-
-	return nil
+// ngrokArgs is the `ngrok http` command line. The log flags are what make the
+// public URL readable at all: with its output on a pipe ngrok runs no console
+// UI (console_ui defaults to "iftty") and logs nothing (log defaults to
+// false), so without them nothing ever names the URL and WaitForURL waits for
+// a line that never comes. With them ngrok prints, among its logfmt lines,
+// `msg="started tunnel" ... url=https://<name>.ngrok-free.app`.
+func ngrokArgs(host string, port int) []string {
+	return []string{"http", "--log=stdout", "--log-format=logfmt", ngrokTarget(host, port)}
 }
 
 // isLoopbackHost reports whether host is this machine's loopback, as a name or
@@ -628,12 +655,14 @@ func ngrokTarget(host string, port int) string {
 }
 
 func (t *Tunnel) parseNgrokOutput(r io.Reader) {
-	forEachLine(r, func(line string) {
-		if match := ngrokURLPattern.FindString(line); match != "" {
-			t.setPublicURL(match)
-			t.markConnected()
-		}
-	})
+	forEachLine(r, t.ngrokLine)
+}
+
+func (t *Tunnel) ngrokLine(line string) {
+	if match := ngrokURLPattern.FindString(line); match != "" {
+		t.setPublicURL(match)
+		t.markConnected()
+	}
 }
 
 // tailscale serve output patterns
@@ -681,38 +710,11 @@ func (t *Tunnel) startTailscale(ctx context.Context) error {
 	// behind on Stop().
 	cmd := exec.CommandContext(ctx, binary, "serve", fmt.Sprintf("%d", t.config.LocalPort))
 
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		err = fmt.Errorf("failed to create stdout pipe: %w", err)
-		t.setState(StateFailed)
-		t.setError(err)
-		t.closeDone()
+	// launch reads stdout and stderr both: serve's URL output stream is not
+	// version-stable.
+	if err := t.launch(ctx, "tailscale serve", cmd, t.tailscaleLine); err != nil {
 		return err
 	}
-	stderr, err := cmd.StderrPipe()
-	if err != nil {
-		err = fmt.Errorf("failed to create stderr pipe: %w", err)
-		t.setState(StateFailed)
-		t.setError(err)
-		t.closeDone()
-		return err
-	}
-
-	if err := cmd.Start(); err != nil {
-		err = fmt.Errorf("failed to start tailscale serve: %w", err)
-		t.setState(StateFailed)
-		t.setError(err)
-		t.closeDone()
-		return err
-	}
-
-	t.procMu.Lock()
-	t.cmd = cmd
-	t.procMu.Unlock()
-
-	// Parse both pipes — serve's URL output stream is not version-stable.
-	go t.parseTailscaleOutput(stdout)
-	go t.parseTailscaleOutput(stderr)
 
 	// MagicDNS fallback: if serve hasn't printed a parseable URL within
 	// the grace window, query `tailscale status --json` for Self.DNSName
@@ -733,24 +735,16 @@ func (t *Tunnel) startTailscale(ctx context.Context) error {
 		}
 	}()
 
-	go func() {
-		defer t.closeDone()
-		if err := cmd.Wait(); err != nil {
-			if ctx.Err() == nil { // Not cancelled
-				t.setError(fmt.Errorf("tailscale serve exited: %w", err))
-				t.setState(StateFailed)
-			}
-		}
-	}()
-
 	return nil
 }
 
 func (t *Tunnel) parseTailscaleOutput(r io.Reader) {
-	forEachLine(r, func(line string) {
-		if match := tailscaleURLPattern.FindString(line); match != "" {
-			t.setPublicURL(match)
-			t.markConnected()
-		}
-	})
+	forEachLine(r, t.tailscaleLine)
+}
+
+func (t *Tunnel) tailscaleLine(line string) {
+	if match := tailscaleURLPattern.FindString(line); match != "" {
+		t.setPublicURL(match)
+		t.markConnected()
+	}
 }
