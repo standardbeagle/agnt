@@ -788,3 +788,47 @@ func TestHook_NoLeakedGoroutines(t *testing.T) {
 // countGoroutines returns runtime.NumGoroutine. Wrapped so tests read
 // cleanly without a runtime call sprinkled through the test body.
 func countGoroutines() int { return runtime.NumGoroutine() }
+
+// TestHook_ProjectPathFallsBackToPayloadCwd is the regression test for
+// stop/notification toasts that never showed: the documented hook lines
+// carry no --project-path, and the daemon fails closed on an unattributed
+// event, so the toast was dropped. Claude Code's payload `cwd` attributes it.
+func TestHook_ProjectPathFallsBackToPayloadCwd(t *testing.T) {
+	sock, sink := startTestHookDaemon(t)
+	_ = redirectDropLog(t)
+
+	proj := t.TempDir()
+	payload, err := json.Marshal(map[string]any{"cwd": proj, "hook_event_name": "Stop"})
+	require.NoError(t, err)
+
+	code := runHookInternal(hookInvocation{
+		event:      "stop",
+		sessionID:  "sess-1",
+		stdin:      bytes.NewReader(payload),
+		stderr:     &bytes.Buffer{},
+		socketPath: sock,
+	})
+	require.Equal(t, 0, code)
+
+	sink.waitFor(t, 1, 2*time.Second)
+	events := sink.snapshot()
+	require.Len(t, events, 1)
+	assert.Equal(t, proj, events[0].ProjectPath)
+	assert.Equal(t, "sess-1", events[0].SessionID)
+}
+
+// TestNotify_AttributesProject is the notify half of the same regression:
+// `agnt notify` sent no tags at all, so its toast was always dropped.
+func TestNotify_AttributesProject(t *testing.T) {
+	sock, sink := startTestHookDaemon(t)
+	_ = redirectDropLog(t)
+
+	proj := t.TempDir()
+	require.Equal(t, 0, dispatchNotifyHook(sock, "info", "T", "hello", proj))
+
+	sink.waitFor(t, 1, 2*time.Second)
+	events := sink.snapshot()
+	require.Len(t, events, 1)
+	assert.Equal(t, "notification", events[0].Event)
+	assert.Equal(t, proj, events[0].ProjectPath)
+}

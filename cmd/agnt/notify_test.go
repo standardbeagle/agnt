@@ -18,7 +18,7 @@ func TestDispatchNotifyHook_DaemonDownReturnsZero(t *testing.T) {
 	// immediately, and the function must swallow the error and return 0.
 	bogusSocket := filepath.Join(sockdir.Short(t), "nonexistent.sock")
 
-	rc := dispatchNotifyHook(bogusSocket, "info", "Title", "Message")
+	rc := dispatchNotifyHook(bogusSocket, "info", "Title", "Message", "")
 	assert.Equal(t, 0, rc, "daemon-down case must return exit 0")
 }
 
@@ -31,7 +31,7 @@ func TestDispatchNotifyHook_DaemonDownReturnsZero(t *testing.T) {
 // dispatched return value is the same regardless of whether the
 // daemon answered or not — the contract is "fire and forget, exit 0".
 func TestDispatchNotifyHook_AlwaysReturnsZero(t *testing.T) {
-	rc := dispatchNotifyHook(filepath.Join(sockdir.Short(t), "missing.sock"), "warning", "", "hello")
+	rc := dispatchNotifyHook(filepath.Join(sockdir.Short(t), "missing.sock"), "warning", "", "hello", "")
 	assert.Equal(t, 0, rc)
 }
 
@@ -40,6 +40,6 @@ func TestDispatchNotifyHook_AlwaysReturnsZero(t *testing.T) {
 // daemon-side broadcastNotificationToast defaults `type=info` when
 // the field is empty, so this is the agreed contract.
 func TestDispatchNotifyHook_EmptyKindStillExitsZero(t *testing.T) {
-	rc := dispatchNotifyHook(filepath.Join(sockdir.Short(t), "missing.sock"), "", "", "fallback")
+	rc := dispatchNotifyHook(filepath.Join(sockdir.Short(t), "missing.sock"), "", "", "fallback", "")
 	assert.Equal(t, 0, rc)
 }

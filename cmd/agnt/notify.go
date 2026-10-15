@@ -16,12 +16,13 @@ import (
 
 var notifyCmd = &cobra.Command{
 	Use:   "notify",
-	Short: "Send a notification to all active browser proxies (alias for `agnt hook notification`)",
+	Short: "Send a notification to the current project's browser proxies (alias for `agnt hook notification`)",
 	Long: `Send a toast notification that will be displayed in the browser's floating indicator.
 
 This is a thin alias for ` + "`agnt hook notification`" + `: it dispatches a hook event
 into the daemon's ring buffer, and the daemon's drain goroutine fans the event
-out to every active proxy as a browser toast. Both ` + "`agnt notify`" + ` and
+out as a browser toast to every proxy of the project named by --project-path
+(default: the current directory). Proxies of other projects never see it. Both ` + "`agnt notify`" + ` and
 ` + "`agnt hook notification`" + ` produce identical browser behavior.
 
 Phase 3 of the hook dispatcher consolidation collapsed the legacy per-proxy
@@ -34,12 +35,14 @@ var (
 	notifyType    string
 	notifyTitle   string
 	notifyMessage string
+	notifyProject string
 )
 
 func init() {
 	notifyCmd.Flags().StringVar(&notifyType, "type", "info", "Notification type (success, error, warning, info)")
 	notifyCmd.Flags().StringVar(&notifyTitle, "title", "", "Notification title")
 	notifyCmd.Flags().StringVar(&notifyMessage, "message", "", "Notification message")
+	notifyCmd.Flags().StringVar(&notifyProject, "project-path", "", "Project whose browser proxies show the toast (default: current directory)")
 
 	rootCmd.AddCommand(notifyCmd)
 }
@@ -74,7 +77,16 @@ func runNotify(cmd *cobra.Command, args []string) {
 	//   - 50ms deadline exceeded → daemon is wedged, surfacing the
 	//     timeout to the calling shell would just spam Claude's output
 	//   - any other error → same reasoning
-	exitCode := dispatchNotifyHook(socketPath, notifyType, notifyTitle, notifyMessage)
+	//
+	// The daemon only toasts proxies of the event's project (an
+	// unattributed event is dropped, never fanned to every overlay), so
+	// the toast is attributed to --project-path, else the directory the
+	// command runs in — what `--project-path $PWD` gives a hook line.
+	projectPath := notifyProject
+	if projectPath == "" {
+		projectPath, _ = os.Getwd()
+	}
+	exitCode := dispatchNotifyHook(socketPath, notifyType, notifyTitle, notifyMessage, projectPath)
 	os.Exit(exitCode)
 }
 
@@ -89,7 +101,7 @@ func runNotify(cmd *cobra.Command, args []string) {
 // issues to the caller would either break the agent loop or pollute
 // Claude's transcript with noise. The only non-zero exit path is the
 // arg validation failure in runNotify above (--message required).
-func dispatchNotifyHook(socketPath, kind, title, message string) int {
+func dispatchNotifyHook(socketPath, kind, title, message, projectPath string) int {
 	type notifyBody struct {
 		Type    string `json:"type"`
 		Title   string `json:"title,omitempty"`
@@ -114,7 +126,11 @@ func dispatchNotifyHook(socketPath, kind, title, message string) int {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	if err := client.HookSend(ctx, "notification", json.RawMessage(body), nil); err != nil {
+	var tags map[string]string
+	if projectPath != "" {
+		tags = map[string]string{"project_path": projectPath}
+	}
+	if err := client.HookSend(ctx, "notification", json.RawMessage(body), tags); err != nil {
 		// Both ErrHookDaemonDown and ErrHookDeadline are explicitly
 		// swallowed. Any other error from HookSend (marshal, internal
 		// daemon error) is also swallowed by design — this command

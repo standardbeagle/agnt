@@ -67,14 +67,16 @@ The `agnt run`/overlay status bar also raises a `⚠` notice (`selflog:agnt`) wh
       { "type": "command", "command": "agnt hook post-tool-use --session-id $CLAUDE_SESSION_ID --project-path $PWD" }
     ],
     "notification": [
-      { "type": "command", "command": "agnt hook notification --session-id $CLAUDE_SESSION_ID" }
+      { "type": "command", "command": "agnt hook notification --session-id $CLAUDE_SESSION_ID --project-path $PWD" }
     ],
     "stop": [
-      { "type": "command", "command": "agnt hook stop --session-id $CLAUDE_SESSION_ID" }
+      { "type": "command", "command": "agnt hook stop --session-id $CLAUDE_SESSION_ID --project-path $PWD" }
     ]
   }
 }
 ```
+
+Browser fan-out needs a project: an event with no `project_path` is dropped (fail-closed). When `--project-path` (or `--tag project_path=…`) is absent, `agnt hook` falls back to the `cwd` field Claude Code puts in every hook payload, so a line wired without it still reaches the session's proxies. A payload with no `cwd` and no flag stays unattributed and gets no toast.
 
 ## Streaming hook events live
 
@@ -86,4 +88,4 @@ agnt monitor --types hook --format json  # NDJSON for jq pipelines
 
 ## `agnt notify` compatibility
 
-`agnt notify --message "hi"` preserved as thin alias for `agnt hook notification`. Marshals `{type, title, message}` and calls `HookSend("notification", ...)`. Daemon-side drain handles per-proxy `BroadcastToast` loop, so browser surface identical to legacy impl. Client-side per-proxy iteration that lived in `cmd/agnt/notify.go` removed in phase 3.
+`agnt notify --message "hi"` preserved as thin alias for `agnt hook notification`. Marshals `{type, title, message}` and calls `HookSend("notification", ...)` tagged with `project_path` = `--project-path`, else the current directory; the toast reaches only that project's proxies. Daemon-side drain handles per-proxy `BroadcastToast` loop, so browser surface identical to legacy impl. Client-side per-proxy iteration that lived in `cmd/agnt/notify.go` removed in phase 3.

@@ -181,6 +181,15 @@ func runHookInternal(opts hookInvocation) int {
 		return 0
 	}
 
+	// Attribute the event to a project. The daemon fails CLOSED on an
+	// event with no project_path (toasts and tool events are dropped, never
+	// fanned to every overlay), so a hook line wired without
+	// `--project-path` — the `notification`/`stop` lines in the documented
+	// settings.json, and any older install — would otherwise never surface
+	// in the browser. Claude Code puts the session's working directory in
+	// every hook payload's `cwd`, which is exactly what `$PWD` would give.
+	tags = attributeHookProject(tags, payload)
+
 	// Pre-tool-use chain: when this is a PreToolUse event for the Bash
 	// tool, pipe the payload through the check-bash interceptor inline
 	// before enqueuing. This lets a single hook entry in settings.json
@@ -274,6 +283,31 @@ func buildHookTags(sessionID, projectPath, agent string, rawTags []string) (map[
 		tags["agent"] = agent
 	}
 	return tags, nil
+}
+
+// attributeHookProject fills tags["project_path"] when the caller gave
+// none. An explicit --project-path / --tag always wins and is passed
+// through untouched; otherwise the payload's `cwd` (an absolute path
+// Claude Code sets on every hook) is used, cleaned. The daemon normalizes
+// both the same way when it scopes the event to a project's proxies. The
+// payload is only decoded when no path was given, so the attributed hot
+// path pays nothing.
+func attributeHookProject(tags map[string]string, payload []byte) map[string]string {
+	if tags["project_path"] != "" || len(payload) == 0 {
+		return tags
+	}
+	var p struct {
+		Cwd string `json:"cwd"`
+	}
+	if json.Unmarshal(payload, &p) != nil || p.Cwd == "" {
+		return tags
+	}
+	path := filepath.Clean(p.Cwd)
+	if tags == nil {
+		tags = make(map[string]string, 1)
+	}
+	tags["project_path"] = path
+	return tags
 }
 
 // writeHookDropLog appends one line to the drop-log so developers can
