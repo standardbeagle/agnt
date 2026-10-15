@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
@@ -128,7 +129,10 @@ func (d *Daemon) handleProxyEvents() {
 }
 
 // handleURLDetected handles URL detection events from scripts.
-// Creates proxies for any proxy configs linked to the script.
+// Creates proxies for any proxy configs linked to the script. A fallback-port
+// proxy already running for the same proxy name is replaced on its port
+// (replaceFallbackProxy) unless it already targets the detected URL, so a late
+// detection never leaves two proxies for one config.
 func (d *Daemon) handleURLDetected(event ProxyEvent) {
 	debug.Log("daemon", "URL detected from %s: %s (path: %s)", event.ScriptID, event.URL, event.Path)
 
@@ -193,10 +197,22 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 			continue
 		}
 
+		// A fallback-port proxy for this proxy name (handleFallbackPortCheck,
+		// id makeProcessID) means detection came late. Already pointing at the
+		// detected URL: keep it. Otherwise it is replaced below, on its port.
+		fallback, hasFallback := d.exactProxy(makeProcessID(projectPath, proxyName))
+		if hasFallback && sameProxyTarget(fallback.TargetURL, event.URL) {
+			debug.Log("daemon", "Fallback proxy %s already targets %s, keeping it", fallback.ID, event.URL)
+			continue
+		}
+
 		// Check proxy limit per session
 		d.scriptProxyMu.RLock()
 		currentCount := len(d.scriptProxies[event.ScriptID])
 		d.scriptProxyMu.RUnlock()
+		if hasFallback && d.linkedScriptForProxy(fallback.ID) == event.ScriptID {
+			currentCount-- // replaced, not added
+		}
 
 		if currentCount >= 5 {
 			debug.Warn("daemon", "Proxy limit (5) reached for script %s, skipping %s", event.ScriptID, event.URL)
@@ -208,7 +224,15 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 		// Create proxy
 		proxyServerConfig := buildProxyServerConfig(proxyID, event.URL, projectPath, proxyConfig)
 
-		server, err := d.proxym.Create(d.ctx, proxyServerConfig)
+		var (
+			server        *proxy.ProxyServer
+			fallbackOwner any
+		)
+		if hasFallback {
+			server, fallbackOwner, err = d.replaceFallbackProxy(fallback, proxyServerConfig, event.ScriptID, proxyName)
+		} else {
+			server, err = d.proxym.Create(d.ctx, proxyServerConfig)
+		}
 		if err != nil {
 			debug.Error("daemon", "Failed to create proxy %s: %v", proxyID, err)
 			d.recordStartupEntry(event.ScriptID, "", "error", "proxy_creation_failed",
@@ -218,6 +242,8 @@ func (d *Daemon) handleURLDetected(event ProxyEvent) {
 
 		if owner, ok := d.incidentProcessOwner.Load(event.ScriptID); ok {
 			d.registerIncidentProxyResourceOwner(server.ID, ownerAsIncidentResource(owner))
+		} else if fallbackOwner != nil {
+			d.registerIncidentProxyResourceOwner(server.ID, ownerAsIncidentResource(fallbackOwner))
 		}
 		d.proxyConfigs.Store(server.ID, configuredProxy{name: proxyName, signature: proxySignature(proxyConfig)})
 		d.wireProxyLogger(server)
@@ -378,6 +404,107 @@ func (d *Daemon) exactProxy(id string) (*proxy.ProxyServer, bool) {
 		return nil, false
 	}
 	return p, true
+}
+
+// fallbackRebindTimeout bounds how long a replacement waits for the fallback
+// proxy's port to be released before giving up on keeping it.
+const fallbackRebindTimeout = 2 * time.Second
+
+// replaceFallbackProxy swaps a fallback-port proxy for one targeting the URL
+// detection found, keeping the port the browser already has open. The proxy id
+// changes (makeProcessID → makeProxyIDFromURL), so open browser connections
+// drop and reconnect to the same address.
+//
+// The fallback is stopped with the full cleanup a PROXY STOP does: config
+// snapshot, script link, incident owner, admin entry, persisted state. The
+// replacement keeps its auto-restart setting and, when it comes back on the
+// same port, its live public URL (a tunnel to that port still reaches it).
+//
+// The port is rebound strictly, retried until fallbackRebindTimeout. When it
+// cannot be reclaimed the failure is recorded as an error
+// (startup_proxy_fallback_replace_failed) and the proxy is created on the
+// port its config would give it, rather than leaving the script with none.
+//
+// It returns the fallback's incident owner so the caller can carry it when
+// the script has none of its own. The caller records creation failure.
+func (d *Daemon) replaceFallbackProxy(fallback *proxy.ProxyServer, cfg proxy.ProxyConfig, scriptID, proxyName string) (*proxy.ProxyServer, any, error) {
+	oldID := fallback.ID
+	oldTarget := fallback.TargetURL.String()
+	port := fallback.BoundPort()
+	cfg.AutoRestart = fallback.AutoRestart()
+	owner, _ := d.incidentProxyOwner.Load(oldID)
+
+	stopErr := d.proxym.Stop(d.ctx, oldID)
+	d.retireIncidentProxyOwner(oldID)
+	d.retireExplicitProxyEntry(fallback.Path, oldID)
+	if d.stateMgr != nil {
+		d.stateMgr.RemoveProxy(oldID)
+	}
+	if stopErr != nil && !errors.Is(stopErr, proxy.ErrProxyNotFound) {
+		d.recordStartupEntry(scriptID, proxyName, "warning", "proxy_stop_failed",
+			fmt.Sprintf("replacing fallback proxy %s: its shutdown failed: %v", oldID, stopErr), port)
+	}
+
+	if port > 0 {
+		pinned := cfg
+		pinned.ListenPort = port
+		pinned.StrictListenPort = true
+		server, err := d.createWithRetry(pinned, fallbackRebindTimeout)
+		if err == nil {
+			if fallback.GetPublicURL() != "" {
+				server.CopyPublicURLFrom(fallback)
+			}
+			d.recordStartupEntry(scriptID, proxyName, "info", "startup_proxy_fallback_replaced",
+				fmt.Sprintf("proxy %s: URL detection replaced fallback proxy %s (%s) with %s (%s) on port %d; open browser connections reconnect",
+					proxyName, oldID, oldTarget, server.ID, server.TargetURL.String(), port), port)
+			return server, owner, nil
+		}
+		server, err2 := d.proxym.Create(d.ctx, cfg)
+		msg := fmt.Sprintf("proxy %s: could not rebind fallback port %d for detected target %s: %v", proxyName, port, cfg.TargetURL, err)
+		if err2 == nil {
+			msg += fmt.Sprintf("; proxy %s now listens on port %d — reopen the browser there", server.ID, server.BoundPort())
+		}
+		d.recordStartupEntry(scriptID, proxyName, "error", "startup_proxy_fallback_replace_failed", msg, port)
+		return server, owner, err2
+	}
+
+	server, err := d.proxym.Create(d.ctx, cfg)
+	return server, owner, err
+}
+
+// createWithRetry creates a proxy, retrying until timeout so a port another
+// listener is still releasing can be reclaimed. ErrProxyExists is final.
+func (d *Daemon) createWithRetry(cfg proxy.ProxyConfig, timeout time.Duration) (*proxy.ProxyServer, error) {
+	deadline := time.Now().Add(timeout)
+	for {
+		server, err := d.proxym.Create(d.ctx, cfg)
+		if err == nil || errors.Is(err, proxy.ErrProxyExists) || d.ctx.Err() != nil || !time.Now().Before(deadline) {
+			return server, err
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+}
+
+// sameProxyTarget reports whether detected names the same upstream as target:
+// scheme, host and port (defaulted), and path up to a trailing slash.
+func sameProxyTarget(target *url.URL, detected string) bool {
+	u, err := url.Parse(detected)
+	if target == nil || err != nil {
+		return false
+	}
+	port := func(u *url.URL) string {
+		if p := u.Port(); p != "" {
+			return p
+		}
+		if strings.EqualFold(u.Scheme, "https") {
+			return "443"
+		}
+		return "80"
+	}
+	return strings.EqualFold(target.Scheme, u.Scheme) &&
+		strings.EqualFold(target.Hostname(), u.Hostname()) &&
+		port(target) == port(u) &&
+		strings.TrimSuffix(target.EscapedPath(), "/") == strings.TrimSuffix(u.EscapedPath(), "/")
 }
 
 // handleFallbackPortCheck handles delayed fallback-port checks for script-linked

@@ -25,7 +25,7 @@ Transitions use `CompareAndSwapState()`; on CAS failure re-read and decide again
 1. **Event-driven** (script-linked): `URLDetected` → `handleURLDetected`.
 2. **Explicit**: `autostartProxy` → `ExplicitStart`.
 
-**fallback-port contract**: with both `script` and `fallback-port`, wait for URL detection; if it never fires, create the proxy on `fallback-port`; a later detection updates the target, never duplicates. Details in `proxy-events.md`.
+**fallback-port contract**: with both `script` and `fallback-port`, wait for URL detection; if it never fires, create the proxy on `fallback-port`; a later detection with a different target replaces that proxy on the same listen port (new proxy id; browser connections reconnect), never duplicates. Details in `proxy-events.md`.
 
 ## Shutdown
 

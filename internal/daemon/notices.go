@@ -40,9 +40,12 @@ var noticeClassification = map[string]noticeRole{
 	"proxy_skipped":                 {domain: "proxy", failure: true, severity: "warning"},
 	"startup_proxy_fallback_failed": {domain: "proxy", failure: true, severity: "warning"},
 	"proxy_event_dropped":           {domain: "proxy", failure: true, severity: "warning"},
+	// The fallback's port could not be kept when detection replaced it.
+	"startup_proxy_fallback_replace_failed": {domain: "proxy", failure: true, severity: "error"},
 	// proxy resolvers
-	"proxy_started":               {domain: "proxy", failure: false},
-	"startup_proxy_fallback_used": {domain: "proxy", failure: false},
+	"proxy_started":                   {domain: "proxy", failure: false},
+	"startup_proxy_fallback_used":     {domain: "proxy", failure: false},
+	"startup_proxy_fallback_replaced": {domain: "proxy", failure: false},
 	// script failures
 	"failed":       {domain: "script", failure: true, severity: "error"},
 	"start_failed": {domain: "script", failure: true, severity: "error"},

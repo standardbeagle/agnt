@@ -921,7 +921,7 @@ definitions in `internal/config/agnt.go` carry the full comments.
 | `target` | Older spelling of `url`; still accepted. |
 | `script` | Link to a script: the proxy is created when a URL is detected in that script's output. |
 | `url-pattern` | Regex choosing among several detected URLs (e.g. `":34115"`). |
-| `fallback-port` | With `script`: the port to proxy if no URL is detected within 30s. |
+| `fallback-port` | With `script`: the port to proxy if no URL is detected within 30s. A URL detected later replaces the fallback target on the same proxy port (open pages reconnect). |
 | `autostart` | Start with the session. A proxy with an explicit target and no `script` autostarts anyway. |
 | `listen-port` | Fixed port for the proxy itself (1–65535). The proxy binds exactly this port or fails; unset picks a stable hash-derived port. |
 | `bind`, `allow-external` | See *Proxy Bind Address*. |
