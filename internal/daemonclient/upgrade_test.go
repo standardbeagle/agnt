@@ -3,7 +3,10 @@ package daemonclient
 import (
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
+	"time"
 )
 
 // The upgrader must spawn the replacement daemon through the same provisioning
@@ -51,5 +54,37 @@ func TestUpgraderCleanupRemovesLibraryPIDFile(t *testing.T) {
 
 	if _, err := os.Stat(pidFile); !os.IsNotExist(err) {
 		t.Fatalf("PID file %s still present after cleanup (stat err: %v)", pidFile, err)
+	}
+}
+
+// A stale lock that cannot be removed made acquireLock call itself forever
+// until the stack overflowed. It must now give up with an error naming the
+// lock. The lock is made unremovable the way each OS allows: a non-empty
+// directory in its place on Unix, an open handle on Windows.
+func TestAcquireLock_UnremovableStaleLockFailsInsteadOfRecursing(t *testing.T) {
+	u := NewDaemonUpgrader(UpgradeConfig{SocketPath: filepath.Join(t.TempDir(), "d.sock")})
+	if runtime.GOOS == "windows" {
+		f, err := os.Create(u.lockPath)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { f.Close() })
+	} else if err := os.MkdirAll(filepath.Join(u.lockPath, "pin"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-time.Hour)
+	if err := os.Chtimes(u.lockPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(u.lockPath); err == nil {
+		t.Skip("this filesystem removed the pinned lock; nothing to test")
+	}
+	err := u.acquireLock()
+	if err == nil {
+		u.releaseLock()
+		t.Fatal("acquireLock succeeded over an unremovable lock")
+	}
+	if !strings.Contains(err.Error(), "lock") {
+		t.Errorf("error should name the lock: %v", err)
 	}
 }

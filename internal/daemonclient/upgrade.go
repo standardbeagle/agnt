@@ -175,9 +175,17 @@ func (u *DaemonUpgrader) Upgrade(ctx context.Context) error {
 // acquireLock acquires the upgrade lock file.
 // Returns error if another upgrade is in progress or lock acquisition fails.
 func (u *DaemonUpgrader) acquireLock() error {
-	// Try to create lock file exclusively
-	f, err := os.OpenFile(u.lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
-	if err != nil {
+	// Two attempts at most: the second follows removing a stale lock. A lock
+	// that cannot be removed must fail here, not retry forever.
+	for attempt := 0; ; attempt++ {
+		// Try to create lock file exclusively
+		f, err := os.OpenFile(u.lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0600)
+		if err == nil {
+			// Write PID to lock file
+			fmt.Fprintf(f, "%d\n", os.Getpid())
+			u.lockFile = f
+			return nil
+		}
 		// Lock file exists - check if stale
 		if !os.IsExist(err) {
 			return err
@@ -185,20 +193,16 @@ func (u *DaemonUpgrader) acquireLock() error {
 
 		// Check if lock is stale (>5 minutes old)
 		info, statErr := os.Stat(u.lockPath)
-		if statErr == nil && time.Since(info.ModTime()) > 5*time.Minute {
+		if attempt == 0 && statErr == nil && time.Since(info.ModTime()) > 5*time.Minute {
 			u.log("Removing stale upgrade lock (>5 minutes old)")
-			os.Remove(u.lockPath)
-			// Retry
-			return u.acquireLock()
+			if rmErr := os.Remove(u.lockPath); rmErr != nil {
+				return fmt.Errorf("stale upgrade lock %s cannot be removed: %w", u.lockPath, rmErr)
+			}
+			continue
 		}
 
 		return errors.New("upgrade already in progress (lock file exists)")
 	}
-
-	// Write PID to lock file
-	fmt.Fprintf(f, "%d\n", os.Getpid())
-	u.lockFile = f
-	return nil
 }
 
 // releaseLock releases the upgrade lock.

@@ -1,7 +1,11 @@
 package daemonclient
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
@@ -111,4 +115,19 @@ func TestSocketManager_ListenAndClose(t *testing.T) {
 	// Close
 	listener.Close()
 	sm.Close()
+}
+
+// socket.Connect reports a missing or refusing socket as the bare
+// ErrSocketNotFound sentinel, not a wrapped ENOENT/ECONNREFUSED, so that is
+// the form "daemon down" takes on the hook path. Unmapped, every hook fired
+// while agnt is stopped wrote a drop-log line.
+func TestHookSend_MissingSocketIsDaemonDown(t *testing.T) {
+	if !errors.Is(mapHookSendError(ErrSocketNotFound), ErrHookDaemonDown) {
+		t.Fatal("ErrSocketNotFound not mapped to ErrHookDaemonDown")
+	}
+	c := NewClient(WithSocketPath(filepath.Join(sockdir.Short(t), "absent.sock")))
+	err := c.HookSend(context.Background(), "pre-tool-use", json.RawMessage(`{}`), nil)
+	if !errors.Is(err, ErrHookDaemonDown) {
+		t.Fatalf("HookSend to a missing socket = %v, want ErrHookDaemonDown", err)
+	}
 }

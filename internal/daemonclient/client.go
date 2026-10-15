@@ -1363,7 +1363,9 @@ func mapHookSendError(err error) error {
 	if errors.Is(err, io.EOF) {
 		return fmt.Errorf("%w: %v", ErrHookDaemonDown, err)
 	}
-	if errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ENOENT) {
+	// socket.Connect reports a missing or refusing socket as the bare
+	// ErrSocketNotFound sentinel, so that is the usual "daemon down" form.
+	if errors.Is(err, ErrSocketNotFound) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(err, syscall.ENOENT) {
 		return fmt.Errorf("%w: %v", ErrHookDaemonDown, err)
 	}
 	if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) {
