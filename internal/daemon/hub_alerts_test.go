@@ -145,3 +145,28 @@ func TestStartupLog_IncludesNotices(t *testing.T) {
 	assert.Equal(t, "error", first["severity"])
 	assert.Contains(t, first["remediation"], "allow-external")
 }
+
+// A malformed `since` must be rejected, not read as "no lower bound" (which
+// answered with the whole history as if the filter had been applied).
+func TestAlertsSince_MalformedIsInvalidArgs(t *testing.T) {
+	_, sockPath := newBootedDaemon(t)
+	c := daemonclient.NewClient(daemonclient.WithSocketPath(sockPath))
+	require.NoError(t, c.Connect())
+	t.Cleanup(func() { _ = c.Close() })
+
+	global := true
+	_, err := c.AlertQuery(protocol.AlertQueryFilter{Since: "yesterday", Global: &global})
+	require.Error(t, err, "ALERTS QUERY accepted a malformed since")
+	assert.Contains(t, err.Error(), "since")
+
+	_, err = c.Conn().Request(protocol.VerbAlerts, protocol.SubVerbStartupLog).
+		WithJSON(map[string]interface{}{"since": "yesterday", "global": true}).JSON()
+	require.Error(t, err, "ALERTS STARTUP-LOG accepted a malformed since")
+	assert.Contains(t, err.Error(), "since")
+
+	// Valid forms still work.
+	_, err = c.AlertQuery(protocol.AlertQueryFilter{Since: "5m", Global: &global})
+	require.NoError(t, err)
+	_, err = c.AlertQuery(protocol.AlertQueryFilter{Since: time.Now().Add(-time.Hour).Format(time.RFC3339), Global: &global})
+	require.NoError(t, err)
+}

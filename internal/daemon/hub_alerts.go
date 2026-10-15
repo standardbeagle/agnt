@@ -159,7 +159,9 @@ func (d *Daemon) hubHandleAlertsQuery(conn *hubpkg.Connection, cmd *hubproto.Com
 		filter.ProjectPath = projectPath
 	}
 
-	filter.Since = parseSinceFilter(protoFilter.Since)
+	if filter.Since, err = parseSinceFilter(protoFilter.Since); err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+	}
 
 	entries := d.alertStore.Query(filter)
 
@@ -178,18 +180,19 @@ func tagSuffix(tag string) string {
 }
 
 // parseSinceFilter parses a "since" string as RFC3339 or Go duration (e.g. "5m").
-
-func parseSinceFilter(s string) time.Time {
+// Empty means no lower bound. Anything else is an error: reading a typo as
+// "no bound" would silently answer with the whole history.
+func parseSinceFilter(s string) (time.Time, error) {
 	if s == "" {
-		return time.Time{}
+		return time.Time{}, nil
 	}
 	if t, err := time.Parse(time.RFC3339, s); err == nil {
-		return t
+		return t, nil
 	}
 	if dur, err := time.ParseDuration(s); err == nil {
-		return time.Now().Add(-dur)
+		return time.Now().Add(-dur), nil
 	}
-	return time.Time{}
+	return time.Time{}, fmt.Errorf("invalid since %q: want an RFC3339 time or a duration such as 5m", s)
 }
 
 // hubHandleStartupLog handles ALERTS STARTUP-LOG command.
@@ -229,7 +232,9 @@ func (d *Daemon) hubHandleStartupLog(conn *hubpkg.Connection, cmd *hubproto.Comm
 	// running a while. The store is a capacity-bounded ring (100 entries), so an
 	// unbounded-in-time query is safe and returns the whole ring up to Limit.
 	// An explicit `since` still narrows the window.
-	filter.Since = parseSinceFilter(f.Since)
+	if filter.Since, err = parseSinceFilter(f.Since); err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+	}
 
 	// Route through the mandatory session-scope chokepoint so STARTUP-LOG
 	// cannot surface another project's startup events. Non-global queries
