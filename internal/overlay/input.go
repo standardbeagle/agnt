@@ -12,6 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf16"
+	"unicode/utf8"
 
 	"github.com/standardbeagle/agnt/internal/debug"
 )
@@ -1300,6 +1302,14 @@ var DebugWin32Input = false
 type win32ParseState struct {
 	result     []byte
 	foundWin32 bool
+	dec        *win32Decoder
+}
+
+// win32Decoder is the win32-input-mode state that outlives one read. A
+// character outside the BMP arrives as two key events, a UTF-16 high then low
+// surrogate, and a read boundary can fall between them.
+type win32Decoder struct {
+	highSurrogate rune // pending high half; 0 when none
 }
 
 // debugLog logs a message if DebugWin32Input is enabled.
@@ -1317,6 +1327,13 @@ func debugLog(format string, args ...interface{}) {
 // Returns parsed bytes and any incomplete sequence at the end that should be
 // prepended to the next buffer read.
 func parseWin32InputModeInternal(data []byte) ([]byte, []byte) {
+	var d win32Decoder
+	return d.parse(data)
+}
+
+// parse is parseWin32InputModeInternal with decoder state carried between
+// calls, which is how the scanner uses it.
+func (d *win32Decoder) parse(data []byte) ([]byte, []byte) {
 	if DebugWin32Input && len(data) > 0 {
 		dump := data
 		if len(dump) > 80 {
@@ -1325,7 +1342,7 @@ func parseWin32InputModeInternal(data []byte) ([]byte, []byte) {
 		debugLog("RAW INPUT (%d bytes): %q", len(data), dump)
 	}
 
-	state := &win32ParseState{}
+	state := &win32ParseState{dec: d}
 	i := 0
 
 	for i < len(data) {
@@ -1569,28 +1586,19 @@ func (s *win32ParseState) parseWin32Sequence(seqData []byte) {
 		return
 	}
 
-	// If there's a unicode character, emit it directly.
-	// Special case: VK_BACK (0x08) with uc=0x08 (\b). Windows Terminal sends
-	// \b for Backspace in win32-input-mode, but POSIX terminals and readline
-	// expect \x7f (DEL) for Backspace. Translate here so the child process
-	// receives the standard Backspace sequence regardless of the host terminal's
-	// win32-input-mode encoding.
-	if uc > 0 {
-		b := byte(uc)
-		if vk == vkBack && b == 0x08 {
-			b = 0x7f
-			debugLog("seq=%s -> VK_BACK translated \\x08 -> \\x7f", seq)
-		}
-		s.result = append(s.result, b)
-		debugLog("seq=%s -> byte %d (0x%02x)", seq, uc, uc)
-		return
-	}
-
-	// No unicode char (uc=0) — check for virtual keys that need ANSI translation
 	cs := 0
 	if len(parts) >= 5 {
 		cs = parseInt(parts[4])
 	}
+
+	// A unicode character is emitted as the character (see appendChar).
+	if uc > 0 {
+		s.appendChar(vk, cs, rune(uc))
+		debugLog("seq=%s -> char %d (0x%02x)", seq, uc, uc)
+		return
+	}
+
+	// No unicode char (uc=0) — check for virtual keys that need ANSI translation
 	if ansi := vkToANSI(vk, cs); ansi != nil {
 		s.result = append(s.result, ansi...)
 		debugLog("seq=%s -> vk=%d cs=%d ansi=%q", seq, vk, cs, ansi)
@@ -1598,6 +1606,34 @@ func (s *win32ParseState) parseWin32Sequence(seqData []byte) {
 	}
 
 	debugLog("seq=%s -> skipped (uc=0, vk=%d, no mapping)", seq, vk)
+}
+
+// appendChar appends the character a key-down event carries. Uc is a UTF-16
+// code unit, so it is encoded as UTF-8 for the child — truncating it to a
+// byte turned "é" into an invalid byte and "中" (0x4E2D) into "-" — and the
+// two halves of a surrogate pair are joined into one rune.
+func (s *win32ParseState) appendChar(vk, cs int, r rune) {
+	switch {
+	case r >= 0xD800 && r <= 0xDBFF: // high surrogate: wait for the low half
+		s.dec.highSurrogate = r
+		return
+	case r >= 0xDC00 && r <= 0xDFFF: // low surrogate
+		hi := s.dec.highSurrogate
+		s.dec.highSurrogate = 0
+		if hi == 0 {
+			return // stray low half: nothing to pair it with
+		}
+		r = utf16.DecodeRune(hi, r)
+	default:
+		s.dec.highSurrogate = 0 // an unpaired high half is dropped
+	}
+
+	// Windows Terminal sends \b for Backspace, but POSIX terminals and
+	// readline expect \x7f (DEL).
+	if vk == vkBack && r == 0x08 {
+		r = 0x7f
+	}
+	s.result = utf8.AppendRune(s.result, r)
 }
 
 // printableChar returns the character if printable, otherwise '.'
@@ -1707,6 +1743,7 @@ func scanWin32Input(r io.Reader, flushAfter time.Duration) iter.Seq[byte] {
 		}
 
 		var pending []byte
+		var dec win32Decoder
 		var timer *time.Timer
 		defer func() {
 			if timer != nil {
@@ -1744,7 +1781,7 @@ func scanWin32Input(r io.Reader, flushAfter time.Duration) iter.Seq[byte] {
 					if len(pending) > 0 {
 						data = append(append([]byte{}, pending...), rr.data...)
 					}
-					parsed, remainder := parseWin32InputModeInternal(data)
+					parsed, remainder := dec.parse(data)
 					pending = remainder
 					if !emit(parsed) {
 						return
