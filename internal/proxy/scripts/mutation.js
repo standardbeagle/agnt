@@ -106,6 +106,16 @@
     var maxRateWindow = 1000; // Track max over 1s windows
     var rateCheckInterval = null;
 
+    // isPasswordInput reports whether el is an <input type="password">.
+    function isPasswordInput(el) {
+      try {
+        if (!el || !el.tagName || String(el.tagName).toLowerCase() !== 'input') return false;
+        return String(el.type || el.getAttribute('type') || '').toLowerCase() === 'password';
+      } catch (e) {
+        return true; // unknown: redact rather than risk recording the text
+      }
+    }
+
     // Safe element ignore check
     function shouldIgnore(node) {
       if (!node) return true;
@@ -414,6 +424,16 @@
                   // getAttribute failed - use null
                 }
 
+                // A password field's value attribute is the password whenever
+                // the page mirrors the typed value into it (React's controlled
+                // inputs do). The change is still recorded, never its text —
+                // the same rule interaction.js applies to the input event.
+                var aOldValue = mutation.oldValue || null;
+                if (mutation.attributeName === 'value' && isPasswordInput(target)) {
+                  aOldValue = aOldValue === null ? null : '[redacted]';
+                  attrValue = attrValue === null ? null : '[redacted]';
+                }
+
                 var aNow = Date.now();
                 var aTriggeredBy = findTriggeringInteraction(aNow);
 
@@ -426,7 +446,7 @@
                   },
                   attribute: {
                     name: mutation.attributeName || 'unknown',
-                    old_value: mutation.oldValue || null,
+                    old_value: aOldValue,
                     new_value: attrValue
                   },
                   timestamp: aNow,
