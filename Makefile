@@ -39,7 +39,7 @@ generate-check:
 # go.mod: never edit a file under it. A fix to a vendored module goes
 # upstream and arrives here as a version bump.
 vendor:
-	go mod vendor
+	GOWORK=off go mod vendor
 
 # Guard for the rule above: fail if vendor/ is not exactly what `go mod vendor`
 # would write. Vendors into a temp directory and compares, so the working tree
@@ -49,9 +49,13 @@ vendor:
 # Files the repo's .gitignore excludes are dropped from the fresh copy before
 # comparing: `go mod vendor` writes vendor/cloud.google.com/go/go.work, the
 # root .gitignore ignores go.work, so a clean checkout never has it.
+#
+# GOWORK=off (here and in `vendor`): a go.work in this directory or any parent
+# puts go in workspace mode, where `go mod vendor` refuses to run. The vendor
+# tree is defined by go.mod alone, which is also what `go install` builds.
 vendor-check:
 	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
-	go mod vendor -o "$$tmp/vendor" || exit 1; \
+	GOWORK=off go mod vendor -o "$$tmp/vendor" || exit 1; \
 	( cd "$$tmp" && find vendor -type f ) | git check-ignore --stdin | \
 		while IFS= read -r f; do rm -f "$$tmp/$$f"; done; \
 	if diff -r vendor "$$tmp/vendor" > "$$tmp/diff" 2>&1; then \

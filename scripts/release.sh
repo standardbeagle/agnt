@@ -8,8 +8,8 @@
 #        ./scripts/release.sh --allow-branch patch # Release from a branch other than main
 #
 # Refuses to run unless: the version is MAJOR.MINOR.PATCH (optionally
-# -prerelease), differs from the current one, has no existing v<version> tag,
-# the tree has no uncommitted changes, and HEAD is main (--allow-branch
+# -prerelease), differs from the current one, has no existing v<version> tag
+# (locally or on origin; an unreachable origin only warns), the tree has no uncommitted changes, and HEAD is main (--allow-branch
 # overrides only the branch check). Every version substitution must change its
 # file; one that matches nothing aborts the release and restores the files.
 
@@ -97,6 +97,31 @@ if git rev-parse -q --verify "refs/tags/v$NEW_VERSION" >/dev/null; then
     echo "Error: tag v$NEW_VERSION already exists."
     exit 1
 fi
+
+# remote_tag_check TAG — whether origin already has TAG, which the local check
+# misses when it was pushed from another clone. Returns 0 when origin answers
+# without it, 1 when origin has it, 2 when origin cannot be asked (no remote,
+# offline, auth). Never prompts for credentials.
+remote_tag_check() {
+    local out
+    if ! out=$(GIT_TERMINAL_PROMPT=0 git ls-remote --tags origin "refs/tags/$1" 2>/dev/null); then
+        return 2
+    fi
+    [ -z "$out" ] || return 1
+    return 0
+}
+
+remote_rc=0
+remote_tag_check "v$NEW_VERSION" || remote_rc=$?
+case "$remote_rc" in
+    1)
+        echo "Error: tag v$NEW_VERSION already exists on origin (git fetch --tags to see it)."
+        exit 1
+        ;;
+    2)
+        echo "Warning: could not reach origin to check for tag v$NEW_VERSION; continuing on the local check only."
+        ;;
+esac
 
 echo "Releasing version: $CURRENT_VERSION -> $NEW_VERSION"
 echo ""
