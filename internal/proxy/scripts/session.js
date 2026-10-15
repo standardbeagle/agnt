@@ -23,6 +23,13 @@
   // Send session request and return promise
   function sendSessionRequest(action, params) {
     return new Promise(function(resolve, reject) {
+      // Fail fast when the transport is down: without this check the caller
+      // waits out the full 10s timeout on a request that was never sent.
+      if (!core || typeof core.isConnected !== 'function' || !core.isConnected()) {
+        reject(new Error('Session request failed: DevTool socket not connected'));
+        return;
+      }
+
       var requestId = generateRequestId();
       var timeoutMs = 10000; // 10 second timeout
 
@@ -39,12 +46,19 @@
         timeout: timeout
       };
 
-      // Send request via WebSocket
-      core.send('session_request', {
+      // Send request via WebSocket. core.send returns false when the frame
+      // was not written (socket closed between the check and here, or the
+      // payload did not serialise); reject now instead of timing out.
+      var sent = core.send('session_request', {
         request_id: requestId,
         action: action,
         params: params || {}
       });
+      if (sent === false) {
+        clearTimeout(timeout);
+        delete pendingRequests[requestId];
+        reject(new Error('Session request failed: DevTool socket not connected'));
+      }
     });
   }
 

@@ -1,0 +1,65 @@
+// session.js: a session request that is never sent rejects at once instead of
+// waiting out the 10s response timeout (the same contract store.js keeps).
+
+import { afterEach, describe, expect, it } from 'vitest';
+import { loadModules } from './load-bundle.js';
+
+let rt = null;
+afterEach(() => { if (rt) { rt.close(); rt = null; } });
+
+// Timers are recorded, never run, so a pending 10s response timeout is visible
+// as an uncleared 10000ms entry and nothing here sleeps.
+function boot() {
+  const timers = [];
+  rt = loadModules(['frames', 'core', 'session'], {
+    before: (win) => {
+      for (const level of ['log', 'warn', 'error']) win.console[level] = () => {};
+      win.setTimeout = (fn, ms) => { const t = { fn, ms, cleared: false }; timers.push(t); return t; };
+      win.clearTimeout = (t) => { if (t) t.cleared = true; };
+    },
+  });
+  expect(rt.errors).toEqual({});
+  const pendingTimeouts = () => timers.filter((t) => !t.cleared && t.ms === 10000);
+  const sessionFrames = () => rt.sockets.flatMap((s) => s.sent).filter((m) => m.type === 'session_request');
+  return { win: rt.window, sockets: rt.sockets, pendingTimeouts, sessionFrames };
+}
+
+// settled reports a promise's state after the current microtasks drain.
+async function settled(p) {
+  let state = 'pending';
+  p.then(() => { state = 'resolved'; }, (e) => { state = e.message; });
+  await Promise.resolve();
+  await Promise.resolve();
+  return state;
+}
+
+describe('session requests', () => {
+  it('rejects at once when the socket is not connected', async () => {
+    const { win, pendingTimeouts, sessionFrames } = boot();
+    // The socket is still CONNECTING.
+    const state = await settled(win.__devtool_session.list());
+    expect(state).toBe('Session request failed: DevTool socket not connected');
+    expect(pendingTimeouts()).toEqual([]);
+    expect(sessionFrames()).toEqual([]);
+  });
+
+  it('rejects at once when core.send does not write the frame', async () => {
+    const { win, sockets, pendingTimeouts, sessionFrames } = boot();
+    sockets[0].open();
+    // A BigInt does not serialise, so core.send reports the frame unsent.
+    const state = await settled(win.__devtool_session.send('abc', 1n));
+    expect(state).toBe('Session request failed: DevTool socket not connected');
+    expect(pendingTimeouts()).toEqual([]);
+    expect(sessionFrames()).toEqual([]);
+  });
+
+  it('sends the request and waits for the response when connected', async () => {
+    const { win, sockets, pendingTimeouts, sessionFrames } = boot();
+    sockets[0].open();
+    const p = win.__devtool_session.list();
+    expect(await settled(p)).toBe('pending');
+    expect(pendingTimeouts()).toHaveLength(1);
+    expect(sessionFrames()).toHaveLength(1);
+    expect(sessionFrames()[0].data).toMatchObject({ action: 'list' });
+  });
+});

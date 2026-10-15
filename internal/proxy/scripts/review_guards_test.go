@@ -163,6 +163,18 @@ func TestAPITracker_XHRListenerInstalledOncePerObject(t *testing.T) {
 	}
 }
 
+// TestSession_FailsFastWhenNotSent — behaviour: jstest/session.test.js. A
+// session request checks the transport before arming its 10s timeout (as
+// store.js does) and rejects at once when core.send reports the frame unsent.
+func TestSession_FailsFastWhenNotSent(t *testing.T) {
+	mustContain(t, "session.js", sessionJS,
+		"if (!core || typeof core.isConnected !== 'function' || !core.isConnected()) {",
+		"var sent = core.send('session_request', {",
+		"if (sent === false) {",
+		"clearTimeout(timeout);",
+	)
+}
+
 // TestPanels_EscapePageDerivedStrings — behaviour: jstest/html-sinks.test.js.
 func TestPanels_EscapePageDerivedStrings(t *testing.T) {
 	mustContain(t, "diagnostics.js", diagnosticsJS,
