@@ -29,14 +29,14 @@ func getStorePath(basePath, scope, scopeKey string) string {
 // ensureStoreDir creates the .agnt/store directory structure if it doesn't exist.
 func ensureStoreDir(basePath string) error {
 	storePath := filepath.Join(basePath, StoreDir)
-	if err := os.MkdirAll(storePath, 0755); err != nil {
+	if err := os.MkdirAll(storePath, storeDirMode); err != nil {
 		return fmt.Errorf("failed to create store directory: %w", err)
 	}
 
 	// Create subdirectories for each scope
 	for _, scope := range []string{ScopeGlobal, ScopeFolder, ScopePage} {
 		scopePath := filepath.Join(storePath, scope)
-		if err := os.MkdirAll(scopePath, 0755); err != nil {
+		if err := os.MkdirAll(scopePath, storeDirMode); err != nil {
 			return fmt.Errorf("failed to create %s scope directory: %w", scope, err)
 		}
 	}
@@ -68,6 +68,12 @@ func loadStoreFile(path string) (*StoreFile, error) {
 	return &sf, nil
 }
 
+// storeFileMode and storeDirMode keep the store private to the daemon's user.
+const (
+	storeFileMode = 0o600
+	storeDirMode  = 0o700
+)
+
 // saveStoreFile saves a store file to disk atomically.
 // Uses temp file + rename pattern to ensure atomic writes.
 func saveStoreFile(path string, sf *StoreFile) error {
@@ -82,13 +88,18 @@ func saveStoreFile(path string, sf *StoreFile) error {
 
 	// Ensure parent directory exists
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0755); err != nil {
+	if err := os.MkdirAll(dir, storeDirMode); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	// Write atomically via temp file + rename
+	// Write atomically via temp file + rename. The file is private to its
+	// owner: the global scope holds secret entries in plaintext (see
+	// MetaSecret), so a world-readable mode would hand every secret to every
+	// local user. A leftover temp file from an interrupted write is removed
+	// first, since WriteFile keeps an existing file's mode.
 	tmpPath := path + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+	_ = os.Remove(tmpPath)
+	if err := os.WriteFile(tmpPath, data, storeFileMode); err != nil {
 		return fmt.Errorf("failed to write temp file: %w", err)
 	}
 
