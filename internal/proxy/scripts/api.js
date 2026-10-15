@@ -707,6 +707,7 @@
                   img.style.transform = computed.transform;
                   img.style.transformOrigin = computed.transformOrigin;
                 }
+                cf.parentNode.replaceChild(img, cf);
               });
               if (origOnclone) origOnclone(clonedDoc, clonedEl);
             };
