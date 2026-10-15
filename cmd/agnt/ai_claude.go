@@ -174,6 +174,8 @@ func runAiClaude(cmd *cobra.Command, args []string) {
 	// Run the query (one-shot is never interactive)
 	if _, err := runClaudeQuery(ctx, prompt, opts, false, nil); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		// os.Exit skips the deferred Close: unregister the session first.
+		daemonHandle.Close()
 		os.Exit(1)
 	}
 }

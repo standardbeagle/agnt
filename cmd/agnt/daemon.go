@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/exec"
@@ -217,69 +218,138 @@ func runDaemonStart(cmd *cobra.Command, args []string) {
 	log.Println("Daemon shutdown complete")
 }
 
-func runDaemonStop(cmd *cobra.Command, args []string) {
-	socketPath := getSocketPath(cmd)
+// daemonLifecycle holds the seams `daemon stop` and `daemon restart` drive, so
+// the stop/verify/start sequencing is testable without a real daemon or real
+// sleeps. defaultDaemonLifecycle wires the production implementations.
+type daemonLifecycle struct {
+	// shutdown connects to the daemon at socketPath and sends SHUTDOWN.
+	// connected reports whether a connection was made at all; err is the
+	// connect error when !connected, else the SHUTDOWN error.
+	shutdown func(socketPath string) (connected bool, err error)
+	// isRunning probes the socket: true while something accepts on it.
+	isRunning func(socketPath string) bool
+	// startDetached starts (or connects to) a detached daemon on socketPath.
+	startDetached func(socketPath string) error
 
-	client := daemonclient.NewClient(daemonclient.WithSocketPath(socketPath))
-	if err := client.Connect(); err != nil {
-		fmt.Fprintf(os.Stderr, "Daemon is not running: %v\n", err)
-		os.Exit(1)
-	}
-
-	if err := client.Shutdown(); err != nil {
-		client.Close()
-		fmt.Fprintf(os.Stderr, "Failed to stop daemon: %v\n", err)
-		os.Exit(1)
-	}
-	client.Close()
-
-	// Verify the daemon actually stopped by checking the socket is no longer
-	// accepting connections.  This is important on Windows where Unix signals
-	// are not delivered and the process could linger.
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
-		if !daemonclient.IsRunning(socketPath) {
-			fmt.Println("Daemon stopped")
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-
-	fmt.Fprintf(os.Stderr, "Warning: daemon may not have stopped cleanly\n")
-	fmt.Println("Daemon stopped")
+	exitTimeout  time.Duration
+	pollInterval time.Duration
+	now          func() time.Time
+	sleep        func(time.Duration)
 }
 
-func runDaemonRestart(cmd *cobra.Command, args []string) {
-	socketPath := getSocketPath(cmd)
-
-	// Try to stop existing daemon
-	client := daemonclient.NewClient(daemonclient.WithSocketPath(socketPath))
-	if err := client.Connect(); err == nil {
-		_ = client.Shutdown()
-		client.Close()
-		// Wait for the daemon to actually stop
-		deadline := time.Now().Add(5 * time.Second)
-		for time.Now().Before(deadline) {
-			if !daemonclient.IsRunning(socketPath) {
-				break
-			}
-			time.Sleep(100 * time.Millisecond)
-		}
+func defaultDaemonLifecycle() daemonLifecycle {
+	return daemonLifecycle{
+		shutdown:      shutdownDaemonAt,
+		isRunning:     daemonclient.IsRunning,
+		startDetached: startDetachedDaemon,
+		exitTimeout:   5 * time.Second,
+		pollInterval:  100 * time.Millisecond,
+		now:           time.Now,
+		sleep:         time.Sleep,
 	}
+}
 
-	// Start the new daemon DETACHED, the way every client auto-starts it. Calling
-	// runDaemonStart here ran it in this command's foreground: restart never
-	// returned, and the daemon died with the shell that ran it.
+func shutdownDaemonAt(socketPath string) (bool, error) {
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(socketPath))
+	if err := client.Connect(); err != nil {
+		return false, err
+	}
+	defer client.Close()
+	return true, client.Shutdown()
+}
+
+// startDetachedDaemon starts the daemon DETACHED, the way every client
+// auto-starts it. Calling runDaemonStart here ran it in this command's
+// foreground: restart never returned, and the daemon died with the shell that
+// ran it.
+func startDetachedDaemon(socketPath string) error {
 	config := daemonclient.DefaultAutoStartConfig()
 	config.SocketPath = socketPath
 	started := daemonclient.NewAutoStartClient(config)
 	if err := started.Connect(); err != nil {
-		fmt.Fprintf(os.Stderr, "Failed to start daemon: %v\n", err)
-		os.Exit(1)
+		return err
 	}
 	started.Close()
-	fmt.Println("Daemon restarted")
-	fmt.Printf("Socket: %s\n", socketPath)
+	return nil
+}
+
+// waitForExit polls the socket until nothing accepts on it or exitTimeout
+// elapses. It returns true only when the daemon is verifiably gone.
+func (l daemonLifecycle) waitForExit(socketPath string) bool {
+	deadline := l.now().Add(l.exitTimeout)
+	for l.now().Before(deadline) {
+		if !l.isRunning(socketPath) {
+			return true
+		}
+		l.sleep(l.pollInterval)
+	}
+	return false
+}
+
+func (l daemonLifecycle) stop(socketPath string, stdout, stderr io.Writer) int {
+	connected, err := l.shutdown(socketPath)
+	if !connected {
+		fmt.Fprintf(stderr, "Daemon is not running: %v\n", err)
+		return 1
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "Failed to stop daemon: %v\n", err)
+		return 1
+	}
+
+	// Verify the daemon actually stopped by checking the socket is no longer
+	// accepting connections.  This is important on Windows where Unix signals
+	// are not delivered and the process could linger.
+	if l.waitForExit(socketPath) {
+		fmt.Fprintln(stdout, "Daemon stopped")
+		return 0
+	}
+
+	fmt.Fprintf(stderr, "Error: daemon is still running on %s %s after shutdown was requested; it did not stop\n",
+		socketPath, l.exitTimeout)
+	return 1
+}
+
+func (l daemonLifecycle) restart(socketPath string, stdout, stderr io.Writer) int {
+	// Stop the existing daemon, and do not start until it is verifiably gone:
+	// the auto-start client connects to whatever answers on the socket, so
+	// starting while the old daemon is still dying "restarts" onto it.
+	connected, err := l.shutdown(socketPath)
+	switch {
+	case connected && !l.waitForExit(socketPath):
+		if err != nil {
+			fmt.Fprintf(stderr, "Error: shutdown request failed (%v) and ", err)
+		} else {
+			fmt.Fprint(stderr, "Error: ")
+		}
+		fmt.Fprintf(stderr, "the old daemon is still running on %s %s later; not starting a new one\n",
+			socketPath, l.exitTimeout)
+		return 1
+	case !connected && l.isRunning(socketPath):
+		fmt.Fprintf(stderr, "Error: a daemon is answering on %s but could not be reached to stop it (%v); not starting a new one\n",
+			socketPath, err)
+		return 1
+	}
+
+	if err := l.startDetached(socketPath); err != nil {
+		fmt.Fprintf(stderr, "Failed to start daemon: %v\n", err)
+		return 1
+	}
+	fmt.Fprintln(stdout, "Daemon restarted")
+	fmt.Fprintf(stdout, "Socket: %s\n", socketPath)
+	return 0
+}
+
+func runDaemonStop(cmd *cobra.Command, args []string) {
+	if code := defaultDaemonLifecycle().stop(getSocketPath(cmd), os.Stdout, os.Stderr); code != 0 {
+		os.Exit(code)
+	}
+}
+
+func runDaemonRestart(cmd *cobra.Command, args []string) {
+	if code := defaultDaemonLifecycle().restart(getSocketPath(cmd), os.Stdout, os.Stderr); code != 0 {
+		os.Exit(code)
+	}
 }
 
 func runDaemonStatus(cmd *cobra.Command, args []string) {
