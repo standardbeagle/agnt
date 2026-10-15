@@ -46,6 +46,8 @@ var validAutoForwardSeverities = []string{"error", "warning", "warn"}
 // validAlertPatternSeverities is the closed set for
 // `alerts.patterns.<id>.severity` (empty means error). Kept in step with
 // compileCustomAlertPatterns in cmd/agnt, which maps anything else to error.
+// "warn" is also accepted, as an alias of "warning" (as for
+// alerts.auto-forward.severity): it loaded before this check existed.
 var validAlertPatternSeverities = []string{"error", "warning", "info"}
 
 // validShimActions is the closed set for `shims.rules.<n>.action` (empty means
@@ -88,7 +90,7 @@ func validateAgntEnums(cfg *AgntConfig) error {
 	}
 	if cfg.Alerts != nil {
 		for _, id := range sortedKeys(cfg.Alerts.Patterns) {
-			if p := cfg.Alerts.Patterns[id]; p != nil && p.Severity != "" && !containsString(validAlertPatternSeverities, p.Severity) {
+			if p := cfg.Alerts.Patterns[id]; p != nil && p.Severity != "" && p.Severity != "warn" && !containsString(validAlertPatternSeverities, p.Severity) {
 				return fmt.Errorf("alerts.patterns.%s: unknown severity %q (accepted: %s)",
 					id, p.Severity, strings.Join(validAlertPatternSeverities, ", "))
 			}

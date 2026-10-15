@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/standardbeagle/agnt/internal/config"
+	"github.com/standardbeagle/agnt/internal/overlay"
 	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 )
 
@@ -165,6 +166,17 @@ func TestCompileCustomAlertPatternsReportsBadRegex(t *testing.T) {
 	}
 	if len(problems) != 1 || !strings.Contains(problems[0], `"broken"`) || !strings.Contains(problems[0], "never fire") {
 		t.Fatalf("problems = %v, want one naming the broken pattern and its consequence", problems)
+	}
+}
+
+// TestCompileCustomAlertPatternsWarnAlias: config accepts severity "warn" as
+// an alias of "warning", so the scanner must rank it as a warning, not error.
+func TestCompileCustomAlertPatternsWarnAlias(t *testing.T) {
+	patterns, _ := compileCustomAlertPatterns(map[string]*config.AlertPatternConfig{
+		"w": {Pattern: `deprecated`, Severity: "warn"},
+	})
+	if len(patterns) != 1 || patterns[0].Severity != overlay.AlertSeverityWarning {
+		t.Fatalf("patterns = %+v, want one warning-severity pattern", patterns)
 	}
 }
 

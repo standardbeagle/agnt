@@ -130,7 +130,8 @@ func TestParseAgntConfig_AcceptsValidValues(t *testing.T) {
 		assert.NoError(t, err, sev)
 	}
 
-	for _, sev := range []string{"", "error", "warning", "info"} {
+	// "warn" is an alias of "warning": it loaded before the check existed.
+	for _, sev := range []string{"", "error", "warning", "warn", "info"} {
 		_, err := ParseAgntConfig("alerts {\n    patterns {\n        p {\n            pattern \"x\"\n            severity \"" + sev + "\"\n        }\n    }\n}\n")
 		assert.NoError(t, err, "alert pattern severity %q", sev)
 	}

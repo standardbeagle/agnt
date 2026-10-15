@@ -949,7 +949,7 @@ definitions in `internal/config/agnt.go` carry the full comments.
 | `enabled` | `true` | Process-output alert monitoring. |
 | `batch-window` | `3` | Seconds alerts are batched before delivery. |
 | `dedupe-window` | `60` | Seconds a duplicate alert is suppressed. |
-| `patterns { <id> { pattern severity } }` | none | Custom patterns: a regex and `error` (default), `warning` or `info`. Any other severity fails the config load. |
+| `patterns { <id> { pattern severity } }` | none | Custom patterns: a regex and `error` (default), `warning` (alias `warn`) or `info`. Any other severity fails the config load. |
 | `disable` | none | Built-in pattern ids to turn off. |
 | `auto-forward { enabled sources severity }` | on, `"browser" "http"`, `"error"` | Forwarding of browser and proxy errors to the agent. `sources` accepts only `browser` and `http`; `severity` only `error` (5xx only) or `warning` (4xx too). Any other value fails the config load. |
 | `auto-forward { debounce }` | — | Deprecated, no effect: nothing reads it (forwarded errors are deduplicated and batched by the alert queue). Accepted so existing files load; declaring it adds a config warning to the startup log. |

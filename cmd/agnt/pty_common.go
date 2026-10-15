@@ -747,7 +747,7 @@ func compileCustomAlertPatterns(cfgs map[string]*config.AlertPatternConfig) (pat
 		}
 		sev := overlay.AlertSeverityError
 		switch pcfg.Severity {
-		case "warning":
+		case "warning", "warn":
 			sev = overlay.AlertSeverityWarning
 		case "info":
 			sev = overlay.AlertSeverityInfo
