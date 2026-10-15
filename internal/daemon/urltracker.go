@@ -44,6 +44,13 @@ type URLTracker struct {
 	// e.g., ["Local:\\s*{url}", "Network:\\s*{url}"]
 	urlMatchers map[string][]urlMatcher
 
+	// lifetimes records which process lifetime the per-id scan state belongs
+	// to. Read only by the tracker: a different *ManagedProcess under a known
+	// id resets the scan state, an id that leaves the process manager retires
+	// all of it, and an id's config (onProcessFirstSeen) loads once per
+	// lifetime rather than on every tick the process stays silent.
+	lifetimes map[string]*process.ManagedProcess
+
 	// scanInterval is how often to scan for new URLs
 	scanInterval time.Duration
 
@@ -84,6 +91,7 @@ func NewURLTracker(pm *process.ProcessManager, config URLTrackerConfig) *URLTrac
 		scannedStdout: make(map[string]int),
 		scannedStderr: make(map[string]int),
 		urlMatchers:   make(map[string][]urlMatcher),
+		lifetimes:     make(map[string]*process.ManagedProcess),
 		scanInterval:  config.ScanInterval,
 	}
 }
@@ -142,6 +150,7 @@ func (t *URLTracker) ClearProcess(processID string) {
 	delete(t.seenURLs, processID)
 	delete(t.scannedStdout, processID)
 	delete(t.scannedStderr, processID)
+	delete(t.lifetimes, processID)
 }
 
 // scanLoop periodically scans process output for URLs.
@@ -227,6 +236,23 @@ func scanStreamForURLs(buf []byte, scanned int, matchers []urlMatcher) (urls []s
 func (t *URLTracker) scanProcess(p *process.ManagedProcess) {
 	t.mu.Lock()
 
+	// Scan state belongs to one lifetime: a new process under the id starts
+	// over (offsets, URLs, config load). Matchers are kept — they are set for
+	// the coming lifetime before it starts.
+	recorded, known := t.lifetimes[p.ID]
+	if known && recorded != p {
+		delete(t.urls, p.ID)
+		delete(t.seenURLs, p.ID)
+		delete(t.scannedStdout, p.ID)
+		delete(t.scannedStderr, p.ID)
+	}
+	// Load matchers on the first scan of this lifetime only. Keying this on
+	// the scan offsets reloaded .agnt.kdl on every tick for a process that
+	// had printed nothing yet. It must happen BEFORE we scan, so matchers are
+	// available.
+	isFirstScan := recorded != p
+	t.lifetimes[p.ID] = p
+
 	// Check if we already have enough URLs
 	if len(t.urls[p.ID]) >= maxURLsPerProcess {
 		t.mu.Unlock()
@@ -240,10 +266,6 @@ func (t *URLTracker) scanProcess(p *process.ManagedProcess) {
 		t.mu.Unlock()
 		return
 	}
-
-	// Call first-seen callback on first scan (for loading config).
-	// This must happen BEFORE we scan, so matchers are available.
-	isFirstScan := stdoutScanned == 0 && stderrScanned == 0
 
 	t.mu.Unlock()
 
@@ -319,6 +341,10 @@ func (t *URLTracker) scanProcess(p *process.ManagedProcess) {
 }
 
 // cleanupRemovedProcesses removes tracking for processes that no longer exist.
+// Every id the tracker scanned is retired, not only those that found a URL —
+// a process that never announced one would otherwise keep its state forever.
+// onProcessStopped still fires only for ids that announced a URL: those are
+// the ones a proxy was created for.
 func (t *URLTracker) cleanupRemovedProcesses(currentProcs []*process.ManagedProcess) {
 	// Build set of current process IDs
 	currentIDs := make(map[string]bool, len(currentProcs))
@@ -330,15 +356,25 @@ func (t *URLTracker) cleanupRemovedProcesses(currentProcs []*process.ManagedProc
 
 	// Remove tracking for processes that don't exist and collect stopped IDs
 	var stoppedProcesses []string
-	for id := range t.urls {
-		if !currentIDs[id] {
-			delete(t.urls, id)
-			delete(t.seenURLs, id)
-			delete(t.scannedStdout, id)
-			delete(t.scannedStderr, id)
-			delete(t.urlMatchers, id)
+	retire := func(id string) {
+		if currentIDs[id] {
+			return
+		}
+		if _, hadURLs := t.urls[id]; hadURLs {
 			stoppedProcesses = append(stoppedProcesses, id)
 		}
+		delete(t.urls, id)
+		delete(t.seenURLs, id)
+		delete(t.scannedStdout, id)
+		delete(t.scannedStderr, id)
+		delete(t.urlMatchers, id)
+		delete(t.lifetimes, id)
+	}
+	for id := range t.urls {
+		retire(id)
+	}
+	for id := range t.lifetimes {
+		retire(id)
 	}
 
 	t.mu.Unlock()
