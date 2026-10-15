@@ -131,9 +131,54 @@ function isExpectedBinary(binaryPath) {
   return isExpectedVersion(reportedVersion(binaryPath));
 }
 
+function unlinkQuietly(p) {
+  try {
+    fs.unlinkSync(p);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+// placeBinary moves the verified binary at srcPath to binaryPath. Windows
+// refuses to overwrite an executable a running process (the daemon) holds,
+// but it does allow renaming it, so the existing binary is first moved aside
+// to .old. If even that fails, the new binary is staged as .new and the next
+// run of this script puts it in place (this package has no launcher wrapper
+// to do it, unlike npm/agnt). Returns true when binaryPath is now the new one.
+function placeBinary(srcPath, binaryPath) {
+  const oldPath = binaryPath + '.old';
+  const newPath = binaryPath + '.new';
+  if (fs.existsSync(binaryPath)) {
+    unlinkQuietly(oldPath); // a leftover from a previous upgrade, may be locked
+    try {
+      fs.renameSync(binaryPath, oldPath);
+    } catch (e) {
+      if (srcPath !== newPath) {
+        unlinkQuietly(newPath);
+        fs.renameSync(srcPath, newPath);
+      }
+      console.log(`Existing ${BINARY_NAME} binary could not be replaced (${e.message}); staged v${VERSION} as ${path.basename(newPath)}.`);
+      console.log(`Stop the running daemon (${BINARY_NAME} daemon stop), then reinstall to put it in place.`);
+      return false;
+    }
+    if (!unlinkQuietly(oldPath)) {
+      console.log('Note: Old binary still in use (daemon running)');
+      console.log(`Tip: Run '${BINARY_NAME} upgrade' after install to restart the daemon with the new version`);
+    }
+  }
+  fs.renameSync(srcPath, binaryPath);
+  if (srcPath !== newPath) {
+    // A .new staged by an earlier install is superseded by this one.
+    unlinkQuietly(newPath);
+  }
+  return true;
+}
+
 async function install() {
   const binDir = path.join(__dirname, '..', 'bin');
   const binaryPath = path.join(binDir, getBinaryName());
+  const newPath = binaryPath + '.new';
 
   // Create bin directory if it doesn't exist
   if (!fs.existsSync(binDir)) {
@@ -144,10 +189,24 @@ async function install() {
   // stale one from an earlier install is replaced.
   if (fs.existsSync(binaryPath)) {
     if (isExpectedBinary(binaryPath)) {
+      unlinkQuietly(binaryPath + '.old');
+      unlinkQuietly(newPath);
       console.log(`${BINARY_NAME} v${VERSION} already installed, skipping download`);
       return;
     }
     console.log(`Existing ${BINARY_NAME} binary is not a working v${VERSION}; replacing it`);
+  }
+
+  // A binary an earlier install staged because the old one was locked:
+  // use it when it is this version instead of downloading again.
+  if (fs.existsSync(newPath)) {
+    if (isExpectedBinary(newPath)) {
+      if (placeBinary(newPath, binaryPath)) {
+        console.log(`Installed staged ${BINARY_NAME} v${VERSION} to ${binaryPath}`);
+      }
+      return;
+    }
+    unlinkQuietly(newPath);
   }
 
   // Download beside the final path and rename into place only once the file
@@ -175,14 +234,8 @@ async function install() {
       throw new Error(`Downloaded binary does not run as v${VERSION} (--version: ${out === null ? 'failed' : JSON.stringify(out)})`);
     }
 
-    fs.renameSync(tmpPath, binaryPath);
-    console.log(`Successfully installed ${BINARY_NAME} to ${binaryPath}`);
   } catch (error) {
-    try {
-      fs.unlinkSync(tmpPath);
-    } catch (e) {
-      // never created, or already gone
-    }
+    unlinkQuietly(tmpPath);
     console.error(`Failed to download ${BINARY_NAME}:`);
     console.error(error.message);
     console.error('');
@@ -194,6 +247,11 @@ async function install() {
     console.error('  cd agnt');
     console.error('  make build');
     process.exit(1);
+  }
+
+  // The verified binary is complete; move it into place.
+  if (placeBinary(tmpPath, binaryPath)) {
+    console.log(`Successfully installed ${BINARY_NAME} to ${binaryPath}`);
   }
 }
 
