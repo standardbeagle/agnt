@@ -64,6 +64,10 @@ type DuplicateScanner struct {
 	// Set by the caller (pty_common.go integration point).
 	OnNotify func(message string)
 
+	// killPID terminates a duplicate. nil means platform.KillPID; tests inject
+	// a recorder so they never signal real PIDs.
+	killPID func(pid, gracefulTimeout int) error
+
 	mu         sync.Mutex
 	lastScanAt time.Time
 	ctx        context.Context
@@ -181,6 +185,9 @@ func (s *DuplicateScanner) scanDuplicates(projectPath string) ([]DuplicateGroup,
 	}
 
 	managedPIDs := s.daemon.collectManagedPIDs()
+	for pid := range s.sessionTreePIDs(allProcs) {
+		managedPIDs[pid] = true
+	}
 	var groups []DuplicateGroup
 
 	for _, pp := range paths {
@@ -189,6 +196,67 @@ func (s *DuplicateScanner) scanDuplicates(projectPath string) ([]DuplicateGroup,
 	}
 
 	return groups, managedPIDs
+}
+
+// sessionTreePIDs returns every process in an agnt session's tree: each
+// registered session's owning `agnt run` process (OwnerPID), its PTY child
+// (SessionPGID) and all their descendants.
+//
+// Those processes are not in the ProcessManager, so collectManagedPIDs does
+// not protect them, yet they are exactly what a "same basename, same project"
+// heuristic matches: the agent itself (Claude Code runs as `node`), the MCP
+// servers it spawns (`node`, `npx`, `python`), and whatever it backgrounded.
+// Without this, a second session in a project killed every one of them but the
+// oldest — the other session's agent and its tools — on its autostart scan.
+// They belong to a live session; session containment reaps them when that
+// session ends, never the duplicate scanner.
+func (s *DuplicateScanner) sessionTreePIDs(allProcs []platform.ProcInfo) map[int]bool {
+	roots := make(map[int]bool)
+	if s.daemon != nil && s.daemon.sessionRegistry != nil {
+		for _, session := range s.daemon.sessionRegistry.List("", true) {
+			for _, pid := range []int{session.OwnerPID, session.SessionPGID} {
+				if pid > 1 {
+					roots[pid] = true
+				}
+			}
+		}
+	}
+	return processTreesOf(allProcs, roots)
+}
+
+// processTreesOf returns roots plus every process in allProcs that descends
+// from one of them, found by walking each process's parent chain.
+func processTreesOf(allProcs []platform.ProcInfo, roots map[int]bool) map[int]bool {
+	out := make(map[int]bool, len(roots))
+	if len(roots) == 0 {
+		return out
+	}
+	for pid := range roots {
+		out[pid] = true
+	}
+	byPID := make(map[int]platform.ProcInfo, len(allProcs))
+	for _, p := range allProcs {
+		byPID[p.PID] = p
+	}
+	for _, p := range allProcs {
+		if out[p.PID] {
+			continue
+		}
+		visited := make(map[int]bool)
+		for ppid := p.PPID; ppid > 1 && !visited[ppid]; {
+			visited[ppid] = true
+			if roots[ppid] {
+				out[p.PID] = true
+				break
+			}
+			parent, ok := byPID[ppid]
+			if !ok {
+				break
+			}
+			ppid = parent.PPID
+		}
+	}
+	return out
 }
 
 // resolveProjectPaths returns the set of project paths to scan.
@@ -276,6 +344,10 @@ func (s *DuplicateScanner) findDuplicates(procs []platform.ProcInfo, projectPath
 func (s *DuplicateScanner) killDuplicates(group DuplicateGroup, managedPIDs map[int]bool) []KilledProcess {
 	var killed []KilledProcess
 	keptUnmanaged := false
+	kill := s.killPID
+	if kill == nil {
+		kill = platform.KillPID
+	}
 
 	for _, p := range group.Procs {
 		// Never kill daemon-managed processes or their children
@@ -290,7 +362,7 @@ func (s *DuplicateScanner) killDuplicates(group DuplicateGroup, managedPIDs map[
 		}
 
 		// Kill the duplicate
-		if err := platform.KillPID(p.PID, 3); err != nil {
+		if err := kill(p.PID, 3); err != nil {
 			debug.Log("dup-scanner", "failed to kill PID %d (%s): %v", p.PID, group.Command, err)
 			continue
 		}

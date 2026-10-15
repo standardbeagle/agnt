@@ -144,7 +144,7 @@ func TestFindDuplicates_SortsByPIDAscending(t *testing.T) {
 
 func TestKillDuplicates_KeepsOldestUnmanaged(t *testing.T) {
 	t.Parallel()
-	scanner := &DuplicateScanner{}
+	scanner, signalled := recordingScanner()
 	group := DuplicateGroup{
 		Command: "node",
 		Path:    "/home/user/project",
@@ -156,22 +156,66 @@ func TestKillDuplicates_KeepsOldestUnmanaged(t *testing.T) {
 	}
 	managed := map[int]bool{}
 
-	// killDuplicates calls platform.KillPID which will fail for non-existent
-	// PIDs, but the logic of selecting which to keep vs kill is testable.
-	killed := scanner.killDuplicates(group, managed)
+	scanner.killDuplicates(group, managed)
 
-	// PID 100 should be kept (oldest). PIDs 200 and 300 would be killed
-	// (may fail with "no such process" but that's fine for logic testing).
-	var killedPIDs []int
-	for _, k := range killed {
-		killedPIDs = append(killedPIDs, k.PID)
+	assert.Equal(t, []int{200, 300}, *signalled, "oldest unmanaged process should be kept, the rest killed")
+}
+
+// recordingScanner returns a scanner whose kills are recorded instead of
+// sent: these tests use made-up PIDs, which may well be real processes.
+func recordingScanner() (*DuplicateScanner, *[]int) {
+	var signalled []int
+	return &DuplicateScanner{killPID: func(pid, _ int) error {
+		signalled = append(signalled, pid)
+		return nil
+	}}, &signalled
+}
+
+// TestDuplicateScan_SparesSessionProcessTrees is the regression for the
+// autostart duplicate scan killing a live session's processes. A second agnt
+// session in a project triggers the scan; the first session's agent (Claude
+// Code runs as `node`) and its MCP servers (`node`) are unmanaged, same
+// basename, same project, so all but the oldest were killed.
+func TestDuplicateScan_SparesSessionProcessTrees(t *testing.T) {
+	t.Parallel()
+	registry := NewSessionRegistry(0)
+	require.NoError(t, registry.Register(&Session{
+		Code: "claude-aaaa", ProjectPath: "/home/user/project",
+		OwnerPID: 400, SessionPGID: 500, Status: SessionStatusActive,
+	}))
+	require.NoError(t, registry.Register(&Session{
+		Code: "claude-bbbb", ProjectPath: "/home/user/project",
+		OwnerPID: 700, SessionPGID: 800, Status: SessionStatusActive,
+	}))
+	scanner, signalled := recordingScanner()
+	scanner.daemon = &Daemon{sessionRegistry: registry}
+
+	procs := []platform.ProcInfo{
+		{PID: 300, PPID: 1, Command: "node", Cwd: "/home/user/project"},   // stray dev server — the one kept
+		{PID: 400, PPID: 10, Command: "agnt", Cwd: "/home/user/project"},  // session A: agnt run
+		{PID: 500, PPID: 400, Command: "node", Cwd: "/home/user/project"}, // session A: the agent
+		{PID: 510, PPID: 500, Command: "node", Cwd: "/home/user/project"}, // session A: an MCP server
+		{PID: 520, PPID: 510, Command: "npx", Cwd: "/home/user/project"},  // grandchild
+		{PID: 800, PPID: 700, Command: "node", Cwd: "/home/user/project"}, // session B: the agent
+		{PID: 900, PPID: 1, Command: "node", Cwd: "/home/user/project"},   // second stray — a real duplicate
 	}
-	assert.NotContains(t, killedPIDs, 100, "oldest unmanaged process should be kept")
+
+	protected := scanner.sessionTreePIDs(procs)
+	for _, pid := range []int{400, 500, 510, 520, 700, 800} {
+		assert.True(t, protected[pid], "PID %d is in a session tree", pid)
+	}
+	assert.False(t, protected[300])
+	assert.False(t, protected[900])
+
+	for _, g := range scanner.findDuplicates(procs, "/home/user/project", protected) {
+		scanner.killDuplicates(g, protected)
+	}
+	assert.Equal(t, []int{900}, *signalled, "only the unowned duplicate may be killed")
 }
 
 func TestKillDuplicates_NeverKillsManaged(t *testing.T) {
 	t.Parallel()
-	scanner := &DuplicateScanner{}
+	scanner, signalled := recordingScanner()
 	group := DuplicateGroup{
 		Command: "node",
 		Path:    "/home/user/project",
@@ -183,21 +227,16 @@ func TestKillDuplicates_NeverKillsManaged(t *testing.T) {
 	}
 	managed := map[int]bool{50: true}
 
-	killed := scanner.killDuplicates(group, managed)
+	scanner.killDuplicates(group, managed)
 
-	var killedPIDs []int
-	for _, k := range killed {
-		killedPIDs = append(killedPIDs, k.PID)
-	}
-	assert.NotContains(t, killedPIDs, 50, "managed process must never be killed")
-	assert.NotContains(t, killedPIDs, 100, "oldest unmanaged should be kept")
+	assert.Equal(t, []int{200}, *signalled, "managed and oldest unmanaged processes must survive")
 }
 
 func TestKillDuplicates_IsLockFree(t *testing.T) {
 	t.Parallel()
 	// Verify killDuplicates can run while another goroutine holds the lock.
 	// This confirms the scan/kill split works — kills don't need the mutex.
-	scanner := &DuplicateScanner{}
+	scanner, _ := recordingScanner()
 
 	// Hold the lock in a goroutine
 	scanner.mu.Lock()
