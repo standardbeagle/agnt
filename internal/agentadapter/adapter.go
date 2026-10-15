@@ -49,7 +49,8 @@ type Adapter interface {
 	// Matches reports whether the given command invokes this agent.
 	// Implementations must handle bare names ("claude"), absolute paths
 	// ("/usr/bin/claude"), relative paths ("./aider"), and — on Windows —
-	// .exe suffixes. Matching is case-insensitive on the base name.
+	// .exe and .cmd/.bat/.ps1 shim suffixes. Matching is case-insensitive on
+	// the base name.
 	Matches(command string) bool
 
 	// BuildArgs returns the argv to use when launching the agent. For

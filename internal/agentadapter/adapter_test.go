@@ -388,10 +388,25 @@ func TestBaseNameOf_HandlesWindowsPathsAndExe(t *testing.T) {
 		"./aider":             "aider",
 		"CURSOR.EXE":          "cursor",
 		"/opt/cursor-agent":   "cursor-agent",
+		// npm installs Windows shims, not .exe files.
+		`C:\Users\me\AppData\Roaming\npm\claude.cmd`: "claude",
+		"claude.CMD": "claude",
+		"aider.bat":  "aider",
+		"gemini.ps1": "gemini",
 	}
 	for input, want := range cases {
 		if got := baseNameOf(input); got != want {
 			t.Errorf("baseNameOf(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestLookup_MatchesWindowsScriptShims(t *testing.T) {
+	r := DefaultRegistry()
+	for _, cmd := range []string{`C:\Users\me\AppData\Roaming\npm\claude.cmd`, "claude.ps1", "CLAUDE.BAT"} {
+		a := r.Lookup(cmd)
+		if a == nil || a.Name() != "claude" {
+			t.Errorf("Lookup(%q) = %v, want the claude adapter", cmd, a)
 		}
 	}
 }

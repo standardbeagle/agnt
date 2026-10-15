@@ -165,14 +165,24 @@ func Universal(command string) Adapter {
 	return newStdinAdapter(base, []string{base})
 }
 
-// baseNameOf strips directory prefixes and, on Windows, the .exe suffix
-// from a command string. Returned name is lowercased.
+// windowsLaunchExts are the suffixes a Windows command name may carry: .exe
+// for native binaries, and the .cmd/.bat/.ps1 shims npm installs for
+// node-based agents (claude, gemini, ...), which have no .exe at all.
+var windowsLaunchExts = []string{".exe", ".cmd", ".bat", ".ps1"}
+
+// baseNameOf strips directory prefixes and one Windows launch suffix
+// (windowsLaunchExts) from a command string. Returned name is lowercased.
 func baseNameOf(command string) string {
 	// Strip directory components.
 	if idx := strings.LastIndexAny(command, `/\`); idx != -1 {
 		command = command[idx+1:]
 	}
-	command = strings.TrimSuffix(strings.ToLower(command), ".exe")
+	command = strings.ToLower(command)
+	for _, ext := range windowsLaunchExts {
+		if trimmed, ok := strings.CutSuffix(command, ext); ok {
+			return trimmed
+		}
+	}
 	return command
 }
 
