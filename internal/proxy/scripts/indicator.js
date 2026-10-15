@@ -1330,7 +1330,12 @@
 
     function getMeasureEl() {
       if (measureEl) return measureEl;
+      // One per mount: the element from a previous compose render (mounted
+      // in the mount root, so clearing the tab content left it) is retired.
+      var staleMeasure = getInMount('__devtool-message-measure');
+      if (staleMeasure && staleMeasure.parentNode) staleMeasure.parentNode.removeChild(staleMeasure);
       measureEl = document.createElement('div');
+      measureEl.id = '__devtool-message-measure';
       // Position off-screen but still laid out so offsetHeight is accurate.
       // visibility:hidden keeps it invisible without opting out of layout.
       measureEl.style.cssText = [
@@ -2077,6 +2082,17 @@
     // It's a sibling of the rest of the indicator UI inside the mount root.
     // The audit button stays inside `container`; the popover is wired back
     // to it only by the popovertarget attribute.
+    //
+    // Because it lives outside the tab content, re-rendering the compose tab
+    // (every panel open) does not remove the previous menu. Retire it here:
+    // otherwise menus pile up and popovertarget resolves to the oldest one,
+    // wired to a detached button. Hiding first runs its close handler, which
+    // drops its window/document listeners.
+    var staleMenu = getInMount(menu.id);
+    if (staleMenu) {
+      try { if (staleMenu.hidePopover) staleMenu.hidePopover(); } catch (_e) { /* not open */ }
+      if (staleMenu.parentNode) staleMenu.parentNode.removeChild(staleMenu);
+    }
     mountRoot().appendChild(menu);
 
     var resizeListener = null;

@@ -66,3 +66,23 @@ func TestIndicatorTogglePanel_HideTimerIsCancellable(t *testing.T) {
 	mustContain(t, "indicator.js destroy", funcBody(t, src, "function destroy()"),
 		"clearTimeout(state.panelHideTimeout);")
 }
+
+// TestIndicatorCompose_RetiresMountRootNodes — behaviour:
+// jstest/indicator-compose-rerender.test.js. The audit menu popover and the
+// textarea measurement element are mounted in the mount root, outside the tab
+// content that a compose re-render clears, so each panel open used to add
+// another of each; popovertarget then resolved to the oldest, detached menu.
+func TestIndicatorCompose_RetiresMountRootNodes(t *testing.T) {
+	src := indicatorSrc(t)
+	dropdown := funcBody(t, src, "function createActionsDropdown()")
+	retire := strings.Index(dropdown, "var staleMenu = getInMount(menu.id);")
+	mount := strings.Index(dropdown, "mountRoot().appendChild(menu);")
+	if retire < 0 || mount < retire {
+		t.Error("createActionsDropdown must retire the previous audit menu before mounting a new one")
+	}
+	measure := funcBody(t, src, "function getMeasureEl()")
+	mustContain(t, "indicator.js getMeasureEl", measure,
+		"getInMount('__devtool-message-measure')",
+		"measureEl.id = '__devtool-message-measure';",
+	)
+}
