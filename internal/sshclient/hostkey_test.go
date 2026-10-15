@@ -40,6 +40,22 @@ func TestHostKeyCallback_UnknownHost_AcceptedPromptAppendsKnownHosts(t *testing.
 	_ = hostKey
 }
 
+// TestHostKeyCallback_CreatesMissingParentDir pins first-ever use from a
+// profile with no ~/.ssh: the parent directory of known_hosts must be created.
+// The directory was derived by splitting on '/', so a native Windows path
+// (filepath.Join → backslashes) yielded ".", nothing was created and opening
+// the file failed.
+func TestHostKeyCallback_CreatesMissingParentDir(t *testing.T) {
+	knownHostsPath := filepath.Join(t.TempDir(), "missing", ".ssh", "known_hosts")
+
+	if _, err := HostKeyCallback(knownHostsPath, Prompter{In: strings.NewReader(""), Out: &discardWriter{}}); err != nil {
+		t.Fatalf("HostKeyCallback with a missing parent dir: %v", err)
+	}
+	if _, err := os.Stat(knownHostsPath); err != nil {
+		t.Fatalf("known_hosts was not created: %v", err)
+	}
+}
+
 func TestHostKeyCallback_UnknownHost_RejectedPromptFails(t *testing.T) {
 	dir := t.TempDir()
 	knownHostsPath := filepath.Join(dir, "known_hosts")

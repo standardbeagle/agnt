@@ -7,6 +7,7 @@ import (
 	"io"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/crypto/ssh"
@@ -87,7 +88,9 @@ func HostKeyCallback(knownHostsPath string, prompter Prompter) (ssh.HostKeyCallb
 	// valid (first-ever connection from this machine), so create it empty
 	// if missing rather than erroring.
 	if _, err := os.Stat(knownHostsPath); os.IsNotExist(err) {
-		if err := os.MkdirAll(dirOf(knownHostsPath), 0o700); err != nil {
+		// filepath.Dir, not a split on '/': DefaultKnownHostsPath is built
+		// with filepath.Join, so on native Windows the separator is '\'.
+		if err := os.MkdirAll(filepath.Dir(knownHostsPath), 0o700); err != nil {
 			return nil, fmt.Errorf("sshclient: creating known_hosts dir: %w", err)
 		}
 		f, err := os.OpenFile(knownHostsPath, os.O_CREATE|os.O_WRONLY, 0o600)
@@ -161,14 +164,6 @@ func appendKnownHost(path, hostname string, key ssh.PublicKey) error {
 		return err
 	}
 	return nil
-}
-
-func dirOf(path string) string {
-	idx := strings.LastIndexByte(path, '/')
-	if idx < 0 {
-		return "."
-	}
-	return path[:idx]
 }
 
 // knownHostKeyAlgorithms returns the host-key algorithms to request from
