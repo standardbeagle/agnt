@@ -4,12 +4,16 @@ const https = require('https');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
+const { execFileSync } = require('child_process');
+const { pipeline } = require('stream/promises');
 
 // Read version from package.json to stay in sync
 const packageJson = require('../package.json');
 const VERSION = packageJson.version;
 const REPO = 'standardbeagle/agnt';
 const BINARY_NAME = 'agnt';
+const MAX_REDIRECTS = 10;
+const IDLE_TIMEOUT_MS = 60000;
 
 // Platform/architecture mapping
 const PLATFORMS = {
@@ -53,89 +57,112 @@ function getDownloadUrl() {
   return `https://github.com/${REPO}/releases/download/v${VERSION}/${BINARY_NAME}-${platform}-${arch}${ext}`;
 }
 
-async function downloadFile(url, dest) {
+
+// downloadFile writes url's body to dest and resolves only when the whole
+// body arrived: a connection dropped mid-body rejects (pipeline's premature
+// close), and a body shorter than Content-Length rejects.
+function downloadFile(url, dest, redirects = 0) {
   return new Promise((resolve, reject) => {
-    const file = fs.createWriteStream(dest);
-    const protocol = url.startsWith('https') ? https : http;
+    const protocol = url.startsWith('https:') ? https : http;
 
     const request = protocol.get(url, (response) => {
+      const { statusCode } = response;
+
       // Handle redirects
-      if (response.statusCode === 301 || response.statusCode === 302) {
-        file.close();
-        fs.unlinkSync(dest);
-        downloadFile(response.headers.location, dest).then(resolve).catch(reject);
+      if ([301, 302, 303, 307, 308].includes(statusCode) && response.headers.location) {
+        response.resume();
+        if (redirects >= MAX_REDIRECTS) {
+          reject(new Error('Failed to download: too many redirects'));
+          return;
+        }
+        const next = new URL(response.headers.location, url).toString();
+        downloadFile(next, dest, redirects + 1).then(resolve, reject);
         return;
       }
 
-      if (response.statusCode !== 200) {
-        file.close();
-        fs.unlinkSync(dest);
-        reject(new Error(`Failed to download: ${response.statusCode} ${response.statusMessage}`));
+      if (statusCode !== 200) {
+        response.resume();
+        reject(new Error(`Failed to download: ${statusCode} ${response.statusMessage}`));
         return;
       }
 
-      response.pipe(file);
-      file.on('finish', () => {
-        file.close();
-        resolve();
-      });
+      const expected = parseInt(response.headers['content-length'], 10);
+      pipeline(response, fs.createWriteStream(dest))
+        .then(() => {
+          const size = fs.statSync(dest).size;
+          if (size === 0) {
+            throw new Error('Failed to download: empty response body');
+          }
+          if (Number.isFinite(expected) && size !== expected) {
+            throw new Error(`Failed to download: got ${size} of ${expected} bytes`);
+          }
+          resolve();
+        })
+        .catch(reject);
     });
 
-    request.on('error', (err) => {
-      file.close();
-      fs.unlinkSync(dest);
-      reject(err);
+    request.on('error', reject);
+    request.setTimeout(IDLE_TIMEOUT_MS, () => {
+      request.destroy(new Error(`Failed to download: no data for ${IDLE_TIMEOUT_MS / 1000}s`));
     });
   });
+}
+
+// reportedVersion returns the first line of `<binary> --version` ("agnt
+// vX.Y.Z"; later lines describe the running daemon, whose version is not
+// this binary's), or null when it cannot run (a truncated or foreign file).
+function reportedVersion(binaryPath) {
+  try {
+    const out = execFileSync(binaryPath, ['--version'], {
+      encoding: 'utf8',
+      timeout: 15000,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    return out.split(/\r?\n/)[0].trim();
+  } catch (e) {
+    return null;
+  }
+}
+
+function isExpectedVersion(out) {
+  return out === `${BINARY_NAME} v${VERSION}`;
+}
+
+function unlinkQuietly(p) {
+  try {
+    fs.unlinkSync(p);
+    return true;
+  } catch (e) {
+    return false;
+  }
 }
 
 async function install() {
   const binDir = path.join(__dirname, '..', 'bin');
   const binaryPath = path.join(binDir, getBinaryName());
+  const oldPath = binaryPath + '.old';
+  const newPath = binaryPath + '.new';
 
   // Create bin directory if it doesn't exist
   if (!fs.existsSync(binDir)) {
     fs.mkdirSync(binDir, { recursive: true });
   }
 
-  // Handle existing binary (might be locked on Windows if daemon is running)
+  // Skip only a binary that runs and reports this version; a truncated or
+  // stale one from an earlier install is replaced.
   if (fs.existsSync(binaryPath)) {
-    const oldPath = binaryPath + '.old';
-    let binaryLocked = false;
-
-    try {
-      // Try to delete any previous .old file first
-      if (fs.existsSync(oldPath)) {
-        try {
-          fs.unlinkSync(oldPath);
-        } catch (e) {
-          // Ignore - might still be locked from previous upgrade
-        }
-      }
-
-      // Rename current binary to .old (works even if file is locked on Windows)
-      fs.renameSync(binaryPath, oldPath);
-      console.log(`Renamed existing binary to ${path.basename(oldPath)}`);
-
-      // Try to delete the old file (will fail if locked, but that's ok)
-      try {
-        fs.unlinkSync(oldPath);
-      } catch (e) {
-        // File is locked (daemon running) - will be cleaned up next time
-        binaryLocked = true;
-        console.log(`Note: Old binary still in use (daemon running)`);
-      }
-    } catch (e) {
-      // Rename failed - binary might be the same version or something else is wrong
-      console.log(`${BINARY_NAME} binary already exists, skipping download`);
+    if (isExpectedVersion(reportedVersion(binaryPath))) {
+      console.log(`${BINARY_NAME} v${VERSION} already installed, skipping download`);
       return;
     }
-
-    // If binary was locked, suggest running agnt upgrade after install
-    if (binaryLocked) {
-      console.log(`Tip: Run 'agnt upgrade' after install to restart daemon with new version`);
-    }
+    console.log(`Existing ${BINARY_NAME} binary is not a working v${VERSION}; replacing it`);
   }
+
+  // Download beside the final path and move it into place only once the
+  // file is complete and runs, so an interrupted install never leaves a
+  // truncated binary at binaryPath.
+  const ext = process.platform === 'win32' ? '.exe' : '';
+  const tmpPath = path.join(binDir, `.${BINARY_NAME}.${process.pid}.download${ext}`);
 
   const url = getDownloadUrl();
   console.log(`Downloading ${BINARY_NAME} v${VERSION}...`);
@@ -144,15 +171,19 @@ async function install() {
   console.log(`  URL: ${url}`);
 
   try {
-    await downloadFile(url, binaryPath);
+    await downloadFile(url, tmpPath);
 
     // Make executable on Unix
     if (process.platform !== 'win32') {
-      fs.chmodSync(binaryPath, 0o755);
+      fs.chmodSync(tmpPath, 0o755);
     }
 
-    console.log(`Successfully installed ${BINARY_NAME} to ${binaryPath}`);
+    const out = reportedVersion(tmpPath);
+    if (!isExpectedVersion(out)) {
+      throw new Error(`Downloaded binary does not run as v${VERSION} (--version: ${out === null ? 'failed' : JSON.stringify(out)})`);
+    }
   } catch (error) {
+    unlinkQuietly(tmpPath);
     console.error(`Failed to download ${BINARY_NAME}:`);
     console.error(error.message);
     console.error('');
@@ -165,6 +196,31 @@ async function install() {
     console.error('  make build');
     process.exit(1);
   }
+
+  // The verified binary is complete. Move the existing one aside (a rename
+  // works on Windows even while a running daemon holds it), then put the new
+  // one in place. If the existing one cannot be moved, stage the new one as
+  // .new, which the bin/agnt wrappers apply on their next run.
+  if (fs.existsSync(binaryPath)) {
+    unlinkQuietly(oldPath); // a leftover from a previous upgrade, may be locked
+    try {
+      fs.renameSync(binaryPath, oldPath);
+    } catch (e) {
+      unlinkQuietly(newPath);
+      fs.renameSync(tmpPath, newPath);
+      console.log(`Existing binary could not be replaced (${e.message}); staged v${VERSION} as ${path.basename(newPath)}, applied on the next 'agnt' run`);
+      return;
+    }
+    if (!unlinkQuietly(oldPath)) {
+      console.log(`Note: Old binary still in use (daemon running)`);
+      console.log(`Tip: Run 'agnt upgrade' after install to restart daemon with new version`);
+    }
+  }
+
+  fs.renameSync(tmpPath, binaryPath);
+  // A .new staged by an earlier install would replace this one on the next run.
+  unlinkQuietly(newPath);
+  console.log(`Successfully installed ${BINARY_NAME} to ${binaryPath}`);
 }
 
 install().catch((err) => {

@@ -107,23 +107,28 @@ function downloadFile(url, dest, redirects = 0) {
   });
 }
 
-// reportedVersion runs `<binary> --version`; null when it cannot run (a
-// truncated or foreign file).
+// reportedVersion returns the first line of `<binary> --version` ("agnt
+// vX.Y.Z"; later lines describe the running daemon, whose version is not
+// this binary's), or null when it cannot run (a truncated or foreign file).
 function reportedVersion(binaryPath) {
   try {
-    return execFileSync(binaryPath, ['--version'], {
+    const out = execFileSync(binaryPath, ['--version'], {
       encoding: 'utf8',
       timeout: 15000,
       stdio: ['ignore', 'pipe', 'pipe'],
-    }).trim();
+    });
+    return out.split(/\r?\n/)[0].trim();
   } catch (e) {
     return null;
   }
 }
 
+function isExpectedVersion(out) {
+  return out !== null && out.endsWith(` v${VERSION}`);
+}
+
 function isExpectedBinary(binaryPath) {
-  const out = reportedVersion(binaryPath);
-  return out !== null && out.includes(VERSION);
+  return isExpectedVersion(reportedVersion(binaryPath));
 }
 
 async function install() {
@@ -166,7 +171,7 @@ async function install() {
     }
 
     const out = reportedVersion(tmpPath);
-    if (out === null || !out.includes(VERSION)) {
+    if (!isExpectedVersion(out)) {
       throw new Error(`Downloaded binary does not run as v${VERSION} (--version: ${out === null ? 'failed' : JSON.stringify(out)})`);
     }
 
