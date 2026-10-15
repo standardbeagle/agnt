@@ -2800,8 +2800,10 @@
 
     var fullMessage = parts.join('\n');
 
-    // Send via panel_message
-    core.send('panel_message', {
+    // Send via panel_message. core.send returns false when the socket is not
+    // open (e.g. reconnecting); the message did not go out, so keep the text,
+    // the attachments and the panel for a retry instead of clearing them.
+    var sent = core.send('panel_message', {
       timestamp: Date.now(),
       payload: {
         message: fullMessage,
@@ -2830,6 +2832,11 @@
         request_notification: state.requestNotification
       }
     });
+
+    if (!sent) {
+      showMicroToast('\u2718 Not sent \u2014 not connected, try again', TOKENS.colors.error);
+      return;
+    }
 
     // Clear
     if (textarea) textarea.value = '';

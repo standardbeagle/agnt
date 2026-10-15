@@ -103,3 +103,30 @@ export function loadModules(names, opts = {}) {
 export function loadBundle(opts = {}) {
   return loadModules(moduleOrder(), opts);
 }
+
+// loadIndicator evaluates the whole bundle and waits for the indicator to build
+// its UI (it does so on DOMContentLoaded). Console noise is silenced and fetch
+// is stubbed to never settle (jsdom has none; the tab bar polls proxy state).
+export async function loadIndicator(opts = {}) {
+  const rt = loadBundle({
+    ...opts,
+    before: (win) => {
+      for (const level of ['log', 'warn', 'error']) win.console[level] = () => {};
+      win.fetch = () => new Promise(() => {});
+      if (opts.before) opts.before(win);
+    },
+  });
+  const win = rt.window;
+  if (win.document.readyState === 'loading') {
+    await new Promise((r) => win.document.addEventListener('DOMContentLoaded', r));
+  }
+  const ind = win.__devtool_indicator;
+  if (!ind || !ind.state.panel) throw new Error('indicator panel was not built');
+  return {
+    ...rt,
+    win,
+    ind,
+    root: win.__devtoolGetMountRoot(),
+    internal: win.__devtool_indicator_internal,
+  };
+}
