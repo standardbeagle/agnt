@@ -240,3 +240,59 @@ func TestSetProxyProperties_RefusesAnUnknownPropertyWithoutWriting(t *testing.T)
 		t.Errorf("file was modified by a refused edit:\n%s", got)
 	}
 }
+
+// One-line blocks: the line editor used to miss `dev { …; }` entirely. A
+// removal then reported success with the key still in the file, and a set
+// appended a second `dev` block (which kdl-go merges) leaving the stale value
+// in the text.
+func TestSetProxyProperties_OneLineBlocks(t *testing.T) {
+	bodies := map[string]string{
+		"inner": "proxies {\n    dev { url \"http://localhost:5173\"; status-url \"https://old.example.test\"; } // pinned\n}\n",
+		"outer": "proxies { dev { url \"http://localhost:5173\"; status-url \"https://old.example.test\"; }; }\n",
+	}
+	for name, body := range bodies {
+		for _, value := range []string{"", "https://new.example.test"} {
+			t.Run(name+"/"+value, func(t *testing.T) {
+				path := writeConfig(t, body)
+				if err := SetProxyStatusURL(path, "dev", value); err != nil {
+					t.Fatalf("SetProxyStatusURL: %v", err)
+				}
+				got := readConfig(t, path)
+				cfg, err := LoadAgntConfigFile(path)
+				if err != nil {
+					t.Fatalf("result does not parse: %v\n%s", err, got)
+				}
+				pc := cfg.Proxies["dev"]
+				if pc == nil || pc.StatusURL != value {
+					t.Fatalf("status-url not %q after edit:\n%s", value, got)
+				}
+				if pc.URL != "http://localhost:5173" {
+					t.Fatalf("edit lost the sibling url:\n%s", got)
+				}
+				if strings.Contains(got, "old.example.test") {
+					t.Fatalf("old value survived:\n%s", got)
+				}
+				if name == "inner" && !strings.Contains(got, "// pinned") {
+					t.Errorf("edit dropped the trailing comment:\n%s", got)
+				}
+			})
+		}
+	}
+}
+
+// A removal the editor cannot carry out (a one-line block with a comment
+// inside, which it will not split) must be reported, not claimed: the result
+// is re-parsed and the key is still there.
+func TestSetProxyStatusURL_RemovalThatDidNotHappenIsReported(t *testing.T) {
+	body := "proxies {\n    dev { url \"http://localhost:5173\" /* note */; status-url \"https://old.example.test\"; }\n}\n"
+	if _, err := ParseAgntConfig(body); err != nil {
+		t.Fatalf("fixture does not parse: %v", err)
+	}
+	path := writeConfig(t, body)
+	if err := SetProxyStatusURL(path, "dev", ""); err == nil {
+		t.Fatalf("removal reported success, file now:\n%s", readConfig(t, path))
+	}
+	if got := readConfig(t, path); got != body {
+		t.Errorf("refused edit changed the file:\n%s", got)
+	}
+}

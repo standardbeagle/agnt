@@ -21,13 +21,13 @@ import (
 // and written atomically. An edit that would produce a file the daemon cannot
 // load is refused, leaving the original untouched.
 
-// proxyPropertyReaders names the proxy properties these edits may write, and
-// reads each one back off the parsed config. An edit is verified through the
-// same field the daemon consumes, so a key the parser ignores cannot be
-// written and left looking configured.
-var proxyPropertyReaders = map[string]func(*ProxyConfig) string{
-	"bind":       func(p *ProxyConfig) string { return p.Bind },
-	"status-url": func(p *ProxyConfig) string { return p.StatusURL },
+// proxyPropertyFields names the proxy properties these edits may write, and
+// maps each one to the parsed field the daemon consumes. An edit is verified
+// through that field, so a key the parser ignores cannot be written and left
+// looking configured, and a removal that left the key behind is caught.
+var proxyPropertyFields = map[string]func(*ProxyConfig) *string{
+	"bind":       func(p *ProxyConfig) *string { return &p.Bind },
+	"status-url": func(p *ProxyConfig) *string { return &p.StatusURL },
 }
 
 // SetProxyStatusURL sets the display-only `status-url` of one proxy. An empty
@@ -52,7 +52,7 @@ func SetProxyProperties(path, proxyID string, props [][2]string) error {
 		return fmt.Errorf("no properties given")
 	}
 	for _, kv := range props {
-		if _, ok := proxyPropertyReaders[kv[0]]; !ok {
+		if _, ok := proxyPropertyFields[kv[0]]; !ok {
 			return fmt.Errorf("cannot set unknown proxy property %q (not written)", kv[0])
 		}
 	}
@@ -76,10 +76,11 @@ func SetProxyProperties(path, proxyID string, props [][2]string) error {
 	}
 	pc := cfg.Proxies[proxyID]
 	for _, kv := range props {
-		if kv[1] == "" {
-			continue
+		got := ""
+		if pc != nil {
+			got = *proxyPropertyFields[kv[0]](pc)
 		}
-		if pc == nil || proxyPropertyReaders[kv[0]](pc) != kv[1] {
+		if got != kv[1] {
 			return fmt.Errorf("edit did not take effect for proxy %q property %q (not written)", proxyID, kv[0])
 		}
 	}
@@ -102,6 +103,15 @@ func setNestedProperty(text string, names []string, key, value string) (string, 
 	indent := ""
 	for _, name := range names {
 		bodyStart, bodyEnd, found := findBlockBody(lines, start, end, name)
+		if !found {
+			// `name { a 1; b 2; }` on one line: give it a line per child and
+			// look again, so the edit lands inside it rather than beside it.
+			if expanded, ok := expandOneLineBlock(lines, start, end, name); ok {
+				end += len(expanded) - len(lines)
+				lines = expanded
+				bodyStart, bodyEnd, found = findBlockBody(lines, start, end, name)
+			}
+		}
 		if !found {
 			// Create this level and everything under it, then set the key.
 			created := renderBlockPath(names, indexOf(names, name), key, value, indent)
@@ -163,6 +173,84 @@ func findBlockBody(lines []string, from, to int, name string) (bodyStart, bodyEn
 		return 0, 0, false // unbalanced braces: refuse rather than guess
 	}
 	return 0, 0, false
+}
+
+// expandOneLineBlock rewrites the first `name { child; child; }` line in
+// lines[from:to] as a multi-line block, one child per line, keeping a trailing
+// comment on the closing line. It reports false when there is no such line or
+// the line is not a shape it can split safely; the caller's re-parse checks
+// the result either way.
+func expandOneLineBlock(lines []string, from, to int, name string) ([]string, bool) {
+	for i := from; i < to && i < len(lines); i++ {
+		code := stripComment(lines[i])
+		fields := strings.Fields(code)
+		if len(fields) == 0 || unquoteKDL(fields[0]) != name {
+			continue
+		}
+		trimmed := strings.TrimRight(code, " \t;")
+		open := strings.IndexByte(trimmed, '{')
+		if open < 0 || !strings.HasSuffix(trimmed, "}") {
+			continue
+		}
+		children, ok := splitKDLChildren(trimmed[open+1 : len(trimmed)-1])
+		if !ok {
+			return nil, false
+		}
+		indent := leadingWhitespace(lines[i])
+		out := []string{indent + strings.TrimSpace(trimmed[:open+1])}
+		for _, child := range children {
+			out = append(out, indent+"    "+child)
+		}
+		closing := indent + "}"
+		if comment := strings.TrimSpace(lines[i][len(code):]); comment != "" {
+			closing += " " + comment
+		}
+		out = append(out, closing)
+		rest := append(append([]string{}, lines[:i]...), lines[i+1:]...)
+		return insertLines(rest, i, out), true
+	}
+	return nil, false
+}
+
+// splitKDLChildren splits a one-line block body on the `;` separators at its
+// own depth, outside quoted strings. It refuses unbalanced braces and syntax
+// it does not model (block comments, raw strings).
+func splitKDLChildren(body string) ([]string, bool) {
+	if strings.Contains(body, "/*") || strings.Contains(body, `r"`) || strings.Contains(body, "r#") {
+		return nil, false
+	}
+	var children []string
+	depth, inQuote, last := 0, false, 0
+	for i := 0; i < len(body); i++ {
+		c := body[i]
+		switch {
+		case inQuote && c == '\\':
+			i++ // skip the escaped character
+		case c == '"':
+			inQuote = !inQuote
+		case inQuote:
+		case c == '{':
+			depth++
+		case c == '}':
+			if depth--; depth < 0 {
+				return nil, false
+			}
+		case c == ';' && depth == 0:
+			children = append(children, body[last:i])
+			last = i + 1
+		}
+	}
+	if depth != 0 || inQuote {
+		return nil, false
+	}
+	children = append(children, body[last:])
+	var out []string
+	for _, child := range children {
+		if child = strings.TrimSpace(child); child != "" {
+			out = append(out, child)
+		}
+	}
+	return out, len(out) > 0
 }
 
 // renderBlockPath renders names[depth:] as nested blocks carrying key/value.
