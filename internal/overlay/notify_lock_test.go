@@ -1,7 +1,6 @@
 package overlay
 
 import (
-	"bytes"
 	"errors"
 	"os"
 	"path/filepath"
@@ -30,8 +29,25 @@ func menuRouterWithConfig(t *testing.T, body string) (*InputRouter, *Overlay, *f
 	cfg := DefaultConfig()
 	cfg.ShowIndicator = true
 	ov := New(&writeRecorder{}, 80, 24, cfg)
-	ov.renderer = NewRenderer(&bytes.Buffer{}, 80, 24)
+	// The renderer writes outside its lock (the real terminal is safe for
+	// that), and the toast expiry timer and the close transition spinner draw
+	// from their own goroutines, so the sink must be synchronized.
+	ov.renderer = NewRenderer(&writeRecorder{}, 80, 24)
 	ov.state.Store(int32(StateMenu))
+	t.Cleanup(func() {
+		// Leave nothing drawing into later tests. TryLock: after a deadlock
+		// the stuck handler holds the lock for good, and waiting on it here
+		// would hang the suite the timeout in pressKey exists to protect.
+		ov.redrawPaused.Store(true)
+		if !ov.mu.TryLock() {
+			return
+		}
+		defer ov.mu.Unlock()
+		ov.stopTransitionSpinnerLocked()
+		if ov.notifyTimer != nil {
+			ov.notifyTimer.Stop()
+		}
+	})
 	ov.panelMode = true
 	ov.panelItems = []PanelItem{{Type: "overview", Label: "overview"}}
 
