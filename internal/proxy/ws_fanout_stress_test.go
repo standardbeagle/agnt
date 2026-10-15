@@ -92,9 +92,17 @@ type slowWSConn struct {
 	gate  chan struct{} // if non-nil, WriteMessage blocks until it is closed
 	mu    sync.Mutex
 	msgs  [][]byte
+
+	// entered (when non-nil) is closed the first time WriteMessage is called,
+	// so a test can wait until the writer is really inside a write.
+	entered     chan struct{}
+	enteredOnce sync.Once
 }
 
 func (s *slowWSConn) WriteMessage(_ int, data []byte) error {
+	if s.entered != nil {
+		s.enteredOnce.Do(func() { close(s.entered) })
+	}
 	// A gate (when set) blocks the writer deterministically until the test
 	// releases it — used to fill the async writer's channel without relying on
 	// a sleep racing the producer (which flaked under -race instrumentation).
@@ -206,7 +214,7 @@ func TestProxyWS_SlowSubscriberDoesntStallOthers(t *testing.T) {
 	// sequential writes, the drain goroutine would take 200×5ms = 1s if it
 	// were inline. Async isolation makes the broadcasts take <<200ms while the
 	// drain goroutine completes its writes independently.
-	slow := &slowWSConn{}
+	slow := &slowWSConn{entered: make(chan struct{})}
 	slow.gate = make(chan struct{})
 	asyncSlow := newAsyncWSWriter(slow, websocket.TextMessage)
 	registerStub(ps, "slow", asyncSlow)
@@ -225,7 +233,15 @@ func TestProxyWS_SlowSubscriberDoesntStallOthers(t *testing.T) {
 	}
 
 	// Reaching here while the subscriber's writer is observably blocked pins
-	// async isolation without a scheduler-sensitive wall-clock budget.
+	// async isolation without a scheduler-sensitive wall-clock budget. Wait
+	// until the drain goroutine is really inside its first (gated) write: if
+	// Close ran before it took a frame, the writer would drop every frame by
+	// design and the slow stub would see none (the old flake under load).
+	select {
+	case <-slow.entered:
+	case <-time.After(10 * time.Second):
+		t.Fatal("slow subscriber's drain goroutine never started writing")
+	}
 
 	// Every fast stub received all messages.
 	for i, s := range fastStubs {
