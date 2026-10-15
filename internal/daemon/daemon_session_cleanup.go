@@ -758,6 +758,12 @@ func (d *Daemon) doCleanupExact(sessionCode string, expected *Session, expectedP
 				debug.Log("daemon", "stopped browsers: %v", stoppedIDs)
 			}
 		}()
+
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			d.stopProjectAutomationSessions(ctx, projectPath)
+		}()
 	}
 
 	// Stop only orphaned script processes (no remaining observers)

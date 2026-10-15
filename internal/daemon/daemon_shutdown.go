@@ -515,6 +515,18 @@ func (d *Daemon) StopAllResources(ctx context.Context) {
 		}
 	}()
 
+	// Stop all chromedp automation sessions (StopAll, unlike Shutdown, lets
+	// new sessions start afterwards).
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		if _, err := d.sessionm.StopAll(cleanupCtx); err != nil {
+			debug.Log("daemon", "error stopping automation sessions: %v", err)
+			d.daemonStartupLog("warning", "stop_failed",
+				fmt.Sprintf("error stopping automation sessions: %v", err))
+		}
+	}()
+
 	// Stop all proxies and update state
 	wg.Add(1)
 	go func() {
@@ -609,6 +621,21 @@ func (d *Daemon) markStoppedScripts(entries []*script.Entry) {
 	}
 }
 
+// stopProjectAutomationSessions stops projectPath's chromedp automation
+// sessions, each a full Chrome process holding a slot under the daemon-wide
+// session cap. A failure is reported to the startup log, not only debug.Log.
+func (d *Daemon) stopProjectAutomationSessions(ctx context.Context, projectPath string) {
+	stoppedIDs, err := d.sessionm.StopByProjectPath(ctx, projectPath)
+	if err != nil {
+		debug.Log("daemon", "error stopping automation sessions for project %s: %v", projectPath, err)
+		d.daemonStartupLog("warning", "stop_failed",
+			fmt.Sprintf("error stopping automation sessions for project %s: %v", projectPath, err))
+	}
+	if len(stoppedIDs) > 0 {
+		debug.Log("daemon", "stopped automation sessions: %v", stoppedIDs)
+	}
+}
+
 // StopProjectResources is the project-scoped sibling of StopAllResources. Where
 // StopAllResources is the true global daemon-shutdown path (StopAll on every
 // manager plus clearing the daemon-wide overlay endpoint), this stops ONLY the
@@ -652,6 +679,13 @@ func (d *Daemon) StopProjectResources(ctx context.Context, projectPath string) {
 			d.daemonStartupLog("warning", "stop_failed",
 				fmt.Sprintf("error stopping browsers for project %s: %v", projectPath, err))
 		}
+	}()
+
+	// Stop this project's chromedp automation sessions
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		d.stopProjectAutomationSessions(cleanupCtx, projectPath)
 	}()
 
 	// Stop this project's proxies and drop them from persisted state
