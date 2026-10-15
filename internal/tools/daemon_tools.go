@@ -266,6 +266,14 @@ func (dt *DaemonTools) resetClient() {
 	dt.forgetAttachment()
 }
 
+// currentClient returns the daemon client as of now, read under clientMu so
+// it cannot race resetClient or ensureClient swapping it. May be nil.
+func (dt *DaemonTools) currentClient() *daemonclient.ResilientClient {
+	dt.clientMu.Lock()
+	defer dt.clientMu.Unlock()
+	return dt.client
+}
+
 // Close closes the daemon client connection.
 func (dt *DaemonTools) Close() error {
 	if dt.client != nil {
@@ -513,12 +521,24 @@ func (dt *DaemonTools) RegisterChannelSession(ctx context.Context, cfg *config.C
 		return nil
 	}
 
-	// Generate a session code for this MCP instance.
-	sessionCode := fmt.Sprintf("mcp-%d", time.Now().UnixNano()%10000)
+	client := dt.currentClient()
+	if client == nil {
+		fmt.Fprintf(os.Stderr, "[agnt] channel session: daemon client was reset before registration\n")
+		return nil
+	}
+
+	// Generate a session code for this MCP instance the way classic sessions
+	// do (crypto/rand suffix): SESSION REGISTER treats an existing code as a
+	// reconnect, so a colliding code would take over another session.
+	sessionCode, err := client.SessionGenerateCode("mcp")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[agnt] channel session: %v\n", err)
+		return nil
+	}
 
 	// Register with SessionPGID=0 (no PTY child in channel mode).
 	// Overlay path is "-" because there is no overlay socket in channel mode.
-	_, err := dt.client.SessionRegisterWithPGID(sessionCode, "-", projectPath, "mcp", nil, 0)
+	_, err = client.SessionRegisterWithPGID(sessionCode, "-", projectPath, "mcp", nil, 0)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "[agnt] channel session: registration failed: %v\n", err)
 		return nil
@@ -540,10 +560,12 @@ func (dt *DaemonTools) RegisterChannelSession(ctx context.Context, cfg *config.C
 		for {
 			select {
 			case <-ticker.C:
-				if dt.client != nil && dt.client.IsConnected() {
+				// Read the client under clientMu each tick: the daemon
+				// stop/restart tools swap it out via resetClient.
+				if c := dt.currentClient(); c != nil && c.IsConnected() {
 					// Best-effort: a missed heartbeat is recovered by the next
 					// tick; log so a persistent failure is diagnosable.
-					if err := dt.client.SessionHeartbeat(sessionCode); err != nil {
+					if err := c.SessionHeartbeat(sessionCode); err != nil {
 						debug.Log("channel-session", "heartbeat failed: %v", err)
 					}
 				}
@@ -571,10 +593,10 @@ func (dt *DaemonTools) closeChannelSession() {
 	}
 
 	// Unregister from daemon so CleanupSessionResources fires.
-	if dt.client != nil && dt.client.IsConnected() {
+	if c := dt.currentClient(); c != nil && c.IsConnected() {
 		// Best-effort cleanup on shutdown: the daemon also reaps the session on
 		// connection drop, so a failed unregister is logged, not fatal.
-		if err := dt.client.SessionUnregister(code); err != nil {
+		if err := c.SessionUnregister(code); err != nil {
 			debug.Log("channel-session", "unregister failed: %v", err)
 		}
 	}

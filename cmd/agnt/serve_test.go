@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"testing"
@@ -518,8 +519,12 @@ func TestRegisterChannelSession_SetsSessionCode(t *testing.T) {
 	if code == "" {
 		t.Error("expected session code to be set after registration")
 	}
-	if !strings.HasPrefix(code, "mcp-") {
-		t.Errorf("expected session code to have mcp- prefix, got %q", code)
+	// Same shape as classic sessions (SessionGenerateCode): "mcp-" plus 8 hex
+	// digits from crypto/rand. The old UnixNano()%10000 suffix gave at most
+	// ten thousand codes, so two MCP processes could draw the same one and
+	// the second registration would take over the first.
+	if !regexp.MustCompile(`^mcp-[0-9a-f]{8}$`).MatchString(code) {
+		t.Errorf("expected session code mcp-<8 hex>, got %q", code)
 	}
 
 	// Close should clear the session code.
