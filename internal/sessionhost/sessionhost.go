@@ -314,28 +314,55 @@ func (s *Session) fanOutLocked(payload []byte, frameType string) {
 		// scrollback snapshot before it can accept live frames again;
 		// otherwise the gap left by the earlier drop stays in its stream.
 		if sub.desynced.Load() {
-			if !s.trySendResync(sub) {
+			if s.trySendResync(sub) {
+				sub.desynced.Store(false)
+				// readLoop writes each chunk to scrollback *before*
+				// broadcasting it, so the snapshot just replayed already
+				// contains this stdout frame — delivering it live too would
+				// render it twice. Skip the live copy for stdout;
+				// non-scrollback frames (e.g. "exit") are not in the
+				// snapshot and must still be delivered.
+				if frameType == "stdout" {
+					continue
+				}
+			} else if frameType != "exit" {
 				// Still no room — stay desynced and skip this frame too.
-				continue
-			}
-			sub.desynced.Store(false)
-			// readLoop writes each chunk to scrollback *before* broadcasting
-			// it, so the snapshot just replayed already contains this stdout
-			// frame — delivering it live too would render it twice. Skip the
-			// live copy for stdout; non-scrollback frames (e.g. "exit") are
-			// not in the snapshot and must still be delivered.
-			if frameType == "stdout" {
+				// The exit frame still goes out below: a reattach replays
+				// the output, but nothing else tells the client it ended.
 				continue
 			}
 		}
-		select {
-		case sub.ch <- payload:
-		default:
+		if frameType == "exit" {
+			// The exit frame is the subscriber's only notice that the child
+			// is gone and is sent once, so it uses the slot every other
+			// frame leaves free (sendLive) and is never dropped.
+			select {
+			case sub.ch <- payload:
+			default:
+			}
+			continue
+		}
+		if !sendLive(sub, payload) {
 			// Slow subscriber: drop rather than block the single PTY
 			// reader (matches "Pinger never blocks delivery"), but mark it
 			// desynced so we resync (not silently corrupt) once it drains.
 			sub.desynced.Store(true)
 		}
+	}
+}
+
+// sendLive enqueues a non-exit frame without blocking, leaving the channel's
+// last slot free for the exit frame. Only the PTY reader sends non-exit frames
+// to a published subscriber, so the reserved slot cannot be taken by another.
+func sendLive(sub *subscriber, payload []byte) bool {
+	if len(sub.ch) >= cap(sub.ch)-1 {
+		return false
+	}
+	select {
+	case sub.ch <- payload:
+		return true
+	default:
+		return false
 	}
 }
 
@@ -350,25 +377,21 @@ func (s *Session) trySendResync(sub *subscriber) bool {
 	// + marshal + base64), so a persistently-full subscriber doesn't force that
 	// allocation on every single stdout frame — it would otherwise throttle the
 	// single PTY reader and every other subscriber while the slow one stays full.
-	if len(sub.ch) >= cap(sub.ch) {
+	if len(sub.ch) >= cap(sub.ch)-1 {
 		return false
 	}
 	snapshot, truncated := s.scrollback.Snapshot()
 	markerData, _ := json.Marshal(ReplayMarkerData{Truncated: truncated})
 	marker, _ := json.Marshal(Frame{Type: "replay-marker", Data: markerData})
 
-	select {
-	case sub.ch <- marker:
-	default:
+	if !sendLive(sub, marker) {
 		return false
 	}
 
 	if len(snapshot) > 0 {
 		data, _ := json.Marshal(base64.StdEncoding.EncodeToString(snapshot))
 		replay, _ := json.Marshal(Frame{Type: "stdout", Data: data})
-		select {
-		case sub.ch <- replay:
-		default:
+		if !sendLive(sub, replay) {
 			// Marker sent but snapshot didn't fit; remain desynced so the
 			// next broadcast retries the full resync.
 			return false
@@ -411,7 +434,8 @@ func (s *Session) Attach(bufferedFrames int) (ch <-chan []byte, attachID string,
 		bufferedFrames = 2 // room for the replay-marker and the snapshot frame
 	}
 	id := fmt.Sprintf("attach-%d", s.nextAttachID.Add(1))
-	sub := &subscriber{id: id, ch: make(chan []byte, bufferedFrames)}
+	// One slot beyond bufferedFrames is reserved for the exit frame (sendLive).
+	sub := &subscriber{id: id, ch: make(chan []byte, bufferedFrames+1)}
 
 	// Snapshot, enqueue the replay frames, and only then publish the subscriber
 	// — all under the exclusive lock the producer takes to write scrollback and

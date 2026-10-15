@@ -435,32 +435,58 @@ func (d *Daemon) hubHandleSessionHostAttach(ctx context.Context, conn *hubpkg.Co
 		return nil
 	}
 
+	defer s.Detach(attachID)
+	return streamSessionHostFrames(ctx, conn, s.Done(), frames, attachID)
+}
+
+// sessionFrameWriter is the part of a hub connection the attach stream uses.
+type sessionFrameWriter interface {
+	WriteChunk([]byte) error
+	WriteEnd() error
+}
+
+// streamSessionHostFrames writes an attach's frames to w until the session
+// exits (done), the attach is detached (frames closed), or ctx ends, with a
+// keepalive when idle.
+func streamSessionHostFrames(ctx context.Context, w sessionFrameWriter, done <-chan struct{}, frames <-chan []byte, attachID string) error {
 	keepalive := time.NewTicker(streamKeepaliveInterval)
 	defer keepalive.Stop()
-	defer s.Detach(attachID)
 
 	for {
 		select {
 		case <-ctx.Done():
 			return nil
-		case <-s.Done():
-			// PTY child exited; the "exit" frame was already broadcast by
-			// waitLoop and will be delivered via frames below before this
-			// case can win a race in practice, but guard anyway.
-			return conn.WriteEnd()
+		case <-done:
+			// The child exited. Its final output and the exit frame were
+			// queued before done closed, and select picks among ready cases
+			// at random, so write everything already queued before ending.
+			for {
+				select {
+				case payload, ok := <-frames:
+					if !ok {
+						return w.WriteEnd()
+					}
+					if err := w.WriteChunk(payload); err != nil {
+						debug.Log("sessionhost", "attach %s: write failed, client disconnected: %v", attachID, err)
+						return nil
+					}
+				default:
+					return w.WriteEnd()
+				}
+			}
 		case payload, ok := <-frames:
 			if !ok {
 				// Detached (by us via defer, or by a DETACH command on
 				// another connection).
-				return conn.WriteEnd()
+				return w.WriteEnd()
 			}
-			if err := conn.WriteChunk(payload); err != nil {
+			if err := w.WriteChunk(payload); err != nil {
 				debug.Log("sessionhost", "attach %s: write failed, client disconnected: %v", attachID, err)
 				return nil
 			}
 			keepalive.Reset(streamKeepaliveInterval)
 		case <-keepalive.C:
-			if err := conn.WriteChunk([]byte(`{"type":"keepalive"}`)); err != nil {
+			if err := w.WriteChunk([]byte(`{"type":"keepalive"}`)); err != nil {
 				return nil
 			}
 		}
