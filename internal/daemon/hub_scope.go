@@ -30,7 +30,7 @@ func (d *Daemon) hubHandleScope(_ context.Context, conn *hubpkg.Connection, cmd 
 	}
 	_, global, err := d.resolveProjectScope(filter, conn.SessionCode())
 	if err != nil {
-		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+		return d.writeScopeErr(conn, err, "session_code")
 	}
 	data, err := json.Marshal(map[string]bool{"global": global})
 	if err != nil {

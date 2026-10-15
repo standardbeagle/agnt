@@ -126,3 +126,14 @@ func publishTestIncident(t *testing.T, d *Daemon, sessionCode, fingerprint, summ
 		return false
 	}, 3*time.Second, 20*time.Millisecond, "published incident never reached session %s inbox", sessionCode)
 }
+
+// SCOPE RESOLVE from a session-less caller must offer the active sessions to
+// re-issue against (writeScopeErr), not the bare no-session error.
+func TestScopeResolve_SessionLess_OffersCandidates(t *testing.T) {
+	d, c, _ := newBootedDaemonWithClient(t)
+	activeSession(t, d.sessionRegistry, "sess-scope-a", shortTempDir(t), "http://127.0.0.1:19191")
+
+	_, err := c.ResolveQueryScope(protocol.DirectoryFilter{})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "sess-scope-a", "SCOPE RESOLVE must name the sessions to pick from")
+}
