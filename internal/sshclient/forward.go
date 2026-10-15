@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"os"
 	"strings"
 	"sync"
 
@@ -58,6 +59,15 @@ type Forwarder struct {
 	paused            chan struct{}
 	conns             map[net.Conn]struct{}
 	beforeRemoteTrack func()
+
+	// errOut receives a line for each local connection dropped because the
+	// remote daemon socket could not be reached (os.Stderr in production).
+	// Without it the local client sees only EOF and nobody learns why.
+	errOut      io.Writer
+	lastDialErr string // guarded by mu; see reportDial
+
+	closeOnce sync.Once
+	closeErr  error
 }
 
 // NewForwarder binds localSocketPath using the platform listener and returns a
@@ -77,6 +87,7 @@ func NewForwarder(client *Client, remoteSocketPath, localSocketPath string) (*Fo
 		done:             make(chan struct{}),
 		paused:           make(chan struct{}),
 		conns:            make(map[net.Conn]struct{}),
+		errOut:           os.Stderr,
 	}, nil
 }
 
@@ -117,6 +128,7 @@ func (f *Forwarder) handleConn(conn net.Conn) {
 	}
 
 	remote, err := client.SSH.Dial("unix", remoteSocketPath)
+	f.reportDial(remoteSocketPath, err)
 	if err != nil {
 		return
 	}
@@ -143,6 +155,24 @@ func (f *Forwarder) handleConn(conn net.Conn) {
 		relayDone <- struct{}{}
 	}()
 	<-relayDone
+}
+
+// reportDial writes a failed remote dial to errOut. A client that retries in
+// a loop would repeat the same line on every attempt, so an identical message
+// is written once until a dial succeeds or the cause changes.
+func (f *Forwarder) reportDial(remoteSocketPath string, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if err == nil {
+		f.lastDialErr = ""
+		return
+	}
+	msg := fmt.Sprintf("agnt ssh: forward: could not reach remote daemon socket %s (%v) — local connection closed\n", remoteSocketPath, err)
+	if msg == f.lastDialErr {
+		return
+	}
+	f.lastDialErr = msg
+	fmt.Fprint(f.errOut, msg)
 }
 
 func (f *Forwarder) track(conn net.Conn) bool {
@@ -197,16 +227,18 @@ func (f *Forwarder) Paused() <-chan struct{} {
 	return f.paused
 }
 
-// Close stops accepting new connections and performs platform cleanup.
+// Close stops accepting new connections and performs platform cleanup. It is
+// idempotent and safe to call concurrently (reconnect teardown and deferred
+// cleanup can race); every call returns the first call's result.
 func (f *Forwarder) Close() error {
-	select {
-	case <-f.done:
-	default:
+	f.closeOnce.Do(func() {
 		close(f.done)
-	}
-	f.Pause()
-	if f.cleanupListener != nil {
-		return f.cleanupListener()
-	}
-	return f.listener.Close()
+		f.Pause()
+		if f.cleanupListener != nil {
+			f.closeErr = f.cleanupListener()
+			return
+		}
+		f.closeErr = f.listener.Close()
+	})
+	return f.closeErr
 }

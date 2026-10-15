@@ -8,6 +8,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -364,4 +366,96 @@ func readFull(conn net.Conn, buf []byte) (int, error) {
 		}
 	}
 	return total, nil
+}
+
+// A forward whose remote channel cannot be opened (the remote daemon is down,
+// or sshd refuses streamlocal forwarding) used to drop the local connection
+// with no word anywhere: `agnt monitor` just saw EOF. The refusal must reach
+// the forwarder's error output, naming the remote socket and the cause.
+func TestForwarder_RemoteDialFailureIsReported(t *testing.T) {
+	fixture := newFixtureServer(t) // no streamLocalDial: every streamlocal open is rejected
+	stopFixture := fixture.serve(t)
+	defer stopFixture()
+
+	client := dialFixtureClient(t, fixture)
+	localSocketPath := filepath.Join(sockdir.Short(t), "local.sock")
+	fwd, err := NewForwarder(client, "/remote/daemon.sock", localSocketPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reported syncBuffer
+	fwd.errOut = &reported
+	defer fwd.Close()
+	go fwd.Serve()
+
+	conn, err := net.Dial("unix", localSocketPath)
+	if err != nil {
+		t.Fatalf("dialing local forward: %v", err)
+	}
+	defer conn.Close()
+	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	// The forwarder closes the local side once the remote dial has failed;
+	// the report is written before that close.
+	if _, err := conn.Read(make([]byte, 1)); err == nil {
+		t.Fatal("forward relayed bytes although the remote channel was refused")
+	}
+
+	got := reported.String()
+	if !strings.Contains(got, "/remote/daemon.sock") || !strings.Contains(got, "no streamlocal target configured") {
+		t.Fatalf("remote dial failure not reported with socket and cause; error output = %q", got)
+	}
+}
+
+// Close is reached from reconnect teardown and from deferred cleanup at the
+// same time. Two callers that both saw done open both closed it: a panic.
+func TestForwarder_ConcurrentCloseIsSafe(t *testing.T) {
+	for i := 0; i < 50; i++ {
+		fwd, err := NewForwarder(nil, "/remote.sock", filepath.Join(sockdir.Short(t), "local.sock"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		panics := make(chan any, 16)
+		for g := 0; g < 16; g++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				defer func() {
+					if r := recover(); r != nil {
+						panics <- r
+					}
+				}()
+				<-start
+				fwd.Close()
+			}()
+		}
+		close(start)
+		wg.Wait()
+		close(panics)
+		if p, ok := <-panics; ok {
+			t.Fatalf("concurrent Close panicked: %v", p)
+		}
+	}
+}
+
+// syncBuffer is a bytes.Buffer safe for the forwarder goroutine to write
+// while the test reads.
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }
