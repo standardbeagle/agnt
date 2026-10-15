@@ -47,6 +47,42 @@ func TestClassifyChildExit(t *testing.T) {
 	}
 }
 
+// TestChildWaitError_ProcessStateOnlyExit is the regression test for the
+// Windows `agnt run` path, whose ConPTY backend reports a finished child the way
+// os.Process.Wait does: a nil error, the status only in ProcessState. A
+// non-zero exit read as clean, so the unexpected-shutdown banner never showed.
+// Process.Wait on a real helper reproduces that shape on every OS.
+func TestChildWaitError_ProcessStateOnlyExit(t *testing.T) {
+	waitState := func(code int) *os.ProcessState {
+		t.Helper()
+		c := helperProcess(t, "exit:"+strconv.Itoa(code))
+		if err := c.Start(); err != nil {
+			t.Fatalf("start helper: %v", err)
+		}
+		ps, err := c.Process.Wait()
+		if err != nil {
+			t.Fatalf("wait helper: %v", err)
+		}
+		return ps
+	}
+
+	un, kind, reason := classifyChildExit(childWaitError(nil, waitState(3)), false)
+	if !un || kind != exitStatus || !strings.Contains(reason, "status 3") {
+		t.Fatalf("exit 3 via ProcessState: unexpected=%v kind=%v reason=%q", un, kind, reason)
+	}
+
+	if err := childWaitError(nil, waitState(0)); err != nil {
+		t.Fatalf("exit 0 must stay clean, got %v", err)
+	}
+	if err := childWaitError(nil, nil); err != nil {
+		t.Fatalf("no ProcessState must pass the nil through, got %v", err)
+	}
+	orig := os.ErrClosed
+	if err := childWaitError(orig, waitState(4)); err != orig {
+		t.Fatalf("a real Wait error must win, got %v", err)
+	}
+}
+
 // TestChildOutputTapResource verifies resource matching, dedup, capacity, and
 // that non-matching lines stay out of the resource list.
 func TestChildOutputTapResource(t *testing.T) {

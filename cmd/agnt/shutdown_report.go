@@ -172,6 +172,19 @@ func classifyChildExit(waitErr error, userInterrupted bool) (unexpected bool, ki
 	return true, exitStatus, fmt.Sprintf("agent process exited with status %d", code)
 }
 
+// childWaitError normalizes a PTY backend's Wait result into the shape
+// classifyChildExit expects. creack/pty (unix) runs the child through os/exec,
+// whose Wait reports a non-zero exit as *exec.ExitError. The ConPTY backend
+// (aymanbagabas/go-pty) returns os.Process.Wait's error, which is nil for any
+// exit, and leaves the status only in ProcessState — so on Windows every
+// non-zero exit read as a clean one and the shutdown banner never fired.
+func childWaitError(waitErr error, ps *os.ProcessState) error {
+	if waitErr != nil || ps == nil || ps.Success() {
+		return waitErr
+	}
+	return &exec.ExitError{ProcessState: ps}
+}
+
 // shutdownWriter is the sink for the persistent notice. Overridable in tests.
 var shutdownWriter io.Writer = os.Stdout
 
