@@ -1611,7 +1611,9 @@ func (s *win32ParseState) parseWin32Sequence(seqData []byte) {
 // appendChar appends the character a key-down event carries. Uc is a UTF-16
 // code unit, so it is encoded as UTF-8 for the child — truncating it to a
 // byte turned "é" into an invalid byte and "中" (0x4E2D) into "-" — and the
-// two halves of a surrogate pair are joined into one rune.
+// two halves of a surrogate pair are joined into one rune. Alt without Ctrl
+// sends ESC first, as xterm and conhost do; Ctrl together with Alt is AltGr,
+// whose character is sent as is.
 func (s *win32ParseState) appendChar(vk, cs int, r rune) {
 	switch {
 	case r >= 0xD800 && r <= 0xDBFF: // high surrogate: wait for the low half
@@ -1632,6 +1634,9 @@ func (s *win32ParseState) appendChar(vk, cs int, r rune) {
 	// readline expect \x7f (DEL).
 	if vk == vkBack && r == 0x08 {
 		r = 0x7f
+	}
+	if cs&csAltMask != 0 && cs&csCtrlMask == 0 {
+		s.result = append(s.result, 0x1b)
 	}
 	s.result = utf8.AppendRune(s.result, r)
 }
