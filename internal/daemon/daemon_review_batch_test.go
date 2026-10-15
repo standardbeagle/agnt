@@ -391,3 +391,33 @@ func TestProxyStop_CrashedProxyIsCleanedUp(t *testing.T) {
 	_, owned := d.incidentProxyOwner.Load(id)
 	assert.False(t, owned, "the incident owner must be retired")
 }
+
+// CHAOS SET ignored a payload decode error and applied the zero config, which
+// wiped every rule. A payload that does not decode is refused as invalid and
+// the rules stay as they were.
+func TestChaosSet_UndecodablePayloadLeavesRulesUntouched(t *testing.T) {
+	d := newReviewBatchDaemon(t)
+	conn := NewConn(d.config.SocketPath)
+	require.NoError(t, conn.EnsureConnected())
+	t.Cleanup(func() { _ = conn.Close() })
+
+	p, err := d.proxym.Create(context.Background(), proxy.ProxyConfig{
+		ID: "chaos-decode", TargetURL: "http://127.0.0.1:65044", ListenPort: 0, MaxLogSize: 100,
+	})
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = d.proxym.Stop(context.Background(), p.ID) })
+	require.NoError(t, p.ChaosEngine().SetConfig(&proxy.ChaosConfig{
+		Enabled: true,
+		Rules:   []*proxy.ChaosRule{{ID: "slow", Type: proxy.ChaosLatency, Enabled: true, MinLatencyMs: 100}},
+	}))
+
+	err = conn.Request("CHAOS", "SET", p.ID).WithData([]byte("{not json")).OK()
+	require.Error(t, err, "an undecodable chaos config must be refused")
+	assert.Contains(t, err.Error(), "invalid chaos config")
+
+	cfg := p.ChaosEngine().GetConfig()
+	require.NotNil(t, cfg)
+	assert.True(t, cfg.Enabled, "chaos must stay enabled")
+	require.Len(t, cfg.Rules, 1, "the rules must be left untouched")
+	assert.Equal(t, "slow", cfg.Rules[0].ID)
+}

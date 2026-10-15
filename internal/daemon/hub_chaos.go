@@ -169,7 +169,12 @@ func (d *Daemon) hubHandleChaosSet(conn *hubpkg.Connection, cmd *hubproto.Comman
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())
 	}
 
-	config, _ := unmarshalCommand[proxy.ChaosConfig](cmd)
+	// SetConfig replaces the whole rule set, so a payload that does not decode
+	// must be refused: applying the zero config would wipe every rule.
+	config, err := unmarshalCommand[proxy.ChaosConfig](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid chaos config: %v", err))
+	}
 
 	if err := p.ChaosEngine().SetConfig(&config); err != nil {
 		return conn.WriteErr(hubproto.ErrInternal, err.Error())
