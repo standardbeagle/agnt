@@ -14,6 +14,7 @@ package sessionhost
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -25,6 +26,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/scope"
 	"github.com/standardbeagle/agnt/internal/shims"
 	goprocess "github.com/standardbeagle/go-cli-server/process"
+	hubprotocol "github.com/standardbeagle/go-cli-server/protocol"
 )
 
 // DefaultScrollback is the default per-session ring buffer capacity (1MB),
@@ -147,6 +149,9 @@ func Create(cfg CreateConfig) (*Session, error) {
 	if cfg.Command == "" {
 		return nil, fmt.Errorf("sessionhost: command is required")
 	}
+	if err := validateName(cfg.Name); err != nil {
+		return nil, err
+	}
 	cols, rows := cfg.Cols, cfg.Rows
 	if cols <= 0 {
 		cols = 80
@@ -214,6 +219,26 @@ func Create(cfg CreateConfig) (*Session, error) {
 }
 
 var idCounter atomic.Int64
+
+// ErrInvalidName is returned by Create for a name the session id cannot carry.
+var ErrInvalidName = errors.New("sessionhost: invalid session name")
+
+// validateName refuses a name whose session id ("<name>-<n>") could not be
+// sent back as the positional argument of SESSION-HOST ATTACH/STDIN/RESIZE/
+// DETACH/KILL. Arguments are whitespace-delimited and the client refuses to
+// send one that holds whitespace, the ";;" terminator or a "--" field, so a
+// session created under such a name would be running yet impossible to
+// attach to or kill until the daemon restarts.
+func validateName(name string) error {
+	if name == "" {
+		return nil
+	}
+	probe := &hubprotocol.Command{Verb: "SESSION-HOST", Args: []string{name + "-0"}}
+	if err := hubprotocol.ValidateCommand(probe); err != nil {
+		return fmt.Errorf("%w %q: %v", ErrInvalidName, name, err)
+	}
+	return nil
+}
 
 // generateID builds a stable-ish session id from the user-facing name (or a
 // generated fallback) plus a monotonic counter, avoiding collisions when the
