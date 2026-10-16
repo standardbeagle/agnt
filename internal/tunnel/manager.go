@@ -90,15 +90,15 @@ func (m *Manager) StopExact(ctx context.Context, t *Tunnel) error {
 	return nil
 }
 
-// Stop stops a tunnel by ID.
+// Stop stops the tunnel registered under id and retires that entry before it
+// returns (see StopExact).
 func (m *Manager) Stop(ctx context.Context, id string) error {
 	value, ok := m.tunnels.Load(id)
 	if !ok {
 		return ErrTunnelNotFound
 	}
 
-	tunnel := value.(*Tunnel)
-	return tunnel.Stop(ctx)
+	return m.StopExact(ctx, value.(*Tunnel))
 }
 
 // Get returns a tunnel by ID with fuzzy matching support.
@@ -216,7 +216,7 @@ func (m *Manager) StopByProjectPath(ctx context.Context, projectPath string) ([]
 		go func(t *Tunnel) {
 			defer stopWg.Done()
 			id := t.ID()
-			if err := m.Stop(ctx, id); err != nil {
+			if err := m.StopExact(ctx, t); err != nil {
 				errMu.Lock()
 				errs = append(errs, err)
 				errMu.Unlock()
@@ -285,7 +285,7 @@ func (m *Manager) StopAll(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := tunnel.Stop(ctx); err != nil {
+			if err := m.StopExact(ctx, tunnel); err != nil {
 				errMu.Lock()
 				if firstErr == nil {
 					firstErr = err
@@ -323,7 +323,7 @@ func (m *Manager) Shutdown(ctx context.Context) error {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			if err := tunnel.Stop(ctx); err != nil {
+			if err := m.StopExact(ctx, tunnel); err != nil {
 				errMu.Lock()
 				if firstErr == nil {
 					firstErr = err

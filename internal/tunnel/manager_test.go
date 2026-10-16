@@ -332,6 +332,60 @@ func TestManager_StopExact(t *testing.T) {
 	})
 }
 
+// Every stop path retires the entry it stopped before returning. Stop by id,
+// StopByProjectPath, StopAll and Shutdown used to stop the tunnel and leave
+// the entry to the Done watcher goroutine, so TUNNEL STOP could reply
+// "stopped" while TUNNEL LIST still listed the tunnel and a START of the same
+// id was refused as already existing. The entries here have no watcher, so a
+// path that relies on one leaves them registered.
+func TestManager_StopPathsRetireBeforeReturn(t *testing.T) {
+	ctx := context.Background()
+	register := func(m *Manager, id, path string) *Tunnel {
+		tun := connectedTunnel(id, path, "u")
+		close(tun.done)
+		m.tunnels.Store(id, tun)
+		m.active.Add(1)
+		return tun
+	}
+	assertRetired := func(t *testing.T, m *Manager, ids ...string) {
+		t.Helper()
+		for _, id := range ids {
+			_, ok := m.tunnels.Load(id)
+			assert.False(t, ok, "%s still registered after its stop returned", id)
+		}
+		assert.Equal(t, 0, m.ActiveCount())
+		assert.Empty(t, m.List())
+	}
+
+	t.Run("Stop", func(t *testing.T) {
+		m := NewManager()
+		register(m, "h1:web:8080", "/projA")
+		require.NoError(t, m.Stop(ctx, "h1:web:8080"))
+		assertRetired(t, m, "h1:web:8080")
+	})
+	t.Run("StopByProjectPath", func(t *testing.T) {
+		m := NewManager()
+		register(m, "h1:web:8080", "/projA")
+		ids, err := m.StopByProjectPath(ctx, "/projA")
+		require.NoError(t, err)
+		assert.Equal(t, []string{"h1:web:8080"}, ids)
+		assertRetired(t, m, "h1:web:8080")
+	})
+	t.Run("StopAll", func(t *testing.T) {
+		m := NewManager()
+		register(m, "h1:web:8080", "/projA")
+		register(m, "h2:api:9090", "/projB")
+		require.NoError(t, m.StopAll(ctx))
+		assertRetired(t, m, "h1:web:8080", "h2:api:9090")
+	})
+	t.Run("Shutdown", func(t *testing.T) {
+		m := NewManager()
+		register(m, "h1:web:8080", "/projA")
+		require.NoError(t, m.Shutdown(ctx))
+		assertRetired(t, m, "h1:web:8080")
+	})
+}
+
 // LastOutput reports the provider's latest line while it is still running,
 // which is what a URL-wait timeout quotes.
 func TestTunnel_LastOutputWhileRunning(t *testing.T) {
