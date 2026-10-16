@@ -123,11 +123,13 @@ func writeUploadTemp(session uploadWriteSession, src io.Reader, writeCmd string)
 // sha256sum is GNU coreutils and is not installed on macOS, which is a
 // supported bootstrap target; macOS ships `shasum` (Perl) instead. Both print
 // "<hex digest>  <path>", so the caller reads the first field either way.
-// When neither exists the shell's "shasum: command not found" reaches the
-// caller as the integrity-check error, and nothing is activated.
+// When neither exists the command fails with a message naming both, which
+// reaches the caller as the integrity-check error, and nothing is activated.
 func remoteSHA256Command(remotePath string) string {
 	q := platform.ShellQuote(remotePath)
-	return "if command -v sha256sum >/dev/null 2>&1; then sha256sum " + q + "; else shasum -a 256 " + q + "; fi"
+	return "if command -v sha256sum >/dev/null 2>&1; then sha256sum " + q +
+		"; elif command -v shasum >/dev/null 2>&1; then shasum -a 256 " + q +
+		"; else echo 'neither sha256sum nor shasum is installed on the remote host; install coreutils or perl to let agnt verify the binary' >&2; exit 127; fi"
 }
 
 // remoteSHA256 hashes remotePath on the remote host and returns the hex digest.

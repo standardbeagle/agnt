@@ -32,6 +32,10 @@ type BootstrapOptions struct {
 	LocalGOOS, LocalGOARCH string
 	// GitHubRepo defaults to updater.DefaultGitHubRepo when empty.
 	GitHubRepo string
+	// FetchChecksums fetches a release's SHA256SUMS asset for the release
+	// download source. Nil means fetchReleaseChecksums (HTTPS from this
+	// client); tests inject a fake.
+	FetchChecksums func(url string) ([]byte, error)
 }
 
 func (o *BootstrapOptions) applyDefaults() {
@@ -43,6 +47,9 @@ func (o *BootstrapOptions) applyDefaults() {
 	}
 	if o.GitHubRepo == "" {
 		o.GitHubRepo = updater.DefaultGitHubRepo
+	}
+	if o.FetchChecksums == nil {
+		o.FetchChecksums = fetchReleaseChecksums
 	}
 }
 
@@ -132,8 +139,7 @@ func InstallRemoteBinary(client *ssh.Client, opts BootstrapOptions, decision Boo
 		return remoteGoInstall(client, opts.LocalVersion, decision.FinalPath)
 
 	default: // SourceReleaseDownload
-		url := ReleaseDownloadURL(opts.GitHubRepo, opts.LocalVersion, decision.RemoteGOOS, decision.RemoteGOARCH)
-		return remoteDownloadInstall(client, url, opts.LocalVersion, decision.FinalPath)
+		return remoteDownloadInstall(client, opts, decision.RemoteGOOS, decision.RemoteGOARCH, decision.FinalPath)
 	}
 }
 
@@ -142,8 +148,22 @@ func InstallRemoteBinary(client *ssh.Client, opts BootstrapOptions, decision Boo
 // reinventing it, so bootstrap and the curl installer always agree on where
 // a given release's binaries live.
 func ReleaseDownloadURL(repo, version, goos, goarch string) string {
-	return fmt.Sprintf("https://github.com/%s/releases/download/v%s/agnt-%s-%s",
-		repo, strings.TrimPrefix(version, "v"), goos, goarch)
+	return releaseAssetURL(repo, version, releaseAssetName(goos, goarch))
+}
+
+// ReleaseChecksumsURL is the SHA256SUMS asset the release workflow publishes
+// beside a release's binaries ("<hex>  <asset name>" lines, sha256sum format).
+func ReleaseChecksumsURL(repo, version string) string {
+	return releaseAssetURL(repo, version, "SHA256SUMS")
+}
+
+func releaseAssetName(goos, goarch string) string {
+	return fmt.Sprintf("agnt-%s-%s", goos, goarch)
+}
+
+func releaseAssetURL(repo, version, asset string) string {
+	return fmt.Sprintf("https://github.com/%s/releases/download/v%s/%s",
+		repo, strings.TrimPrefix(version, "v"), asset)
 }
 
 // agntModule is the package path 'go install' builds remote-side.
@@ -199,27 +219,52 @@ func remoteGoInstall(client *ssh.Client, version, finalPath string) error {
 	return nil
 }
 
-// remoteDownloadInstall downloads url to a temp name via curl, checks the
-// downloaded binary reports the client's version, and only then renames it
-// onto finalPath, remote-side.
-//
-// Integrity gap: the release workflow publishes no checksums, so the bytes
-// are trusted on GitHub's TLS alone, as install.sh trusts them. The version
-// check catches a wrong or stale asset, not a tampered one. See
-// lessons-ssh-transport.md §6.
-func remoteDownloadInstall(client *ssh.Client, url, version, finalPath string) error {
-	want, err := releaseVersion(version)
+// remoteDownloadInstall installs the client's release asset for goos/goarch,
+// remote-side, failing closed at each step: the release's SHA256SUMS is
+// fetched here, by the client, over TLS, and must list the asset; the remote
+// downloads the asset to a temp name with curl; the temp file's SHA-256,
+// computed on the remote, must equal the listed one before the binary is
+// even run; it must then report the client's version; only then is it
+// renamed onto finalPath. A release without SHA256SUMS (every release before
+// checksums were published) cannot be installed this way.
+func remoteDownloadInstall(client *ssh.Client, opts BootstrapOptions, goos, goarch, finalPath string) error {
+	want, err := releaseVersion(opts.LocalVersion)
 	if err != nil {
 		return err
 	}
+	asset := releaseAssetName(goos, goarch)
+	sumsURL := ReleaseChecksumsURL(opts.GitHubRepo, want)
+	sums, err := opts.FetchChecksums(sumsURL)
+	if err != nil {
+		return fmt.Errorf("sshclient: cannot verify the v%s release download, refusing to install it: fetching %s: %w", want, sumsURL, err)
+	}
+	wantSum, err := checksumFor(sums, asset)
+	if err != nil {
+		return fmt.Errorf("sshclient: cannot verify the v%s release download, refusing to install it: %w", want, err)
+	}
+
+	url := ReleaseDownloadURL(opts.GitHubRepo, want, goos, goarch)
 	tmpPath := fmt.Sprintf("%s.download.%d", finalPath, time.Now().UnixNano())
 	dir := path.Dir(finalPath)
 
-	cmd := fmt.Sprintf("mkdir -p %s && curl -fsSL %s -o %s && chmod 755 %s",
-		platform.ShellQuote(dir), platform.ShellQuote(url), platform.ShellQuote(tmpPath), platform.ShellQuote(tmpPath))
+	cmd := fmt.Sprintf("mkdir -p %s && curl -fsSL %s -o %s",
+		platform.ShellQuote(dir), platform.ShellQuote(url), platform.ShellQuote(tmpPath))
 	if err := runRemote(client, cmd); err != nil {
 		cleanupRemotePath(client, tmpPath)
 		return fmt.Errorf("sshclient: remote release download failed: %w", err)
+	}
+	gotSum, err := remoteSHA256(client, tmpPath)
+	if err != nil {
+		cleanupRemotePath(client, tmpPath)
+		return fmt.Errorf("sshclient: cannot verify the downloaded %s on the remote, not activated: %w", asset, err)
+	}
+	if gotSum != wantSum {
+		cleanupRemotePath(client, tmpPath)
+		return fmt.Errorf("sshclient: downloaded %s has sha256 %s, but the v%s SHA256SUMS lists %s; not activated", asset, gotSum, want, wantSum)
+	}
+	if err := runRemote(client, "chmod 755 "+platform.ShellQuote(tmpPath)); err != nil {
+		cleanupRemotePath(client, tmpPath)
+		return fmt.Errorf("sshclient: chmod of the downloaded binary failed: %w", err)
 	}
 	if err := verifyRemoteBinaryVersion(client, tmpPath, want); err != nil {
 		cleanupRemotePath(client, tmpPath)
