@@ -147,7 +147,13 @@ func (c *Coalescer) Schedule(ev IncidentEvent) {
 
 	if s.pending {
 		oldSev := s.event.Severity
-		s.event = ev
+		// The pending ping carries the highest severity that joined it. A
+		// lower-severity event must not overwrite it: the next event at the
+		// original severity would then read as an escalation and fire at once,
+		// and a fire would record the lower rank, restarting the backoff.
+		if sevRank(ev.Severity) >= sevRank(oldSev) {
+			s.event = ev
+		}
 		// Severity escalation: cancel pending timer and fire immediately.
 		if sevRank(ev.Severity) > sevRank(oldSev) {
 			c.clearPendingLocked(s)

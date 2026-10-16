@@ -125,6 +125,47 @@ func TestCoalesce_SupersededTimerDoesNotFire(t *testing.T) {
 	}
 }
 
+// A lower-severity event joining a pending ping must not lower the pending
+// ping's severity. The session pinger feeds every delta through one slot, so
+// errors and warnings interleave on it. When the warning overwrote the pending
+// error, the next error read as an "escalation" and fired at once, bypassing
+// the coalescer; and a ping that fired after the overwrite recorded warning as
+// the window's fired severity, so the next error restarted the backoff at
+// Initial. Mixed-severity traffic was then never coalesced or backed off.
+func TestCoalesce_LowerSeverityDoesNotDowngradePending(t *testing.T) {
+	t.Parallel()
+
+	t.Run("no false escalation", func(t *testing.T) {
+		t.Parallel()
+		pings := 0
+		c, _ := newFakeCoalescer(scheduleDelays, &pings)
+		c.Schedule(sevEv("fp", SeverityError))
+		c.Schedule(sevEv("fp", SeverityWarning))
+		c.Schedule(sevEv("fp", SeverityError)) // same severity as pending: not an escalation
+		if pings != 0 {
+			t.Fatalf("error after error+warning fired %d immediate ping(s); the pending ping was already error-level", pings)
+		}
+	})
+
+	t.Run("fired severity is the pending maximum", func(t *testing.T) {
+		t.Parallel()
+		pings := 0
+		c, fc := newFakeCoalescer(scheduleDelays, &pings)
+		c.Schedule(sevEv("fp", SeverityError))
+		c.Schedule(sevEv("fp", SeverityWarning))
+		fc.advance(fc.last())
+		fc.fire()
+		if pings != 1 {
+			t.Fatalf("setup: pings = %d, want 1", pings)
+		}
+		fc.advance(time.Second)
+		c.Schedule(sevEv("fp", SeverityError))
+		if got := fc.last(); got <= scheduleDelays.Initial {
+			t.Fatalf("error after an error-level ping armed %v; backoff restarted as if only a warning had been pinged", got)
+		}
+	})
+}
+
 // A higher severity than anything this backoff window has pinged about is not
 // "more of the same": it must not wait behind the backed-off delay.
 func TestCoalesce_HigherSeverityAfterFireIsPrompt(t *testing.T) {
