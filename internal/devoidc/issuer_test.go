@@ -275,6 +275,31 @@ func TestTokenEndpointRefusals(t *testing.T) {
 	}
 }
 
+// client_secret_basic credentials are form-urlencoded before base64 (RFC 6749
+// §2.3.1), which is what golang.org/x/oauth2 and openid-client send. A secret
+// with reserved characters must still authenticate, whether the client encodes
+// it or not, and a wrong secret must still be refused.
+func TestClientSecretBasicIsFormURLDecoded(t *testing.T) {
+	const secret = "s3cr+t/=%41:x"
+	cfg := testConfig()
+	cfg.Clients["web"] = Client{ID: "web", RedirectURIs: []string{"http://localhost:*/cb"}, Secret: secret}
+	f := newFixture(t, cfg)
+	fresh := func() string { return f.codeFrom(f.get("/authorize", f.authorizeQuery("web", nil))) }
+
+	if s, body := f.exchange(url.QueryEscape("web"), url.QueryEscape(secret), codeForm(fresh())); s != http.StatusOK {
+		t.Fatalf("form-urlencoded basic credentials: %d %v, want 200", s, body)
+	}
+	if s, body := f.exchange("web", secret, codeForm(fresh())); s != http.StatusOK {
+		t.Fatalf("raw basic credentials: %d %v, want 200", s, body)
+	}
+	if s, body := f.exchange("web", url.QueryEscape(secret+"x"), codeForm(fresh())); s != http.StatusUnauthorized || body["error"] != "invalid_client" {
+		t.Fatalf("wrong secret: %d %v, want 401 invalid_client", s, body)
+	}
+	if s, body := f.exchange("gh%6Fst", "x", codeForm(fresh())); s != http.StatusUnauthorized || body["error_description"] != "unknown client" {
+		t.Fatalf("unknown client: %d %v, want 401 unknown client", s, body)
+	}
+}
+
 func TestAuthorizeRefusals(t *testing.T) {
 	f := newFixture(t, testConfig())
 	// Bad client or redirect: an error page, never a redirect.

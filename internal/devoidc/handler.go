@@ -282,20 +282,40 @@ func (h *handler) token(w http.ResponseWriter, r *http.Request) {
 // authenticateClient accepts client_secret_basic, client_secret_post, or no
 // secret for a public client. A confidential client must present its secret.
 func (h *handler) authenticateClient(w http.ResponseWriter, r *http.Request) (Client, bool) {
-	id, secret, basic := r.BasicAuth()
-	if !basic {
-		id, secret = r.PostForm.Get("client_id"), r.PostForm.Get("client_secret")
+	var creds [][2]string
+	if id, secret, basic := r.BasicAuth(); basic {
+		// RFC 6749 §2.3.1: the id and secret are form-urlencoded before they
+		// go into the Basic header, and golang.org/x/oauth2 and openid-client
+		// both do so. Comparing the header value as-is refused every secret
+		// with a '+', '/', '=' or '%' in it. A client that skips the encoding
+		// sends the raw value, so that is tried second.
+		uid, errID := url.QueryUnescape(id)
+		usecret, errSecret := url.QueryUnescape(secret)
+		if errID == nil && errSecret == nil {
+			creds = append(creds, [2]string{uid, usecret})
+		}
+		creds = append(creds, [2]string{id, secret})
+	} else {
+		creds = append(creds, [2]string{r.PostForm.Get("client_id"), r.PostForm.Get("client_secret")})
 	}
-	cl, ok := h.is.Config().Clients[id]
-	if !ok {
+	clients := h.is.Config().Clients
+	known := false
+	for _, c := range creds {
+		cl, ok := clients[c[0]]
+		if !ok {
+			continue
+		}
+		known = true
+		if cl.Secret == "" || subtle.ConstantTimeCompare([]byte(c[1]), []byte(cl.Secret)) == 1 {
+			return cl, true
+		}
+	}
+	if !known {
 		tokenError(w, http.StatusUnauthorized, "invalid_client", "unknown client")
 		return Client{}, false
 	}
-	if cl.Secret != "" && subtle.ConstantTimeCompare([]byte(secret), []byte(cl.Secret)) != 1 {
-		tokenError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
-		return Client{}, false
-	}
-	return cl, true
+	tokenError(w, http.StatusUnauthorized, "invalid_client", "client authentication failed")
+	return Client{}, false
 }
 
 func (h *handler) userinfo(w http.ResponseWriter, r *http.Request) {
