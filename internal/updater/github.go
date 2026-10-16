@@ -116,7 +116,14 @@ func (g *GitHubRelease) GetVersion() string {
 
 // IsNewer checks if this release is newer than the given version
 func (g *GitHubRelease) IsNewer(currentVersion string) (bool, error) {
-	releaseVersion := g.GetVersion()
+	return IsNewerVersion(g.GetVersion(), currentVersion)
+}
+
+// IsNewerVersion reports whether releaseVersion ranks strictly above
+// currentVersion in SemVer order, prereleases included. The daemon's update
+// notice and `agnt upgrade` both decide through it, so they cannot disagree.
+func IsNewerVersion(releaseVersion, currentVersion string) (bool, error) {
+	releaseVersion = strings.TrimPrefix(strings.TrimPrefix(releaseVersion, "V"), "v")
 	currentVersion = strings.TrimPrefix(currentVersion, "v")
 
 	// Parse versions

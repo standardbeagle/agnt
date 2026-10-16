@@ -193,6 +193,9 @@ func TestVersionIsNewer(t *testing.T) {
 		{"0.16.0", "0.17.0", false}, // local build ahead of the release: no downgrade
 		{"0.9.0", "0.10.0", false},  // numeric, not lexical
 		{"v0.17.0", "0.16.0", true},
+		{"1.0.0", "1.0.0-rc.1", true}, // the final release supersedes its rc
+		{"1.0.0-rc.2", "1.0.0-rc.1", true},
+		{"1.0.0-rc.1", "1.0.0", false},
 	}
 	for _, tc := range cases {
 		got, err := versionIsNewer(tc.latest, tc.current)

@@ -46,23 +46,17 @@ func init() {
 const defaultUpgradeTimeout = 10 * time.Minute
 
 // versionIsNewer reports whether latest is a strictly higher version than
-// current. An unparsable version is an error, never a guess.
+// current, prereleases included (1.0.0 is newer than 1.0.0-rc.1), by the same
+// rule as the daemon's update notice. An unparsable version is an error, never
+// a guess.
 func versionIsNewer(latest, current string) (bool, error) {
-	lMaj, lMin, lPatch, err := updater.ParseVersion(latest)
-	if err != nil {
+	if _, _, _, err := updater.ParseVersion(latest); err != nil {
 		return false, fmt.Errorf("latest version %q: %w", latest, err)
 	}
-	cMaj, cMin, cPatch, err := updater.ParseVersion(current)
-	if err != nil {
+	if _, _, _, err := updater.ParseVersion(current); err != nil {
 		return false, fmt.Errorf("installed version %q: %w", current, err)
 	}
-	if lMaj != cMaj {
-		return lMaj > cMaj, nil
-	}
-	if lMin != cMin {
-		return lMin > cMin, nil
-	}
-	return lPatch > cPatch, nil
+	return updater.IsNewerVersion(latest, current)
 }
 
 // upgradeTools lists the executables the install step for method needs.
