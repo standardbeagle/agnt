@@ -74,17 +74,33 @@ func (g *GitHubChecker) CheckLatestRelease() (*GitHubRelease, error) {
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBodyBytes))
 		return nil, fmt.Errorf("github API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxReleaseBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response: %w", err)
+	}
+	if len(body) > maxReleaseBytes {
+		return nil, fmt.Errorf("release response is larger than %d bytes", maxReleaseBytes)
+	}
 	var release GitHubRelease
-	if err := json.NewDecoder(resp.Body).Decode(&release); err != nil {
+	if err := json.Unmarshal(body, &release); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
 
 	return &release, nil
 }
+
+// Response bounds. The release (its notes included) is cached by the daemon
+// and handed to every client in INFO, and the error body is quoted in the
+// check error, so neither may be as large as the server cares to send. A
+// releases/latest document is a few tens of KiB.
+const (
+	maxReleaseBytes   = 1 << 20
+	maxErrorBodyBytes = 4 << 10
+)
 
 // GetVersion extracts version from release tag
 // Handles tags like "v0.6.5", "V0.6.5", or "0.6.5"

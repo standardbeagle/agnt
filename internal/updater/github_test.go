@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -203,6 +204,42 @@ func TestGitHubChecker_CheckLatestRelease(t *testing.T) {
 		_, err := checker.CheckLatestRelease()
 		if err == nil || !strings.Contains(err.Error(), "decode") {
 			t.Fatalf("expected decode error, got %v", err)
+		}
+	})
+
+	// The release is cached by the daemon and served in INFO, and an error
+	// body is quoted in the check error: neither may grow with the response.
+	t.Run("oversized responses are refused, not buffered", func(t *testing.T) {
+		huge := strings.Repeat("x", 4<<20)
+		var fail atomic.Bool
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if fail.Load() {
+				w.WriteHeader(http.StatusBadGateway)
+				_, _ = w.Write([]byte(huge))
+				return
+			}
+			_ = json.NewEncoder(w).Encode(GitHubRelease{TagName: "v9.9.9", Body: huge})
+		}))
+		defer server.Close()
+
+		checker := NewGitHubChecker("x/y")
+		checker.baseURL = server.URL
+		rel, err := checker.CheckLatestRelease()
+		if err == nil || !strings.Contains(err.Error(), "larger than") {
+			notes := 0
+			if rel != nil {
+				notes = len(rel.Body)
+			}
+			t.Fatalf("oversized release: got err %v with %d bytes of notes, want a size error", err, notes)
+		}
+
+		fail.Store(true)
+		_, err = checker.CheckLatestRelease()
+		if err == nil || !strings.Contains(err.Error(), "502") {
+			t.Fatalf("expected a 502 error, got %v", err)
+		}
+		if len(err.Error()) > 16<<10 {
+			t.Fatalf("error quotes %d bytes of the response body", len(err.Error()))
 		}
 	})
 
