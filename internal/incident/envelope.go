@@ -169,16 +169,26 @@ func NewIncidentEvent(src Source, sev Severity, category, msg string, ctx Contex
 
 // truncateToBytes returns s clipped to at most maxBytes bytes without splitting
 // a multi-byte UTF-8 rune. If the byte at the cap falls mid-rune, it walks back
-// to the preceding rune boundary so the result stays valid UTF-8.
+// (at most utf8.UTFMax-1 bytes) to that rune's start.
+//
+// Only the rune at the cut is examined. Validating the whole prefix instead
+// made one stray invalid byte anywhere before the cap — process output is not
+// guaranteed UTF-8 — shrink the result all the way down to that byte, to ""
+// when it led the line.
 func truncateToBytes(s string, maxBytes int) string {
 	if maxBytes <= 0 || len(s) <= maxBytes {
 		return s
 	}
-	b := s[:maxBytes]
-	for len(b) > 0 && !utf8.ValidString(b) {
-		b = b[:len(b)-1]
+	cut := maxBytes
+	for back := 0; back < utf8.UTFMax-1 && cut > 0 && !utf8.RuneStart(s[cut]); back++ {
+		cut--
 	}
-	return b
+	if !utf8.RuneStart(s[cut]) {
+		// A run of continuation bytes longer than any rune: the bytes are not
+		// UTF-8 here, so there is no rune to keep whole. Cut at the cap.
+		cut = maxBytes
+	}
+	return s[:cut]
 }
 
 func newID() string {

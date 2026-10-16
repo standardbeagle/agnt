@@ -3,6 +3,7 @@ package incident
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestFingerprint_CanonicalizesTimestamps(t *testing.T) {
@@ -118,6 +119,39 @@ func TestEnvelope_SummaryTruncation(t *testing.T) {
 	// Without a store, PayloadRef is nil regardless of size
 	if ev.PayloadRef != nil {
 		t.Error("PayloadRef should be nil when no store provided")
+	}
+}
+
+// TestTruncateToBytes_InvalidByteBeforeCap pins that truncation only backs off
+// a rune split AT the cap. Process output is not guaranteed UTF-8 (a Windows
+// console codepage, a binary HTTP body): one stray byte early in a long line
+// used to make the whole prefix "invalid", and the walk-back loop then
+// shortened the summary all the way down to that byte — to "" when it led.
+func TestTruncateToBytes_InvalidByteBeforeCap(t *testing.T) {
+	t.Parallel()
+	msg := "\xff" + strings.Repeat("a", 300)
+	if got := truncateToBytes(msg, maxSummaryBytes); len(got) != maxSummaryBytes {
+		t.Fatalf("leading invalid byte collapsed the summary to %d bytes, want %d", len(got), maxSummaryBytes)
+	}
+	mid := strings.Repeat("b", 50) + "\x81" + strings.Repeat("c", 300)
+	if got := truncateToBytes(mid, maxSummaryBytes); len(got) != maxSummaryBytes {
+		t.Fatalf("invalid byte at 50 clipped the summary to %d bytes, want %d", len(got), maxSummaryBytes)
+	}
+	ev := NewIncidentEvent(SourceProcessAlert, SeverityError, "go", msg, Context{}, nil)
+	if len(ev.Summary) != maxSummaryBytes {
+		t.Fatalf("incident summary is %d bytes, want %d", len(ev.Summary), maxSummaryBytes)
+	}
+
+	// The rune-boundary guarantee still holds: a 3-byte rune straddling the
+	// cap is dropped whole, never split.
+	straddle := strings.Repeat("x", maxSummaryBytes-1) + "€" + "tail"
+	got := truncateToBytes(straddle, maxSummaryBytes)
+	if got != strings.Repeat("x", maxSummaryBytes-1) {
+		t.Fatalf("straddling rune not dropped whole: len=%d valid=%v", len(got), utf8.ValidString(got))
+	}
+	exact := strings.Repeat("x", maxSummaryBytes-3) + "€" + "tail"
+	if got := truncateToBytes(exact, maxSummaryBytes); got != exact[:maxSummaryBytes] {
+		t.Fatalf("rune ending exactly at the cap was dropped: len=%d", len(got))
 	}
 }
 
