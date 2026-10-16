@@ -487,9 +487,12 @@ func (s *Session) Detach(attachID string) {
 }
 
 // IsPrimary reports whether attachID currently holds the primary (write)
-// slot.
+// slot. The empty id is never primary: "" is also the empty-slot sentinel, so
+// comparing it would admit a caller that names no attach at all whenever no
+// primary is attached (none yet, or the primary detached).
 func (s *Session) IsPrimary(attachID string) bool {
-	return s.primaryID.Load().(string) == attachID
+	current, _ := s.primaryID.Load().(string)
+	return attachID != "" && current == attachID
 }
 
 // AttachedCount returns the number of currently attached clients, for
