@@ -204,8 +204,11 @@ func applyDefaults(config Config) Config {
 		if config.OutputFormat == "" {
 			config.OutputFormat = "text"
 		}
-		// Default to haiku for Claude Code CLI (fast and cost-effective for summaries)
-		if config.Model == "" {
+		// Default to haiku for Claude Code CLI (fast and cost-effective for
+		// summaries). "haiku" is a CLI alias, not an API model id: in API mode
+		// it would reach the auto-detected provider (possibly not Anthropic at
+		// all) and fail every call, so there the provider's default applies.
+		if config.Model == "" && !config.UseAPI {
 			config.Model = "haiku"
 		}
 		config.OutputFormatFlag = "--output-format"

@@ -594,6 +594,17 @@ func TestIsAPIMode(t *testing.T) {
 	})
 }
 
+// The Claude CLI's "haiku" alias is not an API model id; in API mode an unset
+// model must fall to the provider's default, or every summary call fails.
+func TestApplyDefaults_ClaudeAPIModeKeepsModelUnset(t *testing.T) {
+	if got := applyDefaults(Config{Agent: AgentClaude, UseAPI: true}).Model; got != "" {
+		t.Errorf("API-mode Model = %q, want \"\" (provider default)", got)
+	}
+	if got := applyDefaults(Config{Agent: AgentClaude}).Model; got != "haiku" {
+		t.Errorf("CLI-mode Model = %q, want \"haiku\"", got)
+	}
+}
+
 func TestConfigure_APIMode(t *testing.T) {
 	ch := NewWithConfig(Config{
 		UseAPI:       true,
