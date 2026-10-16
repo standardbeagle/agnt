@@ -68,16 +68,32 @@ type ProcessorStats struct {
 	AverageDuration time.Duration
 }
 
+// noFileOrNetworkTools lists every built-in Claude Code tool that reads or
+// writes files, runs commands, reaches the network or spawns another agent.
+// Tasks process browser audit data, which can carry text a page visitor wrote,
+// and permissions are bypassed, so each of these is denied by name. Denying
+// only Bash/Write/Edit/Read left Grep and Glob able to read the project and
+// WebFetch/WebSearch able to send it out.
+//
+// Residual: the SDK passes no --strict-mcp-config, so MCP servers from the
+// user's own Claude config still load and are not covered by this list.
+func noFileOrNetworkTools() []string {
+	return []string{
+		"Bash", "Write", "Edit", "Read", "MultiEdit", "NotebookEdit",
+		"Glob", "Grep", "LS",
+		"WebFetch", "WebSearch",
+		"Task", "Agent",
+	}
+}
+
 // DefaultConfig returns config optimized for automation tasks.
 func DefaultConfig() ProcessorConfig {
 	return ProcessorConfig{
-		Model:        "haiku", // Fast and cheap for processing
-		MaxBudgetUSD: 0.01,    // $0.01 limit per task
-		MaxTurns:     3,       // Usually 1-2 turns needed
-		TimeoutSecs:  30,      // 30 second timeout
-		DisallowedTools: []string{ // No file/bash access for processing
-			"Bash", "Write", "Edit", "Read",
-		},
+		Model:           "haiku", // Fast and cheap for processing
+		MaxBudgetUSD:    0.01,    // $0.01 limit per task
+		MaxTurns:        3,       // Usually 1-2 turns needed
+		TimeoutSecs:     30,      // 30 second timeout
+		DisallowedTools: noFileOrNetworkTools(),
 	}
 }
 

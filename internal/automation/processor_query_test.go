@@ -354,7 +354,10 @@ func TestDefaultConfig(t *testing.T) {
 	assert.Equal(t, 3, cfg.MaxTurns)
 	assert.Equal(t, 30, cfg.TimeoutSecs)
 	assert.InDelta(t, 0.01, cfg.MaxBudgetUSD, 1e-9)
-	for _, tool := range []string{"Bash", "Write", "Edit", "Read"} {
+	// Permissions are bypassed and task input can be visitor-authored, so
+	// every tool that reads files or reaches the network is denied, not just
+	// the ones that write.
+	for _, tool := range []string{"Bash", "Write", "Edit", "Read", "Glob", "Grep", "WebFetch", "WebSearch", "Task"} {
 		assert.Contains(t, cfg.DisallowedTools, tool, "%s must be disallowed", tool)
 	}
 }
@@ -385,7 +388,7 @@ func TestProcessCarriesToolRestrictionsAndTimeout(t *testing.T) {
 	require.NoError(t, err)
 
 	require.NotNil(t, gotOpts)
-	assert.Equal(t, []string{"Bash", "Write", "Edit", "Read"}, gotOpts.DisallowedTools)
+	assert.Equal(t, DefaultConfig().DisallowedTools, gotOpts.DisallowedTools)
 	assert.Equal(t, []string{"WebFetch"}, gotOpts.AllowedTools)
 	assert.Equal(t, cfg.WorkingDir, gotOpts.WorkingDirectory)
 	assert.Equal(t, claude.PermissionModeBypassPermission, gotOpts.PermissionMode)
