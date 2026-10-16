@@ -856,6 +856,32 @@ Limits per request: store key 256 bytes, `scopeKey` 2048 bytes, value 256 KiB
 result is refused whole — narrow the scope). Requests also count against the
 per-connection frame-rate cap.
 
+**Visual baselines** (`snapshot`, content frame; Promise-based):
+- `snapshot.createBaseline(name)` (aliases `baseline`; `quickBaseline()` /
+  `quick()` name it `quick-<timestamp>`) captures the page with html2canvas and
+  saves it through the proxy into the same store the MCP `snapshot` tool uses
+  (`~/.agnt/baselines`, one store for every project, as for the tool), so
+  `snapshot {action:"list"}` and `compare` see it and the page can compare
+  against a baseline the agent made. Resolves with the saved baseline:
+  `{name, timestamp, git_commit, git_branch, pages: [{url, viewport,
+  screenshot, timestamp}], config}`. The page's URL key is
+  `location.pathname`; git info is the proxy's project. An existing name is
+  overwritten, as with the tool.
+- `snapshot.compareToBaseline(name)` (alias `compare`) resolves with the
+  tool's `CompareResult`: `{baseline_name, timestamp, pages: [{url,
+  diff_percentage, has_changes, description, baseline_image_path,
+  current_image_path, diff_image_path}], summary: {total_pages, pages_changed,
+  pages_unchanged, average_diff, has_regressions}}`. A visual change resolves
+  with `summary.has_regressions: true`; it is not a rejection. Diff images are
+  written beside the baseline and returned as paths, never inline.
+- The promise settles only on the proxy's reply. It rejects with the reason on
+  an unknown baseline, a capture that is not a PNG or does not decode, a
+  storage failure, a missing name, a closed socket (at once, before capturing),
+  no reply within 60s, or a capture over 15 MiB of base64 (checked before
+  sending; the proxy enforces the same cap, under the 16 MiB WebSocket frame
+  limit). Refused to an untrusted caller, like `store`. `captureCurrentPage()`
+  and `createPageCapture()` only build a capture; they send nothing.
+
 **Diagnostics** (categories):
 - Element Inspection (9): getElementInfo, getPosition, getComputed, etc.
 - Layout Diagnostics (4): findOverflows, findStackingContexts, findOffscreen (all bounded:
@@ -1157,6 +1183,7 @@ public tunnel — cannot do.** These frame types are refused:
 | `store_request` | read or write the project store |
 | `voice_start` | open a transcription session on the operator's Deepgram key |
 | `chaos_request` | inject failures into the proxy |
+| `snapshot_request` | write a visual baseline (or a comparison's diff images) into the operator's baseline store |
 | `frame_active` | choose the frame the agent's next `proxy exec` and audits run in |
 | `execution` | answer a `proxy exec` — hand the agent a result as if the page had produced it |
 | `screenshot`, `sketch_capture`, binary screenshot frames | write files under the project's `.agnt/audit` |
@@ -1166,9 +1193,9 @@ refusal on a connection is recorded as a `ws_privileged_frame_refused`
 diagnostic. Where the sender has somewhere to show it, it is told why: the
 agent-input frames raise an error toast ("Not sent to the agent", at most one
 per five seconds), and `secret_submit`, `voice_start`, `session_request`,
-`store_request` and `chaos_request` get an error reply. `frame_active`,
-`execution` and the capture frames have no UI of their own and are refused
-with the diagnostic only.
+`store_request`, `chaos_request` and `snapshot_request` get an error reply.
+`frame_active`, `execution` and the capture frames have no UI of their own and
+are refused with the diagnostic only.
 
 Two things follow from the same verdict in the other direction. A `proxy exec`
 is **sent only to trusted connections, and only a connection it was sent to

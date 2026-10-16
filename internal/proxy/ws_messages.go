@@ -172,6 +172,7 @@ var wsMessageHandlers = map[string]func(c *wsConnState, msg *wsMessage){
 	"session_request":    (*wsConnState).handleSessionRequestMsg,
 	"store_request":      (*wsConnState).handleStoreRequestMsg,
 	"chaos_request":      (*wsConnState).handleChaosRequestMsg,
+	"snapshot_request":   (*wsConnState).handleSnapshotRequestMsg,
 	"voice_start":        (*wsConnState).handleVoiceStart,
 	"voice_stop":         (*wsConnState).handleVoiceStop,
 }

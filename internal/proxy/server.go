@@ -81,6 +81,11 @@ type ProxyServer struct {
 	// matching proxy_stopped diagnostic has been emitted.
 	started       bool
 	stopAnnounced bool
+	// snapshotStoragePath is the baseline store for __devtool.snapshot
+	// requests. "" is the default ~/.agnt/baselines, the store the snapshot
+	// MCP tool uses, so the two see each other's baselines; tests set a temp
+	// dir.
+	snapshotStoragePath string
 	// largeResults are the exec-result files this proxy wrote to the temp
 	// dir (saveLargeResult); capped there, removed at teardown.
 	largeResults largeResultFiles

@@ -104,38 +104,109 @@
     });
   }
 
-  // Create a baseline from current page
-  function createBaseline(name) {
-    return captureCurrentPage().then(function(page) {
-      core.send('snapshot_baseline', {
-        name: name,
-        pages: [page],
-        timestamp: Date.now()
-      });
+  // Baseline/compare requests go to the proxy as snapshot_request and are
+  // answered by snapshot_response keyed by request_id (the store.js pattern).
+  // The proxy saves and compares through the same baseline store the
+  // `snapshot` MCP tool uses (~/.agnt/baselines), and the promise settles only
+  // on its reply: resolved with the saved baseline or the CompareResult,
+  // rejected with the proxy's error, on timeout, or when nothing was sent.
 
-      return {
-        success: true,
-        message: 'Baseline "' + name + '" captured',
+  // The proxy refuses a larger capture (maxSnapshotScreenshotBase64 in
+  // ws_snapshot.go); over the 16 MiB WebSocket frame cap the connection itself
+  // would close. Checked here so an oversize page fails with a clear message.
+  var MAX_SCREENSHOT_BASE64 = 15 * 1024 * 1024;
+  var SNAPSHOT_TIMEOUT_MS = 60000;
+  var pendingRequests = {}; // request_id -> {resolve, reject, timeout}
+  var requestIdCounter = 0;
+
+  function connected() {
+    return !!(core && typeof core.isConnected === 'function' && core.isConnected());
+  }
+
+  function notConnected(what) {
+    return new Error(what + ' failed: DevTool socket not connected');
+  }
+
+  function sendSnapshotRequest(action, name, page) {
+    var what = action === 'baseline' ? 'Baseline "' + name + '"' : 'Comparison to "' + name + '"';
+    return new Promise(function(resolve, reject) {
+      if (!page || !page.screenshot_data) {
+        reject(new Error(what + ' failed: the capture produced no image'));
+        return;
+      }
+      if (page.screenshot_data.length > MAX_SCREENSHOT_BASE64) {
+        reject(new Error(what + ' failed: the capture is ' + page.screenshot_data.length +
+          ' bytes of base64, over the ' + MAX_SCREENSHOT_BASE64 + ' byte limit; capture a smaller page or viewport'));
+        return;
+      }
+      if (!connected()) {
+        reject(notConnected(what));
+        return;
+      }
+
+      var requestId = 'snap_' + Date.now().toString(36) + '_' + (++requestIdCounter);
+      var timeout = setTimeout(function() {
+        delete pendingRequests[requestId];
+        reject(new Error(what + ' failed: no reply from the proxy within ' + (SNAPSHOT_TIMEOUT_MS / 1000) + 's'));
+      }, SNAPSHOT_TIMEOUT_MS);
+      pendingRequests[requestId] = { resolve: resolve, reject: reject, timeout: timeout };
+
+      var sent = core.send('snapshot_request', {
+        request_id: requestId,
+        action: action,
+        name: name,
         page: page
-      };
+      });
+      if (sent === false) {
+        clearTimeout(timeout);
+        delete pendingRequests[requestId];
+        reject(notConnected(what));
+      }
     });
   }
 
-  // Compare current page to baseline
-  function compareToBaseline(baselineName) {
-    return captureCurrentPage().then(function(page) {
-      core.send('snapshot_compare', {
-        baseline: baselineName,
-        pages: [page],
-        timestamp: Date.now()
-      });
+  function handleSnapshotResponse(message) {
+    if (!message || message.type !== 'snapshot_response') return;
+    var pending = pendingRequests[message.request_id];
+    if (!pending) return;
+    clearTimeout(pending.timeout);
+    delete pendingRequests[message.request_id];
+    if (message.error) {
+      pending.reject(new Error(message.error));
+    } else {
+      pending.resolve(message.result);
+    }
+  }
 
-      return {
-        success: true,
-        message: 'Comparison to "' + baselineName + '" requested',
-        page: page
-      };
+  if (core && core.onMessage) {
+    core.onMessage(handleSnapshotResponse);
+  }
+
+  // Capture the page and send it; fails fast (before the capture) on a
+  // missing name or a closed socket.
+  function captureAndSend(action, name) {
+    if (typeof name !== 'string' || name === '') {
+      return Promise.reject(new Error('A baseline name is required'));
+    }
+    if (!connected()) {
+      return Promise.reject(notConnected(action === 'baseline' ? 'Baseline "' + name + '"' : 'Comparison to "' + name + '"'));
+    }
+    return captureCurrentPage().then(function(page) {
+      return sendSnapshotRequest(action, name, page);
     });
+  }
+
+  // Create a baseline from the current page. Resolves with the saved baseline
+  // ({name, timestamp, git_commit, git_branch, pages, config}).
+  function createBaseline(name) {
+    return captureAndSend('baseline', name);
+  }
+
+  // Compare the current page to a saved baseline. Resolves with the
+  // CompareResult ({baseline_name, timestamp, pages, summary}); a visual
+  // change is a resolved result with summary.has_regressions, not a rejection.
+  function compareToBaseline(baselineName) {
+    return captureAndSend('compare', baselineName);
   }
 
   // Capture multiple pages (for multi-page baselines)
