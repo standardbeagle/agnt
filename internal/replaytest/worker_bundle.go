@@ -75,6 +75,11 @@ const bundleTemplate = `(function(){
     });
   }
 
+  // A null-body status cannot carry a body, not even an empty one: the
+  // Response constructor throws a TypeError for one, which would turn every
+  // recorded 204 (DELETE/PUT) or 304 (revalidated GET) into a rejected fetch.
+  function nullBodyStatus(s){ return s === 204 || s === 205 || s === 304; }
+
   var origFetch = window.fetch;
   window.fetch = function(input, init){
     var url = (typeof input === 'string') ? input : (input && input.url) || '';
@@ -84,7 +89,7 @@ const bundleTemplate = `(function(){
       if(r.miss){
         return new Response('{"__replay_miss":true}', {status:599, headers:{'content-type':'application/json'}});
       }
-      return new Response(r.body, {status:r.status, headers:r.headers||{}});
+      return new Response(nullBodyStatus(r.status) ? null : r.body, {status:r.status, headers:r.headers||{}});
     });
   };
   window.fetch.__replay_orig = origFetch;
