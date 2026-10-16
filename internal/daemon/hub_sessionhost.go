@@ -107,6 +107,9 @@ func (d *Daemon) hubHandleSessionHostCreate(conn *hubpkg.Connection, cmd *hubpro
 		Rows:        cfg.Rows,
 		Env:         cfg.Env,
 	})
+	if errors.Is(err, sessionhost.ErrInvalidName) {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+	}
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to create session-host session: %v", err))
 	}
@@ -322,6 +325,9 @@ func (d *Daemon) hubHandleSessionHostResize(conn *hubpkg.Connection, cmd *hubpro
 	}
 
 	if err := s.Resize(size.Cols, size.Rows); err != nil {
+		if errors.Is(err, sessionhost.ErrInvalidSize) {
+			return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
+		}
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("resize failed: %v", err))
 	}
 	return conn.WriteOK("resized")

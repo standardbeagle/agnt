@@ -94,6 +94,34 @@ func TestSessionHostCreate_ReturnsSessionIDAndPGID(t *testing.T) {
 	require.NoError(t, c.Request("SESSION-HOST", "KILL", result.SessionID).OK())
 }
 
+// A name the wire cannot carry and an out-of-range resize are the caller's
+// mistakes, so they come back as invalid_args, not internal errors.
+func TestSessionHost_CallerErrorsAreInvalidArgs(t *testing.T) {
+	// No t.Parallel(): spawns a real `sh` PTY child.
+	_, sockPath := newSessionHostTestDaemon(t)
+	rc := dialRaw(t, sockPath)
+
+	rc.send("SESSION-HOST", []string{"CREATE"}, protocol.SessionHostCreateConfig{
+		Name: "my session", ProjectPath: t.TempDir(), Command: "sh", Args: []string{"-c", "cat"},
+	})
+	resp := rc.readResponse(t)
+	require.Equal(t, hubproto.ResponseErr, resp.Type, "CREATE with a whitespace name: %+v", resp)
+	require.Equal(t, string(hubproto.ErrInvalidArgs), resp.Code)
+
+	c := NewConn(sockPath)
+	defer c.Close()
+	var created protocol.SessionHostCreateResult
+	require.NoError(t, c.Request("SESSION-HOST", "CREATE").WithJSON(protocol.SessionHostCreateConfig{
+		ProjectPath: t.TempDir(), Command: "sh", Args: []string{"-c", "cat"}, Cols: 80, Rows: 24,
+	}).JSONInto(&created))
+	defer func() { _ = c.Request("SESSION-HOST", "KILL", created.SessionID).OK() }()
+
+	rc.send("SESSION-HOST", []string{"RESIZE", created.SessionID}, protocol.SessionHostResizeConfig{Cols: 120, Rows: 0})
+	resp = rc.readResponse(t)
+	require.Equal(t, hubproto.ResponseErr, resp.Type, "RESIZE 120x0: %+v", resp)
+	require.Equal(t, string(hubproto.ErrInvalidArgs), resp.Code)
+}
+
 func TestSessionHostList_ProjectScoped(t *testing.T) {
 	// No t.Parallel(): spawns real `sh` PTY children reaped via killpg — see
 	// AGENTS.md prohibition on parallel tests that start real OS processes.
