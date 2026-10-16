@@ -40,14 +40,49 @@ function Main {
         New-Item -ItemType Directory -Path $installDir -Force | Out-Null
     }
 
-    # Download URL
-    $url = "https://github.com/$Repo/releases/download/v$version/$BinaryName-$platform-$arch.exe"
+    # Download URLs
+    $asset = "$BinaryName-$platform-$arch.exe"
+    $base = "https://github.com/$Repo/releases/download/v$version"
+    $url = "$base/$asset"
     $binaryPath = Join-Path $installDir "$BinaryName.exe"
 
-    Write-Host "  Downloading from: $url"
+    # Stage beside the install path; nothing reaches $binaryPath until the
+    # release's SHA256SUMS vouches for it.
+    $tmpDir = Join-Path $installDir (".agnt-install." + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $tmpDir | Out-Null
+    try {
+        $sumsPath = Join-Path $tmpDir "SHA256SUMS"
+        try {
+            Invoke-WebRequest -Uri "$base/SHA256SUMS" -OutFile $sumsPath -UseBasicParsing
+        } catch {
+            throw "Could not fetch SHA256SUMS for v$version ($($_.Exception.Message)); refusing to install an unverified binary"
+        }
+        $expected = $null
+        foreach ($line in Get-Content $sumsPath) {
+            $fields = -split $line
+            if ($fields.Count -eq 2 -and $fields[1].TrimStart('*') -eq $asset) {
+                $expected = $fields[0].ToLowerInvariant()
+                break
+            }
+        }
+        if ($expected -notmatch '^[0-9a-f]{64}$') {
+            throw "SHA256SUMS for v$version lists no valid entry for $asset; refusing to install"
+        }
 
-    # Download binary
-    Invoke-WebRequest -Uri $url -OutFile $binaryPath -UseBasicParsing
+        Write-Host "  Downloading from: $url"
+        $tmpBinary = Join-Path $tmpDir $asset
+        Invoke-WebRequest -Uri $url -OutFile $tmpBinary -UseBasicParsing
+
+        $actual = (Get-FileHash -Algorithm SHA256 -Path $tmpBinary).Hash.ToLowerInvariant()
+        if ($actual -ne $expected) {
+            throw "Checksum mismatch for ${asset}: downloaded file has sha256 $actual, SHA256SUMS lists $expected; not installed"
+        }
+        Write-Host "  Verified sha256: $actual"
+
+        Move-Item -Force -Path $tmpBinary -Destination $binaryPath
+    } finally {
+        Remove-Item -Recurse -Force -Path $tmpDir -ErrorAction SilentlyContinue
+    }
 
     Write-Host ""
     Write-Host "Successfully installed agnt to $binaryPath"

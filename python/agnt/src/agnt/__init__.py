@@ -26,8 +26,10 @@ For more information, see:
 __version__ = "0.16.0"
 __all__ = ["main", "get_binary_path", "run"]
 
+import hashlib
 import os
 import platform
+import re
 import stat
 import subprocess
 import sys
@@ -87,12 +89,48 @@ def get_cache_dir() -> Path:
     return cache_dir
 
 
+def get_asset_name() -> str:
+    """Get the release asset name for the current platform."""
+    plat = get_platform()
+    ext = ".exe" if plat == "windows" else ""
+    return f"{BINARY_NAME}-{plat}-{get_arch()}{ext}"
+
+
+def get_release_url(asset: str) -> str:
+    """Get the URL of a release asset for this version."""
+    return f"https://github.com/{REPO}/releases/download/v{VERSION}/{asset}"
+
+
 def get_download_url() -> str:
     """Get the download URL for the binary."""
-    plat = get_platform()
-    arch = get_arch()
-    ext = ".exe" if plat == "windows" else ""
-    return f"https://github.com/{REPO}/releases/download/v{VERSION}/{BINARY_NAME}-{plat}-{arch}{ext}"
+    return get_release_url(get_asset_name())
+
+
+class ChecksumError(Exception):
+    """The download could not be verified against the release's SHA256SUMS."""
+
+
+def expected_checksum(sums: str, asset: str) -> str:
+    """Return the hex SHA-256 that sums (sha256sum format) lists for asset."""
+    for line in sums.splitlines():
+        fields = line.split()
+        if len(fields) != 2 or fields[1].lstrip("*") != asset:
+            continue
+        digest = fields[0].lower()
+        if not re.fullmatch(r"[0-9a-f]{64}", digest):
+            raise ChecksumError(f"SHA256SUMS entry for {asset} is not a SHA-256 digest: {fields[0]!r}")
+        return digest
+    raise ChecksumError(f"SHA256SUMS lists no {asset}")
+
+
+def verify_checksum(content: bytes, sums: str, asset: str) -> None:
+    """Raise ChecksumError unless content has the SHA-256 sums lists for asset."""
+    want = expected_checksum(sums, asset)
+    got = hashlib.sha256(content).hexdigest()
+    if got != want:
+        raise ChecksumError(
+            f"Checksum mismatch for {asset}: downloaded file has sha256 {got}, SHA256SUMS lists {want}"
+        )
 
 
 def get_binary_path() -> Path:
@@ -104,15 +142,29 @@ def get_binary_path() -> Path:
         return binary_path
 
     # Download the binary
-    url = get_download_url()
+    asset = get_asset_name()
+    url = get_release_url(asset)
     print(f"Downloading agnt v{VERSION}...", file=sys.stderr)
     print(f"  Platform: {get_platform()}", file=sys.stderr)
     print(f"  Architecture: {get_arch()}", file=sys.stderr)
 
     try:
         with httpx.Client(follow_redirects=True, timeout=60.0) as client:
+            # The release's SHA256SUMS must vouch for the binary before it is
+            # written to the cache; without it the install fails.
+            try:
+                sums_response = client.get(get_release_url("SHA256SUMS"))
+                sums_response.raise_for_status()
+            except httpx.HTTPError as e:
+                raise ChecksumError(
+                    f"Cannot verify the download, refusing to install: fetching SHA256SUMS for v{VERSION} failed: {e}"
+                ) from e
+            sums = sums_response.text
+            expected_checksum(sums, asset)  # a missing entry fails before the download
+
             response = client.get(url)
             response.raise_for_status()
+            verify_checksum(response.content, sums, asset)
 
             # Write to temp file first, then move
             with tempfile.NamedTemporaryFile(
@@ -130,8 +182,8 @@ def get_binary_path() -> Path:
 
             print(f"Successfully installed agnt to {binary_path}", file=sys.stderr)
 
-    except httpx.HTTPError as e:
-        print(f"Failed to download agnt: {e}", file=sys.stderr)
+    except (httpx.HTTPError, ChecksumError) as e:
+        print(f"Failed to install agnt: {e}", file=sys.stderr)
         print("", file=sys.stderr)
         print("You can manually download the binary from:", file=sys.stderr)
         print(f"  https://github.com/{REPO}/releases/tag/v{VERSION}", file=sys.stderr)
