@@ -372,6 +372,48 @@ func TestCompareToBaseline_SummaryMath(t *testing.T) {
 	}
 }
 
+// TestCompareToBaseline_SameURLAtSeveralViewports compares a baseline holding
+// one URL at two viewports. Each baseline page must be compared with the
+// capture at its own viewport; matching by URL alone compared both against the
+// last capture, so the smaller viewport reported a dimension mismatch as a
+// regression on an unchanged page.
+func TestCompareToBaseline_SameURLAtSeveralViewports(t *testing.T) {
+	m, err := NewManager(t.TempDir(), 0.01)
+	require.NoError(t, err)
+
+	small := encodePNGBase64(t, 4, 4, color.RGBA{A: 255})
+	large := encodePNGBase64(t, 8, 6, color.RGBA{A: 255})
+	_, err = m.CreateBaseline("multi", []PageCapture{
+		{URL: "http://a/", Viewport: Viewport{Width: 4, Height: 4}, ScreenshotData: small},
+		{URL: "http://a/", Viewport: Viewport{Width: 8, Height: 6}, ScreenshotData: large},
+	})
+	require.NoError(t, err)
+
+	res, err := m.CompareToBaseline("multi", []PageCapture{
+		{URL: "http://a/", Viewport: Viewport{Width: 4, Height: 4}, ScreenshotData: small},
+		{URL: "http://a/", Viewport: Viewport{Width: 8, Height: 6}, ScreenshotData: large},
+	}, 0)
+	require.NoError(t, err)
+
+	require.Len(t, res.Pages, 2)
+	for _, p := range res.Pages {
+		assert.False(t, p.HasChanges, "unchanged page reported as changed: %s", p.Description)
+	}
+	assert.Equal(t, 2, res.Summary.PagesUnchanged)
+	assert.False(t, res.Summary.HasRegressions)
+
+	// A viewport the current run did not capture is reported as missing, not
+	// compared against another viewport's capture.
+	res, err = m.CompareToBaseline("multi", []PageCapture{
+		{URL: "http://a/", Viewport: Viewport{Width: 8, Height: 6}, ScreenshotData: large},
+	}, 0)
+	require.NoError(t, err)
+	require.Len(t, res.Pages, 2)
+	assert.True(t, res.Pages[0].HasChanges)
+	assert.Equal(t, "Page not captured in current snapshot", res.Pages[0].Description)
+	assert.False(t, res.Pages[1].HasChanges, res.Pages[1].Description)
+}
+
 // TestCompareToBaseline_PerCallThreshold verifies the per-call diff_threshold
 // overrides the manager default: the same small diff is a regression under a
 // tight threshold and clean under a loose one.

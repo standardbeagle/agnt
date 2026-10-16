@@ -130,17 +130,18 @@ func (m *Manager) CompareToBaseline(baselineName string, currentPages []PageCapt
 		},
 	}
 
-	// Create map of current pages by URL
-	currentMap := make(map[string]PageCapture)
+	// Group current pages by URL. A baseline may hold one URL at several
+	// viewports, so the URL alone does not identify the capture to compare.
+	currentByURL := make(map[string][]PageCapture)
 	for _, page := range currentPages {
-		currentMap[page.URL] = page
+		currentByURL[page.URL] = append(currentByURL[page.URL], page)
 	}
 
 	totalDiff := 0.0
 
 	// Compare each baseline page
 	for _, baselinePage := range baseline.Pages {
-		currentPage, exists := currentMap[baselinePage.URL]
+		currentPage, exists := matchCurrentPage(currentByURL[baselinePage.URL], baselinePage.Viewport)
 		if !exists {
 			// Page missing from current capture
 			result.Pages = append(result.Pages, PageComparison{
@@ -227,6 +228,31 @@ func (m *Manager) CompareToBaseline(baselineName string, currentPages []PageCapt
 	}
 
 	return result, nil
+}
+
+// matchCurrentPage picks, from the current captures of one URL, the one to
+// compare against a baseline page taken at viewport vp. A capture at the same
+// viewport wins. Failing that, a capture is used only when it is the single one
+// whose viewport is unspecified on either side (a compare call that names no
+// viewport for a one-viewport baseline). Keying by URL alone compared every
+// viewport of a multi-viewport baseline against whichever capture of that URL
+// came last, so all but one reported a dimension mismatch as a regression.
+func matchCurrentPage(candidates []PageCapture, vp Viewport) (PageCapture, bool) {
+	for _, c := range candidates {
+		if c.Viewport == vp {
+			return c, true
+		}
+	}
+	var loose []PageCapture
+	for _, c := range candidates {
+		if c.Viewport == (Viewport{}) || vp == (Viewport{}) {
+			loose = append(loose, c)
+		}
+	}
+	if len(loose) == 1 {
+		return loose[0], true
+	}
+	return PageCapture{}, false
 }
 
 // ListBaselines returns all available baselines
