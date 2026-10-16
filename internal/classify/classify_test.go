@@ -108,6 +108,32 @@ func TestParseBuildErrors_WarningSeverity(t *testing.T) {
 	}
 }
 
+// TestParseBuildErrors_CRLF: output split on "\n" from a Windows tool keeps a
+// trailing "\r" on every line. It must parse exactly like the LF form, and the
+// caller's slice must not be modified.
+func TestParseBuildErrors_CRLF(t *testing.T) {
+	lines := []string{
+		"src/app.ts\r",
+		"  12:3  error  Unexpected console statement  no-console\r",
+		"\r",
+		"  13:1  error  Not under a file header  no-undef\r",
+		"FAILED tests/test_foo.py::test_bar\r",
+	}
+	errs := ParseBuildErrors(lines)
+	if len(errs) != 2 {
+		t.Fatalf("got %d errors, want 2 (eslint row, pytest): %+v", len(errs), errs)
+	}
+	if errs[0].Tool != "eslint" || errs[0].File != "src/app.ts" || errs[0].Rule != "no-console" {
+		t.Errorf("eslint row under a CRLF header parsed wrong: %+v", errs[0])
+	}
+	if errs[1].Tool != "pytest" || errs[1].File != "tests/test_foo.py" || errs[1].Test != "test_bar" {
+		t.Errorf("CRLF pytest line parsed wrong: %+v", errs[1])
+	}
+	if lines[0] != "src/app.ts\r" {
+		t.Errorf("caller's slice was modified: %q", lines[0])
+	}
+}
+
 // TestRunStructuredLine folds Prisma / DB-auth blocks; TestIsStructuralPrefix
 // guards the banner-folding contract.
 func TestRunStructuredLine(t *testing.T) {

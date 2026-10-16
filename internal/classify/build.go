@@ -103,6 +103,23 @@ func ParseBuildErrors(lines []string) []BuildError {
 	var out []BuildError
 	var eslintFile string
 
+	// Output captured from a Windows tool arrives split on "\n" with the
+	// "\r" still attached. Every pattern above anchors on `$` or `\S+$`, and
+	// "\r" is neither part of a path nor the end of the line, so a CRLF
+	// pytest FAILED line, eslint file header or blank separator would not
+	// match. Strip it once, on a copy so the caller's slice is untouched.
+	for i, l := range lines {
+		if strings.HasSuffix(l, "\r") {
+			trimmed := make([]string, len(lines))
+			copy(trimmed, lines)
+			for j := i; j < len(trimmed); j++ {
+				trimmed[j] = strings.TrimSuffix(trimmed[j], "\r")
+			}
+			lines = trimmed
+			break
+		}
+	}
+
 	for i := 0; i < len(lines); i++ {
 		line := lines[i]
 		if line == "" {
