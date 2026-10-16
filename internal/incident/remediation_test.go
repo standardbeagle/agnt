@@ -205,6 +205,26 @@ func TestRoute_Aggregate_WeightedSkill(t *testing.T) {
 	}
 }
 
+// A tie in skill weight must resolve the same way on every call. The pick used
+// to come straight out of a map range, so one browser error and one 5xx (count
+// 1 each) told the agent agnt:browser-debug on one pull and daemon-debug on
+// the next. Ties go to the skill of the first incident listed — the pull is
+// already in priority order.
+func TestRoute_Aggregate_TieIsDeterministic(t *testing.T) {
+	t.Parallel()
+	browser := NewIncidentEvent(SourceBrowserJS, SeverityError, "TypeError", "msg", Context{}, nil)
+	http := NewIncidentEvent(SourceHTTP5xx, SeverityError, "5xx", "msg", Context{}, nil)
+	incidents := []IncidentView{
+		{Source: browser.Source, Count: 1, Remediation: Resolve(&browser)},
+		{Source: http.Source, Count: 1, Remediation: Resolve(&http)},
+	}
+	for i := 0; i < 100; i++ {
+		if skill, _ := AggregateRemediation(incidents); skill != "agnt:browser-debug" {
+			t.Fatalf("call %d: tied skill resolved to %q, want the first incident's agnt:browser-debug", i, skill)
+		}
+	}
+}
+
 // ── placeholder audit ─────────────────────────────────────────────────────────
 
 // TestRoutePrimariesCarryNoPlaceholderIdentifiers scans every route's primary

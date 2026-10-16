@@ -202,6 +202,7 @@ func Resolve(ev *IncidentEvent) Remediation {
 // weighted by occurrence count.
 func AggregateRemediation(incidents []IncidentView) (skill string, tools []ToolSuggestion) {
 	skillWeight := map[string]int{}
+	var skillOrder []string // first-appearance order: the deterministic tie-break
 	seen := map[string]bool{}
 
 	for _, iv := range incidents {
@@ -209,8 +210,11 @@ func AggregateRemediation(incidents []IncidentView) (skill string, tools []ToolS
 		if w <= 0 {
 			w = 1
 		}
-		if iv.Remediation.SkillHint != "" {
-			skillWeight[iv.Remediation.SkillHint] += w
+		if hint := iv.Remediation.SkillHint; hint != "" {
+			if _, ok := skillWeight[hint]; !ok {
+				skillOrder = append(skillOrder, hint)
+			}
+			skillWeight[hint] += w
 		}
 		if iv.Remediation.PrimaryTool != "" && !seen[iv.Remediation.PrimaryTool] {
 			seen[iv.Remediation.PrimaryTool] = true
@@ -222,10 +226,12 @@ func AggregateRemediation(incidents []IncidentView) (skill string, tools []ToolS
 		}
 	}
 
-	// dominant skill by weighted count
+	// Dominant skill by weighted count. Iterate in first-appearance order, not
+	// over the map: a tie must name the same skill on every pull, and the
+	// incidents arrive in priority order, so the earliest one wins it.
 	best := 0
-	for s, w := range skillWeight {
-		if w > best {
+	for _, s := range skillOrder {
+		if w := skillWeight[s]; w > best {
 			best = w
 			skill = s
 		}
