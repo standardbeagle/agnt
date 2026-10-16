@@ -258,20 +258,21 @@ func (h *handler) token(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p.Name = persona
-	refresh, err := h.is.storeRefresh(&refreshGrant{
+	resp := map[string]any{
+		"access_token": h.is.accessToken(h.issuer(), cl, p, scope),
+		"token_type":   "Bearer",
+		"expires_in":   int(accessTokenTTL.Seconds()),
+		"scope":        scope,
+	}
+	// A refresh token is optional in a token response (RFC 6749 §5.1). With
+	// the store at its cap, where each token lives a day, failing the whole
+	// exchange locked every login out until tokens aged out; now the client
+	// gets its tokens and simply signs in again when the access token expires.
+	if refresh, err := h.is.storeRefresh(&refreshGrant{
 		clientID: cl.ID, persona: persona, scope: scope, issuer: h.issuer(),
 		expires: h.is.now().Add(refreshTokenTTL),
-	})
-	if err != nil {
-		tokenError(w, http.StatusServiceUnavailable, "temporarily_unavailable", err.Error())
-		return
-	}
-	resp := map[string]any{
-		"access_token":  h.is.accessToken(h.issuer(), cl, p, scope),
-		"token_type":    "Bearer",
-		"expires_in":    int(accessTokenTTL.Seconds()),
-		"refresh_token": refresh,
-		"scope":         scope,
+	}); err == nil {
+		resp["refresh_token"] = refresh
 	}
 	if slices.Contains(strings.Fields(scope), "openid") {
 		resp["id_token"] = h.is.idToken(h.issuer(), cl, p, nonce)

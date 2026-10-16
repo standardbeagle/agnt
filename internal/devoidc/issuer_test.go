@@ -218,6 +218,25 @@ func TestCodeFlowPublicClientDefaultPersona(t *testing.T) {
 	}
 }
 
+// TestFullRefreshStoreStillSignsIn: refresh tokens live a day, so a busy suite
+// can fill the store. Login must keep working, without a refresh token, rather
+// than fail every code exchange until tokens age out.
+func TestFullRefreshStoreStillSignsIn(t *testing.T) {
+	f := newFixture(t, testConfig())
+	f.is.refreshSize.Store(maxOutstanding)
+	code := f.codeFrom(f.get("/authorize", f.authorizeQuery("spa", nil)))
+	status, tok := f.exchange("", "", mergeForm(codeForm(code), url.Values{"client_id": {"spa"}}))
+	if status != http.StatusOK {
+		t.Fatalf("token with a full refresh store: %d %v, want 200", status, tok)
+	}
+	if _, ok := tok["access_token"].(string); !ok {
+		t.Fatalf("no access_token: %v", tok)
+	}
+	if _, ok := tok["refresh_token"]; ok {
+		t.Fatalf("refresh_token issued past the store cap: %v", tok)
+	}
+}
+
 func TestConfidentialClientCustomClaimsAndAudience(t *testing.T) {
 	f := newFixture(t, testConfig())
 	f.caller.Store(&Caller{AccessEmail: "andy@example.com"}) // exactly one allowed persona: admin
