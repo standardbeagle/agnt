@@ -35,7 +35,7 @@ The integrity check gates the rename. Verifying after activation is too late. `U
 
 The other two bootstrap sources (`bootstrap.go`) stage, check that the binary reports the client's exact version, then rename. `remoteGoInstall` pins `@v<client version>`, never `@latest`, so the Go checksum database authenticates the module. `remoteDownloadInstall` fetches the release's `SHA256SUMS` locally over TLS (`BootstrapOptions.FetchChecksums`, the test seam), requires an entry for the asset, and compares the remote temp file's digest (`remoteSHA256Command`) before the binary is even run for its version check. A missing `SHA256SUMS`, missing entry, mismatch, or remote with neither `sha256sum` nor `shasum` fails closed; no fallback applies, because this source is chosen only when the remote has no Go toolchain.
 
-`cmd/agnt/upgrade.go` does **not** follow this order and must not be cited as an example: for a direct install it pipes `install.sh` from the `main` branch into `bash` with no integrity check, and its only "verify" step reads the new binary's version after it is already active. That gap is open.
+`cmd/agnt/upgrade.go` does **not** follow this order and must not be cited as an example: for a direct install it pipes `install.sh` (or `install.ps1`) from the `main` branch into the shell. The scripts verify the binary against the release's `SHA256SUMS` before moving it into place, but the script itself is fetched unpinned and unverified, and upgrade's only "verify" step reads the new binary's version after it is already active. That gap is open.
 
 ## 7. Non-interactive install needs explicit consent
 

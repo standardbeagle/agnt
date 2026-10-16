@@ -28,6 +28,8 @@ pip install agnt
 go install github.com/standardbeagle/agnt/cmd/agnt@latest
 ```
 
+The npm and pip packages, and the `install.sh` / `install.ps1` scripts, download a release binary and check it against the release's `SHA256SUMS` before installing it. A missing checksum file, a missing entry, or a mismatch stops the install with an error.
+
 Then register it as an MCP server for any agent:
 
 ```bash

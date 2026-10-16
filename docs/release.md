@@ -80,11 +80,24 @@ git push origin main && git push origin v<VERSION>
 
 # GitHub Actions will automatically:
 # - Build binaries for all platforms
-# - Create GitHub release
+# - Create GitHub release, with a SHA256SUMS asset covering every binary
 # - Publish npm packages
 # - Publish Python packages
 # - Update marketplace
 ```
+
+## Release checksums
+
+The release workflow (`.github/workflows/release.yml`) writes `SHA256SUMS` in `sha256sum` format (`<hex>  <asset name>`) over every uploaded binary, after the final artifacts are collected, and uploads it with them. Every downloader verifies against it and fails closed, refusing to install on a missing `SHA256SUMS`, a missing entry, or a digest mismatch:
+
+| Downloader | Where it verifies |
+|---|---|
+| npm: `@standardbeagle/agnt`, and the root `devtool-mcp` package | `npm/agnt/scripts/install.js`, `scripts/install.js` (`verifyChecksum`, before the atomic rename) |
+| PyPI (`agnt`) | `python/agnt/src/agnt/__init__.py` (before the rename into the cache) |
+| `install.sh` / `install.ps1`, and `agnt upgrade` for a direct install (it runs them) | the scripts, before the binary is moved into place |
+| `agnt ssh` bootstrap, release-download source | `internal/sshclient/bootstrap.go` (`remoteDownloadInstall`: the client fetches `SHA256SUMS`, the remote hashes the download) |
+
+A release published without `SHA256SUMS` (every release before this was introduced) can no longer be installed by these downloaders. There is no override.
 
 ## Version Consistency
 

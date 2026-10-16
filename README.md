@@ -69,6 +69,8 @@ pip install agnt
 uv pip install agnt
 ```
 
+The npm and pip packages download the matching release binary and verify it against the release's `SHA256SUMS` before installing it; a missing checksum file, missing entry, or mismatch stops the install.
+
 **From source**:
 ```bash
 git clone https://github.com/standardbeagle/agnt.git
