@@ -220,7 +220,10 @@ func main() {
 
 	// 5. Mobile viewport
 	log.Println("Taking mobile viewport screenshot")
-	mobileVP := chromedp.GetViewport("mobile")
+	mobileVP, vpErr := chromedp.GetViewport("mobile")
+	if vpErr != nil {
+		log.Fatal(vpErr)
+	}
 	result, err = chromedp.CaptureViewport(session, chromedp.ScreenshotOptions{
 		Label:    "proxy-ui-mobile",
 		Viewport: mobileVP,

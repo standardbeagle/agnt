@@ -2,6 +2,8 @@ package chromedp
 
 import (
 	"context"
+	"fmt"
+	"sort"
 	"strings"
 
 	"github.com/chromedp/cdproto/emulation"
@@ -70,63 +72,84 @@ var DefaultViewports = []ViewportPreset{
 	},
 }
 
-// GetViewport retrieves a viewport preset by name with fuzzy matching.
-// It supports exact matches, partial matches, and common aliases.
-// Returns nil if no matching preset is found.
-func GetViewport(name string) *ViewportPreset {
-	name = strings.ToLower(strings.TrimSpace(name))
-	if name == "" {
-		return nil
-	}
+// viewportAliases maps common device words to a preset name.
+var viewportAliases = map[string]string{
+	"phone":           "mobile-portrait",
+	"mobile":          "mobile-portrait",
+	"phone-portrait":  "mobile-portrait",
+	"phone-landscape": "mobile-landscape",
+	"iphone":          "mobile-portrait",
+	"android":         "mobile-portrait",
+	"tablet":          "tablet-portrait",
+	"ipad":            "tablet-portrait",
+	"ipad-portrait":   "tablet-portrait",
+	"ipad-landscape":  "tablet-landscape",
+	"laptop":          "desktop",
+	"1080p":           "desktop-large",
+	"fullhd":          "desktop-large",
+	"hd":              "desktop-large",
+}
 
-	// Define aliases for common terms
-	aliases := map[string]string{
-		"phone":           "mobile-portrait",
-		"mobile":          "mobile-portrait",
-		"phone-portrait":  "mobile-portrait",
-		"phone-landscape": "mobile-landscape",
-		"iphone":          "mobile-portrait",
-		"android":         "mobile-portrait",
-		"tablet":          "tablet-portrait",
-		"ipad":            "tablet-portrait",
-		"ipad-portrait":   "tablet-portrait",
-		"ipad-landscape":  "tablet-landscape",
-		"laptop":          "desktop",
-		"1080p":           "desktop-large",
-		"fullhd":          "desktop-large",
-		"hd":              "desktop-large",
-	}
+// minViewportPrefix is the shortest abbreviation GetViewport accepts. Shorter
+// input is too likely to be a typo or a stray letter to be read as a choice
+// of device: "p" used to select a preset by substring match.
+const minViewportPrefix = 3
 
-	// Check aliases first
-	if aliased, ok := aliases[name]; ok {
-		name = aliased
+// GetViewport resolves a viewport preset by name. It accepts a preset name, an
+// alias (phone, tablet, laptop, …), or a prefix of a preset name at least
+// minViewportPrefix characters long that matches exactly one preset ("tablet-l").
+// Anything else — an unknown, too short or ambiguous name — is an error that
+// lists the valid names, never a guess.
+func GetViewport(name string) (*ViewportPreset, error) {
+	key := strings.ToLower(strings.TrimSpace(name))
+	if key == "" {
+		return nil, fmt.Errorf("viewport name is empty; %s", validViewportNames())
 	}
-
-	// Try exact match
+	if aliased, ok := viewportAliases[key]; ok {
+		key = aliased
+	}
 	for i := range DefaultViewports {
-		if DefaultViewports[i].Name == name {
-			return &DefaultViewports[i]
+		if DefaultViewports[i].Name == key {
+			return &DefaultViewports[i], nil
 		}
 	}
 
-	// Try partial match (contains)
-	for i := range DefaultViewports {
-		if strings.Contains(DefaultViewports[i].Name, name) {
-			return &DefaultViewports[i]
-		}
-	}
-
-	// Try reverse partial match (input contains preset name part)
-	for i := range DefaultViewports {
-		parts := strings.Split(DefaultViewports[i].Name, "-")
-		for _, part := range parts {
-			if strings.Contains(name, part) {
-				return &DefaultViewports[i]
+	if len(key) >= minViewportPrefix {
+		var matches []*ViewportPreset
+		for i := range DefaultViewports {
+			if strings.HasPrefix(DefaultViewports[i].Name, key) {
+				matches = append(matches, &DefaultViewports[i])
 			}
 		}
+		switch len(matches) {
+		case 1:
+			return matches[0], nil
+		case 0:
+		default:
+			names := make([]string, len(matches))
+			for i, m := range matches {
+				names[i] = m.Name
+			}
+			return nil, fmt.Errorf("viewport %q is ambiguous (matches %s); %s",
+				name, strings.Join(names, ", "), validViewportNames())
+		}
 	}
+	return nil, fmt.Errorf("unknown viewport %q; %s", name, validViewportNames())
+}
 
-	return nil
+// validViewportNames is the error suffix naming every accepted spelling.
+func validViewportNames() string {
+	presets := make([]string, len(DefaultViewports))
+	for i := range DefaultViewports {
+		presets[i] = DefaultViewports[i].Name
+	}
+	aliases := make([]string, 0, len(viewportAliases))
+	for a := range viewportAliases {
+		aliases = append(aliases, a)
+	}
+	sort.Strings(aliases)
+	return fmt.Sprintf("valid viewports: %s (aliases: %s; a unique prefix of at least %d characters also works)",
+		strings.Join(presets, ", "), strings.Join(aliases, ", "), minViewportPrefix)
 }
 
 // emulationStep is one CDP emulation command a preset issues, in a form a test

@@ -3,6 +3,7 @@ package chromedp
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -57,12 +58,57 @@ func TestEmulateSteps_TouchIsSetExplicitlyForEveryPreset(t *testing.T) {
 	}
 
 	// The case that used to leak, stated outright.
-	desktop := GetViewport("desktop")
-	if desktop == nil || desktop.Touch {
+	desktop, err := GetViewport("desktop")
+	if err != nil || desktop.Touch {
 		t.Fatal("desktop preset missing or touch-enabled; this test needs a non-touch preset")
 	}
 	if touch, n := touchOf(desktop.emulateSteps()); n != 1 || touch {
 		t.Errorf("desktop preset must send touch=false (got value=%v, steps=%d)", touch, n)
+	}
+}
+
+// TestGetViewport_NoGuessing pins the lookup rules: a preset name, an alias,
+// or a unique prefix of at least minViewportPrefix characters. A one-letter
+// name used to select a preset by substring match ("p" → mobile-portrait), and
+// input merely containing a preset word ("not-a-tablet") picked that preset.
+func TestGetViewport_NoGuessing(t *testing.T) {
+	accepted := map[string]string{
+		"desktop":          "desktop",
+		"  Desktop-Large ": "desktop-large",
+		"phone":            "mobile-portrait",
+		"ipad-landscape":   "tablet-landscape",
+		"tablet-l":         "tablet-landscape",
+		"mobile-p":         "mobile-portrait",
+	}
+	for in, want := range accepted {
+		vp, err := GetViewport(in)
+		if err != nil {
+			t.Errorf("GetViewport(%q) = %v, want %s", in, err, want)
+			continue
+		}
+		if vp.Name != want {
+			t.Errorf("GetViewport(%q) = %s, want %s", in, vp.Name, want)
+		}
+	}
+
+	rejected := []string{"", "p", "d", "mo", "tab", "desk", "landscape", "not-a-tablet", "phablet"}
+	for _, in := range rejected {
+		vp, err := GetViewport(in)
+		if err == nil {
+			t.Errorf("GetViewport(%q) picked %s; want an error", in, vp.Name)
+			continue
+		}
+		if vp != nil {
+			t.Errorf("GetViewport(%q) returned a preset alongside its error", in)
+		}
+		for _, name := range []string{"mobile-portrait", "desktop-large", "tablet-landscape"} {
+			if !strings.Contains(err.Error(), name) {
+				t.Errorf("GetViewport(%q) error %q does not list valid name %s", in, err, name)
+			}
+		}
+	}
+	if _, err := GetViewport("desk"); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Errorf("GetViewport(\"desk\") error = %v, want it to say the prefix is ambiguous", err)
 	}
 }
 

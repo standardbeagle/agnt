@@ -257,9 +257,9 @@ func (d *Daemon) hubHandleAutomationScreenshot(ctx context.Context, conn *hubpkg
 	// Parse viewport preset if specified
 	var viewportPreset *chromedp.ViewportPreset
 	if config.Viewport != "" {
-		vp := chromedp.GetViewport(config.Viewport)
-		if vp == nil {
-			return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("unknown viewport: %s", config.Viewport))
+		vp, err := chromedp.GetViewport(config.Viewport)
+		if err != nil {
+			return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
 		}
 		viewportPreset = vp
 	}
