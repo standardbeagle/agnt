@@ -196,7 +196,9 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 		!isContentFrameRequest(resp.Request) &&
 		isTopLevelNavigation(resp.Request) &&
 		isFullHTMLDocument(modifiedBody)
-	authCfgJS := ps.AuthBreakoutRules().clientConfigJS()
+	// Inline page config read by the bundle at eval time: the auth-breakout
+	// rules and the record-passwords opt-in.
+	authCfgJS := ps.AuthBreakoutRules().clientConfigJS() + ps.recordPasswordsJS()
 	if topLevel {
 		reqURI := resp.Request.URL.RequestURI()
 		fid := frameIDForPath(resp.Request.URL.Path)

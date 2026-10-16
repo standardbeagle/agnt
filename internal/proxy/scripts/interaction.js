@@ -234,8 +234,33 @@
       color: 1, file: 1, image: 1
     };
 
+    // recordPasswords reports the operator's record-passwords opt-in for this
+    // proxy (.agnt.kdl), which the proxy publishes as
+    // window.__devtool_record_passwords only while no public URL is bound.
+    // Off, a password field's value and keys are withheld; on, the field is
+    // treated like any other. Either way the event carries password: true so
+    // the proxy can redact it for a connection it does not trust.
+    function recordPasswords() {
+      try {
+        return window.__devtool_record_passwords === true;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    // isPasswordField reports whether el is an <input type="password">.
+    function isPasswordField(el) {
+      try {
+        if (!el || el.nodeType !== 1 || !el.tagName || String(el.tagName).toLowerCase() !== 'input') return false;
+        return String(el.type || el.getAttribute('type') || '').toLowerCase() === 'password';
+      } catch (e) {
+        return true; // unknown: treat as a password rather than risk recording it
+      }
+    }
+
     // keyTargetKind classifies a keydown target for keystroke privacy:
-    //   'password' — a password field: nothing about the key is recorded.
+    //   'password' — a password field: nothing about the key is recorded
+    //                (with record-passwords on it is 'editable' instead).
     //   'editable' — any other place the user types (inputs, textareas,
     //                selects, contenteditable): typed characters are masked.
     //   'none'     — everything else: the key is a shortcut, recorded as is.
@@ -245,7 +270,7 @@
         var tag = el.tagName ? String(el.tagName).toLowerCase() : '';
         if (tag === 'input') {
           var type = String(el.type || el.getAttribute('type') || 'text').toLowerCase();
-          if (type === 'password') return 'password';
+          if (type === 'password') return recordPasswords() ? 'editable' : 'password';
           return NON_TEXT_INPUT_TYPES[type] ? 'none' : 'editable';
         }
         if (tag === 'textarea' || tag === 'select') return 'editable';
@@ -309,6 +334,7 @@
           target: targetInfo,
           timestamp: Date.now()
         };
+        if (isPasswordField(target)) interaction.password = true;
 
         // Add position for mouse events
         try {
@@ -446,9 +472,9 @@
             try {
               var value = '';
 
-              // Don't send password values
+              // A password field's value only with record-passwords on.
               try {
-                if (target.type !== 'password' && target.value) {
+                if (target.value && (!isPasswordField(target) || recordPasswords())) {
                   value = String(target.value).substring(0, config.truncateText);
                 }
               } catch (err) {

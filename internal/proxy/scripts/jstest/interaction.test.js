@@ -11,8 +11,13 @@ const MODULES = ['frames', 'core', 'utils', 'interaction'];
 let rt = null;
 afterEach(() => { if (rt) { rt.close(); rt = null; } });
 
-function page(html) {
-  rt = loadModules(MODULES, { html: `<!doctype html><html><body>${html}</body></html>` });
+// page loads the modules; opts.recordPasswords stands for the proxy's inline
+// page config (window.__devtool_record_passwords), set before the bundle runs.
+function page(html, opts = {}) {
+  rt = loadModules(MODULES, {
+    html: `<!doctype html><html><body>${html}</body></html>`,
+    before: (win) => { if (opts.recordPasswords) win.__devtool_record_passwords = true; },
+  });
   expect(rt.errors).toEqual({});
   return rt.window;
 }
@@ -42,8 +47,19 @@ describe('keystroke capture', () => {
     expect(keys).toHaveLength(9);
     for (const k of keys) {
       expect(k.key).toEqual({ key: '', code: '', masked: true });
+      expect(k.password).toBe(true);
     }
     expect(JSON.stringify(keys)).not.toMatch(/hunter|KeyH|Backspace|KeyV/);
+  });
+
+  it('with record-passwords, treats a password field like any other editable field', () => {
+    const win = page('<input id="pw" type="password">', { recordPasswords: true });
+    const pw = win.document.getElementById('pw');
+    keydown(win, pw, { key: 'h', code: 'KeyH' });
+    expect(lastOf(win, 'keydown').key).toEqual({ key: '', code: '', masked: true });
+    keydown(win, pw, { key: 'Enter', code: 'Enter' });
+    expect(lastOf(win, 'keydown').key).toMatchObject({ key: 'Enter', code: 'Enter' });
+    expect(lastOf(win, 'keydown').password).toBe(true);
   });
 
   it('masks characters typed into a text input and a textarea', () => {
@@ -95,6 +111,40 @@ describe('keystroke capture', () => {
     const win = page('<input id="c" type="checkbox">');
     keydown(win, win.document.getElementById('c'), { key: ' ', code: 'Space' });
     expect(lastOf(win, 'keydown').key).toMatchObject({ key: ' ', code: 'Space' });
+  });
+});
+
+// typeInto sets a field's value and fires the input event the tracker
+// debounces; the debounce is zeroed so the record lands on the next tick.
+async function typeInto(win, el, value) {
+  win.__devtool_interactions.config.debounceInput = 0;
+  el.value = value;
+  el.dispatchEvent(new win.Event('input', { bubbles: true }));
+  await new Promise((r) => win.setTimeout(r, 20));
+  return lastOf(win, 'input');
+}
+
+describe('input values', () => {
+  it('records the value of a non-password field', async () => {
+    const win = page('<input id="q" type="text">');
+    const rec = await typeInto(win, win.document.getElementById('q'), 'alice@example.test');
+    expect(rec.value).toBe('alice@example.test');
+    expect(rec.password).toBeUndefined();
+  });
+
+  it('withholds a password field value by default, and marks the event', async () => {
+    const win = page('<input id="pw" type="password">');
+    const rec = await typeInto(win, win.document.getElementById('pw'), 'hunter2');
+    expect(rec.value).toBe('');
+    expect(rec.password).toBe(true);
+    expect(JSON.stringify(win.__devtool_interactions.getHistory(500))).not.toMatch(/hunter/);
+  });
+
+  it('records a password field value with record-passwords, still marked', async () => {
+    const win = page('<input id="pw" type="password">', { recordPasswords: true });
+    const rec = await typeInto(win, win.document.getElementById('pw'), 'hunter2');
+    expect(rec.value).toBe('hunter2');
+    expect(rec.password).toBe(true);
   });
 });
 

@@ -116,6 +116,15 @@
       }
     }
 
+    // recordPasswords is the record-passwords opt-in (see interaction.js).
+    function recordPasswords() {
+      try {
+        return window.__devtool_record_passwords === true;
+      } catch (e) {
+        return false;
+      }
+    }
+
     // Safe element ignore check
     function shouldIgnore(node) {
       if (!node) return true;
@@ -426,10 +435,13 @@
 
                 // A password field's value attribute is the password whenever
                 // the page mirrors the typed value into it (React's controlled
-                // inputs do). The change is still recorded, never its text —
-                // the same rule interaction.js applies to the input event.
+                // inputs do). The change is still recorded, its text only with
+                // record-passwords on — the same rule interaction.js applies to
+                // the input event. The marker lets the proxy redact it for a
+                // connection it does not trust.
                 var aOldValue = mutation.oldValue || null;
-                if (mutation.attributeName === 'value' && isPasswordInput(target)) {
+                var aPassword = mutation.attributeName === 'value' && isPasswordInput(target);
+                if (aPassword && !recordPasswords()) {
                   aOldValue = aOldValue === null ? null : '[redacted]';
                   attrValue = attrValue === null ? null : '[redacted]';
                 }
@@ -447,7 +459,8 @@
                   attribute: {
                     name: mutation.attributeName || 'unknown',
                     old_value: aOldValue,
-                    new_value: attrValue
+                    new_value: attrValue,
+                    password: aPassword || undefined
                   },
                   timestamp: aNow,
                   triggered_by: aTriggeredBy

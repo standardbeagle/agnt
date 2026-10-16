@@ -31,14 +31,16 @@ func mustNotContain(t *testing.T, name, src string, bans ...string) {
 
 // TestInteraction_KeystrokesAreMasked — behaviour: jstest/interaction.test.js
 // ("keystroke capture"). A keydown record must be built by keyInfoFor, which
-// withholds the key for password fields and masks typed characters in any
-// editable target; the raw event.key must not be copied anywhere else.
+// withholds the key for password fields (unless the operator's
+// record-passwords opt-in makes them ordinary editable fields) and masks typed
+// characters in any editable target; the raw event.key must not be copied
+// anywhere else.
 func TestInteraction_KeystrokesAreMasked(t *testing.T) {
 	mustContain(t, "interaction.js", interactionJS,
 		"function keyTargetKind(el)",
 		"function keyInfoFor(event, target)",
 		"interaction.key = keyInfoFor(event, target);",
-		"if (type === 'password') return 'password';",
+		"if (type === 'password') return recordPasswords() ? 'editable' : 'password';",
 		"return { key: '', code: '', masked: true };",
 	)
 	if got := strings.Count(interactionJS, "event.key || ''"); got != 1 {

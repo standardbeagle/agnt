@@ -1,6 +1,7 @@
-// mutation.js: an attribute change on a password field is recorded, never
-// its text. Pages that mirror the typed value into the value attribute (React
-// controlled inputs) would otherwise put the password in the mutation log.
+// mutation.js: an attribute change on a password field is recorded, its text
+// only with the operator's record-passwords opt-in. Pages that mirror the typed
+// value into the value attribute (React controlled inputs) would otherwise put
+// the password in the mutation log.
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { loadModules } from './load-bundle.js';
@@ -10,9 +11,10 @@ afterEach(() => { if (rt) { rt.close(); rt = null; } });
 
 const flush = () => new Promise((r) => setTimeout(r, 0));
 
-function page(html) {
+function page(html, opts = {}) {
   rt = loadModules(['frames', 'core', 'utils', 'mutation'], {
     html: `<!doctype html><html><body>${html}</body></html>`,
+    before: (win) => { if (opts.recordPasswords) win.__devtool_record_passwords = true; },
   });
   expect(rt.errors).toEqual({});
   return rt.window;
@@ -35,7 +37,21 @@ describe('attribute mutations on password fields', () => {
     expect(changes.length).toBe(1);
     expect(changes[0].attribute.old_value).toBe('[redacted]');
     expect(changes[0].attribute.new_value).toBe('[redacted]');
+    expect(changes[0].attribute.password).toBe(true);
     expect(JSON.stringify(win.__devtool_mutations.getHistory(500))).not.toMatch(/hunter/);
+  });
+
+  it('records the old and new value with record-passwords, still marked', async () => {
+    const win = page('<input id="pw" type="password" value="hunter1">', { recordPasswords: true });
+    await flush();
+    win.document.getElementById('pw').setAttribute('value', 'hunter2');
+    await flush();
+
+    const changes = valueChanges(win, 'pw');
+    expect(changes.length).toBe(1);
+    expect(changes[0].attribute.old_value).toBe('hunter1');
+    expect(changes[0].attribute.new_value).toBe('hunter2');
+    expect(changes[0].attribute.password).toBe(true);
   });
 
   it('keeps the value of a non-password field', async () => {
@@ -48,5 +64,6 @@ describe('attribute mutations on password fields', () => {
     expect(changes.length).toBe(1);
     expect(changes[0].attribute.old_value).toBe('old');
     expect(changes[0].attribute.new_value).toBe('new');
+    expect(changes[0].attribute.password).toBeUndefined();
   });
 });

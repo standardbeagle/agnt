@@ -245,9 +245,13 @@ type InteractionEvent struct {
 	Target    InteractionTarget      `json:"target"`
 	Position  *InteractionPosition   `json:"position,omitempty"` // For mouse events
 	Key       *KeyboardInfo          `json:"key,omitempty"`      // For keyboard events
-	Value     string                 `json:"value,omitempty"`    // For input events (sanitized, no passwords)
+	Value     string                 `json:"value,omitempty"`    // For input events; a password field's only with record-passwords
 	URL       string                 `json:"url"`
 	Data      map[string]interface{} `json:"data,omitempty"` // Extra data (scroll_position, etc.)
+	// Password marks an event on an <input type="password">. The proxy
+	// redacts Value and Key of a marked event unless record-passwords is
+	// in effect for a trusted connection (redactPasswordValues).
+	Password bool `json:"password,omitempty"`
 	// Untrusted mirrors LogEntry.Untrusted (see FrontendError.Untrusted).
 	Untrusted bool `json:"untrusted,omitempty"`
 }
@@ -334,6 +338,9 @@ type AttributeChange struct {
 	Name     string `json:"name"`
 	OldValue string `json:"old_value,omitempty"`
 	NewValue string `json:"new_value,omitempty"`
+	// Password marks a value-attribute change on an <input
+	// type="password">; see InteractionEvent.Password.
+	Password bool `json:"password,omitempty"`
 }
 
 // PanelMessage represents a message from the floating indicator panel.

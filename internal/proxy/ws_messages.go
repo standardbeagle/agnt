@@ -485,6 +485,9 @@ func (c *wsConnState) handleInteractions(msg *wsMessage) {
 		if em, ok := eventData.(map[string]interface{}); ok {
 			interaction := parseInteractionEvent(em, c.id, c.timestamp, msg.URL)
 			interaction.Untrusted = !c.trusted
+			if !c.keepPasswordValues() {
+				interaction.redactPasswordValues()
+			}
 			c.record(LogEntry{Type: LogTypeInteraction, FrameID: msg.FrameID, Interaction: &interaction})
 			c.ps.pageTracker.TrackInteraction(interaction, msg.SessionID, msg.FrameID)
 		}
@@ -498,6 +501,9 @@ func (c *wsConnState) handleMutations(msg *wsMessage) {
 		if em, ok := eventData.(map[string]interface{}); ok {
 			mutation := parseMutationEvent(em, c.id, c.timestamp, msg.URL)
 			mutation.Untrusted = !c.trusted
+			if !c.keepPasswordValues() {
+				mutation.redactPasswordValues()
+			}
 			c.record(LogEntry{Type: LogTypeMutation, FrameID: msg.FrameID, Mutation: &mutation})
 			c.ps.pageTracker.TrackMutation(mutation, msg.SessionID, msg.FrameID)
 		}

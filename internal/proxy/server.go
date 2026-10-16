@@ -207,6 +207,9 @@ type ProxyServer struct {
 	// .agnt.kdl (wireProxyLogger path) while requests are already flowing.
 	authBreakout atomic.Pointer[AuthBreakout]
 
+	// recordPasswords is ProxyConfig.RecordPasswords, fixed at construction.
+	recordPasswords bool
+
 	// secretSink receives secret values submitted from the browser's
 	// secret-entry field (ws_handler "secret_submit"). The daemon wires it to
 	// the project store at proxy creation. The sink is the ONLY place a
@@ -268,6 +271,10 @@ type ProxyConfig struct {
 	StatusURL     string
 	AllowExternal bool // Allow binding to non-localhost addresses (0.0.0.0, ::). Requires explicit opt-in for security.
 	SkipTLSVerify bool // Skip TLS certificate verification (default: false, verifies certs). Set true for self-signed/expired certs in dev.
+	// RecordPasswords is the operator's .agnt.kdl opt-in to record password
+	// field values for this proxy's pages (see record_passwords.go). Never
+	// set from an MCP tool call.
+	RecordPasswords bool
 	// StrictListenPort disables the silent :0 auto-assign fallback when
 	// ListenPort is already in use. When true, a bind conflict surfaces
 	// as a hard error from Start(). Used by autostart when a user
@@ -465,6 +472,7 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 		AllowExternal:       config.AllowExternal,
 		StrictListenPort:    config.StrictListenPort && config.ListenPort > 0,
 		SkipTLSVerify:       config.SkipTLSVerify,
+		recordPasswords:     config.RecordPasswords,
 		logger:              logger,
 		pageTracker:         NewPageTracker(100, 5*time.Minute),
 		ready:               make(chan struct{}),

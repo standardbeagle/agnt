@@ -167,6 +167,7 @@ func parseInteractionEvent(data map[string]interface{}, id string, timestamp tim
 
 	// Parse value (for input events)
 	event.Value = getStringField(data, "value")
+	event.Password = getBoolField(data, "password")
 
 	// Parse extra data
 	if extraData, ok := data["data"].(map[string]interface{}); ok {
@@ -228,6 +229,7 @@ func parseMutationEvent(data map[string]interface{}, id string, timestamp time.T
 			Name:     getStringField(attrData, "name"),
 			OldValue: getStringField(attrData, "old_value"),
 			NewValue: getStringField(attrData, "new_value"),
+			Password: getBoolField(attrData, "password"),
 		}
 	}
 
