@@ -249,6 +249,65 @@ func killPID(pid int, gracefulTimeout int) error {
 	return killPIDProbed(pid, gracefulTimeout, ProcessBirthID, syscall.Getpgid, syscall.Kill, pidIsZombie)
 }
 
+// identifyProcess reads pid's birth identity. On Linux /proc/<pid>/stat is
+// still readable for a zombie, so an exited, unreaped process is identified.
+func identifyProcess(pid int) (ProcessIdentity, bool) {
+	birth, ok := ProcessBirthID(pid)
+	if !ok || birth == "" {
+		return ProcessIdentity{}, false
+	}
+	return ProcessIdentity{PID: pid, Birth: birth}, true
+}
+
+// killProcess is KillProcess on Unix: the KillPID signalling sequence against
+// the identity the caller observed rather than one read now.
+func killProcess(id ProcessIdentity, gracefulTimeout int) error {
+	return killIdentityProbed(id, gracefulTimeout, ProcessBirthID, syscall.Getpgid, syscall.Kill, pidIsZombie)
+}
+
+// unixTreeMember is a verified tree member. Unix has no way to pin a PID, so
+// KillProcess re-checks the identity before every signal instead.
+type unixTreeMember struct{ id ProcessIdentity }
+
+func (m unixTreeMember) identity() ProcessIdentity { return m.id }
+func (m unixTreeMember) kill(gracefulTimeout int) error {
+	return killProcess(m.id, gracefulTimeout)
+}
+func (m unixTreeMember) release() {}
+
+func processTreeHost() treeHost {
+	return treeHost{
+		scan: Scan,
+		root: func(id ProcessIdentity) (treeMember, error) {
+			cur, ok := ProcessBirthID(id.PID)
+			if !ok {
+				if errors.Is(syscall.Kill(id.PID, 0), syscall.ESRCH) {
+					return nil, nil
+				}
+				return nil, fmt.Errorf("cannot verify pid %d identity before signaling", id.PID)
+			}
+			if cur != id.Birth {
+				return nil, fmt.Errorf("pid %d: %w", id.PID, ErrProcessIdentityChanged)
+			}
+			return unixTreeMember{id: id}, nil
+		},
+		child: func(pid int, parent ProcessIdentity) treeMember {
+			// Parent and birth come from one kernel read, so they describe one
+			// process. The parent is re-checked after: a Unix child whose
+			// parent died is re-parented, so a child still naming parent.PID
+			// while that PID holds parent's identity is parent's own.
+			ppid, birth, ok := processLineage(pid)
+			if !ok || ppid != parent.PID || !birthNotBefore(birth, parent.Birth) {
+				return nil
+			}
+			if cur, ok := ProcessBirthID(parent.PID); !ok || cur != parent.Birth {
+				return nil
+			}
+			return unixTreeMember{id: ProcessIdentity{PID: pid, Birth: birth}}
+		},
+	}
+}
+
 // killPIDWith is killPIDProbed without the zombie probe, for tests that drive
 // the signalling logic with invented PIDs.
 func killPIDWith(pid int, gracefulTimeout int, birthFn func(int) (string, bool),
@@ -283,7 +342,24 @@ func killPIDProbed(pid int, gracefulTimeout int, birthFn func(int) (string, bool
 	if !haveBirth || birth == "" {
 		return fmt.Errorf("cannot verify pid %d identity before signaling", pid)
 	}
+	return killIdentityProbed(ProcessIdentity{PID: pid, Birth: birth}, gracefulTimeout, birthFn, getpgidFn, killFn, zombieFn)
+}
+
+// killIdentityProbed is killPIDProbed for an identity the caller observed
+// earlier. A process that no longer exists is success; one whose PID now
+// carries another birth identity is refused with ErrProcessIdentityChanged.
+func killIdentityProbed(id ProcessIdentity, gracefulTimeout int, birthFn func(int) (string, bool),
+	getpgidFn func(int) (int, error), killFn func(int, syscall.Signal) error,
+	zombieFn func(int) bool,
+) error {
+	pid, birth := id.PID, id.Birth
+	if pid <= 1 {
+		return fmt.Errorf("invalid pid %d", pid)
+	}
 	groupLeader, err := verifiedPIDLeadership(pid, birth, birthFn, getpgidFn)
+	if errors.Is(err, syscall.ESRCH) {
+		return nil // already gone
+	}
 	if err != nil {
 		return err
 	}
@@ -329,8 +405,11 @@ func verifiedPIDLeadership(pid int, expectedBirth string, birthFn func(int) (str
 		return false, fmt.Errorf("getpgid(%d): %w", pid, err)
 	}
 	currentBirth, ok := birthFn(pid)
-	if !ok || currentBirth == "" || currentBirth != expectedBirth {
-		return false, fmt.Errorf("process birth identity no longer matches")
+	if !ok || currentBirth == "" {
+		return false, fmt.Errorf("process birth identity unreadable")
+	}
+	if currentBirth != expectedBirth {
+		return false, fmt.Errorf("process birth identity no longer matches: %w", ErrProcessIdentityChanged)
 	}
 	return pgid == pid, nil
 }

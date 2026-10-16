@@ -24,9 +24,15 @@ func ProcessBirthID(pid int) (string, bool) {
 		return "", false
 	}
 	defer windows.CloseHandle(h)
-	if ev, err := windows.WaitForSingleObject(h, 0); err != nil || ev != uint32(windows.WAIT_TIMEOUT) {
-		return "", false // signalled: the process has exited
+	if handleExited(h) {
+		return "", false
 	}
+	return handleBirth(h)
+}
+
+// handleBirth returns the creation time of the process behind h. It is the
+// same whether or not the process is still running.
+func handleBirth(h windows.Handle) (string, bool) {
 	var created, exited, kernel, user windows.Filetime
 	if err := windows.GetProcessTimes(h, &created, &exited, &kernel, &user); err != nil {
 		return "", false
@@ -36,4 +42,11 @@ func ProcessBirthID(pid int) (string, bool) {
 		return "", false
 	}
 	return strconv.FormatUint(ticks, 10), true
+}
+
+// handleExited reports whether the process behind h (opened with SYNCHRONIZE)
+// has exited. A failed wait counts as exited.
+func handleExited(h windows.Handle) bool {
+	ev, err := windows.WaitForSingleObject(h, 0)
+	return err != nil || ev != uint32(windows.WAIT_TIMEOUT)
 }
