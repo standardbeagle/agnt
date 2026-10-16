@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
@@ -88,16 +89,51 @@ func writeShimFile(path, content string, mode os.FileMode) error {
 			return nil
 		}
 	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, []byte(content), mode); err != nil {
+	// Each writer gets its own temp file. A shared path+".tmp" let two
+	// concurrent Ensure calls on one project (parallel terminals, two
+	// `agnt run`s after an upgrade) truncate each other's temp file, so a
+	// shell could exec an empty shim, and the loser's rename failed outright.
+	f, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
 		return fmt.Errorf("shims: write %s: %w", path, err)
 	}
-	if err := os.Rename(tmp, path); err != nil {
-		_ = os.Remove(tmp)
-		return fmt.Errorf("shims: rename %s: %w", path, err)
+	tmp := f.Name()
+	_, werr := f.WriteString(content)
+	cerr := f.Close()
+	if werr == nil {
+		werr = cerr
 	}
-	return nil
+	if werr == nil {
+		werr = os.Chmod(tmp, mode)
+	}
+	if werr != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("shims: write %s: %w", path, werr)
+	}
+	// On Windows a rename onto a file someone has open (another writer's
+	// read or rename, a shell executing the shim) fails with a sharing
+	// violation that clears in milliseconds, so retry briefly.
+	var rerr error
+	for attempt := 0; attempt < renameAttempts; attempt++ {
+		if rerr = os.Rename(tmp, path); rerr == nil {
+			return nil
+		}
+		time.Sleep(renameRetryDelay)
+	}
+	_ = os.Remove(tmp)
+	// Another writer may have installed this exact content meanwhile.
+	if cur, err := os.ReadFile(path); err == nil && string(cur) == content {
+		return nil
+	}
+	return fmt.Errorf("shims: rename %s: %w", path, rerr)
 }
+
+// renameAttempts and renameRetryDelay bound writeShimFile's retry of a
+// rename that hit a transient Windows sharing violation (~0.5s in all).
+const (
+	renameAttempts   = 50
+	renameRetryDelay = 10 * time.Millisecond
+)
 
 // Remove deletes the project's shim dir. Only files carrying the shim
 // marker are removed; if user files remain, the directory itself is kept.

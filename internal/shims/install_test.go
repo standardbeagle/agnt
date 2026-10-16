@@ -26,6 +26,37 @@ func shimScriptPath(dir, name string) string {
 	return filepath.Join(dir, name)
 }
 
+// TestWriteShimFileConcurrentWriters: several writers installing the same shim
+// at once must all succeed, leave the full content and no temp files. With one
+// shared ".tmp" path they truncated each other's temp file and the losers'
+// renames failed.
+func TestWriteShimFileConcurrentWriters(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "npm")
+	require.NoError(t, os.WriteFile(path, []byte("old "+shimMarker), 0o755))
+	content := "#!/bin/sh\n# " + shimMarker + "\n" + strings.Repeat("exec real \"$@\"\n", 512)
+
+	const writers = 16
+	errs := make(chan error, writers)
+	start := make(chan struct{})
+	for i := 0; i < writers; i++ {
+		go func() {
+			<-start
+			errs <- writeShimFile(path, content, 0o755)
+		}()
+	}
+	close(start)
+	for i := 0; i < writers; i++ {
+		assert.NoError(t, <-errs)
+	}
+
+	got, err := os.ReadFile(path)
+	require.NoError(t, err)
+	assert.Equal(t, content, string(got))
+	leftovers, _ := filepath.Glob(filepath.Join(dir, "*.tmp"))
+	assert.Empty(t, leftovers, "temp files left behind")
+}
+
 func TestEnsureInstallsShimScripts(t *testing.T) {
 	t.Parallel()
 	project := writeProjectConfig(t, "scripts {}\n")
