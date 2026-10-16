@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 
+const crypto = require('crypto');
 const https = require('https');
 const http = require('http');
 const fs = require('fs');
@@ -48,13 +49,42 @@ function getBinaryName() {
   return process.platform === 'win32' ? `${BINARY_NAME}-binary.exe` : `${BINARY_NAME}-binary`;
 }
 
-function getDownloadUrl() {
+function getAssetName() {
   const platform = getPlatform();
-  const arch = getArch();
   const ext = platform === 'windows' ? '.exe' : '';
+  return `${BINARY_NAME}-${platform}-${getArch()}${ext}`;
+}
 
-  // GitHub release asset URL pattern
-  return `https://github.com/${REPO}/releases/download/v${VERSION}/${BINARY_NAME}-${platform}-${arch}${ext}`;
+// releaseAssetUrl is the GitHub release asset URL pattern.
+function releaseAssetUrl(asset) {
+  return `https://github.com/${REPO}/releases/download/v${VERSION}/${asset}`;
+}
+
+// expectedChecksum returns the hex SHA-256 that sums (a release's SHA256SUMS,
+// sha256sum format: "<hex>  <name>" or "<hex> *<name>") lists for asset.
+function expectedChecksum(sums, asset) {
+  for (const line of sums.split(/\r?\n/)) {
+    const fields = line.trim().split(/\s+/);
+    if (fields.length !== 2 || fields[1].replace(/^\*/, '') !== asset) {
+      continue;
+    }
+    const sum = fields[0].toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(sum)) {
+      throw new Error(`SHA256SUMS entry for ${asset} is not a SHA-256 digest: ${JSON.stringify(fields[0])}`);
+    }
+    return sum;
+  }
+  throw new Error(`SHA256SUMS lists no ${asset}`);
+}
+
+// verifyChecksum throws unless the file at filePath has the SHA-256 that sums
+// lists for asset; a missing entry or a malformed one throws too.
+function verifyChecksum(filePath, sums, asset) {
+  const want = expectedChecksum(sums, asset);
+  const got = crypto.createHash('sha256').update(fs.readFileSync(filePath)).digest('hex');
+  if (got !== want) {
+    throw new Error(`Checksum mismatch for ${asset}: downloaded file has sha256 ${got}, SHA256SUMS lists ${want}`);
+  }
 }
 
 
@@ -164,14 +194,29 @@ async function install() {
   const ext = process.platform === 'win32' ? '.exe' : '';
   const tmpPath = path.join(binDir, `.${BINARY_NAME}.${process.pid}.download${ext}`);
 
-  const url = getDownloadUrl();
+  const asset = getAssetName();
+  const url = releaseAssetUrl(asset);
+  const sumsPath = path.join(binDir, `.${BINARY_NAME}.${process.pid}.SHA256SUMS`);
   console.log(`Downloading ${BINARY_NAME} v${VERSION}...`);
   console.log(`  Platform: ${getPlatform()}`);
   console.log(`  Architecture: ${getArch()}`);
   console.log(`  URL: ${url}`);
 
   try {
+    // The release's SHA256SUMS must vouch for the binary before it is run
+    // or moved into place; without it the install fails.
+    let sums;
+    try {
+      await downloadFile(releaseAssetUrl('SHA256SUMS'), sumsPath);
+      sums = fs.readFileSync(sumsPath, 'utf8');
+    } catch (e) {
+      throw new Error(`Cannot verify the download, refusing to install: fetching SHA256SUMS for v${VERSION} failed: ${e.message}`);
+    } finally {
+      unlinkQuietly(sumsPath);
+    }
+    expectedChecksum(sums, asset); // a missing entry fails before the download
     await downloadFile(url, tmpPath);
+    verifyChecksum(tmpPath, sums, asset);
 
     // Make executable on Unix
     if (process.platform !== 'win32') {
@@ -184,7 +229,7 @@ async function install() {
     }
   } catch (error) {
     unlinkQuietly(tmpPath);
-    console.error(`Failed to download ${BINARY_NAME}:`);
+    console.error(`Failed to install ${BINARY_NAME}:`);
     console.error(error.message);
     console.error('');
     console.error('You can manually download the binary from:');
@@ -223,7 +268,11 @@ async function install() {
   console.log(`Successfully installed ${BINARY_NAME} to ${binaryPath}`);
 }
 
-install().catch((err) => {
-  console.error(err);
-  process.exit(1);
-});
+if (require.main === module) {
+  install().catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
+}
+
+module.exports = { expectedChecksum, verifyChecksum };
