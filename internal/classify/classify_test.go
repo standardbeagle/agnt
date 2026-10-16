@@ -170,6 +170,55 @@ func TestParseBuildErrors_WindowsDrivePaths(t *testing.T) {
 	}
 }
 
+// TestParseBuildErrors_JestRealBlock feeds the parser what jest actually
+// prints for a failed assertion: the header, the matcher message, the
+// expected/received block and a code frame, and only then the stack frame,
+// fifteen lines below the header. A five-line lookahead never reached it, so
+// real jest output yielded a test name with no file. The lookahead must also
+// stop at the next test's header rather than lend that test's frame to a test
+// whose own frame never came.
+func TestParseBuildErrors_JestRealBlock(t *testing.T) {
+	block := []string{
+		" FAIL  src/sum.test.js",
+		"  ● adds 1 + 2 to equal 3",
+		"",
+		"    expect(received).toBe(expected) // Object.is equality",
+		"",
+		"    Expected: 4",
+		"    Received: 3",
+		"",
+		"      1 | const sum = require('./sum');",
+		"      2 | test('adds 1 + 2 to equal 3', () => {",
+		"    > 3 |   expect(sum(1, 2)).toBe(4);",
+		"        |                     ^",
+		"      4 | });",
+		"      5 |",
+		"",
+		"      at Object.toBe (src/sum.test.js:3:21)",
+		"",
+		"  ● has no frame",
+		"",
+		"    thrown: \"Exceeded timeout of 5000 ms for a test.\"",
+		"",
+		"  ● second failure",
+		"",
+		"      at Object.toEqual (src/other.test.js:9:7)",
+	}
+	errs := ParseBuildErrors(block)
+	if len(errs) != 3 {
+		t.Fatalf("want 3 jest errors, got %d: %+v", len(errs), errs)
+	}
+	if e := errs[0]; e.Test != "adds 1 + 2 to equal 3" || e.File != "src/sum.test.js" || e.Line != 3 || e.Col != 21 {
+		t.Errorf("first test: got test=%q file=%q line=%d col=%d", e.Test, e.File, e.Line, e.Col)
+	}
+	if e := errs[1]; e.Test != "has no frame" || e.File != "" {
+		t.Errorf("a test with no frame must not borrow the next test's: got test=%q file=%q", e.Test, e.File)
+	}
+	if e := errs[2]; e.Test != "second failure" || e.File != "src/other.test.js" || e.Line != 9 {
+		t.Errorf("third test: got test=%q file=%q line=%d", e.Test, e.File, e.Line)
+	}
+}
+
 // TestParseBuildErrors_DriveNearMisses pins that the drive prefix needs a
 // single letter, a colon and a path separator: a URL scheme or a clock time
 // is never read as a drive path.

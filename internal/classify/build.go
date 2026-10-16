@@ -78,6 +78,10 @@ var (
 	goTestLocationRe = regexp.MustCompile(`^\s+([^\s:]+\.go):(\d+):\s+(.+)$`)
 )
 
+// jestFrameLookahead bounds how far below a `●` header the parser searches for
+// the test's first stack frame. The next header ends the search sooner.
+const jestFrameLookahead = 60
+
 // ParseBuildErrors scans a slice of output lines and returns the
 // structured errors recognised by any of the parsers in the bank.
 // Multi-line formats (rust header → location, vite header → location,
@@ -227,10 +231,15 @@ func ParseBuildErrors(lines []string) []BuildError {
 				Tool: "jest", Severity: "error",
 				Test: strings.TrimSpace(m[1]), RawLine: line,
 			}
-			// Look ahead a few lines for the first at-frame; jest emits
-			// a couple of trace-context lines between header and frame
-			// in some configs.
-			for look := 1; look <= 5 && i+look < len(lines); look++ {
+			// Look ahead for the first at-frame. Jest prints the matcher
+			// message, the expected/received block and a code frame before
+			// the stack, so the frame is typically ~15 lines down (a diff of
+			// two objects pushes it further). Stop at the next test's header:
+			// a test with no frame of its own must not borrow that one's.
+			for look := 1; look <= jestFrameLookahead && i+look < len(lines); look++ {
+				if jestHeaderRe.MatchString(lines[i+look]) {
+					break
+				}
 				if loc := jestLocationRe.FindStringSubmatch(lines[i+look]); loc != nil {
 					ln, _ := strconv.Atoi(loc[2])
 					col, _ := strconv.Atoi(loc[3])
