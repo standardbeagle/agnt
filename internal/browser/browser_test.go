@@ -96,6 +96,35 @@ func TestBrowserBuildArgsMockKeychainDarwin(t *testing.T) {
 	}
 }
 
+// TestBrowserBuildArgsNoSandboxOnlyAsRoot: as root (a Linux container) Chrome
+// exits immediately unless --no-sandbox is passed, after Start has already
+// reported the browser running. As any other user the sandbox stays on.
+func TestBrowserBuildArgsNoSandboxOnlyAsRoot(t *testing.T) {
+	orig := getuid
+	t.Cleanup(func() { getuid = orig })
+
+	hasNoSandbox := func(args []string) bool {
+		for _, arg := range args {
+			if arg == "--no-sandbox" {
+				return true
+			}
+		}
+		return false
+	}
+
+	getuid = func() int { return 0 }
+	if args := New(Config{ID: "test", Headless: true}).buildArgs(); !hasNoSandbox(args) {
+		t.Errorf("root: buildArgs() missing --no-sandbox; got: %v", args)
+	}
+
+	for _, uid := range []int{1000, -1} { // -1 is os.Getuid on Windows
+		getuid = func() int { return uid }
+		if args := New(Config{ID: "test", Headless: true}).buildArgs(); hasNoSandbox(args) {
+			t.Errorf("uid %d: buildArgs() must keep the sandbox; got: %v", uid, args)
+		}
+	}
+}
+
 func TestBrowserBuildArgsHeadless(t *testing.T) {
 	config := Config{
 		ID:       "test",

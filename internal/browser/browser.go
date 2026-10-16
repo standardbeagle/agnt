@@ -253,6 +253,9 @@ func (b *Browser) removeProfileDir() {
 	}
 }
 
+// getuid is os.Getuid (-1 on Windows), replaceable in tests.
+var getuid = os.Getuid
+
 // buildArgs constructs the Chrome command-line arguments.
 func (b *Browser) buildArgs() []string {
 	args := []string{
@@ -270,6 +273,14 @@ func (b *Browser) buildArgs() []string {
 
 	if runtime.GOOS == "darwin" {
 		args = append(args, "--use-mock-keychain")
+	}
+
+	// Chrome refuses to start as root without --no-sandbox ("Running as root
+	// without --no-sandbox is not supported") and exits at once, after Start
+	// has already reported the browser running. Root is the normal user in a
+	// Linux container. chromedp's allocator adds the same flag for root.
+	if getuid() == 0 {
+		args = append(args, "--no-sandbox")
 	}
 
 	if b.config.Headless {
