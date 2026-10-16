@@ -110,7 +110,7 @@ Once the Release workflow completes successfully, verify the release:
 # Check release was created
 gh release view v<version>
 
-# Count assets (should be 24 binaries)
+# Count assets (should be 25: 24 binaries + SHA256SUMS)
 gh release view v<version> --json assets --jq '.assets | length'
 
 # Verify npm package
@@ -121,7 +121,7 @@ pip index versions agnt | grep <version>
 ```
 
 **Expected artifacts:**
-- 24 binary assets (agnt, agnt-daemon, devtool-mcp, devtool-mcp-daemon × 6 platforms)
+- 24 binary assets (agnt, agnt-daemon, devtool-mcp, devtool-mcp-daemon × 6 platforms) plus `SHA256SUMS`, which every downloader requires (a release without it cannot be installed by install.sh, install.ps1, npm, PyPI or `agnt ssh` bootstrap)
 - npm package published
 - PyPI package published
 

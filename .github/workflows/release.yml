@@ -88,7 +88,14 @@ jobs:
           mkdir -p release
           find artifacts -name 'agnt-*' -exec cp {} release/ \;
           find artifacts -name 'devtool-mcp-*' -exec cp {} release/ \;
-          ls -la release/
+          # SHA256SUMS lists every asset uploaded below, by the exact name the
+          # downloaders request (install.sh, install.ps1, npm, PyPI, agnt ssh
+          # bootstrap); they refuse to install a binary it does not vouch for.
+          cd release
+          sha256sum agnt-* devtool-mcp-* > SHA256SUMS
+          sha256sum -c SHA256SUMS
+          cat SHA256SUMS
+          ls -la
 
       - name: Create release
         uses: softprops/action-gh-release@v3
@@ -96,6 +103,7 @@ jobs:
           files: |
             release/agnt-*
             release/devtool-mcp-*
+            release/SHA256SUMS
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
