@@ -1,10 +1,12 @@
 package updater
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -146,8 +148,63 @@ func (g *GitHubRelease) IsNewer(currentVersion string) (bool, error) {
 	if relPatch > curPatch {
 		return true, nil
 	}
+	if relPatch < curPatch {
+		return false, nil
+	}
 
-	return false, nil
+	// Same MAJOR.MINOR.PATCH: a version ranks above its own prereleases
+	// (SemVer §11), so 1.0.0 is an update for someone on 1.0.0-rc.1.
+	return comparePrerelease(prerelease(releaseVersion), prerelease(currentVersion)) > 0, nil
+}
+
+// prerelease returns the prerelease part of a version ("rc.1" for
+// "v1.0.0-rc.1+build"), or "" for a release.
+func prerelease(version string) string {
+	version = strings.TrimPrefix(version, "v")
+	if i := strings.IndexByte(version, '+'); i >= 0 {
+		version = version[:i]
+	}
+	if i := strings.IndexByte(version, '-'); i > 0 {
+		return version[i+1:]
+	}
+	return ""
+}
+
+// comparePrerelease orders two prerelease strings by SemVer §11: no
+// prerelease ranks highest; dot-separated identifiers compare numerically
+// when both are numeric, a numeric one ranks below an alphanumeric one,
+// others compare in ASCII order; with an equal prefix the longer list ranks
+// higher.
+func comparePrerelease(a, b string) int {
+	if a == b {
+		return 0
+	}
+	if a == "" {
+		return 1
+	}
+	if b == "" {
+		return -1
+	}
+	as, bs := strings.Split(a, "."), strings.Split(b, ".")
+	for i := 0; i < len(as) && i < len(bs); i++ {
+		an, aErr := strconv.Atoi(as[i])
+		bn, bErr := strconv.Atoi(bs[i])
+		switch {
+		case aErr == nil && bErr == nil:
+			if an != bn {
+				return cmp.Compare(an, bn)
+			}
+		case aErr == nil:
+			return -1
+		case bErr == nil:
+			return 1
+		default:
+			if c := strings.Compare(as[i], bs[i]); c != 0 {
+				return c
+			}
+		}
+	}
+	return cmp.Compare(len(as), len(bs))
 }
 
 // ParseVersion parses a semantic version string into its major/minor/patch

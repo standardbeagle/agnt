@@ -55,6 +55,18 @@ func TestIsNewer_AllBranches(t *testing.T) {
 		{name: "older patch", tag: "v1.4.3", current: "1.4.5", want: false},
 		{name: "equal", tag: "v1.4.4", current: "1.4.4", want: false},
 		{name: "current has v prefix", tag: "v1.0.1", current: "v1.0.0", want: true},
+		// SemVer §11: a release ranks above its own prereleases. scripts/
+		// release.sh ships -rc/-beta/-alpha versions, and someone on one
+		// was never told the final release was out.
+		{name: "release after its rc", tag: "v1.0.0", current: "1.0.0-rc.1", want: true},
+		{name: "rc is not newer than its release", tag: "v1.0.0-rc.1", current: "1.0.0", want: false},
+		{name: "release after its rc with build metadata", tag: "v1.0.0+b7", current: "1.0.0-beta+b6", want: true},
+		{name: "later rc", tag: "v1.0.0-rc.10", current: "1.0.0-rc.9", want: true},
+		{name: "rc after beta", tag: "v1.0.0-rc.1", current: "1.0.0-beta.2", want: true},
+		{name: "numeric identifier below alphanumeric", tag: "v1.0.0-1", current: "1.0.0-alpha", want: false},
+		{name: "longer prerelease ranks higher", tag: "v1.0.0-alpha.1", current: "1.0.0-alpha", want: true},
+		{name: "same rc", tag: "v1.0.0-rc.1", current: "1.0.0-rc.1", want: false},
+		{name: "older patch still older with prerelease", tag: "v1.0.0", current: "1.0.1-rc.1", want: false},
 		{name: "bad release version", tag: "vgarbage", current: "1.0.0", wantErr: true},
 		{name: "bad current version", tag: "v1.0.0", current: "garbage", wantErr: true},
 	}
