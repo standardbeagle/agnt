@@ -411,6 +411,7 @@
       }
     }
 
+    getUtils().redactPasswordValueAttrs(clone);
     return clone.outerHTML;
   }
 
@@ -608,7 +609,7 @@
         if (el === element || element.contains(el) || el.contains(element)) continue;
         var shared = classes.some(function (c) { return el.classList.contains(c); });
         if (!shared) continue;
-        var html = el.outerHTML;
+        var html = getUtils().passwordSafeOuterHTML(el).html;
         if (html && html.length > 20) out.push(html.slice(0, 800));
       }
       return out.length ? out : null;

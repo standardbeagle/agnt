@@ -257,6 +257,19 @@
       }
     }
 
+    // nodeHTML is up to max characters of node's markup, with password input
+    // values redacted unless record-passwords is on (utils.passwordSafeOuterHTML).
+    // password is true when a password value is left in it, so the proxy can
+    // redact it for a connection it does not trust.
+    function nodeHTML(node, max) {
+      if (!node || node.nodeType !== 1) return { html: undefined }; // only elements have outerHTML
+      var safe = utils.passwordSafeOuterHTML(node);
+      return {
+        html: safe.html ? safe.html.substring(0, max) : undefined,
+        password: safe.password || undefined
+      };
+    }
+
     // Safe NodeList to Array conversion
     function nodeListToArray(nodeList) {
       if (!nodeList) return [];
@@ -353,6 +366,7 @@
                     var now = Date.now();
                     var triggeredBy = findTriggeringInteraction(now);
 
+                    var addedHTML = nodeHTML(node, 500);
                     var record = {
                       mutation_type: 'added',
                       target: {
@@ -364,7 +378,8 @@
                         selector: node.nodeType === 1 ? safeGenerateSelector(node) : null,
                         tag: node.nodeName ? node.nodeName.toLowerCase() : 'unknown',
                         id: node.id || undefined,
-                        html: node.outerHTML ? node.outerHTML.substring(0, 500) : undefined
+                        html: addedHTML.html,
+                        password: addedHTML.password
                       }],
                       timestamp: now,
                       triggered_by: triggeredBy
@@ -391,6 +406,7 @@
                     var rNow = Date.now();
                     var rTriggeredBy = findTriggeringInteraction(rNow);
 
+                    var removedHTML = nodeHTML(rnode, 200);
                     var rrecord = {
                       mutation_type: 'removed',
                       target: {
@@ -401,7 +417,8 @@
                       removed: [{
                         tag: rnode.nodeName ? rnode.nodeName.toLowerCase() : 'unknown',
                         id: rnode.id || undefined,
-                        html: rnode.outerHTML ? rnode.outerHTML.substring(0, 200) : undefined
+                        html: removedHTML.html,
+                        password: removedHTML.password
                       }],
                       timestamp: rNow,
                       triggered_by: rTriggeredBy

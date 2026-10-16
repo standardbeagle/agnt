@@ -51,7 +51,7 @@
   // Truncate HTML to max length
   function truncateHtml(el, maxLength) {
     if (!el) return '';
-    var html = el.outerHTML || '';
+    var html = utils.passwordSafeOuterHTML(el).html;
     maxLength = maxLength || 100;
     if (html.length <= maxLength) return html;
     return html.substring(0, maxLength) + '...';

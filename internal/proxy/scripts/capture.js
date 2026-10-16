@@ -8,7 +8,7 @@
 
   function captureDOM() {
     try {
-      var html = document.documentElement.outerHTML;
+      var html = utils.passwordSafeOuterHTML(document.documentElement).html;
       var hash = 0;
       for (var i = 0; i < html.length; i++) {
         var char = html.charCodeAt(i);

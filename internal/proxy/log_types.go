@@ -331,6 +331,9 @@ type MutationNode struct {
 	Tag      string `json:"tag"`
 	ID       string `json:"id,omitempty"`
 	HTML     string `json:"html,omitempty"` // Truncated outerHTML
+	// Password is set when HTML still holds a password input's value (the
+	// browser had record-passwords on); see InteractionEvent.Password.
+	Password bool `json:"password,omitempty"`
 }
 
 // AttributeChange describes a changed attribute.

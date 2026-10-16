@@ -541,6 +541,82 @@
       return false;
     }
 
+    // Password values in serialised markup. A page that mirrors what is typed
+    // into a password field's value attribute (React controlled inputs do)
+    // puts the password into every outerHTML of that field or an ancestor.
+    // Unless the operator's record-passwords opt-in is in effect
+    // (window.__devtool_record_passwords, published by the proxy), markup
+    // leaving the page has that attribute replaced with '[redacted]'.
+    var REDACTED_PASSWORD = '[redacted]';
+
+    function recordPasswordsOn() {
+      try {
+        return window.__devtool_record_passwords === true;
+      } catch (e) {
+        return false;
+      }
+    }
+
+    // passwordValueInputs returns root and its descendants that are
+    // <input type="password"> with a non-empty value attribute.
+    function passwordValueInputs(root) {
+      var out = [];
+      if (!root || root.nodeType !== ELEMENT_NODE) return out;
+      var candidates = [root];
+      if (typeof root.querySelectorAll === 'function') {
+        var list = root.querySelectorAll('input[value]');
+        for (var i = 0; i < list.length; i++) candidates.push(list[i]);
+      }
+      for (var j = 0; j < candidates.length; j++) {
+        var el = candidates[j];
+        if (String(el.tagName || '').toLowerCase() !== 'input') continue;
+        if (String(el.getAttribute('type') || '').toLowerCase() !== 'password') continue;
+        if (el.getAttribute('value')) out.push(el);
+      }
+      return out;
+    }
+
+    // redactPasswordValueAttrs rewrites, in place, the value attribute of every
+    // password input in root (a detached clone: never call it on the live
+    // page). No-op with record-passwords on.
+    function redactPasswordValueAttrs(root) {
+      if (recordPasswordsOn()) return;
+      var inputs = passwordValueInputs(root);
+      for (var i = 0; i < inputs.length; i++) inputs[i].setAttribute('value', REDACTED_PASSWORD);
+    }
+
+    // exportAttrValue is the value of el's attribute attr as it may leave the
+    // page: a password input's value attribute is redacted unless
+    // record-passwords is on. For attribute maps built from el.attributes.
+    function exportAttrValue(el, attr) {
+      try {
+        if (attr.name === 'value' && attr.value && !recordPasswordsOn() &&
+            String(el.tagName || '').toLowerCase() === 'input' &&
+            String(el.getAttribute('type') || '').toLowerCase() === 'password') {
+          return REDACTED_PASSWORD;
+        }
+        return attr.value;
+      } catch (e) {
+        return REDACTED_PASSWORD;
+      }
+    }
+
+    // passwordSafeOuterHTML is el.outerHTML with password values redacted
+    // (record-passwords off) and whether a password value is still in it
+    // (record-passwords on), so a sender can mark it for the proxy.
+    function passwordSafeOuterHTML(el) {
+      try {
+        if (!el) return { html: '', password: false };
+        if (passwordValueInputs(el).length === 0) return { html: el.outerHTML || '', password: false };
+        if (recordPasswordsOn()) return { html: el.outerHTML || '', password: true };
+        var clone = el.cloneNode(true);
+        redactPasswordValueAttrs(clone);
+        return { html: clone.outerHTML || '', password: false };
+      } catch (e) {
+        return { html: '', password: false }; // unknown: send nothing rather than the password
+      }
+    }
+
     // Export utilities with existence check
     try {
       if (!window.__devtool_utils) {
@@ -556,7 +632,10 @@
           stackingContextTriggers: stackingContextTriggers,
           containingBlockTrap: containingBlockTrap,
           isFlexOrGridItem: isFlexOrGridItem,
-          isDevtoolElement: isDevtoolElement
+          isDevtoolElement: isDevtoolElement,
+          redactPasswordValueAttrs: redactPasswordValueAttrs,
+          exportAttrValue: exportAttrValue,
+          passwordSafeOuterHTML: passwordSafeOuterHTML
         };
       }
     } catch (e) {

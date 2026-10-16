@@ -67,6 +67,11 @@ func passwordTelemetry() []*wsMessage {
 			map[string]interface{}{"mutation_type": "attributes",
 				"target":    map[string]interface{}{"tag": "input", "id": "pw"},
 				"attribute": map[string]interface{}{"name": "value", "old_value": "hunter1", "new_value": "hunter2", "password": true}},
+			// An added subtree whose markup still holds a password value.
+			map[string]interface{}{"mutation_type": "added",
+				"target": map[string]interface{}{"tag": "main"},
+				"added": []interface{}{map[string]interface{}{"tag": "form", "password": true,
+					"html": `<form><input type="password" value="hunter4"></form>`}}},
 		}}},
 	}
 }
@@ -100,7 +105,7 @@ func recorded(t *testing.T, ps *ProxyServer) ([]*InteractionEvent, []*MutationEv
 	raw, err := json.Marshal(entries)
 	require.NoError(t, err)
 	require.Len(t, ins, 4, "premise: every interaction is recorded")
-	require.Len(t, muts, 1, "premise: the mutation is recorded")
+	require.Len(t, muts, 2, "premise: the mutations are recorded")
 	return ins, muts, string(raw)
 }
 
@@ -119,6 +124,7 @@ func TestRecordPasswords_KeptOnlyForTrustedConnectionWithOptIn(t *testing.T) {
 		assert.Equal(t, "alice@example.test", ins[3].Value)
 		assert.Equal(t, "hunter1", muts[0].Attribute.OldValue)
 		assert.Equal(t, "hunter2", muts[0].Attribute.NewValue)
+		assert.Contains(t, muts[1].Added[0].HTML, "hunter4")
 	})
 
 	redacted := func(t *testing.T, ps *ProxyServer, trusted bool) {
@@ -136,6 +142,7 @@ func TestRecordPasswords_KeptOnlyForTrustedConnectionWithOptIn(t *testing.T) {
 		assert.Equal(t, "alice@example.test", ins[3].Value, "a non-password value is still recorded")
 		assert.Equal(t, redactedPasswordValue, muts[0].Attribute.OldValue)
 		assert.Equal(t, redactedPasswordValue, muts[0].Attribute.NewValue)
+		assert.Equal(t, redactedPasswordHTML, muts[1].Added[0].HTML)
 
 	}
 

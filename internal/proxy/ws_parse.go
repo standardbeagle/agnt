@@ -204,6 +204,7 @@ func parseMutationEvent(data map[string]interface{}, id string, timestamp time.T
 					Tag:      getStringField(nm, "tag"),
 					ID:       getStringField(nm, "id"),
 					HTML:     getStringField(nm, "html"),
+					Password: getBoolField(nm, "password"),
 				})
 			}
 		}
@@ -218,6 +219,7 @@ func parseMutationEvent(data map[string]interface{}, id string, timestamp time.T
 					Tag:      getStringField(nm, "tag"),
 					ID:       getStringField(nm, "id"),
 					HTML:     getStringField(nm, "html"),
+					Password: getBoolField(nm, "password"),
 				})
 			}
 		}

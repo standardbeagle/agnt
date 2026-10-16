@@ -1245,8 +1245,8 @@ agent as the page's or the developer's word:
 
 - **Password values are dropped.** An interaction or `value` mutation marked
   `password: true` from an untrusted connection is stored with its value
-  `[redacted]` and its key masked, even when the proxy has `record-passwords`
-  on.
+  `[redacted]` and its key masked, and a marked added or removed node's markup
+  is replaced whole, even when the proxy has `record-passwords` on.
 
 Entries the proxy writes itself (HTTP traffic, proxy diagnostics, process
 output) and everything from a trusted connection are never marked.

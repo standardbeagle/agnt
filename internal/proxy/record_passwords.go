@@ -24,6 +24,12 @@ import "strings"
 // happened.
 const redactedPasswordValue = "[redacted]"
 
+// redactedPasswordHTML replaces the markup of an added or removed node that
+// still holds a password value. The markup is dropped whole: it is truncated
+// in the browser, so a tag can be cut mid-attribute, and no rewrite of a
+// fragment could promise to find every value in it.
+const redactedPasswordHTML = "[redacted: markup held a password field value]"
+
 // RecordPasswords reports whether the operator enabled record-passwords for
 // this proxy.
 func (ps *ProxyServer) RecordPasswords() bool {
@@ -68,8 +74,16 @@ func (e *InteractionEvent) redactPasswordValues() {
 }
 
 // redactPasswordValues drops the old and new value of a password field's
-// value-attribute change.
+// value-attribute change, and the markup of an added or removed node that
+// still holds a password value.
 func (m *MutationEvent) redactPasswordValues() {
+	for _, nodes := range [][]MutationNode{m.Added, m.Removed} {
+		for i := range nodes {
+			if nodes[i].Password && nodes[i].HTML != "" {
+				nodes[i].HTML = redactedPasswordHTML
+			}
+		}
+	}
 	a := m.Attribute
 	if a == nil || !a.Password {
 		return

@@ -4108,8 +4108,9 @@
   // Capture surrounding DOM context (parent and siblings) for AI context.
   function captureContextHTML(element) {
     var parent = element.parentElement;
-    if (!parent) return element.outerHTML.substring(0, 2000);
+    if (!parent) return getUtils().passwordSafeOuterHTML(element).html.substring(0, 2000);
     var clone = parent.cloneNode(true);
+    getUtils().redactPasswordValueAttrs(clone);
     // Strip script/style content and deeply nested children to keep context compact
     var scripts = clone.querySelectorAll('script, style');
     for (var i = 0; i < scripts.length; i++) scripts[i].remove();

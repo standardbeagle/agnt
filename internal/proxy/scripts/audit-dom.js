@@ -52,7 +52,7 @@
     function truncateHtml(el, maxLen) {
       if (!el) return '';
       maxLen = maxLen || 120;
-      var html = el.outerHTML || '';
+      var html = utils.passwordSafeOuterHTML(el).html;
       if (html.length <= maxLen) return html;
       // Keep opening tag and truncate
       var tagEnd = html.indexOf('>');

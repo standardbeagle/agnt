@@ -462,7 +462,7 @@
     var attrs = {};
     var list = element.attributes;
     for (var i = 0; i < list.length; i++) {
-      attrs[list[i].name] = list[i].value;
+      attrs[list[i].name] = getUtils().exportAttrValue(element, list[i]);
     }
     return attrs;
   }

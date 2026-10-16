@@ -14,7 +14,7 @@
       var attrs = {};
       for (var i = 0; i < el.attributes.length; i++) {
         var attr = el.attributes[i];
-        attrs[attr.name] = attr.value;
+        attrs[attr.name] = utils.exportAttrValue(el, attr);
       }
 
       // No live DOM node in the return value: exec results go through

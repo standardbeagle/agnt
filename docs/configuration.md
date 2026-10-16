@@ -644,6 +644,10 @@ any field (see `docs/mcp-tools.md`).
 A password field (`<input type="password">`) is the exception: by default its
 value is replaced (`input` events record an empty value, `value`-attribute
 changes record `[redacted]`) and nothing about a key pressed in it is kept.
+The same goes for its `value` attribute wherever page markup or an element's
+attributes leave the page: the markup of added and removed nodes in the
+mutation log, DOM captures and snapshots, element info, and the HTML context
+sent from design mode and the style editor.
 For development, such as test logins on a local dev server, the operator can
 approve recording it for one proxy:
 
@@ -661,7 +665,8 @@ proxies {
   a bare `true` or `false`.
 - **Visible.** Each start of a proxy with it on writes a `record_passwords_on`
   warning to the project's startup log.
-- **Trusted connections only.** Every event on a password field carries
+- **Trusted connections only.** Every event on a password field, and every
+  mutation node whose markup still holds a password value, carries
   `password: true`. The proxy drops its value (`[redacted]`, key masked) unless
   the connection that sent it is trusted (the local browser, an identified
   tailnet peer or a Cloudflare Access-verified caller; see *Exposure and the

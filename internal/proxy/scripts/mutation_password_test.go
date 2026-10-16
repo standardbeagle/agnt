@@ -44,3 +44,38 @@ func TestMutationRedactsPasswordValueAttribute(t *testing.T) {
 		}
 	}
 }
+
+// TestMarkupSnapshotsRedactPasswordValues guards every place the injected
+// scripts serialise page markup or an element's attribute map: each goes
+// through the utils.js helpers that redact a password input's value attribute
+// unless record-passwords is on.
+//
+// Source guard only: the behaviour is proven in
+// jstest/password-markup.test.js (make test-js).
+func TestMarkupSnapshotsRedactPasswordValues(t *testing.T) {
+	for module, wants := range map[string][]string{
+		"utils":         {"function passwordSafeOuterHTML(el) {", "function redactPasswordValueAttrs(root) {", "function exportAttrValue(el, attr) {"},
+		"mutation":      {"var addedHTML = nodeHTML(node, 500);", "var removedHTML = nodeHTML(rnode, 200);", "password: addedHTML.password", "var safe = utils.passwordSafeOuterHTML(node);"},
+		"accessibility": {"var html = utils.passwordSafeOuterHTML(el).html;"},
+		"audit-dom":     {"var html = utils.passwordSafeOuterHTML(el).html;"},
+		"capture":       {"var html = utils.passwordSafeOuterHTML(document.documentElement).html;"},
+		"design":        {"getUtils().redactPasswordValueAttrs(clone);", "var html = getUtils().passwordSafeOuterHTML(el).html;"},
+		"style-editor":  {"getUtils().redactPasswordValueAttrs(clone);", "getUtils().passwordSafeOuterHTML(element).html"},
+		"diagnostics":   {"obj.attrs[attr.name] = utils.exportAttrValue(el, attr);"},
+		"inspection":    {"attrs[attr.name] = utils.exportAttrValue(el, attr);"},
+		"transform":     {"getUtils().exportAttrValue(element, list[i]);"},
+	} {
+		src := moduleScript[module]
+		if src == "" {
+			t.Fatalf("%s module source not embedded", module)
+		}
+		for _, want := range wants {
+			if !strings.Contains(src, want) {
+				t.Errorf("%s.js: missing %q", module, want)
+			}
+		}
+	}
+	if strings.Contains(moduleScript["mutation"], "node.outerHTML.substring") {
+		t.Error("mutation.js: an added node's markup must go through nodeHTML, not raw outerHTML")
+	}
+}

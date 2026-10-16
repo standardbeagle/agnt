@@ -1143,7 +1143,7 @@
     // Capture attributes
     for (var i = 0; i < el.attributes.length; i++) {
       var attr = el.attributes[i];
-      obj.attrs[attr.name] = attr.value;
+      obj.attrs[attr.name] = utils.exportAttrValue(el, attr);
     }
 
     // Capture computed styles (if requested)
