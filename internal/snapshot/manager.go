@@ -38,18 +38,26 @@ type Manager struct {
 	projectDir string
 }
 
-// NewManager creates a new snapshot manager
+// NewManager creates a new snapshot manager whose baselines are stamped with
+// the git state of the process's working directory (the MCP server's).
 func NewManager(storagePath string, diffThreshold float64) (*Manager, error) {
+	// An unreadable cwd leaves projectDir empty, which runs git in the
+	// process's working directory all the same.
+	projectDir, _ := os.Getwd()
+	return NewManagerForProject(storagePath, diffThreshold, projectDir)
+}
+
+// NewManagerForProject creates a snapshot manager that stamps baselines with
+// the git state of projectDir. The daemon's proxy uses it for browser-created
+// baselines: the daemon's cwd is not the project, the proxy's Path is. The
+// storage is the same shared store either way ("" = ~/.agnt/baselines).
+func NewManagerForProject(storagePath string, diffThreshold float64, projectDir string) (*Manager, error) {
 	storage, err := NewStorage(storagePath)
 	if err != nil {
 		return nil, fmt.Errorf("create storage: %w", err)
 	}
 
 	differ := NewDiffer(diffThreshold)
-
-	// An unreadable cwd leaves projectDir empty, which runs git in the
-	// process's working directory all the same.
-	projectDir, _ := os.Getwd()
 
 	return &Manager{
 		storage:    storage,

@@ -41,9 +41,9 @@ func TestCreateBaseline_RecordsGitCommitAndBranch(t *testing.T) {
 	repo, head := gitRepo(t)
 	defer chdir(t, t.TempDir())() // the process cwd is not the project
 
-	m, err := NewManager(t.TempDir(), 0.01)
+	// The proxy's constructor: the daemon's cwd is not the project either.
+	m, err := NewManagerForProject(t.TempDir(), 0.01, repo)
 	require.NoError(t, err)
-	m.projectDir = repo
 	b, err := m.CreateBaseline("g", []PageCapture{{URL: "http://a/", ScreenshotData: encodePNGBase64(t, 1, 1, color.RGBA{A: 255})}})
 	require.NoError(t, err)
 	assert.Equal(t, head[:7], b.GitCommit)
