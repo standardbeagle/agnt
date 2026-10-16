@@ -49,9 +49,9 @@ func runLifecycleHookWithTimeout(timeout time.Duration, cmd, scriptID, event str
 	c := exec.CommandContext(ctx, shell, shellArgs...)
 	c.Dir = dir
 	c.Env = buildHookEnv(scriptCfg, scriptID, event, exitCode)
-	configureHookProcessGroup(c)
+	run := configureHookProcessGroup(c)
 
-	if err := c.Run(); err != nil {
+	if err := run(); err != nil {
 		if ctx.Err() != nil {
 			return fmt.Errorf("lifecycle hook %s/%s timeout after %s", scriptID, event, timeout)
 		}

@@ -13,11 +13,12 @@ import (
 // CommandContext cancel kills only the direct child (the shell), orphaning
 // hook grandchildren — which violates the repo's process-group containment
 // invariant. WaitDelay bounds how long Wait hangs on grandchildren that
-// inherited the output pipes.
-func configureHookProcessGroup(c *exec.Cmd) {
+// inherited the output pipes. It returns the function that runs the hook.
+func configureHookProcessGroup(c *exec.Cmd) func() error {
 	c.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 	c.Cancel = func() error {
 		return syscall.Kill(-c.Process.Pid, syscall.SIGKILL)
 	}
 	c.WaitDelay = 2 * time.Second
+	return c.Run
 }

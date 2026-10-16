@@ -14,94 +14,73 @@ import (
 // configureHookProcessGroup makes a hook timeout kill the hook's whole process
 // tree, not just the shell. CommandContext's default cancel terminates only the
 // direct child, so a hook's children (a dev tool it launched, a pinger) outlived
-// the timeout — the Windows side of the Unix process-group kill.
+// the timeout — the Windows side of the Unix process-group kill. It returns the
+// function that runs the hook.
 //
-// The tree is found from the process snapshot's parent links at kill time
+// The tree is killed with platform.KillProcessTree, which follows parent links
+// by creation time and kills each member through an identity-checked handle,
 // rather than with a job object: a job with KILL_ON_JOB_CLOSE would also reap
 // children a hook backgrounds on purpose when the hook finishes normally,
 // which the Unix path does not do. WaitDelay bounds how long Wait hangs on a
 // descendant that still holds an inherited handle.
-func configureHookProcessGroup(c *exec.Cmd) {
+//
+// The root's identity is taken right after Start, while the exec package's
+// own handle is certain to hold the PID, and a handle of ours keeps holding
+// it until the hook has been waited for. The exec package can run Cancel just
+// as Process.Wait returns and releases its handle (a timeout racing the
+// shell's exit); the pin keeps the shell's PID, and with it the parent links
+// of its children, from being reused under the kill. The kill used to look the
+// root up by PID at cancel time and then killed every PID of the tree it had
+// collected without checking any of them again.
+func configureHookProcessGroup(c *exec.Cmd) func() error {
+	root := &hookRoot{ready: make(chan struct{})}
 	c.Cancel = func() error {
-		return killHookTree(c.Process.Pid)
+		<-root.ready
+		if !root.ok {
+			return c.Process.Kill() // no identity: the shell alone, through exec's handle
+		}
+		return platform.KillProcessTree(root.id, 0)
 	}
 	c.WaitDelay = 2 * time.Second
-}
-
-// killHookTree terminates root and every descendant reachable through parent
-// links. The tree is collected before anything is killed (a dead parent's
-// children are no longer reported under it), then one more pass catches a
-// child spawned while the first pass ran.
-func killHookTree(root int) error {
-	rootBorn, ok := hookProcessBirth(root)
-	if !ok {
-		return platform.KillPID(root, 0)
-	}
-	// born holds every process in the tree with its creation time; a parent
-	// link is trusted only when the child is younger than the parent, since
-	// Windows keeps a dead parent's PID in its children and reuses PIDs.
-	born := map[int]uint64{root: rootBorn}
-	killed := map[int]bool{}
-	var rootErr error
-	for pass := 0; pass < 2; pass++ {
-		collectHookTree(born)
-		for pid := range born {
-			if killed[pid] {
-				continue
-			}
-			killed[pid] = true
-			if err := platform.KillPID(pid, 0); err != nil && pid == root {
-				rootErr = err
-			}
+	return func() error {
+		if err := c.Start(); err != nil {
+			close(root.ready)
+			return err
 		}
+		root.pin(c.Process.Pid)
+		close(root.ready)
+		defer root.unpin()
+		return c.Wait()
 	}
-	return rootErr
 }
 
-// collectHookTree adds to born every live process whose parent is already in
-// born and which was created after that parent.
-func collectHookTree(born map[int]uint64) {
-	procs, err := platform.Scan()
+// hookRoot is the identity of a hook's shell and the handle that keeps its PID
+// from being reused while the hook runs. Written before ready is closed, read
+// only after.
+type hookRoot struct {
+	ready  chan struct{}
+	handle windows.Handle
+	id     platform.ProcessIdentity
+	ok     bool
+}
+
+// pin opens the shell and records its identity. It runs between Start and
+// Wait, so the PID can only be the shell's.
+func (r *hookRoot) pin(pid int) {
+	h, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(pid))
 	if err != nil {
 		return
 	}
-	children := map[int][]int{}
-	for _, p := range procs {
-		if p.PPID != 0 && p.PPID != p.PID {
-			children[p.PPID] = append(children[p.PPID], p.PID)
-		}
+	id, ok := platform.IdentifyProcess(pid)
+	if !ok {
+		windows.CloseHandle(h)
+		return
 	}
-	queue := make([]int, 0, len(born))
-	for pid := range born {
-		queue = append(queue, pid)
-	}
-	for len(queue) > 0 {
-		parent := queue[0]
-		queue = queue[1:]
-		for _, child := range children[parent] {
-			if _, seen := born[child]; seen {
-				continue
-			}
-			t, ok := hookProcessBirth(child)
-			if !ok || t < born[parent] {
-				continue // gone, or a stale link to a reused parent PID
-			}
-			born[child] = t
-			queue = append(queue, child)
-		}
-	}
+	r.handle, r.id, r.ok = h, id, true
 }
 
-// hookProcessBirth returns a process's creation time in 100ns ticks.
-func hookProcessBirth(pid int) (uint64, bool) {
-	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
-	if err != nil {
-		return 0, false
+func (r *hookRoot) unpin() {
+	if r.ok {
+		windows.CloseHandle(r.handle)
 	}
-	defer windows.CloseHandle(h)
-	var created, exited, kernel, user windows.Filetime
-	if err := windows.GetProcessTimes(h, &created, &exited, &kernel, &user); err != nil {
-		return 0, false
-	}
-	return uint64(created.HighDateTime)<<32 | uint64(created.LowDateTime), true
 }

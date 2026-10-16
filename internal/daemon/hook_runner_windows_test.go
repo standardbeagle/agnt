@@ -16,6 +16,29 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// hookChildGone reports whether the process id names stops running within a
+// generous ceiling.
+func hookChildGone(id platform.ProcessIdentity) bool {
+	for i := 0; i < 200; i++ {
+		if cur, ok := platform.ProcessBirthID(id.PID); !ok || cur != id.Birth {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
+}
+
+// identifyHookChild identifies a process the hook under test started and
+// registers an identity-checked cleanup: it can never reach a later holder of
+// the PID.
+func identifyHookChild(t *testing.T, pid int) platform.ProcessIdentity {
+	t.Helper()
+	id, ok := platform.IdentifyProcess(pid)
+	require.True(t, ok, "cannot identify hook child %d", pid)
+	t.Cleanup(func() { _ = platform.KillProcess(id, 0) })
+	return id
+}
+
 // A lifecycle hook that times out must take its children with it, not only
 // the shell (the default CommandContext cancel kills just the direct child).
 func TestHookTimeout_KillsChildProcessesWindows(t *testing.T) {
@@ -27,8 +50,9 @@ func TestHookTimeout_KillsChildProcessesWindows(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	c := exec.CommandContext(ctx, "powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script)
-	configureHookProcessGroup(c)
-	require.NoError(t, c.Start())
+	run := configureHookProcessGroup(c)
+	done := make(chan error, 1)
+	go func() { done <- run() }()
 
 	var childPID int
 	deadline := time.Now().Add(30 * time.Second)
@@ -41,18 +65,10 @@ func TestHookTimeout_KillsChildProcessesWindows(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	require.NotZero(t, childPID, "hook never reported its child PID")
-	t.Cleanup(func() { _ = platform.KillPID(childPID, 0) })
+	child := identifyHookChild(t, childPID)
 
 	cancel() // what the hook timeout does
-	_ = c.Wait()
+	<-done
 
-	gone := false
-	for i := 0; i < 40 && !gone; i++ {
-		if _, alive := hookProcessBirth(childPID); !alive {
-			gone = true
-			break
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
-	require.True(t, gone, "hook child %d survived the hook timeout", childPID)
+	require.True(t, hookChildGone(child), "hook child %d survived the hook timeout", childPID)
 }
