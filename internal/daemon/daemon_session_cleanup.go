@@ -716,12 +716,6 @@ func (d *Daemon) doCleanupExact(sessionCode string, expected *Session, expectedP
 	var wg sync.WaitGroup
 
 	if !hasOtherSessions {
-		// The departing project stops contributing its automation quota to the
-		// daemon-wide ceiling.
-		if d.sessionm != nil {
-			d.sessionm.ClearProjectMaxSessions(projectPath)
-		}
-
 		// Last session for this project — stop all proxies and browsers
 		wg.Add(1)
 		go func() {
@@ -763,6 +757,13 @@ func (d *Daemon) doCleanupExact(sessionCode string, expected *Session, expectedP
 		go func() {
 			defer wg.Done()
 			d.stopProjectAutomationSessions(ctx, projectPath)
+			// The departing project stops contributing its automation quota to
+			// the daemon-wide ceiling. Cleared after its sessions stop, so the
+			// entry normally goes at once; one whose stop failed keeps counting
+			// its survivors and is retired by the last of them to exit.
+			if d.sessionm != nil {
+				d.sessionm.ClearProjectMaxSessions(projectPath)
+			}
 		}()
 	}
 

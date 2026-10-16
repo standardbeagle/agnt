@@ -222,6 +222,69 @@ func TestProjectQuota_IsolatedFromOtherProjects(t *testing.T) {
 	}
 }
 
+// TestProjectQuota_ClearedWhileSessionsRunLeavesNoStaleEntry is the regression
+// for the leftover quota entry. The daemon clears a departing project's quota
+// before it stops that project's sessions; the entry used to stay behind with
+// max 0 for good, so every later start for the path was held to the default 4
+// while ProjectMaxSessions reported the daemon-wide ceiling.
+func TestProjectQuota_ClearedWhileSessionsRunLeavesNoStaleEntry(t *testing.T) {
+	const daemonMax = 8
+	m := newFakeManager(daemonMax)
+	const proj = "/work/a"
+	m.SetProjectMaxSessions(proj, 2)
+	if _, err := m.Start(context.Background(), "a-0", SessionConfig{Path: proj}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+
+	m.ClearProjectMaxSessions(proj) // the project's last session left
+	if err := m.Stop(context.Background(), "a-0"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, ok := m.projectQuotas.Load(projectQuotaKey(proj)); !ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the cleared project's quota entry outlived its last session")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	if got := m.ProjectMaxSessions(proj); got != daemonMax {
+		t.Fatalf("ProjectMaxSessions = %d, want the daemon-wide %d", got, daemonMax)
+	}
+	// What ProjectMaxSessions reports is what Start enforces: more than the
+	// default 4 sessions start for the path.
+	for i := 0; i < DefaultMaxSessions+1; i++ {
+		if _, err := m.Start(context.Background(), fmt.Sprintf("later-%d", i), SessionConfig{Path: proj}); err != nil {
+			t.Fatalf("start %d for the departed project's path: %v", i, err)
+		}
+	}
+}
+
+// TestProjectQuota_ClearedEntryKeepsCountingUntilRetired: a project that
+// reconnects while its old sessions still run gets its quota back with those
+// sessions counted against it.
+func TestProjectQuota_ClearedEntryKeepsCountingUntilRetired(t *testing.T) {
+	m := newFakeManager(8)
+	const proj = "/work/a"
+	m.SetProjectMaxSessions(proj, 2)
+	if _, err := m.Start(context.Background(), "a-0", SessionConfig{Path: proj}); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	m.ClearProjectMaxSessions(proj)
+	m.SetProjectMaxSessions(proj, 2) // reconnects before a-0 exits
+
+	if _, err := m.Start(context.Background(), "a-1", SessionConfig{Path: proj}); err != nil {
+		t.Fatalf("second session within the quota of 2: %v", err)
+	}
+	if _, err := m.Start(context.Background(), "a-2", SessionConfig{Path: proj}); !errors.Is(err, ErrSessionCapReached) {
+		t.Fatalf("third session must be refused by the restored quota (a-0 still counts), got: %v", err)
+	}
+}
+
 // TestProjectQuota_ClearedProjectStopsRaisingCeiling proves a departed project
 // no longer props up the daemon-wide ceiling.
 func TestProjectQuota_ClearedProjectStopsRaisingCeiling(t *testing.T) {

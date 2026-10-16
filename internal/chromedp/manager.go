@@ -53,10 +53,16 @@ type SessionManager struct {
 
 	// projectQuotas holds each connected project's own ceiling, keyed by
 	// normalized project path (map[string]*projectQuota). Read by Start on every
-	// admission; written by SetProjectMaxSessions / ClearProjectMaxSessions on
-	// session connect and project teardown. Not user-visible on its own — the
-	// refusal message in Start is where a quota surfaces.
+	// admission and by ProjectMaxSessions; written by SetProjectMaxSessions /
+	// ClearProjectMaxSessions on session connect and project teardown, and
+	// retired by the last session release of a cleared project. User-visible
+	// through Start's refusal message and ProjectMaxSessions.
 	projectQuotas sync.Map
+
+	// quotaMu serializes the writes that create, clear and retire a
+	// projectQuotas entry, so a retirement can never delete an entry another
+	// writer has just given a quota. Admission reads stay lock-free.
+	quotaMu sync.Mutex
 
 	// startSession launches the browser for an already-reserved session.
 	// Overridable in tests so the concurrency cap can be exercised without
@@ -82,7 +88,11 @@ func NewSessionManagerWithMax(max int) *SessionManager {
 	return m
 }
 
-// projectQuota is one project's ceiling and its live session count.
+// projectQuota is one project's ceiling and its live session count. A max of
+// 0 marks a project whose last session has left while some of its automation
+// sessions were still running: it declares no quota any more (its sessions are
+// held to the daemon-wide ceiling alone, which is what ProjectMaxSessions
+// reports), and the entry is retired when its last automation session exits.
 type projectQuota struct {
 	max    atomic.Int32
 	active atomic.Int32
@@ -117,29 +127,68 @@ func (m *SessionManager) SetProjectMaxSessions(projectPath string, max int) {
 	if max <= 0 {
 		max = DefaultMaxSessions
 	}
+	m.quotaMu.Lock()
 	q, _ := m.projectQuotas.LoadOrStore(key, &projectQuota{})
 	q.(*projectQuota).max.Store(int32(max))
+	m.quotaMu.Unlock()
 	m.recomputeCeiling()
 }
 
 // ClearProjectMaxSessions drops a project's declared quota when the project's
 // last session leaves, so a departed project stops propping up the daemon-wide
-// ceiling. The entry is kept while the project still has live sessions (their
-// exit goroutines release against it); it then reverts to the default quota.
+// ceiling. An entry with no running sessions is removed at once. One whose
+// sessions are still running (the daemon clears the quota before it stops
+// them) keeps counting them with no quota of its own, and is removed by the
+// release of the last of them (releaseProjectQuota) — it never lingers.
 func (m *SessionManager) ClearProjectMaxSessions(projectPath string) {
 	key := projectQuotaKey(projectPath)
 	if key == "" {
 		return
 	}
+	m.quotaMu.Lock()
 	if v, ok := m.projectQuotas.Load(key); ok {
 		q := v.(*projectQuota)
-		if q.active.Load() > 0 {
-			q.max.Store(0)
-		} else {
+		q.max.Store(0)
+		if q.active.Load() <= 0 {
 			m.projectQuotas.CompareAndDelete(key, v)
 		}
 	}
+	m.quotaMu.Unlock()
 	m.recomputeCeiling()
+}
+
+// reserveProjectQuota counts a new session against its project's entry, if
+// the project has one, refusing it when the project's declared quota is full.
+// It returns the entry reserved against (nil when there is none) and the
+// quota that refused it. A cleared entry (max 0) imposes no limit but still
+// counts, so the entry is retired only after its last session exits.
+//
+// It holds quotaMu: a reservation racing a retirement could otherwise land on
+// an entry already removed from the map, and count against nothing. Admission
+// precedes a Chrome launch, so the lock costs nothing that matters.
+func (m *SessionManager) reserveProjectQuota(key string) (q *projectQuota, refusedAt int32) {
+	m.quotaMu.Lock()
+	defer m.quotaMu.Unlock()
+	v, ok := m.projectQuotas.Load(key)
+	if !ok {
+		return nil, 0
+	}
+	q = v.(*projectQuota)
+	if max := q.max.Load(); max > 0 && q.active.Load() >= max {
+		return nil, max
+	}
+	q.active.Add(1)
+	return q, 0
+}
+
+// releaseProjectQuota gives back one reservation and retires a cleared entry
+// once nothing counts against it.
+func (m *SessionManager) releaseProjectQuota(key string, q *projectQuota) {
+	m.quotaMu.Lock()
+	defer m.quotaMu.Unlock()
+	if q.active.Add(-1) <= 0 && q.max.Load() <= 0 {
+		m.projectQuotas.CompareAndDelete(key, q)
+	}
 }
 
 // ProjectMaxSessions returns the quota a project's sessions are held to: its
@@ -218,32 +267,20 @@ func (m *SessionManager) Start(ctx context.Context, id string, config SessionCon
 	//
 	// The project's own quota is reserved first, then the daemon-wide ceiling;
 	// a refusal at the second releases the first.
-	var quota *projectQuota
-	if v, ok := m.projectQuotas.Load(projectQuotaKey(config.Path)); ok {
-		quota = v.(*projectQuota)
-		projectMax := quota.max.Load()
-		if projectMax <= 0 {
-			projectMax = DefaultMaxSessions
-		}
-		for {
-			cur := quota.active.Load()
-			if cur >= projectMax {
-				m.sessions.CompareAndDelete(id, session)
-				return nil, fmt.Errorf(
-					"cannot start browser automation session %q: %w of %d for this project "+
-						"(each session is a full Chrome process using hundreds of MB). "+
-						"Stop an existing session (browser/automation stop) or raise "+
-						"automation.max-sessions in .agnt.kdl",
-					id, ErrSessionCapReached, projectMax)
-			}
-			if quota.active.CompareAndSwap(cur, cur+1) {
-				break
-			}
-		}
+	quotaKey := projectQuotaKey(config.Path)
+	quota, projectMax := m.reserveProjectQuota(quotaKey)
+	if projectMax > 0 {
+		m.sessions.CompareAndDelete(id, session)
+		return nil, fmt.Errorf(
+			"cannot start browser automation session %q: %w of %d for this project "+
+				"(each session is a full Chrome process using hundreds of MB). "+
+				"Stop an existing session (browser/automation stop) or raise "+
+				"automation.max-sessions in .agnt.kdl",
+			id, ErrSessionCapReached, projectMax)
 	}
 	releaseProject := func() {
 		if quota != nil {
-			quota.active.Add(-1)
+			m.releaseProjectQuota(quotaKey, quota)
 		}
 	}
 
