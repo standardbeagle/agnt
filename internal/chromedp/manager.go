@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/standardbeagle/agnt/internal/pathutil"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -432,11 +433,19 @@ func (m *SessionManager) StopByProjectPath(ctx context.Context, projectPath stri
 	select {
 	case <-done:
 	case <-ctx.Done():
-		if len(errs) > 0 {
-			errs = append(errs, ctx.Err())
-		} else {
-			return stoppedIDs, ctx.Err()
+		// The stop goroutines may still be appending: read both lists under
+		// their locks, and copy them so a late append cannot write into the
+		// slice the caller now holds.
+		errMu.Lock()
+		errs = append(slices.Clone(errs), ctx.Err())
+		errMu.Unlock()
+		stoppedMu.Lock()
+		ids := slices.Clone(stoppedIDs)
+		stoppedMu.Unlock()
+		if len(errs) == 1 {
+			return ids, ctx.Err()
 		}
+		return ids, errors.Join(errs...)
 	}
 
 	if len(errs) > 0 {
@@ -506,7 +515,10 @@ func (m *SessionManager) StopAll(ctx context.Context) ([]string, error) {
 	case <-done:
 		return stoppedIDs, firstErr
 	case <-ctx.Done():
-		return stoppedIDs, ctx.Err()
+		// Stops may still be in flight; copy the list under its lock.
+		stoppedMu.Lock()
+		defer stoppedMu.Unlock()
+		return slices.Clone(stoppedIDs), ctx.Err()
 	}
 }
 
