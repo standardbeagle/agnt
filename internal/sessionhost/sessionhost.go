@@ -536,9 +536,19 @@ func (s *Session) WriteStdin(data []byte) error {
 	return err
 }
 
+// ErrInvalidSize is returned by Resize for a dimension outside 1..65535.
+var ErrInvalidSize = errors.New("sessionhost: invalid window size")
+
 // Resize changes the PTY window size for all current attaches (spec §1.3
 // invariant 8 — no partial re-render, client owns redraw).
+//
+// Both dimensions must fit the kernel's 16-bit winsize fields and be non-zero:
+// a zero row or column count reaches the child as a 0-line terminal, and a
+// negative or oversized value wrapped through uint16 into a nonsense size.
 func (s *Session) Resize(cols, rows int) error {
+	if cols < 1 || cols > 0xFFFF || rows < 1 || rows > 0xFFFF {
+		return fmt.Errorf("%w: %dx%d", ErrInvalidSize, cols, rows)
+	}
 	return setPTYSize(s.ptmx, cols, rows, s.beforeSetSize)
 }
 
