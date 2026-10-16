@@ -555,6 +555,7 @@ func (d *Daemon) restartProxy(ctx context.Context, p *proxy.ProxyServer, callerS
 	publicURL := p.GetPublicURL()
 	statusURL := p.GetStatusURL()
 	skipTLSVerify := p.SkipTLSVerify
+	recordPasswords := p.RecordPasswords()
 	strictListenPort := p.StrictListenPort
 	autoRestart := p.AutoRestart()
 	namedTunnel := p.NamedTunnelConfig()
@@ -623,6 +624,7 @@ func (d *Daemon) restartProxy(ctx context.Context, p *proxy.ProxyServer, callerS
 		PublicURL:        publicURL,
 		StatusURL:        statusURL,
 		SkipTLSVerify:    skipTLSVerify,
+		RecordPasswords:  recordPasswords,
 		AutoRestart:      autoRestart,
 		NamedTunnel:      namedTunnel,
 	})

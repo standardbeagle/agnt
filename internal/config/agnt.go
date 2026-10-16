@@ -529,6 +529,15 @@ type ProxyConfig struct {
 	// TLS config used when dialing the upstream URL.
 	SkipTLSVerify bool `kdl:"skip-tls-verify"`
 
+	// RecordPasswords lets the injected browser tracking record what is
+	// typed into password fields of this proxy's pages (input values,
+	// value-attribute mutations), for development logins. Default false:
+	// password values are redacted. Per proxy, and only in .agnt.kdl, so
+	// it is the operator who approves it for one dev app; an agent-started
+	// proxy never has it. Honoured only for trusted connections and only
+	// while no public URL is bound (internal/proxy/record_passwords.go).
+	RecordPasswords bool `kdl:"record-passwords"`
+
 	// AllowExternal permits binding to non-localhost addresses
 	// (0.0.0.0, ::). Required opt-in when Bind is set to a
 	// non-localhost value; otherwise proxym.Create rejects the

@@ -781,13 +781,21 @@ Returns shell command string for streaming daemon events via `agnt monitor` CLI.
 
 **Core**:
 - `log(message, level, data)` (returns `{sent: boolean}`), `screenshot(name)`, `isConnected()`
-- `interactions.getHistory/getLastClick/getLastClickContext()`. Keystroke
-  privacy: a `keydown` on a password field records `key: ''`, `code: ''`,
-  `masked: true` and no modifiers; a printable character typed into any other
-  editable target (text inputs, textarea, select, contenteditable) is masked
-  the same way. Modifier combos (Ctrl/Alt/Meta) and non-printing keys (Enter,
-  Escape, Tab, arrows) keep `key`/`code`, as do keys pressed outside an
-  editable target.
+- `interactions.getHistory/getLastClick/getLastClickContext()`. **Field
+  contents are recorded**: an `input` event carries the field's value (first
+  100 characters) for every field except a password field, and
+  `mutations` records old and new `value` attributes. Password fields: the
+  value is empty (`input`) or `[redacted]` (`value` attribute) unless the
+  operator set `record-passwords` on the proxy; every event on one carries
+  `password: true`, and the proxy redacts its value from any connection it
+  does not trust (`docs/configuration.md`, *Recording Password Fields*).
+  Keystroke privacy: a `keydown` on a password field records `key: ''`,
+  `code: ''`, `masked: true` and no modifiers (with `record-passwords` it is
+  treated like any other editable field); a printable character typed into
+  any other editable target (text inputs, textarea, select, contenteditable)
+  is masked the same way. Modifier combos (Ctrl/Alt/Meta) and non-printing
+  keys (Enter, Escape, Tab, arrows) keep `key`/`code`, as do keys pressed
+  outside an editable target.
 - `mutations.getHistory/highlightRecent()`
 - `transport` (= `window.__devtool_transport_diag`) — control-WebSocket
   diagnostics: `getHistory()`, `getRecent(n=20)`, `getByCategory(cat)`,
@@ -1234,6 +1242,11 @@ agent as the page's or the developer's word:
   untrusted errors in its error summaries (counted separately from trusted
   ones), and counts untrusted interactions and mutations under their own
   by-type keys (`"click (untrusted)"`).
+
+- **Password values are dropped.** An interaction or `value` mutation marked
+  `password: true` from an untrusted connection is stored with its value
+  `[redacted]` and its key masked, even when the proxy has `record-passwords`
+  on.
 
 Entries the proxy writes itself (HTTP traffic, proxy diagnostics, process
 output) and everything from a trusted connection are never marked.

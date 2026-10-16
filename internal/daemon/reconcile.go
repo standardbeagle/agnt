@@ -139,6 +139,7 @@ func proxySignature(p *config.ProxyConfig) string {
 		strconv.Itoa(p.MaxLogSize),
 		strconv.FormatBool(p.SkipTLSVerify),
 		strconv.FormatBool(p.AllowExternal),
+		strconv.FormatBool(p.RecordPasswords),
 		p.PublicURL,
 		strings.Join(p.WaitFor, "\x00"),
 		cloudflareTunnelSignature(p.CloudflareTunnel),

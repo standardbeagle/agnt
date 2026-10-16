@@ -386,6 +386,7 @@ func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
 	d.applyDevOIDC(server)
 	d.wireSecretSink(server)
 	d.wireSessionClient(server)
+	d.announceRecordPasswords(server)
 	if d.eventHub == nil {
 		return
 	}
@@ -501,6 +502,19 @@ func (d *Daemon) applyAuthBreakout(server *proxy.ProxyServer) {
 		Patterns: ab.GetPatterns(),
 	})
 	debug.Log("daemon", "auth breakout enabled for proxy %s (mode=%s, %d patterns)", server.ID, ab.GetMode(), len(ab.GetPatterns()))
+}
+
+// announceRecordPasswords records, once per proxy start, that the proxy's
+// record-passwords opt-in is on, so recording password values is never
+// silently enabled. It goes to the project's startup log, where config
+// warnings go.
+func (d *Daemon) announceRecordPasswords(server *proxy.ProxyServer) {
+	if server == nil || !server.RecordPasswords() {
+		return
+	}
+	d.startupLog(server.Path).Warn("", "record_passwords_on", fmt.Sprintf(
+		"proxy %s: record-passwords is on — values typed into password fields of its pages are recorded in interactions and mutations "+
+			"(from trusted connections only, and not while a public URL is bound)", server.ID))
 }
 
 // feedTransportSignals inspects the entry for transport-error or

@@ -632,6 +632,45 @@ alerts {
 | `on-proc-stop` | bool | `true` | Explicit stop/restart clears that process's errors. Crash restarts do **not** clear — crash evidence is preserved for diagnosis. |
 | `on-session-end` | bool | `true` | When a project's last session disconnects, its alert-ring entries are cleared alongside the startup log (incident inboxes are per-session and torn down anyway). |
 
+## Recording Password Fields (`proxies.<id>.record-passwords` in `.agnt.kdl`)
+
+The script agnt injects into proxied pages records form input. **The contents
+of every non-password field are recorded**: the value of an `input` event (up
+to 100 characters) and every change to an element's `value` attribute. They
+land in the traffic log (`proxylog`), `currentpage` and the interaction and
+mutation history in the page. Keystrokes are never recorded as characters in
+any field (see `docs/mcp-tools.md`).
+
+A password field (`<input type="password">`) is the exception: by default its
+value is replaced (`input` events record an empty value, `value`-attribute
+changes record `[redacted]`) and nothing about a key pressed in it is kept.
+For development, such as test logins on a local dev server, the operator can
+approve recording it for one proxy:
+
+```kdl
+proxies {
+    dev {
+        script "dev"
+        record-passwords true
+    }
+}
+```
+
+- **Per proxy, operator only.** Only a proxy declared in `.agnt.kdl` can have
+  it; a proxy an agent starts with `proxy start` never does. The value must be
+  a bare `true` or `false`.
+- **Visible.** Each start of a proxy with it on writes a `record_passwords_on`
+  warning to the project's startup log.
+- **Trusted connections only.** Every event on a password field carries
+  `password: true`. The proxy drops its value (`[redacted]`, key masked) unless
+  the connection that sent it is trusted (the local browser, an identified
+  tailnet peer or a Cloudflare Access-verified caller; see *Exposure and the
+  browser panel*). A tunnel visitor's password is never recorded.
+- **Off while exposed.** While a public URL is bound to the proxy (a tunnel,
+  its named tunnel, or `public-url`) the page is not told to record, and the
+  proxy redacts what arrives anyway.
+- Changing the key restarts the proxy, like its other keys.
+
 ## Auth Breakout (internal/config/agnt.go, auth-breakout in .agnt.kdl; runtime: internal/proxy/authbreakout.go)
 
 The proxy's always-wrap model renders every page inside a content `<iframe>`.
@@ -928,6 +967,7 @@ definitions in `internal/config/agnt.go` carry the full comments.
 | `public-url`, `status-url` | See *Proxy Display Address*. |
 | `cloudflare-tunnel { … }` | See *Named Cloudflare Tunnel*. |
 | `skip-tls-verify` | Do not verify the target's TLS certificate. Default `false`. Without it, a certificate-verification failure is bypassed automatically (with a warning diagnostic) only when the target is `localhost` or every address it resolves to is loopback, private, link-local or a tailnet peer. Any other HTTPS target with a bad certificate fails with the certificate error and an error diagnostic until `skip-tls-verify` is set. |
+| `record-passwords` | Record what is typed into password fields of this proxy's pages. Default `false`. See *Recording Password Fields*. |
 | `wait-for` | Script names that must be running before the proxy forwards; until then requests get `503`. Every name must be a declared script. |
 | `max-log-size` | Traffic-log entries kept. Default `1000`. |
 

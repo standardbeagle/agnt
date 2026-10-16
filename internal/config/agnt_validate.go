@@ -181,6 +181,9 @@ func inspectAgntDocument(data string) (warnings []string, err error) {
 				if err := checkIntNodes(proxy.Children, proxyIntRules, where); err != nil {
 					return nil, err
 				}
+				if err := checkBoolNode(proxy, "record-passwords", where); err != nil {
+					return nil, err
+				}
 				if hasChild(proxy, "websocket") {
 					warnings = append(warnings, where+".websocket has no effect: WebSocket upgrades are always proxied")
 				}
@@ -237,6 +240,23 @@ func checkIntNodes(children []*document.Node, rules map[string]intRule, where st
 		for _, arg := range c.Arguments {
 			if err := checkIntValue(arg.Value, rule, where+"."+nodeName(c)); err != nil {
 				return err
+			}
+		}
+	}
+	return nil
+}
+
+// checkBoolNode requires the named child, when present, to be a bare
+// true/false. kdl-go turns any non-empty string into true, so a quoted "no"
+// would otherwise switch on the opt-in it was written to refuse.
+func checkBoolNode(n *document.Node, name, where string) error {
+	for _, c := range n.Children {
+		if nodeName(c) != name {
+			continue
+		}
+		for _, arg := range c.Arguments {
+			if _, ok := arg.Value.(bool); !ok {
+				return fmt.Errorf("%s.%s must be true or false (got %v)", where, name, arg.Value)
 			}
 		}
 	}

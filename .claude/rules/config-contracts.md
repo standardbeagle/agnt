@@ -19,6 +19,7 @@ A struct field nothing reads is a bug. Adding a key means tracing it to its cons
 | `scripts.<n>.autostart` | RunAutostart |
 | `project.port-conflict` | port preflight |
 | `shims.enabled` / `watch-script` / `rules` | `shims.Ensure` + `routeShim` / `WatchScriptName` / `shims.Resolve` |
+| `proxies.<n>.record-passwords` | page config (`recordPasswordsJS`, `rewrite.go`) + WS redaction (`keepPasswordValues`, `internal/proxy/record_passwords.go`) |
 
 ### Keys that parse but have no consumer (decision, 2026-10-13)
 
@@ -37,6 +38,7 @@ They are not in the default template or `docs/configuration.md`. Do not add a ke
 `agnt_validate.go` runs inside `ParseAgntConfig`:
 
 - **Closed sets** fail with the accepted values listed: `project.port-conflict`, `alerts.preset`, `alerts.auto-forward.sources` (`browser`, `http`) and `.severity` (`error`, `warning`; `warn` kept as an alias because it loaded before the check existed), `alerts.patterns.<id>.severity` (`error`, `warning`, `info`; `warn` kept as an alias), `shims.rules.<n>.action` (pinned to `internal/shims` by `TestShimActionsAcceptedByConfig`) and `hook-rules.bash-patterns.<n>.action` (case-insensitive, stored lowercased; pinned by `TestHookActionsAcceptedByConfig`). A consumer `switch` over such a value still needs a safe `default`.
+- **Bool shape**: kdl-go reads any non-empty string as `true`, so `proxies.<n>.record-passwords` must be a bare `true`/`false` (`checkBoolNode`).
 - **Number shape** is checked on the raw document, because kdl-go truncates a float into an `int` field without an error: `scripts.<n>.ports`, `proxies.<n>.listen-port` / `port` / `fallback-port` / `max-log-size`, `automation.max-sessions`. Ports are range-checked too.
 - **Custom unmarshalers skip kdl-go's unknown-property check.** `depends-on` rejects any property but `timeout` itself, and a negative timeout.
 

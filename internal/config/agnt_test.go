@@ -2043,3 +2043,28 @@ func TestSystemPrompt_RawJSIsLastResort(t *testing.T) {
 	assert.Less(t, strings.Index(prompt, "__devtool"), iLast, "__devtool helpers named before last resort")
 	assert.Less(t, strings.Index(prompt, "diagnose"), iLast, "diagnose named before last resort")
 }
+
+// TestParseProxyRecordPasswords: `record-passwords` is a per-proxy bool that
+// defaults to false (password values redacted) and is set only on the proxy
+// that declares it.
+func TestParseProxyRecordPasswords(t *testing.T) {
+	cfg, err := ParseAgntConfig(`proxies {
+    dev {
+        url "http://localhost:3000"
+        record-passwords true
+    }
+    api {
+        url "http://localhost:8080"
+    }
+}`)
+	require.NoError(t, err)
+	assert.True(t, cfg.Proxies["dev"].RecordPasswords)
+	assert.False(t, cfg.Proxies["api"].RecordPasswords, "absent means redacted")
+
+	// kdl-go coerces any non-empty string to true; a quoted value must be
+	// refused rather than read as consent.
+	for _, v := range []string{`"no"`, `"false"`, `1`} {
+		_, err = ParseAgntConfig("proxies {\n    dev {\n        url \"http://localhost:3000\"\n        record-passwords " + v + "\n    }\n}")
+		assert.Errorf(t, err, "record-passwords %s must not parse", v)
+	}
+}

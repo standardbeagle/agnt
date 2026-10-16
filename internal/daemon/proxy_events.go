@@ -45,8 +45,10 @@ func buildProxyServerConfig(id, targetURL, projectPath string, cfg *config.Proxy
 		allowExternal bool
 		publicURL     string
 		statusURL     string
+		recordPw      bool
 	)
 	if cfg != nil {
+		recordPw = cfg.RecordPasswords
 		maxLog = cfg.MaxLogSize
 		bind = cfg.Bind
 		skipTLSVerify = cfg.SkipTLSVerify
@@ -67,6 +69,7 @@ func buildProxyServerConfig(id, targetURL, projectPath string, cfg *config.Proxy
 		AllowExternal:    allowExternal,
 		PublicURL:        publicURL,
 		StatusURL:        statusURL,
+		RecordPasswords:  recordPw,
 		NamedTunnel:      namedTunnelConfig(projectPath, cfg),
 	}
 }
