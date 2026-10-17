@@ -1,3 +1,6 @@
+// @vitest-environment node
+// The test owns its JSDOM window (load-bundle.js), so the default jsdom
+// environment would only build a second, unused DOM per file.
 // Page-derived strings in the indicator attachment previews and the
 // diagnostics panels are rendered as text, never as markup.
 //

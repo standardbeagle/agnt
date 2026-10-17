@@ -1,3 +1,6 @@
+// @vitest-environment node
+// The test owns its JSDOM window (load-bundle.js), so the default jsdom
+// environment would only build a second, unused DOM per file.
 // walkthrough.js: play() re-arms the current step without leaving the previous
 // arming behind, so a stale click listener cannot advance a later step.
 

@@ -1,3 +1,6 @@
+// @vitest-environment node
+// The test owns its JSDOM window (load-bundle.js), so the default jsdom
+// environment would only build a second, unused DOM per file.
 // indicator.js togglePanel: the close transition's deferred work must not
 // outlive a reopen or a destroy.
 //

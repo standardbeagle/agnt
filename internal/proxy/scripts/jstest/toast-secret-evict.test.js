@@ -1,3 +1,6 @@
+// @vitest-environment node
+// The test owns its JSDOM window (load-bundle.js), so the default jsdom
+// environment would only build a second, unused DOM per file.
 // toast.js maxVisible eviction: an open secret-entry prompt persists until the
 // user submits or dismisses it, so a burst of ordinary toasts must evict the
 // oldest ordinary toast instead — never the prompt the user may be typing in.

@@ -63,6 +63,7 @@ func BenchmarkCommandPaletteTyping(b *testing.B) {
 	status := Status{DaemonConnected: ConnectionConnected}
 	queries := []string{"", "s", "st", "sta", "star", "start", "start ", "start d"}
 	r.DrawPanelView(panels, 0, status, 0, true, "", 0, false, OverviewActions{})
+	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		r.DrawPanelView(panels, 0, status, 0, true, queries[i%len(queries)], 0, false, OverviewActions{})

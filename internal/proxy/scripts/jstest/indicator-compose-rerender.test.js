@@ -1,3 +1,6 @@
+// @vitest-environment node
+// The test owns its JSDOM window (load-bundle.js), so the default jsdom
+// environment would only build a second, unused DOM per file.
 // indicator.js compose tab: re-rendering it (every panel open, every switch to
 // the tab) must not accumulate nodes outside the tab content.
 //

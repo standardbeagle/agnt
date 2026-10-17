@@ -8,6 +8,7 @@ package incident
 import (
 	"fmt"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
@@ -29,12 +30,12 @@ const (
 //   - Goroutine count within ±20 of baseline
 //   - BlobStore bytes < defaultBudgetBytes (16MB)
 //   - Inbox band counts never exceed defaultBandCapacity
+//   - Every published event was ingested by the session pipeline (events carry
+//     the session ID, since the bus discards sessionless events), the inbox is
+//     populated, and oversized messages reach the session blob store
 func TestSoak_24h_StableMemory(t *testing.T) {
 	bus := NewMPSCBus(nil)
 	defer bus.Close()
-
-	store := NewBlobStore(0)
-	defer store.Close()
 
 	sessionID := "soak-sess"
 	bus.AddSession(sessionID, nil, nil, nil)
@@ -75,12 +76,26 @@ func TestSoak_24h_StableMemory(t *testing.T) {
 			goroutines, baselineGoroutines, eventCount)
 
 		// BlobStore must not exceed its budget.
-		used, max, _ := store.Stats()
+		used, max, _ := pl.blobs.Stats()
 		require.Less(t, used, max,
 			"BlobStore over budget: used=%d max=%d at event %d", used, max, eventCount)
 
+		// Delivery: sessionless events are discarded before the inbox, so a soak
+		// that skipped this check could pass without exercising dedup, the inbox
+		// or the blob store at all.
+		require.Eventually(t, func() bool { return pl.ingestCount.Load() == int64(eventCount) },
+			10*time.Second, 10*time.Millisecond,
+			"pipeline ingested %d of %d published events", pl.ingestCount.Load(), eventCount)
+		require.Zero(t, bus.Dropped(), "bus dropped events at event %d", eventCount)
+
 		// Inbox bands must never exceed capacity.
 		stats := pl.inbox.Stats()
+		if eventCount > 0 {
+			require.Positive(t, stats.Critical+stats.Error+stats.Warning+stats.Info,
+				"inbox empty after %d published events", eventCount)
+			_, _, blobs := pl.blobs.Stats()
+			require.Positive(t, blobs, "session blob store empty after %d published events", eventCount)
+		}
 		require.LessOrEqual(t, stats.Critical, defaultBandCapacity)
 		require.LessOrEqual(t, stats.Error, defaultBandCapacity)
 		require.LessOrEqual(t, stats.Warning, defaultBandCapacity)
@@ -96,7 +111,14 @@ func TestSoak_24h_StableMemory(t *testing.T) {
 		case <-ticker.C:
 			sev := severities[eventCount%len(severities)]
 			msg := fmt.Sprintf("soak event %d", eventCount)
-			ev := NewIncidentEvent(SourceBrowserJS, sev, "SoakError", msg, Context{}, store)
+			if eventCount%8 == 0 {
+				// Oversized: the bus spills it into the session's own blob store.
+				msg += " " + strings.Repeat("padding ", 64)
+			}
+			// The session ID is what routes the event to the pipeline: the bus
+			// discards sessionless events. A nil store lets the bus own the spill,
+			// as for production adapters.
+			ev := NewIncidentEvent(SourceBrowserJS, sev, "SoakError", msg, Context{SessionID: sessionID}, nil)
 			bus.Publish(ev)
 			eventCount++
 

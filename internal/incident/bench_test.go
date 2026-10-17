@@ -2,17 +2,25 @@ package incident
 
 import (
 	"fmt"
+	"runtime"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
 
-// ── BenchmarkBus_Fire ─────────────────────────────────────────────────────────
-// Target: <500ns/op. Measures the non-blocking fire path under real dispatch.
+// ── Bus: enqueue-only microbenchmarks ─────────────────────────────────────────
+// These events carry no session ID, and the dispatcher discards a sessionless
+// event before dedup or the inbox. They therefore time ONLY the producer-side
+// channel send (and the drop path) — useful for the Fire hot-path budget, and
+// useless as a statement about pipeline throughput. BenchmarkBus_EndToEnd below
+// is the real workload.
 
-func BenchmarkBus_Fire(b *testing.B) {
+// BenchmarkBus_EnqueueOnly_Microbench: target <500ns/op for the non-blocking
+// send. Nothing downstream of the channel is exercised.
+func BenchmarkBus_EnqueueOnly_Microbench(b *testing.B) {
 	bus := NewMPSCBus(nil)
 	defer bus.Close()
-	bus.AddSession("bench-sess", nil, nil, nil)
 
 	ev := NewIncidentEvent(SourceBrowserJS, SeverityError, "TypeError", "bench error", Context{}, nil)
 
@@ -23,9 +31,10 @@ func BenchmarkBus_Fire(b *testing.B) {
 	}
 }
 
-// BenchmarkBus_Fire_Saturated measures Fire latency when the inbound channel is
-// near-full (drop path exercised). This is the worst-case producer scenario.
-func BenchmarkBus_Fire_Saturated(b *testing.B) {
+// BenchmarkBus_EnqueueSaturated_Microbench measures Fire latency when the
+// inbound channel is near-full (drop path exercised). This is the worst-case
+// producer scenario; like the benchmark above it never reaches an inbox.
+func BenchmarkBus_EnqueueSaturated_Microbench(b *testing.B) {
 	if raceEnabled {
 		b.Skip("latency benchmark not meaningful under race detector")
 	}
@@ -46,6 +55,150 @@ func BenchmarkBus_Fire_Saturated(b *testing.B) {
 		bus.Fire(&ev)
 	}
 	bus.resumeDispatch()
+}
+
+// ── BenchmarkBus_EndToEnd ─────────────────────────────────────────────────────
+// Session-scoped events through the whole pipeline: bus → dedup → inbox (and
+// the session blob store for oversized messages). Four numbers are reported
+// separately, because a single ns/op hides which one moved:
+//
+//	enqueue-ns/op     producer cost of Fire, measured around the send loop only
+//	events/s          completed throughput: accepted events / wall time until the
+//	                  dispatcher has ingested every one of them
+//	drain-ns/batch    queue delay: time from the last Fire of a batch returning
+//	                  to its last event being ingested (mean over batches)
+//	max-drain-ns      the worst such batch
+//	drops             events the bus refused (must stay 0, or the run is invalid)
+//
+// The reported ns/op is completed time per event (enqueue + queue + ingest).
+// Delivery is verified against the pipeline's own ingest counter and inbox, so a
+// run that silently discards events fails instead of reporting a fast number.
+
+const benchSessionID = "bench-sess"
+
+// benchBatch keeps each burst well inside the inbound channel so a healthy run
+// never drops; the drop path has its own microbenchmark.
+const benchBatch = busInboundCap / 4
+
+func benchEvent(msg string, sev Severity) IncidentEvent {
+	return NewIncidentEvent(SourceBrowserJS, sev, "TypeError", msg, Context{SessionID: benchSessionID}, nil)
+}
+
+// benchWaitIngested spins until the session pipeline has ingested want events.
+func benchWaitIngested(b *testing.B, pl *sessionPipeline, want int64) {
+	b.Helper()
+	deadline := time.Now().Add(30 * time.Second)
+	for pl.ingestCount.Load() < want {
+		if time.Now().After(deadline) {
+			b.Fatalf("pipeline ingested %d of %d events within 30s", pl.ingestCount.Load(), want)
+		}
+		runtime.Gosched()
+	}
+}
+
+// benchEndToEnd drives b.N events built by mk through a one-session bus and
+// returns the pipeline for post-run delivery assertions.
+func benchEndToEnd(b *testing.B, mk func(i int) IncidentEvent) *sessionPipeline {
+	b.Helper()
+	bus := NewMPSCBus(nil)
+	b.Cleanup(bus.Close)
+	bus.AddSession(benchSessionID, nil, nil, nil)
+	pl := bus.getSessionPipeline(benchSessionID)
+	if pl == nil {
+		b.Fatal("session pipeline missing after AddSession")
+	}
+
+	var (
+		accepted              int64
+		enqueue, drain, worst time.Duration
+		batches               int
+		events                = make([]IncidentEvent, 0, benchBatch)
+	)
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for done := 0; done < b.N; {
+		n := min(benchBatch, b.N-done)
+
+		b.StopTimer()
+		events = events[:0]
+		for j := 0; j < n; j++ {
+			events = append(events, mk(done+j))
+		}
+		b.StartTimer()
+
+		t0 := time.Now()
+		for j := range events {
+			if bus.fire(&events[j]) {
+				accepted++
+			}
+		}
+		enqueued := time.Now()
+		benchWaitIngested(b, pl, accepted)
+		d := time.Since(enqueued)
+
+		enqueue += enqueued.Sub(t0)
+		drain += d
+		worst = max(worst, d)
+		batches++
+		done += n
+	}
+	elapsed := b.Elapsed()
+
+	if dropped := bus.Dropped(); dropped != 0 || accepted != int64(b.N) {
+		b.Fatalf("bus dropped %d events, accepted %d of %d: delivered counts are not comparable", dropped, accepted, b.N)
+	}
+	if got := pl.ingestCount.Load(); got != int64(b.N) {
+		b.Fatalf("pipeline ingested %d events, published %d", got, b.N)
+	}
+
+	b.ReportMetric(float64(enqueue.Nanoseconds())/float64(b.N), "enqueue-ns/op")
+	b.ReportMetric(float64(b.N)/elapsed.Seconds(), "events/s")
+	b.ReportMetric(float64(drain.Nanoseconds())/float64(batches), "drain-ns/batch")
+	b.ReportMetric(float64(worst.Nanoseconds()), "max-drain-ns")
+	b.ReportMetric(float64(bus.Dropped()), "drops")
+	return pl
+}
+
+func BenchmarkBus_EndToEnd(b *testing.B) {
+	// Every event is a new fingerprint: dedup insert + inbox insert + band eviction.
+	b.Run("unique", func(b *testing.B) {
+		seen := make(map[string]struct{}, benchBatch)
+		pl := benchEndToEnd(b, func(i int) IncidentEvent {
+			ev := benchEvent("bench error "+strconv.FormatInt(int64(i), 36)+"x", SeverityError)
+			if i < benchBatch {
+				seen[ev.Fingerprint] = struct{}{}
+			}
+			return ev
+		})
+		if want := min(b.N, benchBatch); len(seen) != want {
+			b.Fatalf("messages collapsed to %d fingerprints, want %d: not a unique-entry workload", len(seen), want)
+		}
+		if got, want := pl.inbox.Stats().Error, min(b.N, defaultBandCapacity); got != want {
+			b.Fatalf("error band holds %d entries, want %d", got, want)
+		}
+	})
+
+	// One fingerprint repeated: the dedup/inbox merge path.
+	b.Run("repeat", func(b *testing.B) {
+		ev := benchEvent("bench repeat error", SeverityError)
+		pl := benchEndToEnd(b, func(int) IncidentEvent { return ev })
+		entry := pl.inbox.FindByFingerprint(ev.Fingerprint)
+		if entry == nil || entry.Count != b.N {
+			b.Fatalf("merged entry = %+v, want count %d", entry, b.N)
+		}
+	})
+
+	// Oversized unique messages: adds the per-session blob store write.
+	b.Run("payload_1KB", func(b *testing.B) {
+		pad := strings.Repeat("stack frame padding ", 52) // ~1KB
+		pl := benchEndToEnd(b, func(i int) IncidentEvent {
+			return benchEvent("bench payload "+strconv.FormatInt(int64(i), 36)+"x "+pad, SeverityError)
+		})
+		if _, _, count := pl.blobs.Stats(); count == 0 {
+			b.Fatal("blob store empty: payloads were not stored")
+		}
+	})
 }
 
 // ── BenchmarkDedup_Merge ──────────────────────────────────────────────────────

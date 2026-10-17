@@ -1,3 +1,6 @@
+// @vitest-environment node
+// The test owns its JSDOM window (load-bundle.js), so the default jsdom
+// environment would only build a second, unused DOM per file.
 // voice.js proxy capture: start() asks for the microphone, and getUserMedia
 // can sit on a permission prompt for as long as the user likes. A stop() or a
 // second toggle() in that window must cancel the start — the stream that

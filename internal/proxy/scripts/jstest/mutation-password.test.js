@@ -1,3 +1,6 @@
+// @vitest-environment node
+// The test owns its JSDOM window (load-bundle.js), so the default jsdom
+// environment would only build a second, unused DOM per file.
 // mutation.js: an attribute change on a password field is recorded, never
 // its text. Pages that mirror the typed value into the value attribute (React
 // controlled inputs) would otherwise put the password in the mutation log.

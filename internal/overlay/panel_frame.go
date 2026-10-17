@@ -17,12 +17,7 @@ func (r *Renderer) diffPanelFrame(frame *bytes.Buffer) (out *bytes.Buffer, overC
 	if r.width <= 0 || r.height <= 1 {
 		return frame, false
 	}
-	terminal := vt10x.New(vt10x.WithSize(r.width, r.height))
-	_, _ = terminal.Write(frame.Bytes()) // vt10x consumes an in-memory ANSI stream.
-	cells := make([]vt10x.Glyph, 0, r.width*(r.height-1))
-	for y := 0; y < r.height-1; y++ {
-		cells = terminal.Row(y, cells)
-	}
+	cells := r.renderPanelCells(frame)
 	previous := r.panelFrame
 	r.panelFrame = cells
 	if len(previous) != len(cells) {
@@ -57,6 +52,44 @@ func (r *Renderer) diffPanelFrame(frame *bytes.Buffer) (out *bytes.Buffer, overC
 		diff.WriteString(Reset)
 	}
 	return &diff, true
+}
+
+// resetSequence takes a reused emulator back to what vt10x.New builds: ESC c
+// (reset to initial state: default attributes, cursor home, wrap mode, tab stops,
+// scroll region) then ESC [ 2 J. The erase is not redundant — vt10x's reset()
+// passes clear() its row and column limits swapped, so on its own it blanks only
+// the first height columns and leaves the rest of the previous frame behind.
+const resetSequence = "\x1bc\x1b[2J"
+
+// renderPanelCells parses one complete panel frame and returns the resulting
+// cells of the rows above the protected status row. The emulator and both cell
+// buffers are kept on the Renderer: parsing a frame used to allocate a fresh
+// emulator (its line, alt-line and tab slices) and cell slice on every draw,
+// which was most of the allocated bytes in a panel redraw.
+//
+// The result aliases one of two alternating buffers, so it stays valid until the
+// draw after next — long enough to be the "previous" frame of the next diff.
+// The caller holds r.mu.
+func (r *Renderer) renderPanelCells(frame *bytes.Buffer) []vt10x.Glyph {
+	if r.panelTerm == nil || r.panelTermW != r.width || r.panelTermH != r.height {
+		r.panelTerm = vt10x.New(vt10x.WithSize(r.width, r.height))
+		r.panelTermW, r.panelTermH = r.width, r.height
+	} else {
+		// Frames are plain SGR/cursor-addressed text and never switch screens,
+		// retitle or recolour the palette, so this is the whole reset a fresh
+		// emulator would have given.
+		_, _ = r.panelTerm.Write([]byte(resetSequence))
+	}
+	_, _ = r.panelTerm.Write(frame.Bytes()) // vt10x consumes an in-memory ANSI stream.
+
+	idx := r.panelFlip
+	r.panelFlip ^= 1
+	cells := r.panelBufs[idx][:0]
+	for y := 0; y < r.height-1; y++ {
+		cells = r.panelTerm.Row(y, cells)
+	}
+	r.panelBufs[idx] = cells
+	return cells
 }
 
 // flushPanelDiff writes a row diff from diffPanelFrame like flushOverChild,

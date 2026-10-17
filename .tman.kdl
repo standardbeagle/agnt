@@ -15,6 +15,11 @@ defaults {
 
 alias "test" {
     command "go"
-    args "test" "./..."
+    args "test" "-p" "1" "./..."
+}
+
+alias "bench" {
+    command "go"
+    args "test" "-p" "1" "-run" "^$" "-bench" "." "-benchmem" "./..."
 }
 

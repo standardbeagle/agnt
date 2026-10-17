@@ -1,3 +1,6 @@
+// @vitest-environment node
+// The test owns its JSDOM window (load-bundle.js), so the default jsdom
+// environment would only build a second, unused DOM per file.
 // toast.js secret-entry field: what the user is told after Save.
 //
 // The value goes out as secret_submit, and the server answers secret_ack

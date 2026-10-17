@@ -647,25 +647,80 @@ func newPanelTestRouter(t *testing.T) (*InputRouter, *Overlay, *mockOutputFetche
 	return router, ov, fetcher
 }
 
+// TestPanelRefreshStartsAndStops is the one test that runs the real ticker: it
+// proves startPanelRefresh wires the production interval to a refresh. Everything
+// the refresh does with a tick is tested below by calling it directly, and
+// cancellation is tested against a driven loop, so neither waits on a timer.
 func TestPanelRefreshStartsAndStops(t *testing.T) {
 	router, _, fetcher := newPanelTestRouter(t)
 
-	// Start refresh
 	router.overlay.mu.Lock()
 	router.startPanelRefresh("dev")
 	router.overlay.mu.Unlock()
 
-	// Wait for at least one refresh tick
-	time.Sleep(panelRefreshInterval + 200*time.Millisecond)
-	count := fetcher.getCallCount()
-	assert.GreaterOrEqual(t, count, 1, "expected at least 1 refresh call")
+	// A liveness ceiling, not an expected latency: one interval plus headroom.
+	require.Eventually(t, func() bool { return fetcher.getCallCount() >= 1 },
+		10*panelRefreshInterval, 10*time.Millisecond, "expected a refresh tick to fetch output")
 
-	// Stop refresh
+	router.overlay.mu.Lock()
+	running := router.panelRefreshStop != nil
+	router.overlay.mu.Unlock()
+	assert.True(t, running, "startPanelRefresh should record the stop channel")
+
 	router.stopPanelRefresh()
+	assert.Nil(t, router.panelRefreshStop, "stopPanelRefresh should clear the stop channel")
+}
 
-	// Record count after stop, wait, verify no more calls
+// drivenRefreshLoop runs panelRefreshLoop on a test-owned tick channel. tick
+// delivers one refresh tick (the loop has taken it when tick returns); stop
+// closes the stop channel and waits for the loop to exit, so any refresh that
+// was in flight has finished when it returns.
+func drivenRefreshLoop(t *testing.T, router *InputRouter, panelID string) (tick func(), stop func()) {
+	t.Helper()
+	ticks := make(chan time.Time)
+	stopCh := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		router.panelRefreshLoop(stopCh, ticks, panelID)
+	}()
+	var stopped bool
+	stop = func() {
+		if stopped {
+			return
+		}
+		stopped = true
+		close(stopCh)
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("refresh loop did not exit after stop")
+		}
+	}
+	t.Cleanup(stop)
+	tick = func() {
+		select {
+		case ticks <- time.Now():
+		case <-time.After(5 * time.Second):
+			t.Fatal("refresh loop did not accept a tick")
+		}
+	}
+	return tick, stop
+}
+
+func TestPanelRefreshLoopRefreshesPerTickAndStopsOnCancel(t *testing.T) {
+	router, _, fetcher := newPanelTestRouter(t)
+	tick, stop := drivenRefreshLoop(t, router, "dev")
+
+	tick()
+	tick() // accepted only once the first refresh finished
+	require.Eventually(t, func() bool { return fetcher.getCallCount() >= 2 }, 5*time.Second, time.Millisecond)
+
+	stop()
 	countAfterStop := fetcher.getCallCount()
-	time.Sleep(panelRefreshInterval + 200*time.Millisecond)
+	assert.Equal(t, 2, countAfterStop, "one fetch per tick")
+
+	// The loop has exited: a late tick has no receiver and nothing fetches.
 	assert.Equal(t, countAfterStop, fetcher.getCallCount(), "no calls expected after stop")
 }
 
@@ -678,12 +733,8 @@ func TestPanelRefreshSkipsUnchangedContent(t *testing.T) {
 	ov.panelItems[1].SetContent("line1\nline2")
 	ov.mu.Unlock()
 
-	// Start refresh
-	router.overlay.mu.Lock()
-	router.startPanelRefresh("dev")
-	router.overlay.mu.Unlock()
-
-	time.Sleep(panelRefreshInterval + 200*time.Millisecond)
+	router.refreshPanelContent("dev")
+	require.Equal(t, 1, fetcher.getCallCount())
 
 	// Content should remain unchanged (no redraw needed)
 	ov.mu.Lock()
@@ -693,14 +744,12 @@ func TestPanelRefreshSkipsUnchangedContent(t *testing.T) {
 
 	// Now change the output
 	fetcher.setOutput("line1\nline2\nline3")
-	time.Sleep(panelRefreshInterval + 200*time.Millisecond)
+	router.refreshPanelContent("dev")
 
 	ov.mu.Lock()
 	content = ov.panelItems[1].Content
 	ov.mu.Unlock()
 	assert.Equal(t, "line1\nline2\nline3", content)
-
-	router.stopPanelRefresh()
 }
 
 func TestPanelRefreshRespectsScrollOffset(t *testing.T) {
@@ -713,12 +762,7 @@ func TestPanelRefreshRespectsScrollOffset(t *testing.T) {
 	ov.mu.Unlock()
 
 	fetcher.setOutput("new content with more lines")
-
-	router.overlay.mu.Lock()
-	router.startPanelRefresh("dev")
-	router.overlay.mu.Unlock()
-
-	time.Sleep(panelRefreshInterval + 200*time.Millisecond)
+	router.refreshPanelContent("dev")
 
 	ov.mu.Lock()
 	offset := ov.panelItems[1].ScrollOffset
@@ -730,8 +774,6 @@ func TestPanelRefreshRespectsScrollOffset(t *testing.T) {
 	// ScrollOffset should be preserved since user was not at bottom (and no
 	// lines were appended — both contents are a single line).
 	assert.Equal(t, 5, offset)
-
-	router.stopPanelRefresh()
 }
 
 // TestPanelRefreshAnchorsViewWhenScrolledUp verifies that when the user has
@@ -750,12 +792,7 @@ func TestPanelRefreshAnchorsViewWhenScrolledUp(t *testing.T) {
 
 	// Two new lines appended at the bottom (now 5 lines).
 	fetcher.setOutput("line1\nline2\nline3\nline4\nline5")
-
-	router.overlay.mu.Lock()
-	router.startPanelRefresh("dev")
-	router.overlay.mu.Unlock()
-
-	time.Sleep(panelRefreshInterval + 200*time.Millisecond)
+	router.refreshPanelContent("dev")
 
 	ov.mu.Lock()
 	offset := ov.panelItems[1].ScrollOffset
@@ -765,8 +802,6 @@ func TestPanelRefreshAnchorsViewWhenScrolledUp(t *testing.T) {
 	assert.Equal(t, "line1\nline2\nline3\nline4\nline5", content)
 	// 2 lines appended → offset must rise 2 (2→4) to keep line1..line3 in view.
 	assert.Equal(t, 4, offset, "offset should grow by appended-line count to anchor the view")
-
-	router.stopPanelRefresh()
 }
 
 func TestPanelRefreshAutoScrollsWhenAtBottom(t *testing.T) {
@@ -779,41 +814,33 @@ func TestPanelRefreshAutoScrollsWhenAtBottom(t *testing.T) {
 	ov.mu.Unlock()
 
 	fetcher.setOutput("new output")
-
-	router.overlay.mu.Lock()
-	router.startPanelRefresh("dev")
-	router.overlay.mu.Unlock()
-
-	time.Sleep(panelRefreshInterval + 200*time.Millisecond)
+	router.refreshPanelContent("dev")
 
 	ov.mu.Lock()
 	offset := ov.panelItems[1].ScrollOffset
+	content := ov.panelItems[1].Content
 	ov.mu.Unlock()
 
+	assert.Equal(t, "new output", content)
 	assert.Equal(t, 0, offset, "should auto-scroll to bottom")
-
-	router.stopPanelRefresh()
 }
 
 func TestPanelRefreshStopsOnPanelSwitch(t *testing.T) {
 	router, ov, fetcher := newPanelTestRouter(t)
 
 	// Start refresh on process panel
-	ov.mu.Lock()
-	router.startPanelRefresh("dev")
-	ov.mu.Unlock()
-
-	time.Sleep(panelRefreshInterval + 200*time.Millisecond)
-	require.GreaterOrEqual(t, fetcher.getCallCount(), 1)
+	tick, stop := drivenRefreshLoop(t, router, "dev")
+	tick()
+	require.Eventually(t, func() bool { return fetcher.getCallCount() >= 1 }, 5*time.Second, time.Millisecond)
 
 	// Navigate away to overview panel
 	ov.mu.Lock()
 	ov.panelIndex = 0 // overview
-	router.stopPanelRefresh()
 	ov.mu.Unlock()
+	stop()
 
 	countAfterStop := fetcher.getCallCount()
-	time.Sleep(panelRefreshInterval + 200*time.Millisecond)
+	assert.Equal(t, 1, countAfterStop)
 	assert.Equal(t, countAfterStop, fetcher.getCallCount())
 }
 
@@ -825,26 +852,20 @@ func TestPanelRefreshIgnoresWrongPanel(t *testing.T) {
 	ov.panelItems[1].SetContent("original")
 	ov.mu.Unlock()
 
-	// Start refresh for "dev" but switch active panel to overview
-	router.overlay.mu.Lock()
-	router.startPanelRefresh("dev")
-	router.overlay.mu.Unlock()
-
-	// Switch to overview between ticks
+	// Switch the active panel to overview between ticks
 	ov.mu.Lock()
 	ov.panelIndex = 0
 	ov.mu.Unlock()
 
-	time.Sleep(panelRefreshInterval + 200*time.Millisecond)
+	router.refreshPanelContent("dev")
 
 	// The refresh should have called GetScriptOutput but skipped the update
 	// because the active panel is no longer "dev"
+	assert.Equal(t, 1, fetcher.getCallCount())
 	ov.mu.Lock()
 	content := ov.panelItems[1].Content
 	ov.mu.Unlock()
 	assert.Equal(t, "original", content, "should not update non-active panel")
-
-	router.stopPanelRefresh()
 }
 
 func TestEagerRefreshOnUnfreeze(t *testing.T) {
@@ -945,21 +966,27 @@ func TestEagerRefreshSkippedWithoutFetcher(t *testing.T) {
 }
 
 func TestPanelRefreshDoubleStartReplacesOld(t *testing.T) {
-	router, _, fetcher := newPanelTestRouter(t)
+	router, _, _ := newPanelTestRouter(t)
 
 	router.overlay.mu.Lock()
 	router.startPanelRefresh("dev")
+	first := router.panelRefreshStop
 	// Starting again should stop the old one
 	router.startPanelRefresh("dev")
+	second := router.panelRefreshStop
 	router.overlay.mu.Unlock()
+	t.Cleanup(router.stopPanelRefresh)
 
-	time.Sleep(panelRefreshInterval + 200*time.Millisecond)
-	count := fetcher.getCallCount()
-	router.stopPanelRefresh()
-
-	// Should have had at most ~2 calls (one from each goroutine's first tick
-	// at most, since the old one is stopped almost immediately)
-	time.Sleep(panelRefreshInterval + 200*time.Millisecond)
-	finalCount := fetcher.getCallCount()
-	assert.Equal(t, count, finalCount, "old goroutine should be stopped")
+	require.NotNil(t, first)
+	require.NotNil(t, second)
+	select {
+	case <-first:
+	default:
+		t.Fatal("old refresh goroutine's stop channel should be closed")
+	}
+	select {
+	case <-second:
+		t.Fatal("new refresh goroutine should still be running")
+	default:
+	}
 }

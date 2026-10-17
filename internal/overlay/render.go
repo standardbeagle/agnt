@@ -305,7 +305,15 @@ type Renderer struct {
 	currentMenuRegion  *ScreenRegion
 	currentInputRegion *ScreenRegion
 
+	// panelFrame is the last panel frame drawn (nil forces a full redraw). It
+	// aliases one of panelBufs; panelTerm and the buffers are reused across
+	// draws — see renderPanelCells.
 	panelFrame []vt10x.Glyph
+	panelBufs  [2][]vt10x.Glyph
+	panelFlip  int
+	panelTerm  vt10x.Terminal
+	panelTermW int
+	panelTermH int
 
 	// Animation frame counter for starting-state indicator. Incremented
 	// atomically on each DrawIndicator call; read by processStateIcon

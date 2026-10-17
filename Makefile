@@ -1,4 +1,4 @@
-.PHONY: all vendor-check test-coverage bench fmt vet deps help build release test test-unit test-integration test-browser test-e2e e2e-publish-browser test-chrome-e2e test-js test-isolated test-ssh test-ssh-coverage test-flake check-dirty-tree clean clean-zombies install install-local install-windows install-hooks run lint test-webapp mockagent generate generate-check vendor cross-compile cross-compile-check demo demo-publish demo-check demo-engine-test demo-mux-check demo-inspect-check demo-publish-check demo-assemble-check
+.PHONY: all vendor-check test-coverage bench test-pkg fmt vet deps help build release test test-unit test-integration test-browser test-e2e e2e-publish-browser test-chrome-e2e test-js test-js-install test-isolated test-ssh test-ssh-coverage test-flake check-dirty-tree clean clean-zombies install install-local install-windows install-hooks run lint test-webapp mockagent generate generate-check vendor cross-compile cross-compile-check demo demo-publish demo-check demo-engine-test demo-mux-check demo-inspect-check demo-publish-check demo-assemble-check
 
 # Binary names
 BINARY := devtool-mcp
@@ -181,13 +181,23 @@ test-ssh-coverage:
 check-dirty-tree: clean-zombies
 	./scripts/check-tree-clean.sh
 
-# Hunt flakes via parallel stress run (50-count, 4-way parallel, shuffled)
-test-flake: ## Hunt flakes via parallel stress run
-	go test -race -count=50 -p 4 -shuffle=on ./internal/daemon/ ./cmd/agnt/
+# Hunt flakes via a shuffled stress run (50-count). Packages stay serial (-p 1):
+# -p 4 reintroduces the cross-package port contention that reads as a flake.
+test-flake: ## Hunt flakes via shuffled stress run
+	go test -race -count=50 -p 1 -shuffle=on ./internal/daemon/ ./cmd/agnt/
 
-# Run unit tests only (excludes integration tests)
+# Focused test run: one package (or pattern) and optionally one test regex.
+#   make test-pkg PKG=./internal/incident
+#   make test-pkg PKG=./internal/overlay RUN='TestPanelRefresh'
+# Serial (-p 1) like the full gate, but only the packages you name.
+PKG ?= ./...
+RUN ?=
+test-pkg:
+	go test -p 1 -count=1 $(if $(RUN),-run '$(RUN)') $(PKG)
+
+# Default suite without verbose output or the zombie sweep; PKG narrows it.
 test-unit:
-	go test -p 1 -v ./...
+	go test -p 1 $(PKG)
 
 # Run integration tests (requires external dependencies)
 test-integration:
@@ -230,12 +240,28 @@ e2e-publish-browser:
 # install, so this target loud-skips when npm is absent rather than failing.
 # jsdom answers for stylesheets, attributes and computed styles; anything
 # needing layout or paint belongs to the chromee2e tier instead.
+JSTEST_DIR := internal/proxy/scripts/jstest
+JSFILTER ?=
+
+# Installs from the lockfile only when it is newer than what is installed, so a
+# local rerun does not pay for `npm ci` (which deletes and rebuilds node_modules).
+# `make test-js-install` forces it.
+$(JSTEST_DIR)/node_modules/.package-lock.json: $(JSTEST_DIR)/package-lock.json
+	cd $(JSTEST_DIR) && npm ci --no-audit --no-fund
+
+test-js-install:
+	cd $(JSTEST_DIR) && npm ci --no-audit --no-fund
+
+# Tests that build their own JSDOM window (load-bundle.js) opt out of the default
+# jsdom environment with `// @vitest-environment node`; keep jsdom only where a
+# test reads the global document. Narrow a run with JSFILTER=core-transport.
 test-js:
 	@if ! command -v npm >/dev/null 2>&1; then \
 		echo "SKIPPED: test-js requires npm (node) on PATH"; \
 		exit 0; \
 	fi
-	cd internal/proxy/scripts/jstest && npm ci --no-audit --no-fund && npm test
+	@$(MAKE) --no-print-directory $(JSTEST_DIR)/node_modules/.package-lock.json
+	cd $(JSTEST_DIR) && npm test -- $(JSFILTER)
 
 # Build test webapp server
 test-webapp:
@@ -245,9 +271,13 @@ test-webapp:
 mockagent:
 	go build -o testdata/mockagent/mockagent ./testdata/mockagent/
 
-# Run benchmarks
+# Run benchmarks only: -run '^$$' keeps the ordinary tests out of the timing.
+#   make bench PKG=./internal/incident BENCH=Bus_EndToEnd
+#   make bench PKG=./internal/overlay BENCH=Panel COUNT=5
+BENCH ?= .
+COUNT ?= 1
 bench:
-	go test -p 1 -bench=. -benchmem ./...
+	go test -p 1 -run '^$$' -bench='$(BENCH)' -benchmem -count=$(COUNT) $(PKG)
 
 # Clean build artifacts
 clean: clean-zombies

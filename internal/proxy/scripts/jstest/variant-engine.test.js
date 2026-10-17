@@ -1,3 +1,6 @@
+// @vitest-environment node
+// The test owns its JSDOM window (load-bundle.js), so the default jsdom
+// environment would only build a second, unused DOM per file.
 // variant-engine.js: reconcile behaviour on a page that keeps mutating.
 //
 // The engine re-syncs on every foreign DOM mutation. These tests drive that

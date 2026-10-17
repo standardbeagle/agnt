@@ -1120,12 +1120,18 @@ func (r *InputRouter) stopPanelRefresh() {
 func (r *InputRouter) runPanelRefresh(stop <-chan struct{}, panelID string) {
 	ticker := time.NewTicker(panelRefreshInterval)
 	defer ticker.Stop()
+	r.panelRefreshLoop(stop, ticker.C, panelID)
+}
 
+// panelRefreshLoop refreshes the panel on every tick until stop closes. The tick
+// source is a parameter so tests can drive refreshes without waiting on the
+// production interval.
+func (r *InputRouter) panelRefreshLoop(stop <-chan struct{}, ticks <-chan time.Time, panelID string) {
 	for {
 		select {
 		case <-stop:
 			return
-		case <-ticker.C:
+		case <-ticks:
 			r.refreshPanelContent(panelID)
 		}
 	}

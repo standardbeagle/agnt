@@ -1,3 +1,6 @@
+// @vitest-environment node
+// The test owns its JSDOM window (load-bundle.js), so the default jsdom
+// environment would only build a second, unused DOM per file.
 // sketch.js: keyboard shortcuts stay out of sketch's own text inputs (which
 // live in the shadow-root mount), and undo/redo walk the drawing history one
 // state at a time in both directions.

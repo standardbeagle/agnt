@@ -1,3 +1,6 @@
+// @vitest-environment node
+// The test owns its JSDOM window (load-bundle.js), so the default jsdom
+// environment would only build a second, unused DOM per file.
 // indicator.js panel send: a message the socket did not take stays put.
 //
 // core.send returns false while the socket is not open (reconnecting). The

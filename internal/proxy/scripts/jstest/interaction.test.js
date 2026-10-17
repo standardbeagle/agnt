@@ -1,3 +1,6 @@
+// @vitest-environment node
+// The test owns its JSDOM window (load-bundle.js), so the default jsdom
+// environment would only build a second, unused DOM per file.
 // interaction.js: what is recorded for a user event, and what is not.
 //
 // Evaluates the shipped frames/core/utils/interaction modules and dispatches

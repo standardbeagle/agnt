@@ -1,3 +1,6 @@
+// @vitest-environment node
+// The test owns its JSDOM window (load-bundle.js), so the default jsdom
+// environment would only build a second, unused DOM per file.
 // The assembled bundle, evaluated in real module order.
 //
 // api.js is the last module and replaces window.__devtool. Earlier modules

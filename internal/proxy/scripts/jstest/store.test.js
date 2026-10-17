@@ -1,3 +1,6 @@
+// @vitest-environment node
+// The test owns its JSDOM window (load-bundle.js), so the default jsdom
+// environment would only build a second, unused DOM per file.
 // store.js: a store request that is never sent rejects at once instead of
 // waiting out the 10s response timeout (the contract session.js keeps).
 

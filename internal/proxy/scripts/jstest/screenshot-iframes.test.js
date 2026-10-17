@@ -1,3 +1,6 @@
+// @vitest-environment node
+// The test owns its JSDOM window (load-bundle.js), so the default jsdom
+// environment would only build a second, unused DOM per file.
 // __devtool.screenshot and __devtool.snapshot render same-origin iframe content
 // themselves: html2canvas paints an <iframe> as an empty box, so each capture
 // pre-renders every iframe and swaps it for an <img> in html2canvas's cloned

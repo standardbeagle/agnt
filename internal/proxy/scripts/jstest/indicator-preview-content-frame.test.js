@@ -1,3 +1,6 @@
+// @vitest-environment node
+// The test owns its JSDOM window (load-bundle.js), so the default jsdom
+// environment would only build a second, unused DOM per file.
 // indicator.js element attachment preview: under the always-wrap model the
 // indicator runs in the chrome shell while the page lives in the content
 // frame, so the highlighted element must be looked up in targetWindow()'s

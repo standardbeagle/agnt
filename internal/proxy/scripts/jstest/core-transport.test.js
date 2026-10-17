@@ -1,3 +1,6 @@
+// @vitest-environment node
+// The test owns its JSDOM window (load-bundle.js), so the default jsdom
+// environment would only build a second, unused DOM per file.
 // core.js control transport: reconnect schedule, stale-socket handling, the
 // online / visibility re-arm, the transport-diagnostics global, and what the
 // console override captures.

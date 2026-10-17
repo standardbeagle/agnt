@@ -282,56 +282,14 @@ func TestModifyResponse_CorruptGzipData(t *testing.T) {
 	}
 }
 
-// Benchmark decompression overhead
-func BenchmarkModifyResponse_Gzip(b *testing.B) {
-	ps := &ProxyServer{
-		ListenAddr: ":8080",
-	}
+// The ModifyResponse benchmarks share one fixture (benchHTML), one proxy
+// configuration and one drain pattern with BenchmarkModifyResponse_Identity, and
+// run at three payload sizes so encodings are comparable with each other and
+// across sizes. The helpers live in rewrite_bench_test.go.
 
-	htmlContent := []byte("<html><head><title>Test</title></head><body>" + strings.Repeat("Hello World ", 1000) + "</body></html>")
+func BenchmarkModifyResponse_Gzip(b *testing.B) { benchModifyEncoded(b, "gzip", encodeGzip) }
 
-	// Pre-compress content
-	var buf bytes.Buffer
-	gzWriter := gzip.NewWriter(&buf)
-	gzWriter.Write(htmlContent)
-	gzWriter.Close()
-	compressedData := buf.Bytes()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		resp := &http.Response{
-			StatusCode: http.StatusOK,
-			Header: http.Header{
-				"Content-Type":     []string{"text/html"},
-				"Content-Encoding": []string{"gzip"},
-			},
-			Body: io.NopCloser(bytes.NewReader(compressedData)),
-		}
-		ps.modifyResponse(resp)
-		io.ReadAll(resp.Body)
-	}
-}
-
-func BenchmarkModifyResponse_NoCompression(b *testing.B) {
-	ps := &ProxyServer{
-		ListenAddr: ":8080",
-	}
-
-	htmlContent := []byte("<html><head><title>Test</title></head><body>" + strings.Repeat("Hello World ", 1000) + "</body></html>")
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		resp := &http.Response{
-			StatusCode: http.StatusOK,
-			Header: http.Header{
-				"Content-Type": []string{"text/html"},
-			},
-			Body: io.NopCloser(bytes.NewReader(htmlContent)),
-		}
-		ps.modifyResponse(resp)
-		io.ReadAll(resp.Body)
-	}
-}
+func BenchmarkModifyResponse_NoCompression(b *testing.B) { benchModifyEncoded(b, "", encodeIdentity) }
 
 func TestModifyResponse_BrotliCompression(t *testing.T) {
 	ps := &ProxyServer{
@@ -491,60 +449,6 @@ func TestModifyResponse_UnsupportedCompression(t *testing.T) {
 	}
 }
 
-func BenchmarkModifyResponse_Brotli(b *testing.B) {
-	ps := &ProxyServer{
-		ListenAddr: ":8080",
-	}
+func BenchmarkModifyResponse_Brotli(b *testing.B) { benchModifyEncoded(b, "br", encodeBrotli) }
 
-	htmlContent := []byte("<html><head><title>Test</title></head><body>" + strings.Repeat("Hello World ", 1000) + "</body></html>")
-
-	// Pre-compress content with Brotli
-	var buf bytes.Buffer
-	brWriter := brotli.NewWriter(&buf)
-	brWriter.Write(htmlContent)
-	brWriter.Close()
-	compressedData := buf.Bytes()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		resp := &http.Response{
-			StatusCode: http.StatusOK,
-			Header: http.Header{
-				"Content-Type":     []string{"text/html"},
-				"Content-Encoding": []string{"br"},
-			},
-			Body: io.NopCloser(bytes.NewReader(compressedData)),
-		}
-		ps.modifyResponse(resp)
-		io.ReadAll(resp.Body)
-	}
-}
-
-func BenchmarkModifyResponse_Zstd(b *testing.B) {
-	ps := &ProxyServer{
-		ListenAddr: ":8080",
-	}
-
-	htmlContent := []byte("<html><head><title>Test</title></head><body>" + strings.Repeat("Hello World ", 1000) + "</body></html>")
-
-	// Pre-compress content with Zstandard
-	var buf bytes.Buffer
-	zstdWriter, _ := zstd.NewWriter(&buf)
-	zstdWriter.Write(htmlContent)
-	zstdWriter.Close()
-	compressedData := buf.Bytes()
-
-	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
-		resp := &http.Response{
-			StatusCode: http.StatusOK,
-			Header: http.Header{
-				"Content-Type":     []string{"text/html"},
-				"Content-Encoding": []string{"zstd"},
-			},
-			Body: io.NopCloser(bytes.NewReader(compressedData)),
-		}
-		ps.modifyResponse(resp)
-		io.ReadAll(resp.Body)
-	}
-}
+func BenchmarkModifyResponse_Zstd(b *testing.B) { benchModifyEncoded(b, "zstd", encodeZstd) }
