@@ -210,7 +210,11 @@ func (t *Tunnel) Start(ctx context.Context) error {
 
 // Stop stops the tunnel.
 func (t *Tunnel) Stop(ctx context.Context) error {
-	if t.State() == StateIdle {
+	// A tunnel stopped before it started must stay stopped: Manager.Start lists
+	// the tunnel before it starts it, so a Stop in that window followed by the
+	// pending Start would otherwise launch a process nothing owns.
+	if t.compareAndSwapState(StateIdle, StateStopped) {
+		t.closeDone()
 		return nil
 	}
 
@@ -480,9 +484,16 @@ func (t *Tunnel) cloudflareLine(line string) {
 		}
 		return
 	}
-	if match := cloudflareURLPattern.FindString(line); match != "" {
+	for _, match := range cloudflareURLPattern.FindAllString(line, -1) {
+		// api.trycloudflare.com is cloudflared's own control endpoint, quoted
+		// in its error lines; it is not a tunnel URL, and taking it would mark
+		// a failing tunnel connected on a host the proxy then trusts.
+		if match == "https://api.trycloudflare.com" {
+			continue
+		}
 		t.setPublicURL(match)
 		t.markConnected()
+		return
 	}
 }
 
@@ -583,7 +594,11 @@ func (t *Tunnel) launch(ctx context.Context, name string, cmd *exec.Cmd, handle 
 		_ = pw.Close()
 		<-parsed
 		if ctx.Err() != nil {
-			return // Stop (or the caller's context) ended it: not a failure.
+			// Stop (or the caller's context) ended it: not a failure, but the
+			// process is gone, so Info must not keep reporting it live.
+			t.compareAndSwapState(StateConnected, StateStopped)
+			t.compareAndSwapState(StateStarting, StateStopped)
+			return
 		}
 		if waitErr == nil {
 			waitErr = errors.New("exited unexpectedly with status 0")

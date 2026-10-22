@@ -96,6 +96,30 @@ func TestCloudflareTunnelValidateFields(t *testing.T) {
 	}
 }
 
+// A character that ends the host in a URL ("?", "#", "\") must not pass as part
+// of an Access team label or tunnel hostname: the signing-key fetch is built
+// from the former, the public URL from the latter.
+func TestCloudflareTunnelRefusesURLDelimitersInNames(t *testing.T) {
+	for _, d := range []string{
+		"intranet?x.cloudflareaccess.com", "intranet#x.cloudflareaccess.com",
+		`intranet\x.cloudflareaccess.com`, "a b.cloudflareaccess.com", "-a.cloudflareaccess.com",
+		".cloudflareaccess.com", "a.b.cloudflareaccess.com",
+	} {
+		if got, err := NormalizeAccessTeamDomain(d); err == nil {
+			t.Errorf("team domain %q accepted as %q", d, got)
+		}
+	}
+	if got, err := NormalizeAccessTeamDomain(" Beagle.CloudflareAccess.com "); err != nil || got != "beagle.cloudflareaccess.com" {
+		t.Errorf("valid team domain = %q, %v", got, err)
+	}
+	for _, h := range []string{"dev.example.com?x=1", "dev.example.com#f", `dev.example.com\x`, "dev..example.com", "-dev.example.com", "dev.example.com\n"} {
+		c := &CloudflareTunnelConfig{ID: "id", Hostname: h, CredentialsFile: "c.json", AllowUnauthenticated: true}
+		if err := c.Validate(); err == nil {
+			t.Errorf("hostname %q accepted", h)
+		}
+	}
+}
+
 func TestCloudflareTunnelCredentialsPath(t *testing.T) {
 	home, err := os.UserHomeDir()
 	if err != nil {

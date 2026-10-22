@@ -55,6 +55,14 @@ func (m *Manager) Start(ctx context.Context, id string, config Config) (*Tunnel,
 	}
 	m.active.Add(1)
 
+	// Re-check after the store: a Shutdown that set the flag between the entry
+	// check and the store may have swept the registry already and missed this
+	// tunnel, which would then start and outlive the shutdown.
+	if m.shuttingDown.Load() {
+		m.retire(tunnel)
+		return nil, fmt.Errorf("tunnel manager is shutting down")
+	}
+
 	if err := tunnel.Start(ctx); err != nil {
 		m.retire(tunnel)
 		return nil, err

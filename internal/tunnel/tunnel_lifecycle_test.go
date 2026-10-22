@@ -184,10 +184,26 @@ func TestTunnelStart_DoubleAndUnsupported(t *testing.T) {
 }
 
 func TestTunnelStop(t *testing.T) {
-	t.Run("stop before start is a no-op", func(t *testing.T) {
+	t.Run("stop before start latches stopped so a later Start cannot launch", func(t *testing.T) {
 		tun := New(Config{Provider: ProviderCloudflare, LocalPort: 1})
 		require.NoError(t, tun.Stop(context.Background()))
-		assert.Equal(t, StateIdle, tun.State(), "idle tunnel stays idle")
+		assert.Equal(t, StateStopped, tun.State())
+		assert.True(t, tun.exited(), "done is closed")
+		err := tun.Start(context.Background())
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "already started")
+		assert.Nil(t, tun.cmd, "no process was launched")
+	})
+
+	t.Run("api.trycloudflare.com in an error line is not the tunnel URL", func(t *testing.T) {
+		tun := New(Config{Provider: ProviderCloudflare, LocalPort: 1})
+		tun.setState(StateStarting)
+		tun.cloudflareLine(`ERR Failed Post "https://api.trycloudflare.com/tunnel": dial tcp: lookup failed`)
+		assert.Empty(t, tun.PublicURL())
+		assert.Equal(t, StateStarting, tun.State())
+		tun.cloudflareLine(`INF | https://abc-def.trycloudflare.com |`)
+		assert.Equal(t, "https://abc-def.trycloudflare.com", tun.PublicURL())
+		assert.Equal(t, StateConnected, tun.State())
 	})
 
 	t.Run("nil cmd/process safe when done already closed", func(t *testing.T) {

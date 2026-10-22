@@ -5,6 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
 
@@ -44,13 +45,21 @@ type CloudflareAccessConfig struct {
 // AccessTeamDomainSuffix is the only domain an Access team hostname can have.
 const AccessTeamDomainSuffix = ".cloudflareaccess.com"
 
+// dnsLabelPattern is one RFC 1123 DNS label. A blocklist of separator
+// characters missed "?", "#" and "\", any of which ends the host in a URL built
+// from the team domain and sends the signing-key fetch somewhere else.
+var dnsLabelPattern = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
+
+// dnsNamePattern is a dotted DNS name of RFC 1123 labels.
+var dnsNamePattern = regexp.MustCompile(`^([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?$`)
+
 // NormalizeAccessTeamDomain lowercases and validates an Access team domain.
 // The proxy fetches signing keys from this host, so anything other than a
 // single label under cloudflareaccess.com is refused.
 func NormalizeAccessTeamDomain(domain string) (string, error) {
 	domain = strings.ToLower(strings.TrimSpace(domain))
 	label := strings.TrimSuffix(domain, AccessTeamDomainSuffix)
-	if label == domain || label == "" || strings.ContainsAny(label, "./:@") {
+	if label == domain || !dnsLabelPattern.MatchString(label) {
 		return "", fmt.Errorf("access team-domain %q must be <team>%s", domain, AccessTeamDomainSuffix)
 	}
 	return domain, nil
@@ -114,7 +123,7 @@ func validateTunnelHostname(h string) error {
 	if h == "" {
 		return fmt.Errorf("hostname is required")
 	}
-	if strings.ContainsAny(h, "/:*@ ") || strings.HasPrefix(h, ".") || strings.HasSuffix(h, ".") || !strings.Contains(h, ".") {
+	if !dnsNamePattern.MatchString(h) {
 		return fmt.Errorf("hostname %q must be a bare DNS name like dev.example.com", h)
 	}
 	if net.ParseIP(h) != nil {

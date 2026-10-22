@@ -400,3 +400,14 @@ func TestTunnel_LastOutputWhileRunning(t *testing.T) {
 	}, 10*time.Second, 20*time.Millisecond)
 	assert.Equal(t, StateStarting, tun.State())
 }
+
+// A Start that loses the race with Shutdown must not leave a started tunnel
+// behind: the flag is re-checked after the registry store.
+func TestManager_StartAfterShutdownFlagRetires(t *testing.T) {
+	m := NewManager()
+	m.shuttingDown.Store(true)
+	_, err := m.Start(context.Background(), "late", Config{Provider: ProviderCloudflare, LocalPort: 1})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "shutting down")
+	assert.Equal(t, 0, m.ActiveCount())
+}
