@@ -79,6 +79,11 @@ type Session struct {
 	// means ownership is unknown and therefore fails safe.
 	OwnerPID int `json:"owner_pid,omitempty"`
 
+	// ownerBirthID is the OS birth token of OwnerPID captured at register time
+	// (platform.ProcessBirthID; empty when unavailable). A live PID whose token
+	// differs is a recycled PID, not the wrapper.
+	ownerBirthID string
+
 	// SessionJobHandle is a legacy wire field. Current clients always send
 	// 0, on every platform, and the daemon never acts on the value: a
 	// Windows handle is an index into the owning process's handle table,

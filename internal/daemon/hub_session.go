@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/standardbeagle/agnt/internal/platform"
 	"net"
 	"net/http"
 	"strings"
@@ -92,6 +93,9 @@ func parseSessionRegisterArgs(cmd *hubproto.Command) (*Session, sessionRegisterM
 		SessionPGID:      metadata.SessionPGID,
 		SessionJobHandle: metadata.SessionJobHandle,
 		OwnerPID:         metadata.OwnerPID,
+	}
+	if metadata.OwnerPID > 1 {
+		session.ownerBirthID, _ = platform.ProcessBirthID(metadata.OwnerPID)
 	}
 	return session, metadata, nil
 }
@@ -274,6 +278,7 @@ func (d *Daemon) hubHandleSessionRegister(conn *hubpkg.Connection, cmd *hubproto
 			}
 			if session.OwnerPID <= 0 {
 				session.OwnerPID = existing.OwnerPID
+				session.ownerBirthID = existing.ownerBirthID
 			}
 			if session.SessionJobHandle == 0 {
 				session.SessionJobHandle = existing.SessionJobHandle

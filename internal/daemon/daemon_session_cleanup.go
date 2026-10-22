@@ -414,8 +414,22 @@ func (d *Daemon) cleanupGracePeriod() time.Duration {
 func ownerConfirmedGone(session *Session) bool {
 	session.mu.RLock()
 	ownerPID := session.OwnerPID
+	birth := session.ownerBirthID
 	session.mu.RUnlock()
-	return ownerPID > 1 && !pidAlive(ownerPID)
+	if ownerPID <= 1 {
+		return false
+	}
+	if !pidAlive(ownerPID) {
+		return true
+	}
+	// A live PID with a different birth token is a recycled PID: the wrapper
+	// is gone and its session's processes would otherwise leak until restart.
+	if birth != "" {
+		if now, ok := platform.ProcessBirthID(ownerPID); ok && now != birth {
+			return true
+		}
+	}
+	return false
 }
 
 // deferAgainWhileOwnerMayLive reschedules the ownership check and reports
