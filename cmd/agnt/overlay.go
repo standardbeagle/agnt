@@ -998,10 +998,25 @@ func isStrippableControl(r rune) bool {
 	return unicode.IsControl(r)
 }
 
+// maxTypedRunes is the longest text typed rune by rune; longer text is written
+// in one go (see typeText).
+const maxTypedRunes = 500
+
+// ptyWriteTimeout bounds a single write to the agent's PTY, so an agent that
+// has stopped reading (Ctrl+Z, wedged) cannot hold o.mu, and with it all
+// injection, forever.
+const ptyWriteTimeout = 5 * time.Second
+
 func (o *Overlay) typeText(msg TypeMessage) {
 	// Single enforced sanitization point for injected content — see
 	// sanitizeInjectedText. Every injection path funnels through here.
 	msg.Text = sanitizeInjectedText(msg.Text)
+
+	// Typing is 10ms a rune with injectMu held, which blocks every other
+	// injection (alerts, the user's own sends). Long text goes as one write.
+	if !msg.Instant && utf8.RuneCountInString(msg.Text) > maxTypedRunes {
+		msg.Instant = true
+	}
 
 	o.injectMu.Lock()
 	defer o.injectMu.Unlock()
@@ -1230,6 +1245,9 @@ func (o *Overlay) writeTopty(s string) {
 	if o.ptmx == nil {
 		debug.Log("overlay", "writeTopty: ptmx is nil, dropping %d bytes", len(s))
 		return
+	}
+	if dl, ok := o.ptmx.(interface{ SetWriteDeadline(time.Time) error }); ok {
+		_ = dl.SetWriteDeadline(time.Now().Add(ptyWriteTimeout))
 	}
 	n, err := o.ptmx.Write([]byte(s))
 	if err != nil {
