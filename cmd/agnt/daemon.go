@@ -205,9 +205,13 @@ func runDaemonStart(cmd *cobra.Command, args []string) {
 	log.Println("Daemon shutdown signal received...")
 
 	// Graceful shutdown
+	// Stop spends the first graceful-timeout window (5s) in hub.Stop waiting
+	// for managed process groups; every later step (scheduler, proxies, state
+	// flush, goroutine wait) shares what is left of this context, so it must be
+	// well above that or they run with it already expired.
 	shutdownCtx, shutdownCancel := context.WithTimeout(
 		context.Background(),
-		5*time.Second,
+		20*time.Second,
 	)
 	defer shutdownCancel()
 
