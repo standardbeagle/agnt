@@ -88,6 +88,32 @@ func TestDaemonTools_ReattachBindsReconnectedConnection(t *testing.T) {
 	assert.Equal(t, "attach-test", dt.SessionCode())
 }
 
+// The channel session is created by this process, so a restarted daemon has no
+// record of it: reconnecting must re-register it, or the heartbeat loop beats
+// for a session that does not exist and digests stop being scoped to it.
+func TestDaemonTools_ReattachReregistersChannelSession(t *testing.T) {
+	dt, sock := attachTestDaemon(t)
+	project, err := os.Getwd()
+	require.NoError(t, err)
+
+	// State RegisterChannelSession leaves behind, against a daemon that never
+	// heard of the code (what a restarted daemon looks like).
+	dt.sessionMu.Lock()
+	dt.channelSessionCode = "mcp-restarted"
+	dt.channelProjectPath = project
+	dt.sessionMu.Unlock()
+
+	fresh := daemonclient.NewClient(daemonclient.WithSocketPath(sock))
+	require.NoError(t, fresh.Connect())
+	t.Cleanup(func() { _ = fresh.Close() })
+	require.Error(t, fresh.SessionHeartbeat("mcp-restarted"), "precondition: the daemon does not know the channel session")
+
+	require.NoError(t, dt.reattach(fresh))
+	assert.NoError(t, fresh.SessionHeartbeat("mcp-restarted"),
+		"reconnect must recreate the channel-owned session so heartbeats land")
+	assert.Equal(t, "mcp-restarted", dt.ChannelSessionCode())
+}
+
 // With no session left to attach to (daemon restarted, session ended), the
 // stale code is dropped and the next tool call gets to try again.
 func TestDaemonTools_ReattachDropsStaleSession(t *testing.T) {

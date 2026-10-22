@@ -49,6 +49,7 @@ type DaemonTools struct {
 	// process-scoped identifier read by ChannelSessionCode(); that access
 	// continues to go through sessionMu.
 	channelSessionCode string // Session code for the channel session (empty if not registered)
+	channelProjectPath string // Project the channel session registered under, for re-registration after a daemon restart
 }
 
 // NewDaemonTools creates a new daemon tools wrapper with auto-start and version checking.
@@ -155,6 +156,8 @@ func (dt *DaemonTools) forgetAttachment() {
 // It never fails the reconnect: with no session to attach (daemon restarted,
 // session ended) the stale code is dropped and the next tool call retries.
 func (dt *DaemonTools) reattach(client *daemonclient.Client) error {
+	dt.reregisterChannelSession(client)
+
 	dt.sessionMu.Lock()
 	skip := dt.noAutoAttach || !dt.attachAttempted
 	dt.sessionMu.Unlock()
@@ -166,6 +169,23 @@ func (dt *DaemonTools) reattach(client *daemonclient.Client) error {
 		dt.forgetAttachment()
 	}
 	return nil
+}
+
+// reregisterChannelSession recreates the channel-owned session on a connection
+// the ResilientClient just re-established. Unlike a cwd session, the channel
+// session is created by this process, so a restarted daemon has no record of it
+// and heartbeats would target a nonexistent session. Same code, so the incident
+// digest stream and heartbeat loop keep working unchanged.
+func (dt *DaemonTools) reregisterChannelSession(client *daemonclient.Client) {
+	dt.sessionMu.Lock()
+	code, projectPath := dt.channelSessionCode, dt.channelProjectPath
+	dt.sessionMu.Unlock()
+	if code == "" {
+		return
+	}
+	if _, err := client.SessionRegisterWithPGID(code, "-", projectPath, "mcp", nil, 0); err != nil {
+		fmt.Fprintf(os.Stderr, "[agnt] channel session: re-registration failed: %v\n", err)
+	}
 }
 
 // ensureConnected ensures we have a connection to the daemon with automatic version checking and upgrade.
@@ -554,6 +574,7 @@ func (dt *DaemonTools) RegisterChannelSession(ctx context.Context, cfg *config.C
 
 	dt.sessionMu.Lock()
 	dt.channelSessionCode = sessionCode
+	dt.channelProjectPath = projectPath
 	dt.sessionMu.Unlock()
 
 	// Child context owned by the returned handle. Close() cancels it;
@@ -594,6 +615,7 @@ func (dt *DaemonTools) closeChannelSession() {
 	dt.sessionMu.Lock()
 	code := dt.channelSessionCode
 	dt.channelSessionCode = ""
+	dt.channelProjectPath = ""
 	dt.sessionMu.Unlock()
 
 	if code == "" {
