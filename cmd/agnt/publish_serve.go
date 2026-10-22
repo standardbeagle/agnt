@@ -654,9 +654,13 @@ func runPublishServe(ctx context.Context, opts publishServeOptions) error {
 		opts.OnListen(boundAddr)
 	}
 
+	// tunnelErr carries a tunnel that never came up or died afterwards. Nil
+	// (blocks in the select below) when no tunnel was asked for.
+	var tunnelErr chan error
 	if opts.Tunnel != "" {
 		tun := tunnel.New(tunnel.Config{
 			Provider:  provider,
+			LocalHost: tunnelLocalHost(boundAddr),
 			LocalPort: portOf(boundAddr),
 			ID:        "publish-serve",
 			Path:      dir,
@@ -674,6 +678,28 @@ func runPublishServe(ctx context.Context, opts publishServeOptions) error {
 			defer cancel()
 			_ = tun.Stop(stopCtx)
 		}()
+		// tun.Start returns at once, so a provider that exits after launch or
+		// never prints a URL (ngrok without an authtoken, tailscale serve not
+		// enabled) would leave this process running with only loopback links and
+		// nothing said. Fail loudly instead.
+		tunnelErr = make(chan error, 1)
+		go func() {
+			urlCtx, cancel := context.WithTimeout(ctx, publishServeTunnelURLTimeout)
+			defer cancel()
+			if _, err := tun.WaitForURL(urlCtx); err != nil {
+				if ctx.Err() == nil {
+					tunnelErr <- fmt.Errorf("publish serve: %s tunnel did not come up: %w%s", provider, err, tunnelOutputHint(tun))
+				}
+				return
+			}
+			select {
+			case <-tun.Done():
+				if ctx.Err() == nil {
+					tunnelErr <- fmt.Errorf("publish serve: %s tunnel exited; share links are no longer reachable%s", provider, tunnelOutputHint(tun))
+				}
+			case <-ctx.Done():
+			}
+		}()
 	}
 
 	watchErr := make(chan error, 1)
@@ -686,7 +712,34 @@ func runPublishServe(ctx context.Context, opts publishServeOptions) error {
 		return err
 	case err := <-watchErr:
 		return err
+	case err := <-tunnelErr:
+		return err
 	}
+}
+
+// publishServeTunnelURLTimeout bounds the wait for a tunnel's public URL.
+const publishServeTunnelURLTimeout = 60 * time.Second
+
+// tunnelOutputHint appends the provider's last output line, which is usually
+// the reason (auth missing, serve not enabled), or "" when it printed nothing.
+func tunnelOutputHint(tun *tunnel.Tunnel) string {
+	if last := tun.LastOutput(); last != "" {
+		return " (last output: " + last + ")"
+	}
+	return ""
+}
+
+// tunnelLocalHost is the host the tunnel provider should forward to: the
+// address the server is bound to, or loopback for a wildcard bind.
+func tunnelLocalHost(boundAddr string) string {
+	host, _, err := net.SplitHostPort(boundAddr)
+	if err != nil {
+		return ""
+	}
+	if ip := net.ParseIP(host); host == "" || (ip != nil && ip.IsUnspecified()) {
+		return "127.0.0.1"
+	}
+	return host
 }
 
 // printQuarantinedShares reports, loudly and one block per share, every share
