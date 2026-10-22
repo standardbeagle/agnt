@@ -872,7 +872,6 @@ func (d *Daemon) bootstrap() error {
 	// and (when configured) the dedicated public listener. This is the P9 wiring
 	// that P7/P8 deferred — before it, the public plane was never mounted.
 	d.buildPublicPlane()
-	d.startPublicListener()
 
 	// Register agnt-specific commands with Hub before starting.
 	if err := d.registerCommands(); err != nil {
@@ -895,6 +894,12 @@ func (d *Daemon) bootstrap() error {
 	}
 	d.started = time.Now()
 	d.daemonStartupLog("info", "hub_started", fmt.Sprintf("daemon hub listening on %s", d.config.SocketPath))
+
+	// Bind the public listener only once this daemon owns the control socket.
+	// Autostart races are normal: a daemon that loses hub.Start (ErrDaemonRunning)
+	// used to have already taken AGNT_PUBLIC_ADDR, leaving the winner without a
+	// public plane for its whole lifetime.
+	d.startPublicListener()
 
 	// Start the scheduler for scheduled message delivery. A start failure
 	// leaves scheduled-message delivery silently disabled, so surface it
