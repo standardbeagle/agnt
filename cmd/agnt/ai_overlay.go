@@ -191,14 +191,13 @@ func (a *AIOverlay) handleType(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var msg TypeMessage
-	if err := json.NewDecoder(r.Body).Decode(&msg); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if !decodeOverlayJSON(w, r, maxOverlayControlBody, &msg) {
 		return
 	}
 
 	if msg.Text != "" {
 		// /type is an explicit send (`agnt session send`, scheduled message).
-		a.enqueue(aiOverlayMessage{text: msg.Text, protected: true})
+		a.enqueue(aiOverlayMessage{text: sanitizeInjectedText(msg.Text), protected: true})
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -223,8 +222,7 @@ func (a *AIOverlay) handleEvent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var event ProxyEvent
-	if err := json.NewDecoder(r.Body).Decode(&event); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if !decodeOverlayJSON(w, r, maxOverlayEventBody, &event) {
 		return
 	}
 
