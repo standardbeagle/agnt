@@ -32,3 +32,21 @@ func TestSessionVerbs_BoundConnectionCannotReachOtherProject(t *testing.T) {
 	_, err = c.SessionGet("sess-a")
 	require.NoError(t, err, "own session stays reachable")
 }
+
+func TestScheduler_BoundsMessageDelayAndPendingCount(t *testing.T) {
+	d, _, _ := newBootedDaemonWithClient(t)
+	dir := normalizePath(shortTempDir(t))
+	activeSession(t, d.sessionRegistry, "sess-q", dir, "http://127.0.0.1:29293")
+
+	_, err := d.scheduler.Schedule("sess-q", time.Hour, string(make([]byte, maxScheduledMessageBytes+1)), dir)
+	require.Error(t, err, "oversized message")
+	_, err = d.scheduler.Schedule("sess-q", maxScheduleDelay+time.Hour, "x", dir)
+	require.Error(t, err, "excessive delay")
+
+	for i := 0; i < maxPendingTasksPerSession; i++ {
+		_, err = d.scheduler.Schedule("sess-q", time.Hour, "x", dir)
+		require.NoError(t, err)
+	}
+	_, err = d.scheduler.Schedule("sess-q", time.Hour, "x", dir)
+	require.Error(t, err, "pending cap")
+}

@@ -634,6 +634,12 @@ func parseTaskIDNum(id string) (int64, bool) {
 	return n, true
 }
 
+const (
+	maxScheduledMessageBytes  = 16 * 1024
+	maxScheduleDelay          = 30 * 24 * time.Hour
+	maxPendingTasksPerSession = 100
+)
+
 // Schedule adds a new task to the scheduler.
 func (s *Scheduler) Schedule(sessionCode string, duration time.Duration, message string, projectPath string) (*ScheduledTask, error) {
 	if sessionCode == "" {
@@ -646,9 +652,29 @@ func (s *Scheduler) Schedule(sessionCode string, duration time.Duration, message
 		return nil, fmt.Errorf("duration must be positive")
 	}
 
+	if len(message) > maxScheduledMessageBytes {
+		return nil, fmt.Errorf("message too large (%d bytes, max %d)", len(message), maxScheduledMessageBytes)
+	}
+	if duration > maxScheduleDelay {
+		return nil, fmt.Errorf("duration %s exceeds the maximum of %s", duration, maxScheduleDelay)
+	}
+
 	// Verify session exists
 	if _, ok := s.registry.Get(sessionCode); !ok {
 		return nil, fmt.Errorf("session %q not found", sessionCode)
+	}
+
+	// Tasks are persisted and reloaded on every project register, so an
+	// unbounded queue grows memory and disk without limit.
+	pending := 0
+	s.tasks.Range(func(_, v interface{}) bool {
+		if t := v.(*ScheduledTask); t.SessionCode == sessionCode && t.Status() == TaskStatusPending {
+			pending++
+		}
+		return true
+	})
+	if pending >= maxPendingTasksPerSession {
+		return nil, fmt.Errorf("session %q already has %d pending scheduled tasks (max %d)", sessionCode, pending, maxPendingTasksPerSession)
 	}
 
 	taskID := fmt.Sprintf("task-%d", s.nextTaskID.Add(1))
