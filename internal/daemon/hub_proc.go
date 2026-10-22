@@ -857,18 +857,21 @@ func (d *Daemon) hubHandleProcAutoRestart(ctx context.Context, conn *hubpkg.Conn
 	case "enable":
 		config := DefaultAutoRestartConfig()
 		config.Enabled = true
-		if payload, err := unmarshalCommand[struct {
+		payload, err := unmarshalCommand[struct {
 			MaxRestarts    int     `json:"max_restarts"`
 			OnlyOnError    bool    `json:"only_on_error"`
 			RestartDelayMs float64 `json:"restart_delay_ms"`
-		}](cmd); err == nil {
-			if payload.MaxRestarts > 0 {
-				config.MaxRestarts = payload.MaxRestarts
-			}
-			config.OnlyOnError = payload.OnlyOnError
-			if payload.RestartDelayMs > 0 {
-				config.RestartDelay = time.Duration(payload.RestartDelayMs) * time.Millisecond
-			}
+		}](cmd)
+		if err != nil {
+			// Enabling with defaults would silently ignore the limits asked for.
+			return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid AUTORESTART payload: %v", err))
+		}
+		if payload.MaxRestarts > 0 {
+			config.MaxRestarts = payload.MaxRestarts
+		}
+		config.OnlyOnError = payload.OnlyOnError
+		if payload.RestartDelayMs > 0 {
+			config.RestartDelay = time.Duration(payload.RestartDelayMs) * time.Millisecond
 		}
 
 		// Register for auto-restart with the env the process was launched with

@@ -37,7 +37,7 @@ func (d *Daemon) hubHandleTunnelStart(ctx context.Context, conn *hubpkg.Connecti
 
 	tunnelID := cmd.Args[0]
 
-	config, _ := unmarshalCommand[struct {
+	config, cfgErr := unmarshalCommand[struct {
 		Provider     string `json:"provider"`
 		LocalPort    int    `json:"local_port"`
 		LocalHost    string `json:"local_host"`
@@ -45,6 +45,9 @@ func (d *Daemon) hubHandleTunnelStart(ctx context.Context, conn *hubpkg.Connecti
 		BinaryPath   string `json:"binary_path"`
 		URLTimeoutMs int    `json:"url_timeout_ms"`
 	}](cmd)
+	if cfgErr != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid TUNNEL START payload: %v", cfgErr))
+	}
 
 	if config.Provider == "" {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "provider is required")
@@ -82,7 +85,7 @@ func (d *Daemon) hubHandleTunnelStart(ctx context.Context, conn *hubpkg.Connecti
 	}
 
 	// Get project path from session for session scoping
-	projectPath := d.getSessionProjectPath(conn)
+	projectPath := tunnelOwnerPath(d.getSessionProjectPath(conn), linked)
 
 	tunnelConfig := tunnel.Config{
 		Provider:   provider,
@@ -121,10 +124,27 @@ func (d *Daemon) hubHandleTunnelStart(ctx context.Context, conn *hubpkg.Connecti
 		"local_port": config.LocalPort,
 		"public_url": publicURL,
 		"status":     "running",
+		// The MCP tunnel tool reads state and local_addr from this reply.
+		"state":      t.Info().State,
+		"local_addr": t.Info().LocalAddr,
 	}
 
 	data, _ := json.Marshal(resp)
 	return conn.WriteJSON(data)
+}
+
+// tunnelOwnerPath is the project a started tunnel belongs to: the connection's
+// bound session, else the project of the proxy it fronts. The MCP connection is
+// never session-bound, so without the proxy fallback its tunnels carried no
+// path and never appeared in their own project's scoped TUNNEL LIST.
+func tunnelOwnerPath(sessionPath string, linked *proxy.ProxyServer) string {
+	if sessionPath != "" {
+		return sessionPath
+	}
+	if linked != nil && linked.Path != "" && linked.Path != "." {
+		return normalizePath(linked.Path)
+	}
+	return ""
 }
 
 // defaultTunnelURLTimeout bounds how long TUNNEL START waits for a provider to

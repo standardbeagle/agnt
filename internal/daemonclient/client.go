@@ -1371,7 +1371,10 @@ func mapHookSendError(err error) error {
 	if errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EWOULDBLOCK) {
 		return fmt.Errorf("%w: %v", ErrHookDeadline, err)
 	}
-	if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+	// errors.As, not a type assertion: a deadline that fires after part of the
+	// ack was read arrives wrapped in protocol.PartialFrameError.
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
 		return fmt.Errorf("%w: %v", ErrHookDeadline, err)
 	}
 	// Fall through: unknown error, surface it verbatim so the CLI's

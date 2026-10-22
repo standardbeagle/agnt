@@ -633,6 +633,13 @@ func New(config DaemonConfig) *Daemon {
 			fmt.Sprintf("failed to save scheduled tasks (they will not survive a daemon restart): %v", err))
 	})
 
+	// A scheduled message dropped after its retries are exhausted would
+	// otherwise vanish; tell the project's startup log.
+	d.scheduler.SetTaskFailedHandler(func(task *ScheduledTask, errMsg string) {
+		d.startupLog(task.ProjectPath).Error("", "scheduled_task_failed",
+			fmt.Sprintf("scheduled message %s for session %s was dropped after %d failed deliveries: %s", task.ID, task.SessionCode, task.Attempts(), errMsg))
+	})
+
 	// health.HealthTracker is initialised after the struct so it can capture `d`
 	// in its lookup closures. Its emitDiagnostic routes back through the
 	// EventHub directly so suppression markers always bypass the gate.
@@ -735,6 +742,9 @@ func New(config DaemonConfig) *Daemon {
 	// Create URLTracker with callbacks to emit proxy events
 	// Access ProcessManager through Hub
 	urlTracker := NewURLTracker(h.ProcessManager(), DefaultURLTrackerConfig())
+	urlTracker.onMatcherError = func(processID, message string) {
+		d.daemonStartupLog("warning", "url_matcher_invalid", message)
+	}
 	urlTracker.onURLDetected = func(processID, url string) {
 		// Signal readiness for dependency ordering
 		d.readySignaler.SignalReady(processID)

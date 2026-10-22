@@ -60,7 +60,7 @@ func (d *Daemon) autoStartBrowserProxy(ctx context.Context, proxyID, targetURL, 
 // hubHandleBrowserStart handles BROWSER START command.
 
 func (d *Daemon) hubHandleBrowserStart(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	config, _ := unmarshalCommand[struct {
+	config, cfgErr := unmarshalCommand[struct {
 		ID         string `json:"id"`
 		URL        string `json:"url"`
 		ProxyID    string `json:"proxy_id"`
@@ -68,6 +68,9 @@ func (d *Daemon) hubHandleBrowserStart(ctx context.Context, conn *hubpkg.Connect
 		BinaryPath string `json:"binary_path"`
 		protocol.StartScope
 	}](cmd)
+	if cfgErr != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid payload: %v", cfgErr))
+	}
 
 	// Also accept ID from args for convenience
 	if config.ID == "" && len(cmd.Args) > 0 {

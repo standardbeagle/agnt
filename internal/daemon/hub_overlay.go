@@ -66,9 +66,12 @@ func (d *Daemon) hubHandleOverlayForwarding(conn *hubpkg.Connection, cmd *hubpro
 // hubHandleOverlaySet handles OVERLAY SET command.
 
 func (d *Daemon) hubHandleOverlaySet(conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	config, _ := unmarshalCommand[struct {
+	config, cfgErr := unmarshalCommand[struct {
 		Endpoint string `json:"endpoint"`
 	}](cmd)
+	if cfgErr != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid payload: %v", cfgErr))
+	}
 
 	if config.Endpoint == "" {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "endpoint is required")

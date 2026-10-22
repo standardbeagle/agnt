@@ -288,6 +288,9 @@ type Scheduler struct {
 
 	// Task ID counter
 	nextTaskID atomic.Int64
+
+	// onTaskFailed reports a task dropped after exhausting its retries.
+	onTaskFailed atomic.Pointer[func(task *ScheduledTask, errMsg string)]
 }
 
 // NewScheduler creates a new scheduler.
@@ -556,18 +559,29 @@ func (s *Scheduler) handleDeliveryFailure(task *ScheduledTask, errMsg string) {
 		task.status.Store(uint32(taskStatusFailed))
 		s.totalFailed.Add(1)
 		s.removeTaskFromStorage(task)
-	} else {
-		// Delivering -> Pending (retry on next tick). Apply exponential
-		// backoff by pushing DeliverAt into the future — checkDueTasks only
-		// re-claims a task once DeliverAt is in the past, so RetryDelay is now
-		// actually honored (previously the task became immediately due again
-		// and RetryDelay was dead config). Delay grows RetryDelay*2^(attempts-1).
-		if s.config.RetryDelay > 0 {
-			task.SetDeliverAt(time.Now().Add(retryBackoff(s.config.RetryDelay, attempts)))
+		// The task is gone from storage; re-persisting it would resurrect it.
+		if fn := s.onTaskFailed.Load(); fn != nil {
+			(*fn)(task, errMsg)
 		}
-		task.status.Store(uint32(taskStatusPending))
+		return
 	}
+	// Delivering -> Pending (retry on next tick). Apply exponential
+	// backoff by pushing DeliverAt into the future — checkDueTasks only
+	// re-claims a task once DeliverAt is in the past, so RetryDelay is now
+	// actually honored (previously the task became immediately due again
+	// and RetryDelay was dead config). Delay grows RetryDelay*2^(attempts-1).
+	if s.config.RetryDelay > 0 {
+		task.SetDeliverAt(time.Now().Add(retryBackoff(s.config.RetryDelay, attempts)))
+	}
+	task.status.Store(uint32(taskStatusPending))
 	s.persistTask(task)
+}
+
+// SetTaskFailedHandler registers a callback invoked when a scheduled task is
+// dropped after its final delivery attempt, so the loss is visible rather than
+// only counted.
+func (s *Scheduler) SetTaskFailedHandler(fn func(task *ScheduledTask, errMsg string)) {
+	s.onTaskFailed.Store(&fn)
 }
 
 // createOverlayClient creates an HTTP client that connects via Unix socket.

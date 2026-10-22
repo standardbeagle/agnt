@@ -35,13 +35,16 @@ func (d *Daemon) hubHandleAutomation(ctx context.Context, conn *hubpkg.Connectio
 // hubHandleAutomationStart handles AUTOMATION START command.
 
 func (d *Daemon) hubHandleAutomationStart(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	config, _ := unmarshalCommand[struct {
+	config, cfgErr := unmarshalCommand[struct {
 		ID       string `json:"id"`
 		URL      string `json:"url"`
 		ProxyID  string `json:"proxy_id"`
 		Headless *bool  `json:"headless"`
 		protocol.StartScope
 	}](cmd)
+	if cfgErr != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid payload: %v", cfgErr))
+	}
 
 	// Accept ID from args for convenience
 	if config.ID == "" && len(cmd.Args) > 0 {
@@ -222,7 +225,7 @@ func (d *Daemon) hubHandleAutomationList(conn *hubpkg.Connection, cmd *hubproto.
 // hubHandleAutomationScreenshot handles AUTOMATION SCREENSHOT command.
 
 func (d *Daemon) hubHandleAutomationScreenshot(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	config, _ := unmarshalCommand[struct {
+	config, cfgErr := unmarshalCommand[struct {
 		SessionID string `json:"session_id"`
 		Type      string `json:"type"`     // viewport, fullpage, element, clip
 		Label     string `json:"label"`    // Optional label for filename
@@ -234,6 +237,9 @@ func (d *Daemon) hubHandleAutomationScreenshot(ctx context.Context, conn *hubpkg
 		Width  float64 `json:"width"`
 		Height float64 `json:"height"`
 	}](cmd)
+	if cfgErr != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid payload: %v", cfgErr))
+	}
 
 	// Session ID from args takes precedence
 	if len(cmd.Args) > 0 {
@@ -316,10 +322,13 @@ func (d *Daemon) hubHandleAutomationScreenshot(ctx context.Context, conn *hubpkg
 // hubHandleAutomationNavigate handles AUTOMATION NAVIGATE command.
 
 func (d *Daemon) hubHandleAutomationNavigate(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	config, _ := unmarshalCommand[struct {
+	config, cfgErr := unmarshalCommand[struct {
 		SessionID string `json:"session_id"`
 		URL       string `json:"url"`
 	}](cmd)
+	if cfgErr != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid payload: %v", cfgErr))
+	}
 
 	// Accept session_id and URL from args
 	if len(cmd.Args) >= 1 {
@@ -452,11 +461,14 @@ func contentFrameTimeoutMsg() string {
 // hubHandleAutomationEvaluate handles AUTOMATION EVALUATE command.
 
 func (d *Daemon) hubHandleAutomationEvaluate(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	config, _ := unmarshalCommand[struct {
+	config, cfgErr := unmarshalCommand[struct {
 		SessionID string `json:"session_id"`
 		Script    string `json:"script"`
 		Frame     string `json:"frame"`
 	}](cmd)
+	if cfgErr != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid payload: %v", cfgErr))
+	}
 
 	// Accept session_id from args
 	if len(cmd.Args) >= 1 {

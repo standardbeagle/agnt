@@ -982,3 +982,33 @@ func TestScheduler_StopRespectsContextDeadline(t *testing.T) {
 	// not waiting for the full DeliveryTimeout.
 	assert.Less(t, elapsed, 500*time.Millisecond, "Stop should respect context deadline")
 }
+
+func TestScheduler_FailedTaskNotRepersisted(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("USERPROFILE", t.TempDir())
+	project := t.TempDir()
+	stateMgr := NewSchedulerStateManager()
+	defer stateMgr.Close()
+	scheduler := NewScheduler(SchedulerConfig{
+		TickInterval: time.Hour, MaxRetries: 1, DeliveryTimeout: time.Second, MaxConcurrentDeliveries: 1,
+	}, NewSessionRegistry(60*time.Second), stateMgr)
+
+	var reported atomic.Int32
+	scheduler.SetTaskFailedHandler(func(task *ScheduledTask, errMsg string) {
+		if task.ID == "fail-1" && errMsg == "boom" {
+			reported.Add(1)
+		}
+	})
+
+	task := NewScheduledTask("fail-1", "s", "msg", project, time.Now(), time.Now(), TaskStatusDelivering)
+	scheduler.tasks.Store(task.ID, task)
+	require.NoError(t, stateMgr.SaveTask(task))
+
+	scheduler.handleDeliveryFailure(task, "boom")
+
+	assert.Equal(t, int32(1), reported.Load())
+	require.NoError(t, stateMgr.Flush())
+	loaded, err := stateMgr.LoadTasks(project)
+	require.NoError(t, err)
+	assert.Empty(t, loaded, "a task dropped after its final failure must not be re-persisted")
+}

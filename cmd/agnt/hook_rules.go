@@ -25,6 +25,7 @@ import (
 	"os"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/spf13/cobra"
 
@@ -152,9 +153,10 @@ func runHookCheckBash(cmd *cobra.Command, _ []string) error {
 	// budget. Exceeding it means fail-open exit 0.
 	ctx, cancel := context.WithTimeout(cmd.Context(), time.Second)
 	defer cancel()
-	_ = ctx // reserved for future daemon-probe scope guard
 
-	code := runCheckBashImpl(cmd.InOrStdin(), cmd.ErrOrStderr(), hookCheckBashProjectPath, os.Getenv)
+	code := runWithDeadline(ctx, func() int {
+		return runCheckBashImpl(cmd.InOrStdin(), cmd.ErrOrStderr(), hookCheckBashProjectPath, os.Getenv)
+	})
 	if code != 0 {
 		os.Exit(code)
 	}
@@ -292,7 +294,28 @@ func truncateHookMsg(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}
-	return s[:max-3] + "..."
+	cut := max - 3
+	if cut < 0 {
+		cut = 0
+	}
+	// Back up to a rune boundary so a multi-byte character is never split.
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return s[:cut] + "..."
+}
+
+// runWithDeadline runs fn and returns its exit code, or 0 (fail-open) when ctx
+// expires first. The abandoned goroutine ends with the process.
+func runWithDeadline(ctx context.Context, fn func() int) int {
+	done := make(chan int, 1)
+	go func() { done <- fn() }()
+	select {
+	case code := <-done:
+		return code
+	case <-ctx.Done():
+		return 0
+	}
 }
 
 func runHookCheckPrompt(cmd *cobra.Command, _ []string) error {

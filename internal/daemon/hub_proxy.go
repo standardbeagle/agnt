@@ -77,21 +77,26 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 	allowExternal := false
 	publicURL := ""
 	skipTLSVerify := false
-	if ext, err := unmarshalCommand[struct {
+	// A malformed payload is refused: dropping it would start the proxy without
+	// the bind address, public URL or TLS setting the caller asked for, and report
+	// success.
+	ext, err := unmarshalCommand[struct {
 		Path          string `json:"path"`
 		BindAddress   string `json:"bind_address"`
 		AllowExternal bool   `json:"allow_external"`
 		PublicURL     string `json:"public_url"`
 		SkipTLSVerify bool   `json:"skip_tls_verify"`
-	}](cmd); err == nil {
-		if ext.Path != "" {
-			path = ext.Path
-		}
-		bindAddress = ext.BindAddress
-		allowExternal = ext.AllowExternal
-		publicURL = ext.PublicURL
-		skipTLSVerify = ext.SkipTLSVerify
+	}](cmd)
+	if err != nil {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid PROXY START payload: %v", err))
 	}
+	if ext.Path != "" {
+		path = ext.Path
+	}
+	bindAddress = ext.BindAddress
+	allowExternal = ext.AllowExternal
+	publicURL = ext.PublicURL
+	skipTLSVerify = ext.SkipTLSVerify
 
 	normalizedPath := normalizePath(path)
 

@@ -795,10 +795,15 @@ func (d *Daemon) hubHandleSessionURL(conn *hubpkg.Connection, cmd *hubproto.Comm
 
 	// Parse script name from data payload (default to "dev")
 	scriptName := "dev"
-	if data, err := unmarshalCommand[struct {
+	urlPayload, err := unmarshalCommand[struct {
 		Script string `json:"script"`
-	}](cmd); err == nil && data.Script != "" {
-		scriptName = data.Script
+	}](cmd)
+	if err != nil {
+		// Falling back to "dev" would attribute the URL to the wrong script.
+		return conn.WriteErr(hubproto.ErrInvalidArgs, fmt.Sprintf("invalid SESSION URL payload: %v", err))
+	}
+	if urlPayload.Script != "" {
+		scriptName = urlPayload.Script
 	}
 
 	// Construct scriptID in the format: {basename}:{scriptName}

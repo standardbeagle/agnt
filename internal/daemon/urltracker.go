@@ -57,6 +57,11 @@ type URLTracker struct {
 	// onURLDetected is called when a new URL is detected
 	onURLDetected func(processID, url string)
 
+	// onMatcherError is called (outside the lock) for each invalid url-matcher
+	// pattern, and when none of a process's patterns compile so it falls back
+	// to matching every URL. Set before use; not synchronized.
+	onMatcherError func(processID, message string)
+
 	// onProcessStopped is called when a process is removed/stopped
 	onProcessStopped func(processID string)
 
@@ -103,23 +108,37 @@ func NewURLTracker(pm *process.ProcessManager, config URLTrackerConfig) *URLTrac
 // errors) was both hot-path waste and an invisible config failure. An invalid
 // pattern is reported and skipped.
 func (t *URLTracker) SetURLMatchers(processID string, matchers []string) {
+	msgs := t.setURLMatchers(processID, matchers)
+	// Reported after unlocking: the callback writes to the startup log.
+	if t.onMatcherError != nil {
+		for _, m := range msgs {
+			t.onMatcherError(processID, m)
+		}
+	}
+}
+
+func (t *URLTracker) setURLMatchers(processID string, matchers []string) []string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
 	if len(matchers) == 0 {
 		delete(t.urlMatchers, processID)
-		return
+		return nil
 	}
 
 	compiled, errs := compileURLMatchers(matchers)
+	var msgs []string
 	for _, err := range errs {
 		debug.Warn("daemon", "invalid URL matcher for %s: %v", processID, err)
+		msgs = append(msgs, fmt.Sprintf("invalid url-matcher for %s (skipped): %v", processID, err))
 	}
 	if len(compiled) > 0 {
 		t.urlMatchers[processID] = compiled
 	} else {
 		delete(t.urlMatchers, processID)
+		msgs = append(msgs, fmt.Sprintf("no usable url-matcher for %s: every URL printed by the process will be matched instead", processID))
 	}
+	return msgs
 }
 
 // Start begins periodic URL scanning.
