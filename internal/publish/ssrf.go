@@ -51,6 +51,11 @@ var deniedPrefixes = []struct {
 	{netip.MustParsePrefix("169.254.0.0/16"), "link-local (incl. 169.254.169.254 cloud metadata)"},
 	{netip.MustParsePrefix("172.16.0.0/12"), "RFC1918 private"},
 	{netip.MustParsePrefix("192.168.0.0/16"), "RFC1918 private"},
+	{netip.MustParsePrefix("192.0.0.0/24"), "IETF protocol assignments"},
+	{netip.MustParsePrefix("192.0.2.0/24"), "documentation (TEST-NET-1)"},
+	{netip.MustParsePrefix("198.18.0.0/15"), "benchmarking (internal in some VPN/container setups)"},
+	{netip.MustParsePrefix("198.51.100.0/24"), "documentation (TEST-NET-2)"},
+	{netip.MustParsePrefix("203.0.113.0/24"), "documentation (TEST-NET-3)"},
 	{netip.MustParsePrefix("224.0.0.0/4"), "multicast"},
 	{netip.MustParsePrefix("240.0.0.0/4"), "reserved (incl. 255.255.255.255 broadcast)"},
 	// IPv6. ::/96 covers the unspecified address, ::1 loopback, and the
@@ -58,6 +63,7 @@ var deniedPrefixes = []struct {
 	{netip.MustParsePrefix("::/96"), "unspecified/loopback/IPv4-compatible"},
 	{netip.MustParsePrefix("fc00::/7"), "unique-local (incl. fd00:ec2::254 cloud metadata)"},
 	{netip.MustParsePrefix("fe80::/10"), "link-local"},
+	{netip.MustParsePrefix("2001:db8::/32"), "documentation"},
 	{netip.MustParsePrefix("ff00::/8"), "multicast"},
 	// 6to4 and Teredo embed an arbitrary IPv4 address, so they are a direct
 	// route to a denied v4 target (2002:7f00:1::1 is 127.0.0.1). Both are
