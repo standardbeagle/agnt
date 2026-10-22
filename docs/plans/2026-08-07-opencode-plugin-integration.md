@@ -1,7 +1,10 @@
 # agnt × opencode integration — plugin architecture design
 
 **Date:** 2026-08-07
-**Status:** design (no code yet)
+**Status:** phase 1–2 implemented in `integrations/opencode/` (digest push, `agnt_incidents`,
+`agnt_forwarding`, compaction context), on the `agnt incidents` CLI (`cmd/agnt/incidents.go`)
+instead of a TS daemon-socket client. `agnt_exec`, the TUI inbox dialog and the npm package
+are not done; not yet exercised against a live opencode.
 **Verdict:** opencode's existing plugin system + local server API support tight
 integration of agnt's proxy-UI messaging and incident queues **today — no fork
 required**. The only gap is arbitrary custom SSE event types, which this design
