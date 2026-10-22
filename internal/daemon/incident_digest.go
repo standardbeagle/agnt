@@ -5,12 +5,17 @@ import (
 	"github.com/standardbeagle/agnt/internal/proxy"
 )
 
-// broadcastIncidentDigest fans an incident ping out to all STREAM-EVENTS
-// subscribers as a synthetic incident_digest LogEntry. This is the cross-process
-// transport for the unified agent-inbound queue: consumer processes (agnt mcp,
-// agnt run) that subscribe to the daemon event stream render the digest to the
-// agent. The compact digest text rides in Custom.Message; level is the severity.
-func (d *Daemon) broadcastIncidentDigest(level, projectPath string, payload incident.PingPayload) {
+// broadcastIncidentDigest is the one emit point for an agent-directed incident
+// ping. It fans the ping out to STREAM-EVENTS subscribers as a synthetic
+// incident_digest LogEntry, the cross-process transport for the agent-inbound
+// queue; the compact text rides in Custom.Message and level is the severity.
+//
+// sessionCode scopes the digest to one agent's inbox (streamFilter.session), so
+// two agents in one checkout do not see each other's pings; empty leaves it
+// project-scoped. The sender never picks a transport: via is the session's
+// connector (see connectorFor), and each front end acts only on its own. Empty
+// via leaves the digest unrouted (observers only).
+func (d *Daemon) broadcastIncidentDigest(level, projectPath, sessionCode, via string, payload incident.PingPayload) {
 	if d.eventHub == nil {
 		return
 	}
@@ -30,8 +35,17 @@ func (d *Daemon) broadcastIncidentDigest(level, projectPath string, payload inci
 			// more than the one-line text: with channel mode on, the MCP
 			// process delivers the digest as a channel event and lists the top
 			// incidents from this.
-			Data: map[string]interface{}{incident.DigestPayloadKey: payload},
+			Data: map[string]interface{}{
+				incident.DigestPayloadKey: payload,
+				incident.DigestKindKey:    incident.DigestKindAgentMessage,
+			},
 		},
+	}
+	if sessionCode != "" {
+		entry.Custom.Data[incident.DigestSessionKey] = sessionCode
+	}
+	if via != "" {
+		entry.Custom.Data[incident.DigestViaKey] = via
 	}
 	// Stamp the digest with the owning session's project so project-scoped
 	// STREAM-EVENTS subscribers in other projects don't receive this session's
@@ -87,12 +101,15 @@ func (d *Daemon) incidentSinkCallbacks(sessionCode string) (incident.MCPNotifyFn
 		if !d.alertPushConfigForProject(s.ProjectPath).MCPNotificationsEnabled() {
 			return nil
 		}
-		d.broadcastIncidentDigest(level, s.ProjectPath, payload)
+		// Observers (the incidents CLI, a Claude mod's pane) see every digest;
+		// the stamp tells the MCP process whether this session's agent is its to
+		// notify.
+		d.broadcastIncidentDigest(level, s.ProjectPath, sessionCode, string(connectorFor(s)), payload)
 		return nil
 	}
 	ptyInject := func(line string) error {
 		s, ok := d.sessionRegistry.Get(sessionCode)
-		if !ok || s.OverlayPath == "" {
+		if !ok || connectorFor(s) != connectorStdin {
 			return nil
 		}
 		if !d.alertPushConfigForProject(s.ProjectPath).PTYInjectionEnabled() || d.IsForwardingPaused(sessionCode) {

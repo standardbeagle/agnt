@@ -172,6 +172,10 @@ The pinger has two wired sinks (`incidentSinkCallbacks`, `incident_digest.go`), 
 
 Source of truth: inbox = cache of the originating subsystem; bus = transient (drop-newest at 4096, no replay); blob store = per-session in-memory LRU, 16MB, never persisted; dedup fingerprints = per-session, cleared on teardown.
 
+Digests are session-scoped as well as project-scoped: `broadcastIncidentDigest` stamps `Custom.Data["session_code"]`, and a `STREAM-EVENTS` subscription that names a `session_code` receives only that session's digests (`streamFilter.session`; an unstamped digest fails closed). A directory-selected subscriber keeps project scope. The channel-owned MCP session is re-registered under its original code when the daemon connection is re-established (`reregisterChannelSession`), since a restarted daemon has no record of it.
+
+Delivery to the agent is routed by how the session was started, never chosen by the sender (`agent_delivery.go`): `connectorFor` gives `stdin` for a session with an overlay socket (`agnt run`) and `mcp` otherwise (empty or `-`). The digest is an `agent_message` (`Data["kind"]`) stamped `Data["via"]` with that connector; the PTY sink fires only for `stdin`, and `tools.ForwardIncidentDigest` drops a digest stamped for another connector, so one ping is one delivery. Observers ignore the stamp. The pull surface (`get_incidents`) is never gated by connector, pause or `alerts.push`.
+
 ### Numbered Contracts
 
 1. **Cross-session isolation.** Each session has its own `sessionPipeline`; session A's events never reach B's inbox, even same project. Pins live and die with the session inbox (`TestBus_PinDiesWithSession`).

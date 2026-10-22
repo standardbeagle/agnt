@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/incident"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/scope"
@@ -95,6 +96,7 @@ type streamFilter struct {
 	severity    string // "error", "warning", "info" — matches against error/custom/diagnostic levels
 	grep        string // Substring match on process output lines
 	grepStream  string // "stdout", "stderr", or "" for both
+	session     string // Incident digests only: the originating session; "" accepts any session in the project
 }
 
 // matches returns true if the log entry passes the filter.
@@ -109,6 +111,13 @@ func (f *streamFilter) matches(entry proxy.LogEntry, proxyID, proxyPath string) 
 	}
 	if f.projectPath != "" && proxyPath != f.projectPath {
 		return false
+	}
+	if f.session != "" && entry.Type == proxy.LogTypeIncidentDigest {
+		// Fail closed: a digest that does not name its session is not delivered
+		// to a subscriber that selected one.
+		if entry.Custom == nil || entry.Custom.Data[incident.DigestSessionKey] != f.session {
+			return false
+		}
 	}
 	if f.processID != "" && entry.Type == proxy.LogTypeProcessOutput {
 		if entry.ProcessOutput == nil || entry.ProcessOutput.ProcessID != f.processID {

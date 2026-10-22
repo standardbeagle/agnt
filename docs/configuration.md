@@ -594,9 +594,16 @@ alerts {
 | `universal` | enabled | enabled |
 | (none) | enabled | enabled |
 
-`claude-code` emits one project-scoped incident digest through STREAM-EVENTS
-(consumed by the MCP/agent adapter) and does not type into PTY stdin.
-`universal` emits that digest once and also injects one compact PTY line. The
+Senders never choose how a message reaches the agent. The pinger emits one
+`agent_message` digest, and the daemon stamps it with the session's connector,
+fixed by how the agent was started: `stdin` when `agnt run` owns the PTY, `mcp`
+otherwise (MCP-only, channel, or a mod's session). The overlay types only
+`stdin` messages and the MCP process notifies only for `mcp` ones, so one event
+is one delivery to the agent whichever preset is set. `mcp-notifications false`
+or `pty-injection false` still switches that connector off. Observers
+(`agnt incidents watch`, `agnt monitor`, a Claude mod's pane) see every digest.
+Pulling is never gated: `get_incidents` returns the inbox history, read and
+unread, whatever the connector, pause or `alerts.push`. The
 legacy `incident-pipeline` key is accepted for compatibility but ignored because
 the incident pipeline is always active; declaring it produces a no-effect config
 warning.

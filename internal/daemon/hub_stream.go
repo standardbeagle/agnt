@@ -92,6 +92,10 @@ func (d *Daemon) resolveStreamFilter(f protocol.StreamEventFilter, connSessionCo
 		return streamFilter{}, err
 	}
 	sf := buildStreamFilter(f)
+	// An explicit session selection narrows incident digests to that session's
+	// inbox, not just its project. The connection's own bound session is not an
+	// explicit selection and keeps project scope.
+	sf.session = f.SessionCode
 	if sc.IsUnscoped() {
 		sf.projectPath = ""
 	} else {

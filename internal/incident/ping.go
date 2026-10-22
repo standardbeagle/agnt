@@ -290,6 +290,21 @@ func highestLevel(s PingStats) string {
 // renders the top incidents from it; one that cannot ignores it.
 const DigestPayloadKey = "payload"
 
+// Stamps the daemon puts on a digest's Custom.Data besides the payload. They are
+// shared so the emitter (daemon) and its consumers (MCP process, CLI) cannot drift.
+const (
+	// DigestSessionKey names the session whose inbox the digest came from.
+	DigestSessionKey = "session_code"
+	// DigestKindKey and DigestKindAgentMessage say the digest is addressed to the agent.
+	DigestKindKey          = "kind"
+	DigestKindAgentMessage = "agent_message"
+	// DigestViaKey names the connector the session's agent is reached by
+	// (DigestViaStdin or DigestViaMCP); each front end acts only on its own.
+	DigestViaKey   = "via"
+	DigestViaStdin = "stdin"
+	DigestViaMCP   = "mcp"
+)
+
 // CompactDigestText renders the one-line digest summary for cross-process
 // transport (daemon → STREAM-EVENTS → consumer). Exported wrapper over the
 // internal compact formatter.

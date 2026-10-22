@@ -41,6 +41,12 @@ func ForwardIncidentDigest(ctx context.Context, entry proxy.LogEntry, channelOn 
 	if entry.Type != proxy.LogTypeIncidentDigest || entry.Custom == nil {
 		return false
 	}
+	// A digest stamped for another connector (the session's agent is reached by
+	// stdin through `agnt run`) is not this process's to deliver. An unstamped
+	// one is from an older daemon and keeps the old behaviour.
+	if via, _ := entry.Custom.Data[incident.DigestViaKey].(string); via != "" && via != incident.DigestViaMCP {
+		return false
+	}
 	level := entry.Custom.Level
 	if level == "" {
 		level = "info"

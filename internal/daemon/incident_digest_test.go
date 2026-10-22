@@ -27,7 +27,7 @@ func TestBroadcastIncidentDigest_ReachesStreamSink(t *testing.T) {
 	// A digest must carry the owning project's path — broadcastIncidentDigest
 	// drops empty-path digests to avoid an unscoped cross-project leak. The
 	// unscoped sink above still receives a path-stamped digest.
-	d.broadcastIncidentDigest("error", "/proj", payload)
+	d.broadcastIncidentDigest("error", "/proj", "", "", payload)
 
 	select {
 	case entry := <-sink.Ch:
@@ -56,7 +56,7 @@ func TestBroadcastIncidentDigest_ProjectScopedIsolation(t *testing.T) {
 
 	payload := incident.PingPayload{Type: "agnt.incident_ping", Version: 1,
 		Summary: incident.PingStats{Error: 1, New: 1}}
-	d.broadcastIncidentDigest("error", "/proj/a", payload)
+	d.broadcastIncidentDigest("error", "/proj/a", "", "", payload)
 
 	select {
 	case <-own.Ch:

@@ -43,7 +43,7 @@ func TestIncidentDigestSinkFilter_ExcludesOtherProjects(t *testing.T) {
 	}))
 	defer d.eventHub.RemoveStreamSink(legacy)
 
-	d.broadcastIncidentDigest("error", projA, incident.PingPayload{
+	d.broadcastIncidentDigest("error", projA, "", "", incident.PingPayload{
 		Type: "agnt.incident_ping", Version: 1,
 		Summary: incident.PingStats{Error: 1, New: 1},
 	})
