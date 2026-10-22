@@ -125,6 +125,8 @@ type Session struct {
 
 	status   atomic.Value // Status
 	exitCode atomic.Int32
+	// exitedAt is the unix-nano time the child was reaped (0 while running).
+	exitedAt atomic.Int64
 
 	subsMu    sync.RWMutex
 	subs      map[string]*subscriber
@@ -293,6 +295,7 @@ func (s *Session) waitLoop() {
 		}
 	}
 	s.exitCode.Store(int32(code))
+	s.exitedAt.Store(time.Now().UnixNano())
 	s.status.Store(StatusExited)
 
 	exitData, _ := json.Marshal(ExitData{Code: code})
@@ -588,10 +591,30 @@ func NewRegistry() *Registry {
 	return &Registry{}
 }
 
+// exitedRetention is how long a session that exited on its own stays
+// registered, so a client can still attach to read its scrollback and exit
+// code. Past it the next Add retires the entry; without that, every short-lived
+// session held 1 MiB of scrollback until someone sent an explicit KILL.
+const exitedRetention = 10 * time.Minute
+
 // Add registers a newly created session.
 func (r *Registry) Add(s *Session) {
+	r.pruneExited(time.Now())
 	r.sessions.Store(s.ID, s)
 	r.totalCreated.Add(1)
+}
+
+// pruneExited removes sessions that exited more than exitedRetention ago.
+func (r *Registry) pruneExited(now time.Time) {
+	cutoff := now.Add(-exitedRetention).UnixNano()
+	r.sessions.Range(func(k, v any) bool {
+		if at := v.(*Session).exitedAt.Load(); at != 0 && at < cutoff {
+			if r.sessions.CompareAndDelete(k, v) {
+				r.totalKilled.Add(1)
+			}
+		}
+		return true
+	})
 }
 
 // Get looks up a session by id.
