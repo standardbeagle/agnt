@@ -217,3 +217,26 @@ func TestDropWatcher_CloseWithoutFilesLeaksNoGoroutines(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, w.Close())
 }
+
+func TestDropWatcherScan_ForgetsFilesDeletedBeforeUpload(t *testing.T) {
+	dir := t.TempDir()
+	var calls int
+	var reports []string
+	w := &DropWatcher{dir: dir, notify: func(m string) { reports = append(reports, m) }}
+	w.upload = func(string, string) error { calls++; return errors.New("open: no such file") }
+
+	name := filepath.Join(dir, "gone.txt")
+	require.NoError(t, os.WriteFile(name, []byte("x"), 0o600))
+	files := map[string]dropState{}
+	base := time.Now()
+	w.scan(files, base)
+	require.Contains(t, files, name)
+
+	require.NoError(t, os.Remove(name))
+	w.scan(files, base.Add(dropPollPeriod))
+	require.NotContains(t, files, name, "deleted file must stop being tracked")
+
+	w.uploadSettled(files, base.Add(time.Minute))
+	require.Zero(t, calls, "no upload attempt for a deleted file")
+	require.Empty(t, reports)
+}

@@ -444,3 +444,38 @@ func TestPingControl_TimesOutAgainstUnresponsivePeer(t *testing.T) {
 		t.Fatal("pingControl did not honor its own read deadline")
 	}
 }
+
+// A slow but steady sender must succeed: the timeout bounds a stall between
+// reads, not the whole transfer.
+func TestServeControl_SlowSteadyBodyOutlivesTotalReadTimeout(t *testing.T) {
+	root, sc := newSFTPFixture(t)
+	server, client := net.Pipe()
+	done := make(chan struct{})
+	go func() {
+		serveControlConnWithLimits(server, root, sc, nil, 300*time.Millisecond, 16)
+		close(done)
+	}()
+	defer client.Close()
+
+	body := "slowly"
+	writeRawControlPush(t, client, "slow.txt", int64(len(body)), "")
+	start := time.Now()
+	for i := 0; i < len(body); i++ {
+		time.Sleep(100 * time.Millisecond)
+		if _, err := io.WriteString(client, body[i:i+1]); err != nil {
+			t.Fatalf("write body byte %d: %v", i, err)
+		}
+	}
+	if time.Since(start) < 300*time.Millisecond {
+		t.Fatal("test did not exceed the total read timeout")
+	}
+	response := readRawControlResponse(t, client)
+	if !response.OK {
+		t.Fatalf("slow-steady response = %+v", response)
+	}
+	<-done
+	content, err := os.ReadFile(filepath.Join(root, DefaultInboxDir, "slow.txt"))
+	if err != nil || string(content) != body {
+		t.Fatalf("content = %q, err %v", content, err)
+	}
+}

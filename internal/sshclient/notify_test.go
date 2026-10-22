@@ -5,6 +5,7 @@ import (
 	"net"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/standardbeagle/agnt/internal/protocol"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
@@ -51,4 +52,36 @@ func TestNotifyFileArrived_UsesTypedDeveloperEventProtocol(t *testing.T) {
 func TestNotifyFileArrived_RejectsPathOutsideProject(t *testing.T) {
 	err := NotifyFileArrived("unused", "agent", "/project", "/other/file", 1)
 	require.ErrorContains(t, err, "outside project")
+}
+
+func TestNotifyFileArrived_HungDaemonTimesOut(t *testing.T) {
+	old := fileArrivalNoticeTimeout
+	fileArrivalNoticeTimeout = 100 * time.Millisecond
+	defer func() { fileArrivalNoticeTimeout = old }()
+
+	socket := filepath.Join(shortSocketDir(t), "daemon.sock")
+	ln, err := net.Listen("unix", socket)
+	require.NoError(t, err)
+	defer ln.Close()
+	hold := make(chan struct{})
+	defer close(hold)
+	go func() {
+		conn, acceptErr := ln.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		<-hold // accept, then never answer
+	}()
+
+	root := filepath.Join(t.TempDir(), "project")
+	remote := filepath.Join(root, ".agnt-inbox", "mock.png")
+	done := make(chan error, 1)
+	go func() { done <- NotifyFileArrived(socket, "s", root, remote, 1) }()
+	select {
+	case err := <-done:
+		require.Error(t, err)
+	case <-time.After(5 * time.Second):
+		t.Fatal("NotifyFileArrived blocked on a hung daemon")
+	}
 }

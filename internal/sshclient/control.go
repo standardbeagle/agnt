@@ -138,7 +138,7 @@ func servePushQueueConnWithLimits(conn net.Conn, queue *PushQueue, readTimeout t
 			return
 		}
 		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
-		remotePath, err := queue.Push(header.FileName, header.DestRelPath, &exactBodyReader{r: reader, remaining: header.Size})
+		remotePath, err := queue.Push(header.FileName, header.DestRelPath, &exactBodyReader{r: &idleDeadlineReader{conn: conn, r: reader, timeout: readTimeout}, remaining: header.Size})
 		if err != nil {
 			writeControlResponse(conn, controlResponse{Error: err.Error()})
 			return
@@ -171,7 +171,7 @@ func serveControlConnWithLimits(conn net.Conn, projectRoot string, sc *sftp.Clie
 			return
 		}
 		_ = conn.SetReadDeadline(time.Now().Add(readTimeout))
-		body, err := spoolControlBody(reader, header.Size)
+		body, err := spoolControlBody(&idleDeadlineReader{conn: conn, r: reader, timeout: readTimeout}, header.Size)
 		if err != nil {
 			writeControlResponse(conn, controlResponse{Error: fmt.Sprintf("sshclient: reading push body: %v", err)})
 			return
@@ -369,4 +369,19 @@ func PushOneFile(host, fileName, destRelPath string, size int64, src io.Reader) 
 		return "", fmt.Errorf("sshclient: push of %s rejected: %s", fileName, resp.Error)
 	}
 	return resp.RemotePath, nil
+}
+
+// idleDeadlineReader refreshes the connection's read deadline before every
+// Read, so readTimeout bounds how long the sender may stall rather than the
+// total transfer time. A single absolute deadline set before the body would
+// cut a legitimate multi-megabyte push off after readTimeout.
+type idleDeadlineReader struct {
+	conn    net.Conn
+	r       io.Reader
+	timeout time.Duration
+}
+
+func (d *idleDeadlineReader) Read(p []byte) (int, error) {
+	_ = d.conn.SetReadDeadline(time.Now().Add(d.timeout))
+	return d.r.Read(p)
 }

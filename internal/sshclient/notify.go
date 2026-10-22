@@ -6,10 +6,14 @@ import (
 	"net"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/standardbeagle/agnt/internal/protocol"
 	hubproto "github.com/standardbeagle/go-cli-server/protocol"
 )
+
+// fileArrivalNoticeTimeout bounds the whole daemon round trip of a notice.
+var fileArrivalNoticeTimeout = 10 * time.Second
 
 // FileArrivalNotifier runs after an upload has been atomically installed.
 // An error is returned to the push caller so notification loss is never silent.
@@ -29,11 +33,13 @@ func NotifyFileArrived(daemonSocket, sessionName, projectRoot, remotePath string
 		return fmt.Errorf("sshclient: encoding file-arrival notice: %w", err)
 	}
 
-	conn, err := net.Dial("unix", daemonSocket)
+	conn, err := net.DialTimeout("unix", daemonSocket, fileArrivalNoticeTimeout)
 	if err != nil {
 		return fmt.Errorf("sshclient: connecting to daemon for file-arrival notice: %w", err)
 	}
 	defer conn.Close()
+	// A hung daemon must not block the push (and its caller) forever.
+	_ = conn.SetDeadline(time.Now().Add(fileArrivalNoticeTimeout))
 	if err := hubproto.NewWriter(conn).WriteCommandWithSubVerb(protocol.VerbPorts, protocol.SubVerbDeveloperEvent, nil, payload); err != nil {
 		return fmt.Errorf("sshclient: sending file-arrival notice: %w", err)
 	}

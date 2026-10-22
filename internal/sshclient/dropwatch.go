@@ -180,8 +180,20 @@ func (w *DropWatcher) scan(files map[string]dropState, now time.Time) {
 		w.report(fmt.Sprintf("agnt ssh: scanning drop folder: %v", err))
 		return
 	}
+	present := make(map[string]struct{}, len(entries))
 	for _, entry := range entries {
-		w.observe(filepath.Join(w.dir, entry.Name()), files, now)
+		name := filepath.Join(w.dir, entry.Name())
+		present[name] = struct{}{}
+		w.observe(name, files, now)
+	}
+	// fsnotify reports no event that reaches observe for a removal, so a file
+	// deleted before it settled would stay tracked: uploadSettled would keep
+	// retrying a path that no longer exists, reporting errors and finally
+	// "giving up" on it. Forget anything the directory no longer lists.
+	for name := range files {
+		if _, ok := present[name]; !ok {
+			delete(files, name)
+		}
 	}
 }
 

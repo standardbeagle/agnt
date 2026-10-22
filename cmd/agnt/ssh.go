@@ -39,8 +39,8 @@ User, Port, IdentityFile, and ProxyJump, exactly as the OpenSSH client
 would), verify the host key against ~/.ssh/known_hosts, authenticate via
 ssh-agent then IdentityFile(s) (default ~/.ssh/id_ed25519, id_ecdsa, id_rsa
 when none is configured) then interactive keyboard-interactive/password,
-and attach a PTY to a remote session-host session by execing
-'agnt attach <name> --create-if-missing --cwd <path>' on the far side.
+and attach a PTY to a remote session-host session over the forwarded daemon
+socket (SESSION-HOST LIST/CREATE), creating it in <path> if missing.
 
 Host[:path] parsing rule (documented here since it is a judgment call, not
 an inferred default): the argument is split on the FIRST colon. Everything

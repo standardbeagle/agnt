@@ -214,6 +214,7 @@ func ResolveHostFromReader(r io.Reader, alias string) (HostConfig, error) {
 	}
 
 	cfg := HostConfig{Host: alias, Port: 22, Warnings: warnings}
+	portSet := false // an explicit "Port 22" is a first obtained value too
 	for _, b := range blocks {
 		if !matchesAnyPattern(b.patterns, alias) {
 			continue
@@ -231,10 +232,11 @@ func ResolveHostFromReader(r io.Reader, alias string) (HostConfig, error) {
 				cfg.User = v
 			}
 		}
-		if cfg.Port == 22 {
+		if !portSet {
 			if v, ok := b.dirs["port"]; ok {
 				if p, err := strconv.Atoi(v); err == nil {
 					cfg.Port = p
+					portSet = true
 				}
 			}
 		}

@@ -150,3 +150,21 @@ Host *
 		t.Errorf("ProxyJump for a host without the override = %q, want \"bastion\"", hc.ProxyJump)
 	}
 }
+
+func TestResolveHostFromReader_ExplicitPort22IsNotOverriddenByLaterBlock(t *testing.T) {
+	cfg := "Host a\n  Port 22\nHost *\n  Port 2222\n"
+	hc, err := ResolveHostFromReader(strings.NewReader(cfg), "a")
+	if err != nil {
+		t.Fatalf("ResolveHostFromReader: %v", err)
+	}
+	if hc.Port != 22 {
+		t.Fatalf("Port = %d, want 22 (first obtained value wins)", hc.Port)
+	}
+	other, err := ResolveHostFromReader(strings.NewReader(cfg), "b")
+	if err != nil {
+		t.Fatalf("ResolveHostFromReader: %v", err)
+	}
+	if other.Port != 2222 {
+		t.Fatalf("catch-all Port = %d, want 2222", other.Port)
+	}
+}
