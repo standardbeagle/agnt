@@ -760,6 +760,25 @@ func formatDeltaLines(deltas map[string]string) string {
 	return strings.Join(lines, "\n")
 }
 
+// Caps on page- and upstream-authored text typed into the agent. These strings
+// are whatever the page, a third-party script or an upstream response says, and
+// they are submitted as a user turn, so each is cut and flattened to one line:
+// a multi-line payload cannot pose as a separate instruction.
+const (
+	maxInjectedFieldRunes = 300
+	maxInjectedMsgRunes   = 500
+)
+
+// untrustedLine flattens s to a single line (every run of whitespace, newlines
+// included, becomes one space) and cuts it to max runes, marking a cut.
+func untrustedLine(s string, max int) string {
+	s = strings.Join(strings.Fields(s), " ")
+	if r := []rune(s); len(r) > max {
+		return string(r[:max]) + "…"
+	}
+	return s
+}
+
 func valueOr(s, fallback string) string {
 	if s == "" {
 		return fallback
@@ -785,10 +804,10 @@ func formatBrowserErrorText(event ProxyEvent) string {
 
 	var b strings.Builder
 	b.WriteString("[browser error] ")
-	b.WriteString(data.Message)
+	b.WriteString(untrustedLine(data.Message, maxInjectedMsgRunes))
 
 	if data.Source != "" {
-		b.WriteString("\n  source: " + data.Source)
+		b.WriteString("\n  source: " + untrustedLine(data.Source, maxInjectedFieldRunes))
 		if data.LineNo > 0 {
 			b.WriteString(fmt.Sprintf(":%d:%d", data.LineNo, data.ColNo))
 		}
@@ -798,12 +817,12 @@ func formatBrowserErrorText(event ProxyEvent) string {
 	if data.Stack != "" {
 		frame := firstAppFrame(data.Stack)
 		if frame != "" {
-			b.WriteString("\n  at " + frame)
+			b.WriteString("\n  at " + untrustedLine(frame, maxInjectedFieldRunes))
 		}
 	}
 
 	if data.URL != "" {
-		b.WriteString("\n  page: " + data.URL)
+		b.WriteString("\n  page: " + untrustedLine(data.URL, maxInjectedFieldRunes))
 	}
 	b.WriteString("\nproxy: " + event.ProxyID + "\n")
 
@@ -857,13 +876,13 @@ func formatHTTPErrorText(event ProxyEvent) string {
 		severity = "error"
 	}
 
-	b.WriteString(fmt.Sprintf("[http %s] %d %s %s", severity, data.StatusCode, data.Method, data.URL))
+	b.WriteString(fmt.Sprintf("[http %s] %d %s %s", severity, data.StatusCode, untrustedLine(data.Method, 16), untrustedLine(data.URL, maxInjectedFieldRunes)))
 
 	// Extract error message from response body
 	if data.ResponseBody != "" {
 		msg := extractHTTPErrorMessage(data.ResponseBody)
 		if msg != "" {
-			b.WriteString("\n  " + msg)
+			b.WriteString("\n  " + untrustedLine(msg, maxInjectedMsgRunes))
 		}
 	}
 
