@@ -84,6 +84,9 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 	// Set when an oversized unknown-length body is passed through mid-decode:
 	// the decompressor is handed downstream, so its deferred Close must not run.
 	passthrough := false
+	// closeDecoder releases the decompressor (zstd's owns goroutines). The
+	// passthrough path hands it downstream, so the body's Close must run it.
+	closeDecoder := func() {}
 
 	// Decompress if needed
 	if strings.Contains(encoding, "gzip") {
@@ -99,6 +102,7 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 			}
 		}()
 		bodyReader = gzReader
+		closeDecoder = func() { gzReader.Close() }
 	} else if strings.Contains(encoding, "deflate") {
 		deflateReader, err := newDeflateReader(resp.Body)
 		if err != nil {
@@ -112,6 +116,7 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 			}
 		}()
 		bodyReader = deflateReader
+		closeDecoder = func() { deflateReader.Close() }
 	} else if strings.Contains(encoding, "br") {
 		brReader := brotli.NewReader(resp.Body)
 		brCloser := io.NopCloser(brReader)
@@ -134,6 +139,7 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 			}
 		}()
 		bodyReader = io.NopCloser(zstdReader)
+		closeDecoder = zstdReader.Close
 	} else if encoding != "" && encoding != "identity" {
 		// Unsupported encoding - pass through without modification
 		debug.Log("proxy", "Unsupported Content-Encoding: %s - passing through without injection", encoding)
@@ -167,9 +173,15 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 		// stream downstream. Deferred decompressor Close is skipped because the
 		// reader is handed off.
 		passthrough = true
+		// Capture the origin body now: the closure runs after resp.Body is
+		// reassigned below, and resp.Body.Close() would call itself.
+		origBody := resp.Body
 		resp.Body = &passthroughReadCloser{
 			Reader: io.MultiReader(bytes.NewReader(bodyBytes), bodyReader),
-			Closer: resp.Body,
+			Closer: closerFunc(func() error {
+				closeDecoder()
+				return origBody.Close()
+			}),
 		}
 		resp.ContentLength = -1
 		resp.Header.Del("Content-Length")
@@ -297,6 +309,10 @@ const maxInjectBodyBytes = 16 << 20 // 16 MiB
 
 // passthroughReadCloser pairs a reassembled reader (buffered head + in-flight
 // remainder) with the closer of the original response body.
+type closerFunc func() error
+
+func (f closerFunc) Close() error { return f() }
+
 type passthroughReadCloser struct {
 	io.Reader
 	io.Closer
