@@ -80,6 +80,8 @@ Cursor-based pull from the always-active incident inbox. This is the authoritati
 | `error_id` | string | — | Pin/unpin target: the fingerprint from a prior result |
 | `tag` | string | — | Note stored with a pin, returned on the pinned item |
 
+This tool is the history surface: it is never gated by pause, `alerts.push` or how the session was started (see `agnt incidents`).
+
 There is no `global` flag: the inbox is per-session hard-isolated (numbered
 contract 1), which is a stronger guarantee than project scoping.
 
@@ -769,7 +771,9 @@ Returns shell command string for streaming daemon events via `agnt monitor` CLI.
 |-----------|------|---------|-------------|
 | `target` | string | `all` | What to watch: `errors`, `interactions`, `process`, `all` |
 | `proxy_id` | string | none | Filter to specific proxy |
-| `process_id` | string | none | Filter to specific process (required for `process` target) |
+| `process_id` | string | none | Filter to specific process (required for `process` target unless `process_ids` is set) |
+| `proxy_ids` | string[] | none | Multiple proxies, emitted as comma-joined `--proxy`; wins over `proxy_id` |
+| `process_ids` | string[] | none | Multiple processes, emitted as comma-joined `--process`; wins over `process_id` |
 
 **Output**: Returns `command` string (e.g., `agnt monitor --socket /tmp/devtool-mcp-1000.sock --types error,diagnostic --format compact`) and human-readable `description`.
 
@@ -1043,6 +1047,20 @@ Interactive responsive workbench (4th indicator mode beside sketch/design):
 - **Fast**: Focus indicators, color schemes, ~50-100ms
 - **Comprehensive**: State-specific contrast, responsive, ~500-2000ms
 - **Basic**: Fallback, minimal checks, ~10-50ms
+
+## Incident Pings Without the MCP Server (`agnt incidents`)
+
+Front ends that are not an MCP client (the Claude Mods pane, the OpenCode plugin, a shell) read one session's incident pings through the same daemon the MCP server uses. The session is `--session <code>` or `$AGNT_SESSION_CODE` (set by `agnt run`).
+
+| Command | Effect |
+|---------|--------|
+| `agnt incidents list [--severity S,...] [--since C] [--limit N] [--json]` | Preview of the session's incidents; never marks anything read |
+| `agnt incidents watch [--register]` | Streams one NDJSON line per digest ping (`type`, `session_code`, `level`, `message`, `payload`); reconnects every 2s. `--register` owns a session for this checkout when the agent was not started by `agnt run`: the first line is `{"type":"session","session_code":...}`, the session is heartbeated and unregistered on exit |
+| `agnt incidents forwarding pause\|resume` | Stops or restarts pings reaching the agent; incidents keep collecting |
+
+**Delivery follows how the agent was started, never the sender.** A ping is one agent message. The daemon stamps it with the session's connector: `stdin` when `agnt run` owns the agent's PTY (the daemon types it), `mcp` otherwise (the MCP process notifies). The MCP process skips digests stamped for another connector, so one ping is one delivery. Observers such as `agnt incidents watch` and `agnt monitor` see every digest.
+
+**History is always pullable.** `get_incidents` is never gated by pause, `alerts.push` or the connector. `profile:"changed"` returns unread only; other profiles return read and unread, bounded by the inbox caps (100 per severity band) and `clear`.
 
 ## Event Streaming (`agnt monitor`)
 
