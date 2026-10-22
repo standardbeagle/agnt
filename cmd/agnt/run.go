@@ -124,6 +124,17 @@ func runPTYChild(ctx context.Context, args []string, socketPath string, sessionC
 
 	oldState, err := term.MakeRaw(int(os.Stdin.Fd()))
 	if err != nil {
+		// The child is already running (its own session, pgid == pid). Returning
+		// here without reaping it left the agent and any jobs it spawned alive
+		// with no owner once the pty closed.
+		if sessionPGID > 1 {
+			_ = syscall.Kill(-sessionPGID, syscall.SIGKILL)
+		} else if c.Process != nil {
+			_ = c.Process.Kill()
+		}
+		if c.Process != nil {
+			_, _ = c.Process.Wait()
+		}
 		return 0, fmt.Errorf("failed to set raw mode: %w", err)
 	}
 	defer func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }()
