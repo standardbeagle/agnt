@@ -713,10 +713,11 @@ func (d *Daemon) monitorStartupFailure(
 			stderr, _ := proc.Stderr()
 			// A process that is still running has not failed to start: an
 			// "address already in use" line for a side port (inspector, livereload)
-			// is a warning, not a dead server. Only the declared port counts here;
+			// is a warning, not a dead server. When a port is declared only that port
+			// counts here;
 			// acting on any other port stopped a healthy process and killed whatever
 			// else held that port.
-			if port := detectEADDRINUSE(string(stderr)); port > 0 && expectedPort > 0 && port == expectedPort {
+			if port := detectEADDRINUSE(string(stderr)); port > 0 && (expectedPort <= 0 || port == expectedPort) {
 				return &StartupError{
 					ProcessID: proc.ID,
 					Port:      port,

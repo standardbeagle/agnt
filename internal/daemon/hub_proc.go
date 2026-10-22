@@ -1104,6 +1104,9 @@ func (d *Daemon) hubHandleProcRun(ctx context.Context, conn *hubpkg.Connection, 
 		return conn.WriteErr(hubproto.ErrMissingParam, "PROC RUN: project_path required (or attach session with ProjectPath)")
 	}
 	projectPath = normalizePath(projectPath)
+	if !d.pathVisibleTo(conn, projectPath) {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "PROC RUN: project_path belongs to another project than this session")
+	}
 
 	scriptCfg := &config.ScriptConfig{
 		Run:         payload.Run,
@@ -1273,6 +1276,9 @@ func (d *Daemon) hubHandleProcRunGroup(ctx context.Context, conn *hubpkg.Connect
 		return conn.WriteErr(hubproto.ErrMissingParam, "PROC RUN-GROUP: project_path required (or attach session with ProjectPath)")
 	}
 	projectPath = normalizePath(projectPath)
+	if !d.pathVisibleTo(conn, projectPath) {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "PROC RUN-GROUP: project_path belongs to another project than this session")
+	}
 
 	// Translate per-group default timeout (int seconds) to Duration.
 	var depTimeout time.Duration
