@@ -38,8 +38,11 @@ type PersistentState struct {
 // never touches disk I/O.
 type StateManager struct {
 	statePath string
-	mu        sync.RWMutex
-	state     PersistentState
+	// loadErr is why AutoLoad started empty (nil when the file loaded or did
+	// not exist). The daemon reports it; debug.Log alone is invisible.
+	loadErr error
+	mu      sync.RWMutex
+	state   PersistentState
 
 	// Write-behind channel signals the background writer.
 	// A non-blocking send coalesces multiple rapid mutations into one write.
@@ -147,6 +150,7 @@ func NewStateManager(config StateManagerConfig) *StateManager {
 		// empty state and rebuild. Log it so a persistently unreadable state
 		// file is diagnosable rather than silently invisible.
 		if err := sm.Load(); err != nil {
+			sm.loadErr = err
 			debug.Log("state", "auto-load of persisted state failed, starting empty: %v", err)
 		}
 	}
@@ -155,6 +159,9 @@ func NewStateManager(config StateManagerConfig) *StateManager {
 
 	return sm
 }
+
+// LoadError returns why the initial AutoLoad found no usable state, or nil.
+func (sm *StateManager) LoadError() error { return sm.loadErr }
 
 // Load reads state from disk into memory. Only called at startup.
 func (sm *StateManager) Load() error {
@@ -171,6 +178,12 @@ func (sm *StateManager) Load() error {
 
 	var state PersistentState
 	if err := json.Unmarshal(data, &state); err != nil {
+		// Keep the unreadable file: the next write replaces the state file and
+		// would otherwise destroy the only evidence of what was persisted.
+		quarantine := fmt.Sprintf("%s.corrupt-%d", sm.statePath, time.Now().Unix())
+		if rerr := os.Rename(sm.statePath, quarantine); rerr == nil {
+			return fmt.Errorf("failed to parse state file (moved to %s): %w", quarantine, err)
+		}
 		return fmt.Errorf("failed to parse state file: %w", err)
 	}
 

@@ -798,6 +798,10 @@ func New(config DaemonConfig) *Daemon {
 			StatePath: config.StatePath,
 			AutoLoad:  true,
 		})
+		if err := d.stateMgr.LoadError(); err != nil {
+			d.daemonStartupLog("warning", "state_load_failed",
+				fmt.Sprintf("persisted daemon state was unreadable and was not restored (proxies from the last run will not be re-created): %v", err))
+		}
 	}
 
 	// Set initial overlay endpoint from config or persisted state
