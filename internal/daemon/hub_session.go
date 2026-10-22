@@ -588,7 +588,7 @@ func (d *Daemon) hubHandleSessionGet(conn *hubpkg.Connection, cmd *hubproto.Comm
 	code := cmd.Args[0]
 
 	session, ok := d.sessionRegistry.Get(code)
-	if !ok {
+	if !ok || !d.sessionVisibleTo(conn, session) {
 		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("session %q not found", code))
 	}
 
@@ -612,7 +612,7 @@ func (d *Daemon) hubHandleSessionSend(conn *hubpkg.Connection, cmd *hubproto.Com
 
 	// Get session
 	session, ok := d.sessionRegistry.Get(code)
-	if !ok {
+	if !ok || !d.sessionVisibleTo(conn, session) {
 		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("session %q not found", code))
 	}
 
@@ -658,7 +658,7 @@ func (d *Daemon) hubHandleSessionSchedule(conn *hubpkg.Connection, cmd *hubproto
 
 	// Get session to determine project path
 	session, ok := d.sessionRegistry.Get(code)
-	if !ok {
+	if !ok || !d.sessionVisibleTo(conn, session) {
 		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("session %q not found", code))
 	}
 
@@ -688,6 +688,14 @@ func (d *Daemon) hubHandleSessionCancel(conn *hubpkg.Connection, cmd *hubproto.C
 	}
 
 	taskID := cmd.Args[0]
+
+	// Task ids are sequential, so a bound caller must not be able to cancel
+	// another project's task by guessing one.
+	if v, ok := d.scheduler.tasks.Load(taskID); ok {
+		if task := v.(*ScheduledTask); !d.pathVisibleTo(conn, task.ProjectPath) {
+			return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("task %q not found", taskID))
+		}
+	}
 
 	if err := d.scheduler.Cancel(taskID); err != nil {
 		return conn.WriteErr(hubproto.ErrNotFound, err.Error())

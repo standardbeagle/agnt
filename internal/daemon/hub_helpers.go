@@ -98,6 +98,24 @@ func getSessionScoped[T any](d *Daemon, conn *hubpkg.Connection, id string, getF
 	return getFn(id, pathFilter)
 }
 
+// pathVisibleTo reports whether a verb that names a session or task by id may
+// act on one that belongs to projectPath. A connection bound to a session (an
+// `agnt run` wrapper) is confined to its own project, like the other ID-scoped
+// verbs; an unbound connection (the CLI, an MCP server before it attaches)
+// names its target explicitly and is not confined here.
+func (d *Daemon) pathVisibleTo(conn *hubpkg.Connection, projectPath string) bool {
+	own := d.getSessionProjectPath(conn)
+	if own == "" || projectPath == "" {
+		return true
+	}
+	return normalizePath(own) == normalizePath(projectPath)
+}
+
+// sessionVisibleTo is pathVisibleTo for a session.
+func (d *Daemon) sessionVisibleTo(conn *hubpkg.Connection, s *Session) bool {
+	return d.pathVisibleTo(conn, s.ProjectPath)
+}
+
 // getSessionProjectPath returns the project path from the connection's session.
 
 func (d *Daemon) getSessionProjectPath(conn *hubpkg.Connection) string {
