@@ -68,7 +68,10 @@ func init() {
 	rootCmd.AddCommand(ciCmd)
 
 	// Custom version output that includes daemon version
-	rootCmd.SetVersionTemplate(getVersionString())
+	// (evaluated lazily: eager evaluation dialed the daemon on every process
+	// start, including the `agnt hook` hot path).
+	cobra.AddTemplateFunc("agntVersion", getVersionString)
+	rootCmd.SetVersionTemplate("{{agntVersion}}")
 }
 
 func initDebug() {

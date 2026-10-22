@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 )
 
@@ -266,6 +267,8 @@ func parsePackageJsonScripts(packagePath string) []string {
 	for name := range pkg.Scripts {
 		scripts = append(scripts, name)
 	}
+	// Map order is random; Metadata["scripts"] feeds generated output.
+	sort.Strings(scripts)
 	return scripts
 }
 

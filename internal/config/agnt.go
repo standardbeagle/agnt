@@ -1423,7 +1423,13 @@ Pattern: ` + "`proc run`" + ` to start, ` + "`proc output`" + ` to inspect, ` + 
 	// Add configured scripts
 	if len(c.Scripts) > 0 {
 		sb.WriteString("\n## Configured Scripts\n\n")
-		for name, script := range c.Scripts {
+		// Sorted: the prompt is handed to the agent verbatim, and a map-order
+		// shuffle on every launch defeats prompt caching.
+		for _, name := range sortedKeys(c.Scripts) {
+			script := c.Scripts[name]
+			if script == nil {
+				continue
+			}
 			cmd := script.Run
 			if cmd == "" && script.Command != "" {
 				cmd = script.Command
@@ -1442,7 +1448,11 @@ Pattern: ` + "`proc run`" + ` to start, ` + "`proc output`" + ` to inspect, ` + 
 	// Add configured proxies
 	if len(c.Proxies) > 0 {
 		sb.WriteString("\n## Configured Proxies\n\n")
-		for name, proxy := range c.Proxies {
+		for _, name := range sortedKeys(c.Proxies) {
+			proxy := c.Proxies[name]
+			if proxy == nil {
+				continue
+			}
 			target := proxy.URL
 			if target == "" {
 				target = proxy.Target

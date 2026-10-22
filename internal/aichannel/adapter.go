@@ -322,6 +322,13 @@ func (a *GenericAdapter) BuildCommand(ctx context.Context, config Config, prompt
 
 	args = append(args, config.Args...)
 
+	// Context travels on stdin only when UseStdin is set (StdinData). Without
+	// it the context used to be dropped silently, so the agent answered a
+	// prompt that referred to data it never received. Embed it in the prompt.
+	if !config.UseStdin && inputContext != "" {
+		prompt = fmt.Sprintf("<context>\n%s\n</context>\n\n%s", inputContext, prompt)
+	}
+
 	// Use non-interactive flag if available
 	if config.NonInteractiveFlag != "" && prompt != "" {
 		args = append(args, config.NonInteractiveFlag, prompt)

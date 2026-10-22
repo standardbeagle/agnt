@@ -849,6 +849,13 @@ type responseRecorder struct {
 const StatusClientClosedRequest = 499
 
 func (rr *responseRecorder) WriteHeader(statusCode int) {
+	// A 1xx other than 101 is informational (103 Early Hints): the final
+	// status still follows, so it is forwarded without being recorded as the
+	// response's status or ending the header phase.
+	if statusCode >= 100 && statusCode < 200 && statusCode != http.StatusSwitchingProtocols {
+		rr.ResponseWriter.WriteHeader(statusCode)
+		return
+	}
 	if !rr.wroteHeader {
 		rr.statusCode = statusCode
 		rr.wroteHeader = true

@@ -83,11 +83,15 @@ func hasWord(haystack, word string) bool {
 	if word == "" {
 		return false
 	}
-	for {
-		i := strings.Index(haystack, word)
+	// from is an offset into the full haystack, so the boundary check always
+	// sees the real previous byte (re-slicing made a mid-word match look like
+	// the start of the string: "aaa" matched "aa").
+	for from := 0; from < len(haystack); {
+		i := strings.Index(haystack[from:], word)
 		if i < 0 {
 			return false
 		}
+		i += from
 		// Boundary check: char before must be a separator or string start.
 		startOK := i == 0 || isWordSep(haystack[i-1])
 		end := i + len(word)
@@ -95,8 +99,9 @@ func hasWord(haystack, word string) bool {
 		if startOK && endOK {
 			return true
 		}
-		haystack = haystack[i+1:]
+		from = i + 1
 	}
+	return false
 }
 
 func isWordSep(b byte) bool {

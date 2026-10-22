@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func TestRecordReadRoundTrip(t *testing.T) {
@@ -105,5 +106,18 @@ func TestComponentWithSpacesSanitized(t *testing.T) {
 	entries, _ := Read(path, 0)
 	if len(entries) != 1 || strings.Contains(entries[0].Component, " ") {
 		t.Fatalf("component not sanitized: %+v", entries)
+	}
+}
+
+func TestRecordTo_TruncationKeepsRunesWhole(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "errors.log")
+	// 3-byte runes so the 400-byte cap falls mid-rune.
+	RecordTo(path, "t", strings.Repeat("€", 300))
+	entries, err := Read(path, 0)
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("Read = %v, %v", entries, err)
+	}
+	if !utf8.ValidString(entries[0].Message) {
+		t.Fatalf("truncated message is not valid UTF-8: %q", entries[0].Message)
 	}
 }

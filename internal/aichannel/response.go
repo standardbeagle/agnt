@@ -322,9 +322,16 @@ func parseStreamJSONResponse(output string) (*Response, error) {
 	return ParseStreamJSONReader(reader)
 }
 
+// maxStreamLineBytes bounds one stream-json line.
+const maxStreamLineBytes = 16 << 20
+
 // ParseStreamJSONReader parses stream-json from a reader (for real-time processing).
 func ParseStreamJSONReader(reader io.Reader) (*Response, error) {
 	scanner := bufio.NewScanner(reader)
+	// A stream-json line carries a whole assistant message or tool result; the
+	// default 64KB token cap fails the entire parse (bufio.ErrTooLong) on one
+	// large line.
+	scanner.Buffer(make([]byte, 0, 64*1024), maxStreamLineBytes)
 
 	var response *Response
 	var lastAssistantContent strings.Builder

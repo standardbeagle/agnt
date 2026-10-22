@@ -17,6 +17,7 @@ func TestURLNormalization(t *testing.T) {
 		{"/", "/"},
 		{"https://example.com", "https://example.com/"},
 		{"https://example.com/", "https://example.com/"},
+		{"https://example.com/products/123?", "https://example.com/products/123"},
 	}
 
 	for _, tt := range tests {

@@ -24,6 +24,7 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
 
 // maxFileSize caps the log before a single-generation rotation kicks in.
@@ -96,7 +97,12 @@ func RecordTo(path, component, message string) {
 	}
 	msg := strings.ReplaceAll(message, "\n", " ")
 	if len(msg) > maxMessageLen {
-		msg = msg[:maxMessageLen] + "…"
+		// Back up to a rune boundary so the cut never leaves a torn rune.
+		cut := maxMessageLen
+		for cut > 0 && !utf8.RuneStart(msg[cut]) {
+			cut--
+		}
+		msg = msg[:cut] + "…"
 	}
 	// Format: <RFC3339> <component> <message> — mirrors the legacy
 	// hook-drop line so existing tooling/expectations still parse.

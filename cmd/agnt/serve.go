@@ -137,10 +137,7 @@ Available tools:
 	}
 
 	// Load .agnt.kdl and apply channel capability when enabled.
-	agntCfg, cfgErr := config.LoadAgntConfig(".")
-	if cfgErr != nil {
-		agntCfg = config.DefaultAgntConfig()
-	}
+	agntCfg := loadMCPConfig(".", os.Stderr)
 	serverOpts = tools.ChannelServerOptions(serverOpts, agntCfg.Channel)
 
 	// Always trigger autostart on MCP initialized. In agnt run mode,
@@ -294,6 +291,19 @@ type runAutostartFunc func(projectDir string) (map[string]interface{}, error)
 // .claude/rules/daemon-lifecycle.md), so blocking here turns a slow project
 // start into a permanently silent MCP server. Nothing consumes the result but
 // the diagnostics below, so detaching loses nothing.
+// loadMCPConfig loads .agnt.kdl from dir. A parse/read error falls back to the
+// defaults, but never silently: it is reported on w and in the self-error log,
+// since channel mode and other declared settings would otherwise just vanish.
+func loadMCPConfig(dir string, w io.Writer) *config.AgntConfig {
+	cfg, err := config.LoadAgntConfig(dir)
+	if err != nil {
+		fmt.Fprintf(w, "agnt: failed to load .agnt.kdl, using defaults: %v\n", err)
+		selflog.Record("mcp", "failed to load .agnt.kdl, using defaults: %v", err)
+		return config.DefaultAgntConfig()
+	}
+	return cfg
+}
+
 func mcpAutostartHandler(runAutostart runAutostartFunc) func(context.Context, *mcp.InitializedRequest) {
 	return func(ctx context.Context, req *mcp.InitializedRequest) {
 		cwd, err := os.Getwd()

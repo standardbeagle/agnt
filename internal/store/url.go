@@ -21,6 +21,7 @@ func NormalizeURL(rawURL string) string {
 
 	// Remove query and fragment
 	u.RawQuery = ""
+	u.ForceQuery = false // a bare trailing "?" would otherwise survive String()
 	u.Fragment = ""
 
 	// Get the clean URL string
