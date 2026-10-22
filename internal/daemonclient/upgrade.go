@@ -11,6 +11,7 @@ import (
 	"time"
 
 	agntconfig "github.com/standardbeagle/agnt/internal/config"
+	"github.com/standardbeagle/agnt/internal/updater"
 	goclient "github.com/standardbeagle/go-cli-server/client"
 )
 
@@ -128,6 +129,17 @@ func (u *DaemonUpgrader) Upgrade(ctx context.Context) error {
 		client.Close()
 		u.log("Daemon already at version %s, no upgrade needed", newVersion)
 		return nil
+	}
+
+	// Never downgrade. A stale client (an IDE holding an old binary) would
+	// otherwise restart a newer daemon, and the newer clients would restart it
+	// back, killing every project's processes on each flip.
+	if !u.config.Force {
+		if daemonNewer, perr := updater.IsNewerVersion(info.Version, newVersion); perr == nil && daemonNewer {
+			client.Close()
+			u.log("Daemon %s is newer than this binary (%s), not downgrading", info.Version, newVersion)
+			return nil
+		}
 	}
 
 	u.log("Upgrading daemon from %s to %s...", info.Version, newVersion)
