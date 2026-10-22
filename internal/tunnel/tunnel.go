@@ -707,6 +707,20 @@ var (
 // const) so tests can shorten it.
 var tailscaleDNSFallbackDelay = 750 * time.Millisecond
 
+// tailscaleServeActive reports whether `tailscale serve status` lists a mapping
+// to the given local port. A var so tests can stub it.
+var tailscaleServeActive = func(ctx context.Context, binary string, port int) bool {
+	cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	out, err := exec.CommandContext(cctx, binary, "serve", "status").CombinedOutput()
+	if err != nil {
+		return false
+	}
+	text := string(out)
+	return strings.Contains(text, fmt.Sprintf("localhost:%d", port)) ||
+		strings.Contains(text, fmt.Sprintf("127.0.0.1:%d", port))
+}
+
 func (t *Tunnel) startTailscale(ctx context.Context) error {
 	binary := t.config.BinaryPath
 	if binary == "" {
@@ -756,6 +770,13 @@ func (t *Tunnel) startTailscale(ctx context.Context) error {
 			return
 		}
 		if t.PublicURL() != "" {
+			return
+		}
+		// Only synthesise the URL when serve is really mapping our port. Serve
+		// blocks on a "Serve is not enabled on your tailnet" prompt without
+		// failing, and a URL built from the DNS name alone would be reported
+		// (and bound as trusted) with nothing behind it.
+		if !tailscaleServeActive(ctx, binary, t.config.LocalPort) {
 			return
 		}
 		if name := platform.TailscaleDNSName(ctx); name != "" {
