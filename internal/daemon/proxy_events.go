@@ -542,6 +542,16 @@ func (d *Daemon) handleFallbackPortCheck(event ProxyEvent) {
 		return
 	}
 
+	// The check fires fallbackCheckDelay after autostart. If the script died or
+	// was stopped meanwhile, handleScriptStopped has already run and nothing
+	// would tear down a proxy created now, so it would leak its listen port.
+	if event.ScriptID != "" && d.processKnownStopped(event.ScriptID) {
+		debug.Log("daemon", "Fallback check for proxy %s: script %s is no longer running, skipping", event.ProxyName, event.ScriptID)
+		d.recordStartupEntry(event.ScriptID, event.ProxyName, "info", "startup_proxy_fallback_skipped_script_stopped",
+			fmt.Sprintf("fallback-port check for proxy %s: script %s is no longer running, no fallback proxy created", event.ProxyName, event.Config.Script), 0)
+		return
+	}
+
 	// Use the explicit-start proxy id scheme. Script-linked proxies created
 	// via URLDetected use makeProxyIDFromURL (which embeds host+port), so we
 	// also need to scan any existing proxies linked to this script to detect
@@ -624,6 +634,19 @@ func (d *Daemon) handleFallbackPortCheck(event ProxyEvent) {
 	d.recordStartupEntry(event.ScriptID, event.ProxyName, "info", "startup_proxy_fallback_used",
 		fmt.Sprintf("created fallback proxy %s for script %s targeting %s", event.ProxyName, event.Config.Script, targetURL), event.Config.FallbackPort)
 	debug.Log("daemon", "Created fallback proxy %s targeting %s (script %s)", fallbackProxyID, targetURL, event.Config.Script)
+}
+
+// processKnownStopped reports whether the ProcessManager holds processID in a
+// state that is not running or starting. An id it does not hold is not "known
+// stopped": the caller cannot tell a removed process from one never started.
+func (d *Daemon) processKnownStopped(processID string) bool {
+	if d.hub == nil {
+		return false
+	}
+	if _, err := d.hub.ProcessManager().Get(processID); err != nil {
+		return false
+	}
+	return !d.processIsLive(processID)
 }
 
 // processIsLive reports whether the ProcessManager currently holds a running
