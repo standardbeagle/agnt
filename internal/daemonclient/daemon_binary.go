@@ -1,9 +1,11 @@
 package daemonclient
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -64,7 +66,10 @@ func ensureDaemonBinary() string {
 		// Provisioning is best-effort: on any failure (read-only install dir,
 		// permissions) fall back to the library default rather than blocking
 		// autostart entirely.
-		debug.Log("daemon", "ensureDaemonBinary: copy %s -> %s failed: %v", self, daemonPath, err)
+		debug.Warn("daemon", "ensureDaemonBinary: copy %s -> %s failed: %v", self, daemonPath, err)
+		// Autostart now self-execs agnt, which sandboxes forbid. Say so where
+		// the user (or the agent reading the MCP server's stderr) can see it.
+		fmt.Fprintf(os.Stderr, "[agnt] could not provision %s (%v); falling back to starting the daemon from agnt itself, which a sandbox may block\n", daemonPath, err)
 		return ""
 	}
 	debug.Log("daemon", "ensureDaemonBinary: provisioned daemon copy %s", daemonPath)
@@ -140,10 +145,29 @@ func copyExecutable(src, dst string) error {
 		tmp.Close()
 		return err
 	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return err
+	}
 	if err := tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmpName, dst)
+	err = os.Rename(tmpName, dst)
+	if err != nil && runtime.GOOS == "windows" {
+		// A running exe cannot be overwritten on Windows but can be renamed:
+		// move the stale copy aside, then put the new one in place.
+		old := fmt.Sprintf("%s.old-%d", dst, os.Getpid())
+		if os.Rename(dst, old) == nil {
+			if err2 := os.Rename(tmpName, dst); err2 == nil {
+				_ = os.Remove(old) // fails while the old daemon still runs; harmless
+				return nil
+			} else {
+				_ = os.Rename(old, dst)
+				err = err2
+			}
+		}
+	}
+	return err
 }
 
 // removeStaleTemps reaps `.agnt-daemon-*` temp files left behind when a
