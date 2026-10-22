@@ -812,6 +812,13 @@ func (r *InputRouter) runSummarize() {
 
 	r.overlay.summaryText = result.Summary
 	r.overlay.buildPanelItems()
+	// The summarize runs for up to two minutes. If the user closed the panel
+	// view meanwhile, reopening it (and clearing the screen) would wipe the
+	// child's live output and leave panelMode stale; the summary stays
+	// available as a panel the next time the view opens.
+	if r.overlay.State() != StateMenu {
+		return
+	}
 	for i, p := range r.overlay.panelItems {
 		if p.Type == "summary" {
 			r.overlay.panelIndex = i
@@ -1687,6 +1694,12 @@ func (s *win32ParseState) appendChar(vk, cs int, r rune) {
 	// readline expect \x7f (DEL).
 	if vk == vkBack && r == 0x08 {
 		r = 0x7f
+	}
+	// Shift+Tab arrives as Uc=9 with the Shift flag; POSIX apps expect the
+	// back-tab sequence, not a plain Tab.
+	if vk == vkTab && r == '\t' && cs&csShift != 0 {
+		s.result = append(s.result, 0x1b, '[', 'Z')
+		return
 	}
 	if cs&csAltMask != 0 && cs&csCtrlMask == 0 {
 		s.result = append(s.result, 0x1b)

@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"sync"
@@ -64,6 +66,12 @@ func (n *OverlayNotifier) CompareAndSwapEndpoint(old, next string) bool {
 }
 
 func (n *OverlayNotifier) setEndpointLocked(socketPath string) {
+	// The previous client's transport pools keep-alive connections to the old
+	// socket and, with no IdleConnTimeout, never lets them go: each endpoint
+	// change left a connection and its two goroutines behind.
+	if n.client != nil {
+		n.client.CloseIdleConnections()
+	}
 	n.socketPath = socketPath
 	n.enabled = socketPath != ""
 
@@ -75,6 +83,7 @@ func (n *OverlayNotifier) setEndpointLocked(socketPath string) {
 		n.client = &http.Client{
 			Timeout: 5 * time.Second,
 			Transport: &http.Transport{
+				IdleConnTimeout: 30 * time.Second,
 				DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 					return dialer.DialContext(ctx, "unix", socketPath)
 				},
@@ -315,6 +324,14 @@ func (n *OverlayNotifier) send(event OverlayEvent) error {
 		return err
 	}
 	defer resp.Body.Close()
+	// Drain (bounded) so the keep-alive connection is reused.
+	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 4<<10))
+
+	// A reply that is not a success means the overlay did not take the event;
+	// reporting it as delivered would swallow the failure.
+	if resp.StatusCode < 200 || resp.StatusCode > 299 {
+		return fmt.Errorf("overlay rejected %s event: HTTP %d", event.Type, resp.StatusCode)
+	}
 
 	debug.Log("overlay-notifier", "%s event delivered to overlay (status=%d)", event.Type, resp.StatusCode)
 	return nil

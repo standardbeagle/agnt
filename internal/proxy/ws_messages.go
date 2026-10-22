@@ -239,6 +239,25 @@ func (c *wsConnState) handleBinaryFrame(rawMessage []byte) {
 	debug.Log("proxy", "binary frame dropped: not a screenshot and no voice session (%d bytes)", len(rawMessage))
 }
 
+// maxConnCaptures bounds the capture ids one connection remembers. An entry
+// leaves the map only when a panel_message names it, so a page that captures
+// and never sends (or a hostile one) grew it for the life of the connection.
+// A forgotten id still resolves through ownedCapturePath, which accepts the
+// path capture_ack echoed back.
+const maxConnCaptures = 256
+
+// rememberCapture records a capture id's file path for the panel_message that
+// will name it, evicting an arbitrary older entry at the cap. Read loop only.
+func (c *wsConnState) rememberCapture(id, filePath string) {
+	if _, replacing := c.captures[id]; !replacing && len(c.captures) >= maxConnCaptures {
+		for old := range c.captures {
+			delete(c.captures, old)
+			break
+		}
+	}
+	c.captures[id] = filePath
+}
+
 // saveCaptureFrame writes a screenshot frame's PNG bytes and acks it.
 func (c *wsConnState) saveCaptureFrame(captureID string, imgBytes []byte) {
 	filePath, err := c.ps.savePNGBytes("area-"+captureID, imgBytes)
@@ -246,7 +265,7 @@ func (c *wsConnState) saveCaptureFrame(captureID string, imgBytes []byte) {
 		debug.Error("proxy", "Failed to save binary screenshot id=%s: %v", captureID, err)
 		return
 	}
-	c.captures[captureID] = filePath
+	c.rememberCapture(captureID, filePath)
 	debug.Log("proxy", "Saved binary screenshot: id=%s path=%s", captureID, filePath)
 	if wErr := c.asyncConn.WriteJSON(map[string]interface{}{
 		"type":      "capture_ack",
@@ -766,7 +785,7 @@ func (c *wsConnState) handleSketchCapture(msg *wsMessage) {
 		filePath, err := c.ps.saveScreenshot("sketch-"+capture.ID, capture.ImageData)
 		if err == nil {
 			capture.FilePath = filePath
-			c.captures[capture.ID] = filePath
+			c.rememberCapture(capture.ID, filePath)
 		}
 		capture.ImageData = ""
 	}

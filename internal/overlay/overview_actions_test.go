@@ -187,3 +187,24 @@ func TestOverviewReconnect_NoopWhenConnected(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	assert.Equal(t, int32(0), conn.calls.Load(), "reconnect must be a no-op when already connected")
 }
+
+func TestRunSummarize_AfterPanelClosedDoesNotReopenOrClearScreen(t *testing.T) {
+	router, ov, _ := newOverviewRouter(t)
+	var screen bytes.Buffer
+	ov.renderer = NewRenderer(&screen, 80, 24)
+	router.SetSummarizer(&fakeSummarizer{available: true, summary: "done"})
+
+	// The user closed the panel view while the summary was being produced.
+	ov.mu.Lock()
+	ov.panelMode = false
+	ov.state.Store(int32(StateIndicator))
+	ov.mu.Unlock()
+
+	router.runSummarize()
+
+	ov.mu.Lock()
+	defer ov.mu.Unlock()
+	assert.Equal(t, "done", ov.summaryText, "summary is kept for the next open")
+	assert.False(t, ov.panelMode, "closed panel view must stay closed")
+	assert.NotContains(t, screen.String(), ClearScreen, "child's live screen must not be cleared")
+}

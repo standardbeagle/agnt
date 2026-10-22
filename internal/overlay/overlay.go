@@ -24,10 +24,9 @@ type PtyReadWriter interface {
 type State int
 
 const (
-	StateHidden        State = iota // No overlay visible, full PTY passthrough
-	StateIndicator                  // Status bar visible at bottom
-	StateMenu                       // Panel browser active
-	StateProcessViewer              // Process output viewer (temporary, while key held)
+	StateHidden    State = iota // No overlay visible, full PTY passthrough
+	StateIndicator              // Status bar visible at bottom
+	StateMenu                   // Panel browser active
 )
 
 // ConnectionStatus represents daemon connection state.
@@ -337,9 +336,6 @@ type Config struct {
 	// Whether to show indicator bar by default
 	ShowIndicator bool
 
-	// Status refresh interval
-	StatusRefreshInterval time.Duration
-
 	// Version string to display in dashboard
 	Version string
 
@@ -354,8 +350,7 @@ type Config struct {
 // DefaultConfig returns the default overlay configuration.
 func DefaultConfig() Config {
 	return Config{
-		ShowIndicator:         true,
-		StatusRefreshInterval: 2 * time.Second,
+		ShowIndicator: true,
 	}
 }
 
@@ -599,7 +594,7 @@ func (o *Overlay) buildPanelItems() {
 		} else {
 			label := s.Name
 			if len(label) > 12 {
-				label = label[:12]
+				label = TruncateRunes(label, 12, "")
 			}
 			o.panelItems = append(o.panelItems, PanelItem{
 				Type: "process", ID: s.Name, Label: label, ProcessState: s.State,
@@ -656,7 +651,7 @@ func (o *Overlay) buildPanelItems() {
 		if _, ok := existing[p.ID]; !ok {
 			label := stripProjectPrefix(p.ID)
 			if len(label) > 12 {
-				label = label[:12]
+				label = TruncateRunes(label, 12, "")
 			}
 			o.panelItems = append(o.panelItems, PanelItem{
 				Type: "proxy", ID: p.ID, Label: label,

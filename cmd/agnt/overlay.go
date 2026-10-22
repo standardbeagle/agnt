@@ -1215,8 +1215,8 @@ func (o *Overlay) buildKeySequence(msg KeyMessage) string {
 
 	// Regular key
 	if len(msg.Key) == 1 {
-		if msg.Shift {
-			return string(msg.Key[0] - 32) // Simple uppercase
+		if msg.Shift && msg.Key[0] >= 'a' && msg.Key[0] <= 'z' {
+			return string(msg.Key[0] - 32)
 		}
 		return msg.Key
 	}

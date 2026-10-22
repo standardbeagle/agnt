@@ -27,3 +27,16 @@ func TestParseWin32AltGrCharIsNotEscPrefixed(t *testing.T) {
 		t.Fatalf("AltGr+Q: got %q, want %q", got, "@")
 	}
 }
+
+func TestParseWin32ShiftTabIsBackTab(t *testing.T) {
+	// Shift+Tab is Uc=9 with the Shift flag. Emitting a plain Tab made
+	// reverse-navigation (Claude mode cycling, form back-tab) impossible.
+	got, _ := parseWin32InputModeInternal(buildWin32Seq(0x09, 15, 9, 1, 0x10, 1))
+	if !bytes.Equal(got, []byte("\x1b[Z")) {
+		t.Fatalf("Shift+Tab = %q, want ESC [ Z", got)
+	}
+	plain, _ := parseWin32InputModeInternal(buildWin32Seq(0x09, 15, 9, 1, 0, 1))
+	if !bytes.Equal(plain, []byte("\t")) {
+		t.Fatalf("Tab = %q, want tab", plain)
+	}
+}

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 )
@@ -367,10 +368,6 @@ func TestDefaultConfig(t *testing.T) {
 	if !cfg.ShowIndicator {
 		t.Error("expected ShowIndicator to be true by default")
 	}
-
-	if cfg.StatusRefreshInterval <= 0 {
-		t.Error("expected positive StatusRefreshInterval")
-	}
 }
 
 func TestProcessStateIconHealthy(t *testing.T) {
@@ -520,4 +517,29 @@ func TestTransitionSpinnerDoubleStopIsSafe(t *testing.T) {
 	// Stopping when nothing is running should not panic
 	o.stopTransitionSpinner()
 	o.stopTransitionSpinner()
+}
+
+func TestBuildPanelItems_LabelTruncationKeepsValidUTF8(t *testing.T) {
+	ov := New(&bytes.Buffer{}, 80, 24, DefaultConfig())
+	name := "x" + strings.Repeat("日", 8)
+	ov.statusMu.Lock()
+	ov.status.Scripts = []ScriptInfo{{Name: name, State: "running"}}
+	ov.statusMu.Unlock()
+
+	ov.mu.Lock()
+	ov.buildPanelItems()
+	ov.mu.Unlock()
+
+	var label string
+	for _, p := range ov.panelItems {
+		if p.Type == "process" {
+			label = p.Label
+		}
+	}
+	if label == "" {
+		t.Fatal("no process panel built")
+	}
+	if !utf8.ValidString(label) {
+		t.Fatalf("label %q is not valid UTF-8", label)
+	}
 }
