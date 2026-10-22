@@ -296,6 +296,28 @@ const (
 	maxFrontendErrorStackBytes = 16 * 1024 // stack
 )
 
+// Caps on the free-form parts of performance, custom_log and batched event
+// frames. The frame limit (wsMaxMessageBytes) is far above what the log ring can
+// hold 1000 of, so each retained field is cut at parse.
+const (
+	maxFrameDataBytes = 16 * 1024 // re-encoded size of a kept Data/Custom map
+	maxPerfResources  = 200       // resource timings kept per performance frame
+	maxEventsPerFrame = 500       // interactions/mutations handled per frame
+)
+
+// capData returns data unchanged when its JSON encoding fits maxFrameDataBytes,
+// otherwise a small marker map saying how large it was.
+func capData(data map[string]interface{}) map[string]interface{} {
+	if len(data) == 0 {
+		return data
+	}
+	b, err := json.Marshal(data)
+	if err == nil && len(b) <= maxFrameDataBytes {
+		return data
+	}
+	return map[string]interface{}{"truncated": true, "original_bytes": len(b)}
+}
+
 // truncateUTF8 cuts s to at most max bytes without splitting a UTF-8
 // sequence, marking a cut with a trailing ellipsis (within max).
 func truncateUTF8(s string, max int) string {
@@ -359,11 +381,14 @@ func (c *wsConnState) handlePerformance(msg *wsMessage) {
 		PageHeight:           int(getInt64Field(msg.Data, "page_height")),
 		ViewportWidth:        int(getInt64Field(msg.Data, "viewport_width")),
 		ViewportHeight:       int(getInt64Field(msg.Data, "viewport_height")),
-		Custom:               msg.Data,
+		Custom:               capData(msg.Data),
 	}
 
 	// Extract resources if present
 	if resourcesData, ok := msg.Data["resources"].([]interface{}); ok {
+		if len(resourcesData) > maxPerfResources {
+			resourcesData = resourcesData[:maxPerfResources]
+		}
 		for _, r := range resourcesData {
 			if rm, ok := r.(map[string]interface{}); ok {
 				metric.Resources = append(metric.Resources, ResourceTiming{
@@ -383,10 +408,10 @@ func (c *wsConnState) handleCustomLog(msg *wsMessage) {
 	c.record(LogEntry{Type: LogTypeCustom, FrameID: msg.FrameID, Custom: &CustomLog{
 		ID:        c.id,
 		Timestamp: c.timestamp,
-		Level:     getStringField(msg.Data, "level"),
-		Message:   getStringField(msg.Data, "message"),
-		Data:      msg.Data,
-		URL:       msg.URL,
+		Level:     truncateUTF8(getStringField(msg.Data, "level"), maxFrontendErrorFieldBytes),
+		Message:   truncateUTF8(getStringField(msg.Data, "message"), maxFrontendErrorStackBytes),
+		Data:      capData(msg.Data),
+		URL:       truncateUTF8(msg.URL, maxFrontendErrorFieldBytes),
 	}})
 }
 
@@ -499,6 +524,9 @@ func (c *wsConnState) handleExecution(msg *wsMessage) {
 // handleInteractions handles batched interaction events from the frontend.
 func (c *wsConnState) handleInteractions(msg *wsMessage) {
 	events := getArrayField(msg.Data, "events")
+	if len(events) > maxEventsPerFrame {
+		events = events[:maxEventsPerFrame]
+	}
 	for _, eventData := range events {
 		if em, ok := eventData.(map[string]interface{}); ok {
 			interaction := parseInteractionEvent(em, c.id, c.timestamp, msg.URL)
@@ -512,6 +540,9 @@ func (c *wsConnState) handleInteractions(msg *wsMessage) {
 // handleMutations handles batched mutation events from the frontend.
 func (c *wsConnState) handleMutations(msg *wsMessage) {
 	events := getArrayField(msg.Data, "events")
+	if len(events) > maxEventsPerFrame {
+		events = events[:maxEventsPerFrame]
+	}
 	for _, eventData := range events {
 		if em, ok := eventData.(map[string]interface{}); ok {
 			mutation := parseMutationEvent(em, c.id, c.timestamp, msg.URL)
