@@ -1,7 +1,7 @@
 {
   "name": "opencode-agnt",
   "version": "0.1.0",
-  "description": "Pushes agnt incident digests into an opencode session and exposes the inbox as tools",
+  "description": "Shows agnt incident pings in opencode and exposes the inbox as tools",
   "type": "module",
   "main": "src/index.ts",
   "files": ["src"],

@@ -2,42 +2,30 @@ import { execFile, spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 import { tool, type Plugin } from "@opencode-ai/plugin";
-import {
-  compactionContext,
-  decide,
-  DigestQueue,
-  SEVERITIES,
-  type Digest,
-  type Severity,
-} from "./queue.ts";
+import { compactionContext, meetsFloor, SEVERITIES, type Digest, type Severity } from "./queue.ts";
 
 const run = promisify(execFile);
 
 interface Options {
-  /** Lowest severity pushed into the session. Default "warning". */
+  /** Lowest severity shown as a toast. Default "warning". */
   severity?: Severity;
-  /** Coalescing window for a burst of digests, ms. Default 2000. */
-  coalesceMs?: number;
-  /** Identical batches inside this window are dropped, ms. Default 30000. */
-  dedupMs?: number;
-  /** When idle, start a turn on a new batch instead of leaving it as context. Default true. */
-  resumeOnIdle?: boolean;
   /** `agnt` binary. Default $AGNT_BIN, else "agnt". */
   bin?: string;
 }
 
 /**
- * Bridges the agnt incident pipeline into opencode.
+ * Shows agnt incident pings in opencode and exposes the inbox as tools.
  *
- * Needs the agent's own agnt session: start opencode with `agnt run opencode`,
- * which sets AGNT_SESSION_CODE. Inboxes are per session, so the plugin only ever
- * sees this agent's incidents. The daemon applies forwarding-pause and
- * alerts.push before a digest reaches `agnt incidents watch`.
+ * It never injects text into a session: start opencode with `agnt run opencode`
+ * and agnt types each ping to the agent (the stdin connector); this plugin is the
+ * display, the pull tools and the compaction context. It needs the agent's own
+ * session (AGNT_SESSION_CODE) because inboxes are per session.
  */
 export const AgntPlugin: Plugin = async (ctx, raw?: Options) => {
   const { client, directory } = ctx;
   const opts = raw ?? {};
   const bin = opts.bin ?? process.env.AGNT_BIN ?? "agnt";
+  const floor = opts.severity ?? "warning";
   const session = process.env.AGNT_SESSION_CODE;
   const env = { ...process.env, AGNT_SESSION_CODE: session ?? "" };
 
@@ -60,70 +48,6 @@ export const AgntPlugin: Plugin = async (ctx, raw?: Options) => {
     }
   };
 
-  // Which opencode session receives digests: the most recently active root
-  // session. Subagent sessions (parentID set) are never targets.
-  const sessions = new Map<string, { busy: boolean; at: number }>();
-  const subagents = new Set<string>();
-  const touch = (id: string | undefined, busy?: boolean) => {
-    if (!id || subagents.has(id)) return;
-    const cur = sessions.get(id);
-    sessions.set(id, { busy: busy ?? cur?.busy ?? false, at: Date.now() });
-  };
-  const target = () => {
-    let best: [string, { busy: boolean; at: number }] | undefined;
-    for (const e of sessions) if (!best || e[1].at > best[1].at) best = e;
-    return best;
-  };
-
-  const queue = new DigestQueue(opts.severity ?? "warning", opts.dedupMs ?? 30_000);
-  let timer: ReturnType<typeof setTimeout> | undefined;
-
-  const send = async (id: string, text: string, mode: "context" | "prompt") => {
-    const body = {
-      noReply: mode === "context",
-      // synthetic keeps the text out of the human-visible transcript (opencode
-      // part schema); servers that do not know the field ignore it.
-      parts: [{ type: "text", text, synthetic: true }],
-    };
-    const s = client.session as unknown as {
-      promptAsync?: (a: unknown) => Promise<unknown>;
-      prompt: (a: unknown) => Promise<unknown>;
-    };
-    // promptAsync returns at once; plain prompt waits for the reply, so a
-    // turn-starting send must not be awaited by this loop.
-    if (mode === "prompt" && typeof s.promptAsync === "function") {
-      await s.promptAsync({ path: { id }, body });
-    } else if (mode === "prompt") {
-      void s.prompt({ path: { id }, body }).catch((e) => log("error", `prompt failed: ${e}`));
-    } else {
-      await s.prompt({ path: { id }, body });
-    }
-  };
-
-  const flush = async () => {
-    timer = undefined;
-    const t = target();
-    // No session yet: leave the batch pending for the first one (session events
-    // reschedule) rather than taking it and losing it to the dedup window.
-    if (!t) return;
-    const batch = queue.take();
-    if (!batch) return;
-    const mode = decide({ hasBatch: true, busy: t[1].busy, resumeOnIdle: opts.resumeOnIdle ?? true });
-    if (mode === "none") return;
-    try {
-      await send(t[0], batch.text, mode);
-      if (mode === "prompt") touch(t[0], true);
-      // A toast is a human cue only; the session injection is the delivery.
-      await client.tui.showToast({ body: { message: `agnt: ${batch.count} incident ping(s), highest ${batch.level}`, variant: batch.level === "critical" || batch.level === "error" ? "error" : "warning" } }).catch(() => undefined);
-    } catch (e) {
-      await log("error", `incident delivery failed: ${e}`);
-    }
-  };
-
-  const schedule = () => {
-    if (!timer) timer = setTimeout(() => void flush(), opts.coalesceMs ?? 2000);
-  };
-
   // `agnt incidents watch` is a long-lived NDJSON child that reconnects through
   // daemon restarts itself; this loop only restarts the child if it dies.
   let child: ChildProcess | undefined;
@@ -134,7 +58,10 @@ export const AgntPlugin: Plugin = async (ctx, raw?: Options) => {
       backoff = 1000;
       try {
         const d = JSON.parse(line) as Digest;
-        if (d.type === "incident_digest" && queue.add(d)) schedule();
+        if (d.type !== "incident_digest" || !meetsFloor(d.level, floor)) return;
+        void client.tui
+          .showToast({ body: { message: d.message, variant: d.level === "critical" || d.level === "error" ? "error" : "warning" } })
+          .catch(() => undefined);
       } catch {
         void log("warn", `unparseable watch line: ${line.slice(0, 120)}`);
       }
@@ -151,28 +78,6 @@ export const AgntPlugin: Plugin = async (ctx, raw?: Options) => {
   process.on("exit", () => child?.kill());
 
   return {
-    event: async ({ event }) => {
-      const p = (event as { properties?: Record<string, any> }).properties ?? {};
-      switch (event.type) {
-        case "session.created":
-          if (p.info?.parentID) subagents.add(p.info.id);
-          else touch(p.info?.id, false);
-          break;
-        case "session.status":
-          touch(p.sessionID, p.status?.type === "busy" || p.status?.type === "retry");
-          if (queue.hasPending()) schedule();
-          break;
-        case "session.idle":
-          touch(p.sessionID, false);
-          // A batch that waited out a busy turn goes out now.
-          if (queue.hasPending()) schedule();
-          break;
-        case "session.deleted":
-          sessions.delete(p.info?.id);
-          break;
-      }
-    },
-
     // Keep the incident cursor and unresolved findings across compaction, so the
     // new context still knows what is outstanding and how to page past it.
     "experimental.session.compacting": async (_input, output) => {
