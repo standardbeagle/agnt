@@ -260,12 +260,13 @@ func TestSaveStoreFile_RenameFailureCleansTemp(t *testing.T) {
 
 	err := saveStoreFile(path, sf)
 	require.Error(t, err, "rename onto a directory must fail")
-	assert.Contains(t, err.Error(), "failed to rename temp file",
+	assert.Contains(t, err.Error(), "failed to write store file",
 		"rename failure must be wrapped with context")
 
 	// The orphaned temp file must have been cleaned up.
-	_, tmpErr := os.Stat(path + ".tmp")
-	assert.True(t, os.IsNotExist(tmpErr),
+	leftovers, globErr := filepath.Glob(path + ".*.tmp")
+	require.NoError(t, globErr)
+	assert.Empty(t, leftovers,
 		"temp file must be removed when rename fails — no garbage left behind")
 
 	// The destination is still the directory we created (untouched by the write).

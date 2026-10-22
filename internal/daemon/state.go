@@ -3,6 +3,7 @@ package daemon
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/standardbeagle/agnt/internal/pathutil"
 	"os"
 	"path/filepath"
 	"sync"
@@ -215,14 +216,8 @@ func (sm *StateManager) writeToDisk(data []byte) error {
 		return fmt.Errorf("failed to create state directory: %w", err)
 	}
 
-	tmpPath := sm.statePath + ".tmp"
-	if err := os.WriteFile(tmpPath, data, 0644); err != nil {
+	if err := pathutil.WriteFileAtomic(sm.statePath, data, 0600); err != nil {
 		return fmt.Errorf("failed to write state file: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, sm.statePath); err != nil {
-		os.Remove(tmpPath)
-		return fmt.Errorf("failed to rename state file: %w", err)
 	}
 
 	return nil

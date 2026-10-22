@@ -5,6 +5,7 @@ package store
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/standardbeagle/agnt/internal/pathutil"
 	"os"
 	"path/filepath"
 	"time"
@@ -97,15 +98,8 @@ func saveStoreFile(path string, sf *StoreFile) error {
 	// MetaSecret), so a world-readable mode would hand every secret to every
 	// local user. A leftover temp file from an interrupted write is removed
 	// first, since WriteFile keeps an existing file's mode.
-	tmpPath := path + ".tmp"
-	_ = os.Remove(tmpPath)
-	if err := os.WriteFile(tmpPath, data, storeFileMode); err != nil {
-		return fmt.Errorf("failed to write temp file: %w", err)
-	}
-
-	if err := os.Rename(tmpPath, path); err != nil {
-		os.Remove(tmpPath) // Clean up temp file on failure
-		return fmt.Errorf("failed to rename temp file: %w", err)
+	if err := pathutil.WriteFileAtomic(path, data, storeFileMode); err != nil {
+		return fmt.Errorf("failed to write store file: %w", err)
 	}
 
 	return nil

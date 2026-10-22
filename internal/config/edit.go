@@ -355,6 +355,10 @@ func writeFileAtomic(path, content string) error {
 		tmp.Close()
 		return fmt.Errorf("write temp config: %w", err)
 	}
+	if err := tmp.Sync(); err != nil {
+		tmp.Close()
+		return fmt.Errorf("sync temp config: %w", err)
+	}
 	if err := tmp.Close(); err != nil {
 		return fmt.Errorf("close temp config: %w", err)
 	}
