@@ -711,6 +711,7 @@ func (d *Daemon) handleScriptStopped(event ProxyEvent) {
 	}
 
 	// Stop each proxy
+	var stillRunning []string
 	for _, proxyID := range proxyIDs {
 		debug.Log("daemon", "Stopping proxy %s (script: %s)", proxyID, event.ScriptID)
 		err := d.proxym.Stop(d.ctx, proxyID)
@@ -732,10 +733,16 @@ func (d *Daemon) handleScriptStopped(event ProxyEvent) {
 		debug.Warn("daemon", "Failed to stop proxy %s: %v", proxyID, err)
 		d.recordStartupEntry(event.ScriptID, "", "warning", "proxy_stop_failed",
 			fmt.Sprintf("failed to stop proxy %s on script stop: %v", proxyID, err), 0)
+		stillRunning = append(stillRunning, proxyID)
 	}
 
-	// Clear tracking
+	// Clear tracking, but keep a proxy that failed to stop linked to its
+	// script: it still holds its port, and dropping the link would leave later
+	// script-stop events and restarts unable to reach it.
 	d.clearScriptProxies(event.ScriptID)
+	for _, proxyID := range stillRunning {
+		d.trackScriptProxy(event.ScriptID, proxyID)
+	}
 }
 
 // FlushScriptProxyConnections closes idle connections on all proxies linked to a script.

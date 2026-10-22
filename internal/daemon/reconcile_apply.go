@@ -107,13 +107,19 @@ func (d *Daemon) ReconcileProjectConfig(ctx context.Context, projectPath string)
 	for _, name := range plan.RestartProxies {
 		stopProxies[name] = true
 	}
+	// A proxy that will not stop is reported at the end, not by aborting: the
+	// remaining stops, script restarts and autostart still have to run or the
+	// running state stops matching the config.
+	var applyErrs []string
 	for _, p := range d.proxym.ListScoped(scope.Project(projectPath)) {
 		value, ok := d.proxyConfigs.Load(p.ID)
 		if !ok || !stopProxies[value.(configuredProxy).name] {
 			continue
 		}
 		if err := d.proxym.Stop(ctx, p.ID); err != nil {
-			return plan, fmt.Errorf("stop proxy %s: %w", p.ID, err)
+			log.Warn("", "reconcile_proxy_stop_failed", fmt.Sprintf("stop proxy %s: %v", p.ID, err))
+			applyErrs = append(applyErrs, fmt.Sprintf("stop proxy %s: %v", p.ID, err))
+			continue
 		}
 		d.retireIncidentProxyOwner(p.ID)
 		if d.stateMgr != nil {
@@ -136,9 +142,7 @@ func (d *Daemon) ReconcileProjectConfig(ctx context.Context, projectPath string)
 	// materialization to the autostart path. Idempotent for unchanged running
 	// scripts (StartScriptExplicit skips them).
 	result := d.RunAutostart(ctx, projectPath)
-	if len(result.Errors) != 0 {
-		return plan, fmt.Errorf("config reconcile: %s", strings.Join(result.Errors, "; "))
-	}
+	applyErrs = append(applyErrs, result.Errors...)
 	// A running script need not print its URL again after a config edit.
 	// Replay its known URLs so new or changed script-linked proxies can start.
 	if d.urlTracker != nil {
@@ -156,6 +160,9 @@ func (d *Daemon) ReconcileProjectConfig(ctx context.Context, projectPath string)
 	}
 	d.applyProxyDisplayConfig(projectPath, cfg)
 	d.applyDevOIDCProject(projectPath, cfg)
+	if len(applyErrs) != 0 {
+		return plan, fmt.Errorf("config reconcile: %s", strings.Join(applyErrs, "; "))
+	}
 	return plan, nil
 }
 
