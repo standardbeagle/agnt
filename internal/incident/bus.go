@@ -68,6 +68,9 @@ type MPSCBus struct {
 	once    sync.Once
 
 	dropped atomic.Int64
+	// unrouted counts events that reached dispatch but had no live session
+	// pipeline to take them (session gone or stopping, or no session at all).
+	unrouted atomic.Int64
 
 	mu         sync.RWMutex
 	perSession map[string]*sessionPipeline
@@ -136,6 +139,21 @@ func (b *MPSCBus) fire(ev *IncidentEvent) bool {
 // event value (not a pointer).
 func (b *MPSCBus) Publish(ev IncidentEvent) {
 	b.Fire(&ev)
+}
+
+// Unrouted returns the cumulative count of events discarded at dispatch because
+// no live session pipeline owned them.
+func (b *MPSCBus) Unrouted() int64 {
+	return b.unrouted.Load()
+}
+
+// noteUnrouted records one event dropped for want of a live pipeline. The first
+// and every 100th are logged, so a lost alert is visible without a flood.
+func (b *MPSCBus) noteUnrouted(ev *IncidentEvent, why string) {
+	n := b.unrouted.Add(1)
+	if n == 1 || n%100 == 0 {
+		debug.Warn("incident", "event dropped at dispatch (%s): source=%s session=%q; %d unrouted so far", why, ev.Source, ev.Ctx.SessionID, n)
+	}
 }
 
 // Dropped returns the cumulative count of dropped events.
@@ -559,15 +577,19 @@ func (b *MPSCBus) deliver(ev *IncidentEvent) {
 		if pl := b.perSession[ev.Ctx.SessionID]; pl != nil {
 			select {
 			case <-pl.stopCh:
+				b.noteUnrouted(ev, "session pipeline stopping")
 				return
 			default:
 				b.ingestToSession(pl, ev)
 			}
+		} else {
+			b.noteUnrouted(ev, "no pipeline for session")
 		}
 		return
 	}
 	if ev.Fingerprint != metaBusOverflowFP {
 		// A sessionless production event has no trustworthy owner.
+		b.noteUnrouted(ev, "sessionless event")
 		return
 	}
 	for _, pl := range b.perSession {
