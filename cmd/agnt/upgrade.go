@@ -197,7 +197,7 @@ func runUpgrade(cmd *cobra.Command, args []string) {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	if err := runPackageUpgrade(ctx, method); err != nil {
+	if err := runPackageUpgrade(ctx, method, latestVersion, execPath); err != nil {
 		errStr := err.Error()
 		// Check for common locked file errors
 		if strings.Contains(errStr, "EBUSY") ||
@@ -226,6 +226,11 @@ func runUpgrade(cmd *cobra.Command, args []string) {
 		fmt.Fprintf(os.Stderr, "Warning: could not verify new version: %v\n", err)
 	} else {
 		fmt.Printf("New version installed: %s\n", newVersion)
+		if strings.TrimPrefix(newVersion, "v") != strings.TrimPrefix(latestVersion, "v") {
+			fmt.Fprintf(os.Stderr, "\nUpgrade did not take effect: %s still reports %s, expected %s.\n", execPath, newVersion, latestVersion)
+			fmt.Fprintf(os.Stderr, "The %s install may have written to a different location than the binary on PATH.\n", method)
+			os.Exit(1)
+		}
 	}
 
 	fmt.Println("\n✓ Upgrade complete!")
@@ -306,7 +311,7 @@ func checkLatestVersion() (string, error) {
 	return release.GetVersion(), nil
 }
 
-func runPackageUpgrade(ctx context.Context, method installMethod) error {
+func runPackageUpgrade(ctx context.Context, method installMethod, version, execPath string) error {
 	var cmd *exec.Cmd
 
 	switch method {
@@ -317,7 +322,7 @@ func runPackageUpgrade(ctx context.Context, method installMethod) error {
 	case installGo:
 		cmd = exec.CommandContext(ctx, "go", "install", "github.com/standardbeagle/agnt/cmd/agnt@latest")
 	case installDirect:
-		return runDirectUpgrade(ctx)
+		return runDirectUpgrade(ctx, version, execPath)
 	default:
 		return fmt.Errorf("unknown install method, please upgrade manually")
 	}
@@ -327,20 +332,25 @@ func runPackageUpgrade(ctx context.Context, method installMethod) error {
 	return cmd.Run()
 }
 
-func runDirectUpgrade(ctx context.Context) error {
-	// For direct installs, use the install script
-	if runtime.GOOS == "windows" {
-		// PowerShell install
-		cmd := exec.CommandContext(ctx, "powershell", "-Command",
-			"irm https://raw.githubusercontent.com/standardbeagle/agnt/main/install.ps1 | iex")
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
-	}
+func runDirectUpgrade(ctx context.Context, version, execPath string) error {
+	// Run the installer published with the release being installed, not
+	// whatever main holds now, so the version the user was shown is the one
+	// that lands. It installs into the directory of the running binary
+	// (AGNT_INSTALL_DIR), and swaps the file by rename.
+	tag := "v" + strings.TrimPrefix(version, "v")
+	env := append(os.Environ(),
+		"AGNT_VERSION="+strings.TrimPrefix(version, "v"),
+		"AGNT_INSTALL_DIR="+filepath.Dir(execPath))
 
-	// Unix: curl install
-	cmd := exec.CommandContext(ctx, "bash", "-c",
-		"curl -fsSL https://raw.githubusercontent.com/standardbeagle/agnt/main/install.sh | bash")
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		cmd = exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command",
+			"irm https://raw.githubusercontent.com/standardbeagle/agnt/"+tag+"/install.ps1 | iex")
+	} else {
+		cmd = exec.CommandContext(ctx, "bash", "-c",
+			"curl -fsSL https://raw.githubusercontent.com/standardbeagle/agnt/"+tag+"/install.sh | bash")
+	}
+	cmd.Env = env
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()

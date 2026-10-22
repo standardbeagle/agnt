@@ -88,6 +88,9 @@ jobs:
           mkdir -p release
           find artifacts -name 'agnt-*' -exec cp {} release/ \;
           find artifacts -name 'devtool-mcp-*' -exec cp {} release/ \;
+          # Checksums for the installers (install.sh / install.ps1) to verify
+          # a download against before it replaces an installed binary.
+          (cd release && sha256sum agnt-* devtool-mcp-* > SHA256SUMS)
           ls -la release/
 
       - name: Create release
@@ -96,6 +99,7 @@ jobs:
           files: |
             release/agnt-*
             release/devtool-mcp-*
+            release/SHA256SUMS
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}

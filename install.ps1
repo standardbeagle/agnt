@@ -46,8 +46,54 @@ function Main {
 
     Write-Host "  Downloading from: $url"
 
-    # Download binary
-    Invoke-WebRequest -Uri $url -OutFile $binaryPath -UseBasicParsing
+    # Download beside the target, verify, then swap into place. A failed or
+    # truncated download never replaces a working binary, and a running agnt.exe
+    # (locked against overwrite but not against rename) is moved aside first.
+    $tmpPath = "$binaryPath.new"
+    $oldPath = "$binaryPath.old"
+    Remove-Item $tmpPath -Force -ErrorAction SilentlyContinue
+    Invoke-WebRequest -Uri $url -OutFile $tmpPath -UseBasicParsing
+
+    $sumsUrl = "https://github.com/$Repo/releases/download/v$version/SHA256SUMS"
+    $sums = $null
+    try {
+        $sums = (Invoke-WebRequest -Uri $sumsUrl -UseBasicParsing).Content
+    } catch {
+        $sums = $null
+    }
+    if ($sums) {
+        $asset = "$BinaryName-$platform-$arch.exe"
+        $expected = $null
+        foreach ($line in ($sums -split "`n")) {
+            $parts = $line.Trim() -split '\s+'
+            if ($parts.Length -ge 2 -and $parts[1].TrimStart('*') -eq $asset) { $expected = $parts[0] }
+        }
+        if (-not $expected) {
+            Remove-Item $tmpPath -Force -ErrorAction SilentlyContinue
+            throw "no checksum for $asset in SHA256SUMS"
+        }
+        $actual = (Get-FileHash -Algorithm SHA256 -Path $tmpPath).Hash
+        if ($actual -ne $expected.ToUpper()) {
+            Remove-Item $tmpPath -Force -ErrorAction SilentlyContinue
+            throw "checksum mismatch for $asset (expected $expected, got $actual)"
+        }
+        Write-Host "  Checksum verified"
+    } elseif ($env:AGNT_REQUIRE_CHECKSUM -eq "1") {
+        Remove-Item $tmpPath -Force -ErrorAction SilentlyContinue
+        throw "SHA256SUMS is not published for v$version and AGNT_REQUIRE_CHECKSUM=1"
+    } else {
+        Write-Warning "no SHA256SUMS published for v$version; skipping checksum verification"
+    }
+
+    Remove-Item $oldPath -Force -ErrorAction SilentlyContinue
+    if (Test-Path $binaryPath) { Move-Item $binaryPath $oldPath -Force }
+    try {
+        Move-Item $tmpPath $binaryPath -Force
+    } catch {
+        if (Test-Path $oldPath) { Move-Item $oldPath $binaryPath -Force }
+        throw
+    }
+    Remove-Item $oldPath -Force -ErrorAction SilentlyContinue
 
     Write-Host ""
     Write-Host "Successfully installed agnt to $binaryPath"

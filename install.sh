@@ -47,6 +47,27 @@ get_latest_version() {
     echo "$version"
 }
 
+# download URL DEST: fetch with curl or wget, failing on HTTP errors.
+download() {
+    if command -v curl &> /dev/null; then
+        curl -fsSL "$1" -o "$2"
+    elif command -v wget &> /dev/null; then
+        wget -q "$1" -O "$2"
+    else
+        echo "Error: curl or wget is required" >&2
+        exit 1
+    fi
+}
+
+# sha256_of FILE: print the hex SHA-256 of FILE.
+sha256_of() {
+    if command -v sha256sum &> /dev/null; then
+        sha256sum "$1" | awk '{ print $1 }'
+    else
+        shasum -a 256 "$1" | awk '{ print $1 }'
+    fi
+}
+
 main() {
     local platform=$(detect_platform)
     local arch=$(detect_arch)
@@ -73,18 +94,44 @@ main() {
 
     echo "  Downloading from: $url"
 
-    # Download binary
-    if command -v curl &> /dev/null; then
-        curl -fsSL "$url" -o "$binary_path"
-    elif command -v wget &> /dev/null; then
-        wget -q "$url" -O "$binary_path"
-    else
-        echo "Error: curl or wget is required" >&2
+    # Download to a temp file beside the target and rename it into place, so a
+    # failed or truncated download never replaces a working binary and an
+    # installed (possibly running) binary is swapped atomically.
+    TMP_FILES=()
+    trap 'rm -f "${TMP_FILES[@]}"' EXIT
+    local tmp_path
+    tmp_path=$(mktemp "$install_dir/.$BINARY_NAME.XXXXXX")
+    TMP_FILES+=("$tmp_path")
+
+    download "$url" "$tmp_path"
+
+    # Verify against the release's SHA256SUMS. Releases that predate the file
+    # have none; AGNT_REQUIRE_CHECKSUM=1 refuses to install without it.
+    local sums_path="$tmp_path.sums"
+    TMP_FILES+=("$sums_path")
+    if download "https://github.com/$REPO/releases/download/v$version/SHA256SUMS" "$sums_path" 2>/dev/null; then
+        local asset="$BINARY_NAME-$platform-$arch"
+        local expected actual
+        expected=$(awk -v f="$asset" '$2 == f { print $1 }' "$sums_path")
+        if [ -z "$expected" ]; then
+            echo "Error: no checksum for $asset in SHA256SUMS" >&2
+            exit 1
+        fi
+        actual=$(sha256_of "$tmp_path")
+        if [ "$expected" != "$actual" ]; then
+            echo "Error: checksum mismatch for $asset (expected $expected, got $actual)" >&2
+            exit 1
+        fi
+        echo "  Checksum verified"
+    elif [ "${AGNT_REQUIRE_CHECKSUM:-}" = "1" ]; then
+        echo "Error: SHA256SUMS is not published for v$version and AGNT_REQUIRE_CHECKSUM=1" >&2
         exit 1
+    else
+        echo "  Warning: no SHA256SUMS published for v$version; skipping checksum verification" >&2
     fi
 
-    # Make executable
-    chmod +x "$binary_path"
+    chmod +x "$tmp_path"
+    mv -f "$tmp_path" "$binary_path"
 
     echo ""
     echo "Successfully installed agnt to $binary_path"
