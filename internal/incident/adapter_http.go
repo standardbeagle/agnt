@@ -61,10 +61,7 @@ func FromHTTPEntry(he proxy.HTTPLogEntry, proxyID string) (IncidentEvent, bool) 
 	if he.Error != "" {
 		msg += "\n" + he.Error
 	} else if he.ResponseBody != "" {
-		body := he.ResponseBody
-		if len(body) > 500 {
-			body = body[:500]
-		}
+		body := truncateToBytes(he.ResponseBody, 500)
 		msg += "\n" + body
 	}
 	if he.Untrusted {

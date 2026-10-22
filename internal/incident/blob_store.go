@@ -296,6 +296,13 @@ func (bs *BlobStore) storeLocked(hash string, content []byte, mime string) {
 		return
 	}
 
+	// A payload larger than the whole budget can never be held. Inserting it
+	// would evict every other blob (and then itself) to make room, wiping the
+	// session's store for nothing. Skip it; readers fall back to Summary.
+	if int64(len(content)) > bs.maxBytes {
+		return
+	}
+
 	ref := BlobRef{Hash: hash, Size: len(content), MIME: mime}
 	entry := &blobEntry{ref: ref, content: content}
 	entry.elem = bs.lruList.PushFront(entry)

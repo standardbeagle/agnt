@@ -221,3 +221,23 @@ func TestBlobStore_LargePayload_LowAlloc(t *testing.T) {
 		t.Errorf("mime: got %q, want application/octet-stream", mime)
 	}
 }
+
+func TestBlobStore_OversizedPayloadDoesNotEvictOthers(t *testing.T) {
+	t.Parallel()
+	store := NewBlobStore(64)
+	defer store.Close()
+
+	small := []byte("small payload")
+	smallRef, err := store.Write(small, "text/plain")
+	require.NoError(t, err)
+
+	huge := make([]byte, 1024)
+	hugeRef, err := store.Write(huge, "text/plain")
+	require.NoError(t, err)
+
+	_, _, err = store.Read(hugeRef.Hash)
+	require.ErrorIs(t, err, ErrBlobEvicted, "a payload over the whole budget is never held")
+	got, _, err := store.Read(smallRef.Hash)
+	require.NoError(t, err, "an oversized write must not wipe the other blobs")
+	require.Equal(t, small, got)
+}

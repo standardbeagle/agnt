@@ -1,7 +1,9 @@
 package incident
 
 import (
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/stretchr/testify/assert"
@@ -96,4 +98,13 @@ func TestFromHTTPEntry_ClientClosedRequestIsNotAnIncident(t *testing.T) {
 
 	_, ok = FromHTTPEntry(httpEntry("GET", "/api/slow", 502), "dev")
 	assert.True(t, ok, "premise: a real 502 is still an incident")
+}
+
+func TestFromHTTPEntry_BodyTruncationKeepsRunesWhole(t *testing.T) {
+	he := httpEntry("GET", "/x", 500)
+	he.ResponseBody = strings.Repeat("€", 400) // 3-byte runes: 500 falls mid-rune
+	ev, ok := FromHTTPEntry(he, "dev")
+	require.True(t, ok)
+	require.True(t, ev.PayloadRef != nil || len(ev.payload) > 0)
+	assert.True(t, utf8.Valid(ev.payload), "stored payload must be valid UTF-8")
 }
