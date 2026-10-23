@@ -118,3 +118,23 @@ func TestUncapturableBodyType(t *testing.T) {
 		}
 	}
 }
+
+func TestBufferBudget_ReservesUpToLimitAndReleases(t *testing.T) {
+	b := &bufferBudget{limit: 100}
+	if !b.tryReserve(60) || !b.tryReserve(40) {
+		t.Fatal("reservations within the limit must succeed")
+	}
+	if b.tryReserve(1) {
+		t.Fatal("reservation past the limit must fail")
+	}
+	if b.shed.Load() != 1 {
+		t.Fatalf("shed = %d, want 1", b.shed.Load())
+	}
+	b.release(60)
+	if !b.tryReserve(50) {
+		t.Fatal("released bytes must be reservable again")
+	}
+	if b.used.Load() != 90 {
+		t.Fatalf("used = %d, want 90", b.used.Load())
+	}
+}

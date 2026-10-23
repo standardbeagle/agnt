@@ -7,6 +7,7 @@ import (
 	"compress/gzip"
 	"compress/zlib"
 	"context"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -14,6 +15,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync/atomic"
+	"time"
 
 	"github.com/andybalholm/brotli"
 	"github.com/klauspost/compress/zstd"
@@ -162,6 +165,19 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 		debug.Log("proxy", "Skipping injection: body too large (%d bytes)", sizeHint)
 		return nil
 	}
+	// Reserve against the process-wide buffering budget. Injection holds the
+	// document plus two or three rewritten copies, so many concurrent large
+	// pages would otherwise multiply the 16MiB cap. Over budget the response is
+	// passed through uninjected, and that is reported (see noteInjectShed).
+	reserve := sizeHint
+	if reserve < 0 {
+		reserve = injectUnknownSizeReserve
+	}
+	if !injectBudget.tryReserve(reserve) {
+		ps.noteInjectShed(resp, reserve)
+		return nil
+	}
+	defer injectBudget.release(reserve)
 	bodyBytes, truncated, err := readAllCapped(bodyReader, sizeHint, maxInjectBodyBytes)
 	if err != nil {
 		return err
@@ -306,6 +322,62 @@ func (ps *ProxyServer) interceptAuthRedirect(resp *http.Response) bool {
 // unmodified — injection is a dev convenience, never worth destabilizing the
 // proxy for.
 const maxInjectBodyBytes = 16 << 20 // 16 MiB
+
+// injectBufferBudget is the most bytes of HTML the proxy buffers for injection
+// across all in-flight responses (every proxy in the process). A response whose
+// reservation does not fit is passed through uninjected.
+const injectBufferBudget = 64 << 20
+
+// injectUnknownSizeReserve is what a chunked or decompressed response (no known
+// length) reserves. It is an estimate: typical documents are far smaller, and
+// the per-response cap above still bounds the worst case.
+const injectUnknownSizeReserve = 1 << 20
+
+type bufferBudget struct {
+	limit int64
+	used  atomic.Int64
+	shed  atomic.Int64
+}
+
+func (b *bufferBudget) tryReserve(n int64) bool {
+	for {
+		cur := b.used.Load()
+		if cur+n > b.limit {
+			b.shed.Add(1)
+			return false
+		}
+		if b.used.CompareAndSwap(cur, cur+n) {
+			return true
+		}
+	}
+}
+
+func (b *bufferBudget) release(n int64) { b.used.Add(-n) }
+
+var injectBudget = &bufferBudget{limit: injectBufferBudget}
+
+// noteInjectShed makes a skipped injection visible: the page works but has no
+// agnt instrumentation, which an agent would otherwise read as a broken proxy.
+// Logged for the first shed and every 50th after, as a diagnostic.
+func (ps *ProxyServer) noteInjectShed(resp *http.Response, reserve int64) {
+	n := injectBudget.shed.Load()
+	debug.Log("proxy", "Skipping injection: buffering budget exhausted (%d bytes wanted)", reserve)
+	if n != 1 && n%50 != 0 {
+		return
+	}
+	url := ""
+	if resp.Request != nil && resp.Request.URL != nil {
+		url = resp.Request.URL.String()
+	}
+	ps.logger.LogDiagnostic(ProxyDiagnostic{
+		Timestamp: time.Now(),
+		Level:     DiagnosticWarning,
+		Category:  "injection",
+		Event:     "injection_skipped_memory_budget",
+		Message:   fmt.Sprintf("HTML response %s was served without agnt instrumentation: injection buffering budget (%dMiB) is in use by other responses (%d skipped so far)", url, injectBufferBudget>>20, n),
+		Target:    ps.TargetURL.String(),
+	})
+}
 
 // passthroughReadCloser pairs a reassembled reader (buffered head + in-flight
 // remainder) with the closer of the original response body.
