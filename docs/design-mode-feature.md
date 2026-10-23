@@ -261,3 +261,25 @@ gets its own at its root.
 
 Single change set; no config flag (pure additive enhancement, legacy-safe
 fallbacks). Version bump via `scripts/release.sh`. No migration.
+
+## 10. First-look latency (measured 2026-10-23)
+
+Target: first alternative in the browser in under 10 s. Measured with
+`claude -p` driving the rendered `formatDesignStateMessage` prompt against a stub
+`proxy` MCP tool, time from process start to the first `addAlternative` call
+(includes ~2-3 s CLI startup that a warm `agnt run` session does not pay):
+
+| Prompt | haiku | sonnet |
+|---|---|---|
+| Before: DESIGN.md + context gather + draft subagent | 17-27 s | 9-10 s |
+| After: agent writes the draft itself as its first action | 6-9 s | ~6 s |
+
+What costs time, in order: output tokens (~240 tok/s, so a 750-token draft is
+~3 s and a polished one 7-11 s), pre-work before the draft (DESIGN.md authoring,
+three context calls), and subagent dispatch for the draft. The draft step is now
+the agent's first action with a 15-line cap; DESIGN.md and context gathering
+run after it, alongside the concurrent variations.
+
+Not done: a zero-model, client-side token-swap draft in `design.js` (rejected in
+section 7 for quality; it would make first paint instant if speed ever needs to
+beat the model floor).

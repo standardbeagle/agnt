@@ -409,6 +409,23 @@ func TestFormatDesignStateMessage_Full(t *testing.T) {
 	assertContains(t, result, "google-labs-code")
 }
 
+// The first look is latency-critical: the draft must be the agent's first action,
+// written by the agent itself (a subagent dispatch costs seconds), with DESIGN.md
+// authoring and context gathering only after it.
+func TestFormatDesignStateMessage_DraftComesBeforeAllOtherWork(t *testing.T) {
+	result := formatDesignStateMessage(".el", "div", "", nil, "", "p1", nil)
+
+	draft := strings.Index(result, "label:'draft'")
+	for _, later := range []string{"DESIGN.md", "__devtool.screenshot", "__devtool.inspect", "CONCURRENTLY"} {
+		i := strings.Index(result, later)
+		if i < 0 || draft < 0 || draft > i {
+			t.Errorf("draft (at %d) must precede %q (at %d)", draft, later, i)
+		}
+	}
+	assertContains(t, result, "no subagent")
+	assertNotContains(t, result, "Dispatch ONE low-effort subagent")
+}
+
 func TestFormatDesignStateMessage_NilSchemeOmitsSchemeBlock(t *testing.T) {
 	result := formatDesignStateMessage(".el", "div", "", nil, "", "p1", nil)
 	assertNotContains(t, result, "extracted live")

@@ -504,34 +504,14 @@ func formatDesignStateMessage(selector, tag, id string, classes []string, textCo
 
 	text += fmt.Sprintf(`
 
-**Your Mission:** Act as a world-class UX designer. Deliver a fast first look, then polished on-scheme variations.
+**Your Mission:** Act as a world-class UX designer. Speed first: the user must see a first look within seconds.
 
-**Gather context first (cheap, do in parallel):**
-1. Screenshot: %s
-2. Inspect element: %s
-3. Accessibility: %s
-
-**STEP 0 — Ensure DESIGN.md (do this FIRST, then announce it):**
-Check the project root for DESIGN.md. If MISSING, create it NOW in the google-labs-code format
-(https://github.com/google-labs-code/design.md) — YAML frontmatter design tokens + ordered '##'
-sections — derived from the App design scheme above:
-- colors      ← palette
-- typography  ← font families / sizes / weights
-- rounded     ← radius
-- spacing     ← spacing steps
-- components  ← infer from the selected element + its sibling context
-Then post one line so the developer sees it: "Created DESIGN.md — captured the app's design system".
-If DESIGN.md ALREADY EXISTS, read it and treat it as the AUTHORITATIVE design system: every variation
-must conform to it (it overrides the extracted scheme on any conflict).
-
-**Generation strategy — fast draft first, then concurrent variations:**
-
-STEP 1 — Fast draft (do this immediately, before anything else):
-Dispatch ONE low-effort subagent to produce a single quick restyle. It must call addAlternative
-with a draft label so the user sees something instantly:
+**STEP 1 — Fast draft. Your FIRST action: no preamble, no file reads, no screenshots, no subagent.**
+Write one quick restyle of the element yourself (standalone HTML, inline styles, under 15 lines,
+using the scheme above) and push it with a draft label:
   %s
 
-STEP 2 — On-scheme variations (dispatch CONCURRENTLY in a single message — one subagent each):
+**STEP 2 — On-scheme variations (only after the draft is sent; dispatch CONCURRENTLY in a single message — one subagent each):**
 Create 3-4 distinct, polished alternatives. Each subagent independently authors ONE variation and
 calls addAlternative as soon as it is done (they stream in as they finish):
   %s
@@ -541,15 +521,23 @@ Or push the whole set in one call (preferred — avoids racing a recompile):
 Previews are NON-INVASIVE: they render in an isolated side-by-side / overlay panel, never written
 into the app's live DOM — so produce complete standalone HTML for the element's content.
 
-%s
+**STEP 3 — Housekeeping, while the variations are being written (never before the draft):**
+- Context if needed: screenshot %s, inspect %s, accessibility %s
+- Ensure DESIGN.md. Check the project root. If MISSING, create it in the google-labs-code format
+  (https://github.com/google-labs-code/design.md) — YAML frontmatter design tokens + ordered '##'
+  sections — derived from the App design scheme above (colors ← palette, typography ← fonts,
+  rounded ← radius, spacing ← spacing steps, components ← the selected element and its siblings),
+  then post one line: "Created DESIGN.md — captured the app's design system". If it ALREADY EXISTS,
+  read it and treat it as the AUTHORITATIVE design system (it overrides the extracted scheme); later
+  variations must conform to it.
 
-Run STEP 1 and STEP 2 so the draft lands first and the variations arrive concurrently right after.`,
-		proxyExec(proxyID, "__devtool.screenshot('design-context')"),
-		proxyExec(proxyID, "__devtool.inspect('"+selector+"')"),
-		proxyExec(proxyID, "__devtool.auditAccessibility()"),
+%s`,
 		addAltExec(proxyID, "draft", "Fast draft"),
 		addAltExec(proxyID, "variation", "<direction>"),
 		proxyID,
+		proxyExec(proxyID, "__devtool.screenshot('design-context')"),
+		proxyExec(proxyID, "__devtool.inspect('"+selector+"')"),
+		proxyExec(proxyID, "__devtool.auditAccessibility()"),
 		designOnSchemeRules)
 
 	return text
