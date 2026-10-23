@@ -61,7 +61,13 @@ func (d *Daemon) buildChecks(projectPath string) []doctorCheck {
 			return checkPortConflicts(ctx, projectPath, d.hub.ProcessManager())
 		}},
 		{name: "daemon_health", fn: func(ctx context.Context) CheckResult {
-			return checkDaemonHealthStatic(Version, time.Since(d.started), d.hub.ClientCount())
+			res := checkDaemonHealthStatic(Version, time.Since(d.started), d.hub.ClientCount())
+			if mem := d.memoryStats(); mem != nil {
+				if details, ok := res.Details.(map[string]interface{}); ok {
+					details["memory"] = mem
+				}
+			}
+			return res
 		}},
 		{name: "script_health", fn: func(ctx context.Context) CheckResult {
 			return checkScriptHealth(ctx, d.scriptRegistry, projectPath)

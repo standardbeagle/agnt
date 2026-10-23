@@ -152,6 +152,9 @@ func New(cfg Config) *Governor {
 // Register adds a Reclaimer and returns the function that removes exactly this
 // registration (a same-name replacement registered later is left alone).
 func (g *Governor) Register(r Reclaimer) (unregister func()) {
+	if g == nil {
+		return func() {}
+	}
 	g.mu.Lock()
 	g.nextID++
 	id := g.nextID
@@ -168,14 +171,23 @@ func (g *Governor) Register(r Reclaimer) (unregister func()) {
 // stopped, a session cleaned up), so the next tick should reclaim and return
 // pages to the OS rather than wait for the background scavenger.
 func (g *Governor) NoteRelease(bytes int64) {
-	if bytes > 0 {
+	if g != nil && bytes > 0 {
 		g.released.Add(bytes)
 	}
 }
 
 // NoteActivity marks the daemon as busy. Cheap enough for a hot path.
 func (g *Governor) NoteActivity() {
-	g.lastActivity.Store(g.cfg.now().UnixNano())
+	if g == nil {
+		return
+	}
+	now := g.cfg.now().UnixNano()
+	// Per output line and per proxied request: skip the stores when the last
+	// mark is under a second old.
+	if now-g.lastActivity.Load() < int64(time.Second) {
+		return
+	}
+	g.lastActivity.Store(now)
 	g.idleDone.Store(false)
 }
 

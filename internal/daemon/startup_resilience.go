@@ -630,6 +630,7 @@ func (d *Daemon) processOutputCallback(processID, projectPath string, scriptEntr
 	owner, _ := d.incidentProcessOwner.Load(processID)
 	lifetimeOwner := ownerAsIncidentResource(owner)
 	return func(_ string, line string) {
+		d.mem.NoteActivity()
 		if scriptEntry != nil {
 			scriptEntry.AppendOutput(line)
 		}

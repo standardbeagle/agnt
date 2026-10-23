@@ -413,6 +413,7 @@ func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
 	lifetimeOwner, _ := owner.(*health.ResourceOwner)
 	d.eventHub.RegisterProxyPath(proxyID, server.Path)
 	server.Logger().SetOnLogEntry(func(entry proxy.LogEntry) {
+		d.mem.NoteActivity()
 		// Feed transport signals to the tracker before gating so the
 		// classifier sees recovery signals immediately.
 		d.feedTransportSignals(proxyID, entry)

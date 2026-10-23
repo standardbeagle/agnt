@@ -44,6 +44,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/standardbeagle/agnt/internal/memgov"
 	"net/http"
 	"reflect"
 	"sync"
@@ -244,6 +245,11 @@ func DefaultDaemonConfig() DaemonConfig {
 // proxy management, tunnel management, URL tracking, and scheduling.
 type Daemon struct {
 	config DaemonConfig
+
+	// mem is the memory governor. Nil until Start (tests build daemons with
+	// NewForTest and must not change the process-wide memory limit); every
+	// governor method is nil-safe.
+	mem *memgov.Governor
 
 	// Core hub (owns ProcessManager, sessions, clients)
 	hub *hub.Hub
@@ -1068,6 +1074,10 @@ func (d *Daemon) Start() error {
 
 	// Setup file-based logging for debugging (captures output even when daemon runs detached)
 	setupDebugLogging()
+
+	// Before bootstrap: output and proxy callbacks read d.mem, so it must be set
+	// before anything can start producing output.
+	d.startMemoryGovernor()
 
 	// Shared wiring: commands, hub, scheduler, URL tracker, proxy events, hook drain.
 	if err := d.bootstrap(); err != nil {

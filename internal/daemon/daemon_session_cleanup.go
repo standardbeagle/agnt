@@ -494,6 +494,9 @@ func (d *Daemon) CleanupSessionResources(sessionCode string) {
 		return
 	}
 	d.doCleanupExact(sessionCode, session, nil)
+	// A session's resources (proxies with their logs and page history, process
+	// output rings) just went away: let the governor return the pages promptly.
+	d.mem.NoteRelease(sessionReleaseEstimate)
 }
 
 // CleanupSessionResourcesDeferred schedules resource cleanup with a grace period.
