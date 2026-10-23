@@ -283,3 +283,10 @@ run after it, alongside the concurrent variations.
 Not done: a zero-model, client-side token-swap draft in `design.js` (rejected in
 section 7 for quality; it would make first paint instant if speed ever needs to
 beat the model floor).
+
+Reliability (6 runs each, stub proxy tool, startup included): the shipped prompt
+finished in 6.1-8.9 s on haiku (p50 7.8 s) and 5.2-8.6 s on sonnet (p50 6.2 s),
+12/12 under 10 s. A leaner prompt with no variation or housekeeping text was no
+faster (haiku p50 8.2 s with one 10.0 s run; sonnet p50 6.5 s), so the shipped
+template keeps its later steps. The browser round trip (proxy exec to panel
+render) was not timed.
