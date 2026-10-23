@@ -308,12 +308,6 @@ func (s *Session) waitLoop() {
 // frame (base64-encoded, since PTY output is not guaranteed valid UTF-8
 // mid-escape-sequence — spec §1.3).
 func (s *Session) broadcast(chunk []byte) {
-	data, _ := json.Marshal(base64.StdEncoding.EncodeToString(chunk))
-	payload, err := json.Marshal(Frame{Type: "stdout", Data: data})
-	if err != nil {
-		return
-	}
-
 	// The scrollback write and the fan-out happen under the same lock that
 	// Attach takes exclusively. Writing outside it let a chunk land in the
 	// snapshot a concurrent Attach was taking AND be delivered live to that
@@ -322,6 +316,16 @@ func (s *Session) broadcast(chunk []byte) {
 	s.subsMu.RLock()
 	defer s.subsMu.RUnlock()
 	s.scrollback.Write(chunk)
+	if len(s.subs) == 0 {
+		// Detached: nothing to deliver, so skip the base64 and two JSON
+		// marshals (about 4x the chunk in garbage per read).
+		return
+	}
+	data, _ := json.Marshal(base64.StdEncoding.EncodeToString(chunk))
+	payload, err := json.Marshal(Frame{Type: "stdout", Data: data})
+	if err != nil {
+		return
+	}
 	s.fanOutLocked(payload, "stdout")
 }
 
