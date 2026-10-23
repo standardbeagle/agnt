@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"fmt"
+	"net/http"
 	"strings"
 	"testing"
 	"time"
@@ -82,5 +83,38 @@ func TestPageTracker_ReclaimIdleEvictsOnlyIdleSessions(t *testing.T) {
 	}
 	if pt.RetainedBytes() >= freed {
 		t.Fatalf("retained %d should be below what was freed %d", pt.RetainedBytes(), freed)
+	}
+}
+
+func TestUncapturableBodyType(t *testing.T) {
+	cases := []struct {
+		ct, enc string
+		skip    bool
+	}{
+		{"text/html; charset=utf-8", "", false},
+		{"application/json", "", false},
+		{"application/vnd.api+json", "", false},
+		{"text/event-stream", "", false},
+		{"application/javascript", "", false},
+		{"", "", false},
+		{"application/x-something-new", "", false},
+		{"image/png", "", true},
+		{"font/woff2", "", true},
+		{"application/wasm", "", true},
+		{"application/octet-stream", "", true},
+		{"text/html", "gzip", true},
+		{"text/html", "identity", false},
+	}
+	for _, c := range cases {
+		h := http.Header{}
+		if c.ct != "" {
+			h.Set("Content-Type", c.ct)
+		}
+		if c.enc != "" {
+			h.Set("Content-Encoding", c.enc)
+		}
+		if got := uncapturableBodyType(h) != ""; got != c.skip {
+			t.Errorf("ct=%q enc=%q skip=%v, want %v", c.ct, c.enc, got, c.skip)
+		}
 	}
 }

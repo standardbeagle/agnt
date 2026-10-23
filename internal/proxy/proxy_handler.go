@@ -768,7 +768,9 @@ func (ps *ProxyServer) logProxiedRequest(r *http.Request, reqID string, startTim
 	}
 
 	respBody := recorder.body.String()
-	if recorder.truncated {
+	if recorder.binaryType != "" {
+		respBody = fmt.Sprintf("[%s body not captured: %d bytes]", recorder.binaryType, recorder.skippedBytes)
+	} else if recorder.truncated {
 		respBody += "... [truncated]"
 	}
 
@@ -833,6 +835,11 @@ type responseRecorder struct {
 	body        *bytes.Buffer
 	wroteHeader bool
 	truncated   bool
+	// typeChecked/binaryType: decided once, at the first body write, from the
+	// response headers. skippedBytes counts what was streamed but not kept.
+	typeChecked  bool
+	binaryType   string
+	skippedBytes int64
 
 	// reqID is handleProxy's id for this request; errorHandler reuses it.
 	reqID string
@@ -863,9 +870,52 @@ func (rr *responseRecorder) WriteHeader(statusCode int) {
 	}
 }
 
+// uncapturableBodyType returns a label when the response body is not worth
+// recording as text (binary media, fonts, wasm, or any content-encoded
+// payload), or "" when it should be captured. An absent Content-Type is
+// captured: the type is unknown and the body may well be text.
+func uncapturableBodyType(h http.Header) string {
+	if enc := strings.ToLower(strings.TrimSpace(h.Get("Content-Encoding"))); enc != "" && enc != "identity" {
+		return "content-encoded " + enc
+	}
+	ct := strings.ToLower(strings.TrimSpace(h.Get("Content-Type")))
+	if ct == "" {
+		return ""
+	}
+	if i := strings.IndexByte(ct, ';'); i >= 0 {
+		ct = strings.TrimSpace(ct[:i])
+	}
+	switch {
+	case strings.HasPrefix(ct, "text/"),
+		strings.HasSuffix(ct, "+json"), strings.HasSuffix(ct, "+xml"),
+		strings.Contains(ct, "json"), strings.Contains(ct, "xml"),
+		strings.Contains(ct, "javascript"), strings.Contains(ct, "ecmascript"),
+		strings.Contains(ct, "x-www-form-urlencoded"), strings.Contains(ct, "graphql"),
+		strings.Contains(ct, "yaml"), strings.Contains(ct, "event-stream"):
+		return ""
+	case strings.HasPrefix(ct, "image/"), strings.HasPrefix(ct, "video/"),
+		strings.HasPrefix(ct, "audio/"), strings.HasPrefix(ct, "font/"),
+		strings.Contains(ct, "wasm"), strings.Contains(ct, "octet-stream"),
+		strings.Contains(ct, "zip"), strings.Contains(ct, "pdf"), strings.Contains(ct, "protobuf"):
+		return ct
+	}
+	return "" // unknown application/* types stay captured
+}
+
 func (rr *responseRecorder) Write(b []byte) (int, error) {
 	if !rr.wroteHeader {
 		rr.WriteHeader(http.StatusOK)
+	}
+	if !rr.typeChecked {
+		rr.typeChecked = true
+		rr.binaryType = uncapturableBodyType(rr.Header())
+	}
+	if rr.binaryType != "" {
+		// Images, fonts, wasm and compressed payloads are not readable as the
+		// string the log stores; keeping 10KB of each per request (and again in
+		// the page tracker) only cost memory.
+		rr.skippedBytes += int64(len(b))
+		return rr.ResponseWriter.Write(b)
 	}
 	// Capture only the first maxRecordedBody bytes for logging; never buffer the
 	// whole body. The full payload is streamed to the client unchanged below.
