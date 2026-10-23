@@ -13,9 +13,19 @@ defaults {
     max-parallel 2
 }
 
+// The full suite is one supervised tree: the go driver, compile/link steps and the test binary
+// together reach 2.1-2.3GB, which the 2048 default culled twice (review-baseline, review-suite).
+// The test binaries themselves are small (internal/daemon peaks near 180MB), so this is toolchain
+// headroom, not a licence for tests to grow. `test-pkg` keeps a focused run far below it.
 alias "test" {
     command "go"
     args "test" "-p" "1" "./..."
+    max-mem 4096
+}
+
+alias "test-pkg" {
+    command "go"
+    args "test" "-p" "1" "-count=1"
 }
 
 alias "bench" {
