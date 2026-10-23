@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/standardbeagle/agnt/internal/updater"
 	"os"
 	"path/filepath"
 	"sync"
@@ -231,6 +232,12 @@ func (dt *DaemonTools) ensureClient() error {
 	// Configure auto-upgrade callback for version mismatches
 	resilientConfig.OnVersionMismatch = func(clientVer, daemonVer string) error {
 		fmt.Fprintf(os.Stderr, "[agnt] Version mismatch detected: client=%s daemon=%s\n", clientVer, daemonVer)
+		// Upgrade() is a no-op for a daemon that is newer than this binary, so
+		// reporting "upgraded" would be false; say what happens instead.
+		if newer, perr := updater.IsNewerVersion(daemonVer, clientVer); perr == nil && newer {
+			fmt.Fprintf(os.Stderr, "[agnt] Daemon %s is newer than this client %s; not downgrading\n", daemonVer, clientVer)
+			return nil
+		}
 		fmt.Fprintf(os.Stderr, "[agnt] Triggering automatic daemon upgrade...\n")
 
 		// Create upgrader

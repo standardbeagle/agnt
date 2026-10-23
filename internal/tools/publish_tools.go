@@ -62,6 +62,12 @@ type ServeStoreInfo struct {
 	Addr string `json:"addr,omitempty"`
 }
 
+// Feedback rows are visitor text on a public share; cap what one call returns.
+const (
+	defaultFeedbackLimit = 50
+	maxFeedbackLimit     = 200
+)
+
 // RegisterPublishTool registers the publish MCP tool.
 func RegisterPublishTool(server *mcp.Server, dt *DaemonTools) {
 	addLenientTool(server, &mcp.Tool{
@@ -175,7 +181,14 @@ func makePublishHandler(dt *DaemonTools) func(context.Context, *mcp.CallToolRequ
 			if input.ID == "" {
 				return fail[PublishOutput]("publish feedback: id is required")
 			}
-			res, err := dt.currentClient().PublishFeedback(input.ID, input.Cursor, input.Limit)
+			// Rows carry visitor-authored text: bound how many reach the model.
+			limit := input.Limit
+			if limit <= 0 {
+				limit = defaultFeedbackLimit
+			} else if limit > maxFeedbackLimit {
+				limit = maxFeedbackLimit
+			}
+			res, err := dt.currentClient().PublishFeedback(input.ID, input.Cursor, limit)
 			if err != nil {
 				return fail[PublishOutput]("publish feedback failed: " + err.Error())
 			}

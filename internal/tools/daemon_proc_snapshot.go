@@ -358,18 +358,38 @@ func splitFileLine(location string) (file, line string) {
 	if location == "" {
 		return "", ""
 	}
-	parts := strings.Split(location, ":")
-	switch len(parts) {
-	case 0, 1:
-		return location, ""
-	case 2:
-		return parts[0], parts[1]
-	default:
-		// "file:line:col" — keep file and line; drop col so the snapshot
-		// stays compact. Callers wanting col can use raw mode and parse
-		// the unified error themselves.
-		return parts[0], parts[1]
+	// Peel trailing numeric ":line" / ":line:col" from the right so a Windows
+	// drive-letter path (C:\proj\a.go:12:3) keeps its drive. The column is
+	// dropped to keep the snapshot compact; callers wanting it can use raw mode.
+	isNum := func(s string) bool {
+		if s == "" {
+			return false
+		}
+		for _, r := range s {
+			if r < '0' || r > '9' {
+				return false
+			}
+		}
+		return true
 	}
+	rest := location
+	var nums []string
+	for len(nums) < 2 {
+		i := strings.LastIndexByte(rest, ':')
+		if i < 0 || !isNum(rest[i+1:]) {
+			break
+		}
+		nums = append([]string{rest[i+1:]}, nums...)
+		rest = rest[:i]
+	}
+	if len(nums) == 0 {
+		// No numeric suffix: keep the legacy split on the first colon.
+		if i := strings.IndexByte(location, ':'); i > 0 && !(i == 1 && len(location) > 2 && (location[2] == '\\' || location[2] == '/')) {
+			return location[:i], location[i+1:]
+		}
+		return location, ""
+	}
+	return rest, nums[0]
 }
 
 // buildSuggestedNext applies the documented logic from the task spec:

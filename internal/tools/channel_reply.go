@@ -112,11 +112,18 @@ func (dt *DaemonTools) makeChannelReplyHandler() func(context.Context, *mcp.Call
 		}
 
 		delivered := 0
+		var firstErr error
 		for _, pid := range proxyIDs {
 			_, err := dt.currentClient().ProxyToast(pid, toastConfig)
 			if err == nil {
 				delivered++
+			} else if firstErr == nil {
+				firstErr = err
 			}
+		}
+		if delivered == 0 {
+			// Nothing was shown, so the agent must not wait on a reply to it.
+			return fail[ChannelReplyOutput](fmt.Sprintf("message not delivered to any of %d proxies: %v", len(proxyIDs), firstErr))
 		}
 
 		return nil, ChannelReplyOutput{

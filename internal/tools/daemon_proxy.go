@@ -353,6 +353,12 @@ func (dt *DaemonTools) handleProxyNavigate(input ProxyInput) (*mcp.CallToolResul
 	}
 	// buildNavigateJS returns {navigating:true, from:<href>} synchronously
 	// before the deferred navigation runs; surface it instead of discarding it.
+	if !getBool(result, "success") {
+		return nil, ProxyOutput{
+			Success: false,
+			Message: fmt.Sprintf("navigate %s failed: %s", input.Direction, getString(result, "error")),
+		}, nil
+	}
 	return nil, ProxyOutput{
 		Success: true,
 		Message: fmt.Sprintf("navigate %s dispatched: %s", input.Direction, getString(result, "result")),

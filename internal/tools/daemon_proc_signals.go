@@ -345,6 +345,10 @@ type WaitResult struct {
 	MatchedLine string `json:"matched_line,omitempty"`
 	ElapsedMs   int64  `json:"elapsed_ms"`
 	TimedOut    bool   `json:"timeout,omitempty"`
+	// Error is set when the output could not be read (unknown process, daemon
+	// unreachable) on several consecutive polls; the wait ends early rather
+	// than reporting a timeout for a process that was never being watched.
+	Error string `json:"error,omitempty"`
 }
 
 // waitForSignal polls fetchLines until any of `wanted` signals appears in
@@ -365,6 +369,7 @@ func waitForSignal(ctx context.Context, fetchLines func() ([]string, error), wan
 	deadline := time.Now().Add(time.Duration(timeoutMs) * time.Millisecond)
 	start := time.Now()
 	pollInterval := time.Duration(pollIntervalMs) * time.Millisecond
+	failures := 0
 
 	for {
 		// A cancelled wait (the MCP call was abandoned) stops querying the
@@ -373,7 +378,13 @@ func waitForSignal(ctx context.Context, fetchLines func() ([]string, error), wan
 			return WaitResult{ElapsedMs: time.Since(start).Milliseconds()}
 		}
 		lines, err := fetchLines()
-		if err == nil {
+		if err != nil {
+			failures++
+			if failures >= 3 {
+				return WaitResult{ElapsedMs: time.Since(start).Milliseconds(), Error: err.Error()}
+			}
+		} else {
+			failures = 0
 			signals := extractSignals(lines, wantedToExtractList(wanted))
 			match, line := signalMatchesAny(signals, wanted)
 			if match != "" {

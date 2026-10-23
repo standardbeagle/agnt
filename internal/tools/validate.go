@@ -33,6 +33,19 @@ func validateStringLen(field, value string, maxLen int) error {
 	return nil
 }
 
+// validateToken checks a value that becomes one whitespace-delimited token of
+// the daemon IPC line. The protocol writer rejects whitespace and control
+// characters after the request is already on the shared connection, which
+// tears the connection down and drops the session binding with it.
+func validateToken(field, value string) error {
+	for _, r := range value {
+		if r <= ' ' || r == 0x7f {
+			return fmt.Errorf("%s must not contain whitespace or control characters", field)
+		}
+	}
+	return nil
+}
+
 // validateArrayLen checks a slice does not exceed maxLen elements.
 func validateArrayLen[T any](field string, arr []T, maxLen int) error {
 	if len(arr) > maxLen {
@@ -85,6 +98,7 @@ func validateProcInput(input ProcInput) error {
 	checks := []error{
 		validateStringLen("action", input.Action, maxIDLength),
 		validateStringLen("process_id", input.ProcessID, maxIDLength),
+		validateToken("process_id", input.ProcessID),
 		validateStringLen("script_name", input.ScriptName, maxIDLength),
 		validateStringLen("stream", input.Stream, maxIDLength),
 		validateStringLen("grep", input.Grep, maxGrepPattern),
@@ -128,6 +142,7 @@ func validateProxyInput(input ProxyInput) error {
 	checks := []error{
 		validateStringLen("action", input.Action, maxIDLength),
 		validateStringLen("id", input.ID, maxIDLength),
+		validateToken("id", input.ID),
 		validateStringLen("target_url", input.TargetURL, maxURLLength),
 		validateStringLen("bind_address", input.BindAddress, maxStringField),
 		validateStringLen("public_url", input.PublicURL, maxURLLength),
@@ -346,6 +361,8 @@ func validateTunnelInput(input TunnelInput) error {
 		validateStringLen("local_host", input.LocalHost, maxStringField),
 		validateStringLen("binary_path", input.BinaryPath, maxPathLength),
 		validateStringLen("proxy_id", input.ProxyID, maxIDLength),
+		validateToken("proxy_id", input.ProxyID),
+		validateToken("id", input.ID),
 		validatePort("local_port", input.LocalPort),
 	}
 	for _, err := range checks {

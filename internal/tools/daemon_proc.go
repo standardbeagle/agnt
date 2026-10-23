@@ -720,7 +720,9 @@ func (dt *DaemonTools) handleProcCleanupPort(input ProcInput) (*mcp.CallToolResu
 	}
 
 	output := ProcOutput{
-		Success: getBool(result, "success"),
+		// The daemon replies with port/killed_count/killed_pids and no success
+		// key, so a reply without an error is the success.
+		Success: true,
 	}
 
 	if pids, ok := result["killed_pids"].([]interface{}); ok {
