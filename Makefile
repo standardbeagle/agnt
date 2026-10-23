@@ -54,20 +54,7 @@ vendor:
 # puts go in workspace mode, where `go mod vendor` refuses to run. The vendor
 # tree is defined by go.mod alone, which is also what `go install` builds.
 vendor-check:
-	@tmp="$$(mktemp -d)"; trap 'rm -rf "$$tmp"' EXIT; \
-	GOWORK=off go mod vendor -o "$$tmp/vendor" || exit 1; \
-	( cd "$$tmp" && find vendor -type f ) | git check-ignore --stdin | \
-		while IFS= read -r f; do rm -f "$$tmp/$$f"; done; \
-	if diff -r vendor "$$tmp/vendor" > "$$tmp/diff" 2>&1; then \
-		echo "vendor-check passed: vendor/ matches go.mod"; \
-	else \
-		echo "FAIL: vendor/ differs from what go.mod resolves to:"; \
-		head -40 "$$tmp/diff"; \
-		echo "A patch must not live only in vendor/ (it never reaches go install"; \
-		echo "builds and the next go mod vendor drops it). Send it upstream and"; \
-		echo "bump the version, or run make vendor if go.mod changed."; \
-		exit 1; \
-	fi
+	@go run ./scripts/check.go vendor
 
 # Build both binaries (agnt is the source, devtool-mcp is a copy for MCP compatibility)
 # Version is defined in cmd/agnt/main.go and managed by scripts/release.sh
@@ -391,11 +378,7 @@ cross-compile:
 # Check-only variant for CI: same as cross-compile but without producing
 # named binaries. Faster — `go build` with no -o discards output.
 cross-compile-check:
-	@echo "==> Checking windows/amd64 build..."
-	CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build ./...
-	@echo "==> Checking darwin/arm64 build..."
-	CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build ./...
-	@echo "Cross-compile check passed"
+	@go run ./scripts/check.go cross
 
 # Run the server (for development)
 run: build

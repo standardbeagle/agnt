@@ -13,7 +13,7 @@ Run tests through `tman` (or the repo shims) per the global standards.
 ```bash
 make build            # agnt binary
 make all              # build + the agnt-daemon copy
-make vendor-check     # vendor/ must equal what go.mod resolves to
+make vendor-check     # vendor/ must equal what go.mod resolves to (no make: `tman vendor-check`)
 make install-local    # ~/.local/bin
 make test             # default suite (host-safe; excludes procisolation/sshe2e/chromee2e tags)
 make test-pkg PKG=./internal/incident RUN=TestBus   # focused, serial; PKG/RUN both optional
@@ -22,7 +22,7 @@ make test-isolated    # procisolation tests inside a PID namespace (Linux)
 make test-ssh         # SSH harness + containerized sshd smoke (loud skip without Docker/Podman)
 make test-chrome-e2e  # real-Chrome tests — unloaded machine only, never alongside other runs
 make test-js          # vitest + jsdom tier for injected scripts (loud skip without npm); JSFILTER=name narrows, npm ci runs only when the lockfile changed
-make cross-compile-check   # GOOS=windows build
+make cross-compile-check   # windows/amd64 + darwin/arm64 build (no make: `tman cross-compile-check`)
 make install-hooks    # once per clone: core.hooksPath=.githooks
 ```
 

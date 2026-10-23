@@ -33,3 +33,19 @@ alias "bench" {
     args "test" "-p" "1" "-run" "^$" "-bench" "." "-benchmem" "./..."
 }
 
+
+// Portable replacements for the make targets of the same name: no make or POSIX shell needed,
+// so they run the same on Windows, macOS and Linux. CI still calls the make targets, which
+// delegate here.
+alias "vendor-check" {
+    command "go"
+    args "run" "./scripts/check.go" "vendor"
+    max-time "10m"
+}
+
+alias "cross-compile-check" {
+    command "go"
+    args "run" "./scripts/check.go" "cross"
+    max-time "15m"
+    max-mem 4096
+}
