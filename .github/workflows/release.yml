@@ -9,8 +9,30 @@ permissions:
   contents: write
 
 jobs:
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+
+      - name: Vendor check
+        run: make vendor-check
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test (serial packages)
+        run: go test -p 1 ./...
+
   build:
     name: Build binaries
+    needs: test
     runs-on: ubuntu-latest
     strategy:
       matrix:

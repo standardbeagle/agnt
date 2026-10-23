@@ -237,11 +237,7 @@ echo ""
 echo "Creating commit and tag..."
 # shellcheck disable=SC2086
 git add $VERSION_FILES
-git commit -m "chore: bump version to $NEW_VERSION
-
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
-
-Co-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>"
+git commit -m "chore: bump version to $NEW_VERSION"
 
 git tag -a "v$NEW_VERSION" -m "v$NEW_VERSION"
 

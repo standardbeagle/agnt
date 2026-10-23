@@ -59,6 +59,22 @@ download() {
     fi
 }
 
+# fetch_status URL DEST: download URL to DEST and print the HTTP status
+# ("000" when the request did not complete).
+fetch_status() {
+    local code
+    if command -v curl &> /dev/null; then
+        code=$(curl -sSL -w '%{http_code}' -o "$2" "$1" 2>/dev/null) || code="000"
+        echo "${code:-000}"
+    elif command -v wget &> /dev/null; then
+        if wget -q "$1" -O "$2" 2>/dev/null; then echo 200
+        elif wget -S --spider "$1" 2>&1 | grep -q ' 404 '; then echo 404
+        else echo 000; fi
+    else
+        echo 000
+    fi
+}
+
 # sha256_of FILE: print the hex SHA-256 of FILE.
 sha256_of() {
     if command -v sha256sum &> /dev/null; then
@@ -109,7 +125,9 @@ main() {
     # have none; AGNT_REQUIRE_CHECKSUM=1 refuses to install without it.
     local sums_path="$tmp_path.sums"
     TMP_FILES+=("$sums_path")
-    if download "https://github.com/$REPO/releases/download/v$version/SHA256SUMS" "$sums_path" 2>/dev/null; then
+    local sums_status
+    sums_status=$(fetch_status "https://github.com/$REPO/releases/download/v$version/SHA256SUMS" "$sums_path")
+    if [ "$sums_status" = "200" ]; then
         local asset="$BINARY_NAME-$platform-$arch"
         local expected actual
         expected=$(awk -v f="$asset" '$2 == f { print $1 }' "$sums_path")
@@ -123,6 +141,11 @@ main() {
             exit 1
         fi
         echo "  Checksum verified"
+    elif [ "$sums_status" != "404" ]; then
+        # Only a definite "not published" may skip verification; a network
+        # error or 5xx must not downgrade the install to unverified.
+        echo "Error: could not fetch SHA256SUMS for v$version (status $sums_status)" >&2
+        exit 1
     elif [ "${AGNT_REQUIRE_CHECKSUM:-}" = "1" ]; then
         echo "Error: SHA256SUMS is not published for v$version and AGNT_REQUIRE_CHECKSUM=1" >&2
         exit 1
