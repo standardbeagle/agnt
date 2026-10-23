@@ -219,6 +219,51 @@ func TestConcurrentAcceptRaceSafe(t *testing.T) {
 	}
 }
 
+// Writes to different shares run their fsyncs concurrently; writes to one share
+// stay serialized. Under -race, with reads interleaved (ReadByShare/Count take
+// the share lock), no row is lost and the on-disk rings equal the in-memory
+// ones after a reopen.
+func TestConcurrentAcceptAcrossSharesPersistsEveryRow(t *testing.T) {
+	clk := newFakeClock()
+	limits := testLimits()
+	limits.Burst = 1000
+	limits.RatePerMinute = 1
+	s, dir := newTestStore(t, limits, clk)
+
+	shares := []string{"share-a", "share-b", "share-c"}
+	const perShare = 20
+	body := []byte(`{"message":"m"}`)
+	var wg sync.WaitGroup
+	for _, id := range shares {
+		for w := 0; w < 4; w++ {
+			wg.Add(1)
+			go func(id string) {
+				defer wg.Done()
+				for i := 0; i < perShare/4; i++ {
+					if err := s.Accept(id, "rev", "9.9.9.9:1", body); err != nil {
+						t.Errorf("Accept(%s): %v", id, err)
+					}
+					_ = s.Count(id)
+				}
+			}(id)
+		}
+	}
+	wg.Wait()
+
+	reopened, err := NewFeedbackStore(dir, limits, clk.now)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	for _, id := range shares {
+		if got := s.Count(id); got != perShare {
+			t.Errorf("%s in memory: %d rows, want %d", id, got, perShare)
+		}
+		if got := reopened.Count(id); got != perShare {
+			t.Errorf("%s on disk: %d rows, want %d", id, got, perShare)
+		}
+	}
+}
+
 // TestRestartSurvival writes feedback, reconstructs the store from the same dir,
 // and asserts the rows survive.
 func TestRestartSurvival(t *testing.T) {

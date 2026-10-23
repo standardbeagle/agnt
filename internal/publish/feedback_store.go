@@ -140,6 +140,15 @@ type FeedbackStore struct {
 	// only by OpenFeedbackStoreReadOnly, for reading a store another process owns.
 	readOnly bool
 
+	// shareLocks serialize every durable write of one share's ring file, so the
+	// fsync can run outside mu without two writers racing on the same temp path
+	// or an older ring landing over a newer one. Lock order is always
+	// shareLock(id) then mu; nothing takes a share lock while holding mu.
+	// Entries are never removed: one small mutex per share that ever had
+	// feedback, and shares are operator-published, not visitor-created.
+	locksMu    sync.Mutex
+	shareLocks map[string]*sync.Mutex
+
 	mu             sync.Mutex
 	byShare        map[string][]FeedbackRecord
 	dropped        int64            // aggregate compatibility metric
@@ -380,15 +389,43 @@ func (s *FeedbackStore) AcceptAdmitted(shareID string, revisionDigest RevisionDi
 		CreatedAt:      s.now(),
 	}
 
+	// The fsync is slow and must not stall other shares' reads and writes, so
+	// it runs under this share's lock alone. The ring is still made durable
+	// before it becomes visible: a failed write leaves memory untouched.
+	sl := s.shareLock(shareID)
+	sl.Lock()
+	defer sl.Unlock()
+
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	records := append(s.byShare[shareID], rec)
+	// A copy, not an append onto the stored slice: nothing published until
+	// the write succeeds.
+	records := append(append([]FeedbackRecord(nil), s.byShare[shareID]...), rec)
 	records = s.prune(records)
+	s.mu.Unlock()
+
 	if err := s.persist(shareID, records); err != nil {
 		return err
 	}
+
+	s.mu.Lock()
 	s.byShare[shareID] = records
+	s.mu.Unlock()
 	return nil
+}
+
+// shareLock returns the write lock for one share's ring file.
+func (s *FeedbackStore) shareLock(shareID string) *sync.Mutex {
+	s.locksMu.Lock()
+	defer s.locksMu.Unlock()
+	if s.shareLocks == nil {
+		s.shareLocks = make(map[string]*sync.Mutex)
+	}
+	l, ok := s.shareLocks[shareID]
+	if !ok {
+		l = &sync.Mutex{}
+		s.shareLocks[shareID] = l
+	}
+	return l
 }
 
 // validate enforces the ingest contract: size cap, valid UTF-8, and strict
@@ -470,6 +507,10 @@ func (s *FeedbackStore) prune(records []FeedbackRecord) []FeedbackRecord {
 // escaping them before rendering into any HTML surface — the store never
 // reflects.
 func (s *FeedbackStore) ReadByShare(shareID, cursor string, limit int) (rows []FeedbackRecord, nextCursor string, err error) {
+	// expire may rewrite the ring file, so it takes the share lock first.
+	sl := s.shareLock(shareID)
+	sl.Lock()
+	defer sl.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -534,6 +575,9 @@ func (s *FeedbackStore) DroppedByShare(shareID string) int64 {
 
 // Count returns the number of stored, unexpired rows for a share.
 func (s *FeedbackStore) Count(shareID string) int {
+	sl := s.shareLock(shareID)
+	sl.Lock()
+	defer sl.Unlock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	// A failed durable write still leaves the in-memory ring pruned, which is
@@ -550,7 +594,7 @@ func (s *FeedbackStore) persist(shareID string, records []FeedbackRecord) error 
 	}
 	sf := shareFeedback{ShareID: shareID, Records: records}
 	sf.Checksum = sf.computeChecksum()
-	data, err := json.MarshalIndent(&sf, "", "  ")
+	data, err := json.Marshal(&sf)
 	if err != nil {
 		return fmt.Errorf("publish: marshal feedback: %w", err)
 	}
