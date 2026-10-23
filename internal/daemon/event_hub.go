@@ -322,6 +322,21 @@ func (h *EventHub) UnregisterProxyPath(proxyID string) {
 	h.proxyPaths.remove(proxyID)
 }
 
+// snapshotStreamSinks copies the sink list under the read lock, or returns nil
+// when there are none. Every process output line and traffic entry passes
+// through here, and with no STREAM-EVENTS subscriber (the usual case) the old
+// code still allocated and copied a slice per call.
+func (h *EventHub) snapshotStreamSinks() []*StreamSink {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if len(h.streamSinks) == 0 {
+		return nil
+	}
+	sinks := make([]*StreamSink, len(h.streamSinks))
+	copy(sinks, h.streamSinks)
+	return sinks
+}
+
 // BroadcastLogEntry sends a log entry to all matching stream sinks.
 // Called from the TrafficLogger callback when a new entry is logged.
 //
@@ -332,10 +347,10 @@ func (h *EventHub) UnregisterProxyPath(proxyID string) {
 // the slice before the remove will hold a dangling pointer and would
 // otherwise crash the daemon on the next send.
 func (h *EventHub) BroadcastLogEntry(entry proxy.LogEntry, proxyID string) {
-	h.mu.RLock()
-	sinks := make([]*StreamSink, len(h.streamSinks))
-	copy(sinks, h.streamSinks)
-	h.mu.RUnlock()
+	sinks := h.snapshotStreamSinks()
+	if len(sinks) == 0 {
+		return
+	}
 
 	proxyPath := h.proxyPaths.get(proxyID)
 
@@ -360,10 +375,10 @@ func (h *EventHub) BroadcastLogEntryForProject(entry proxy.LogEntry, projectPath
 		return
 	}
 
-	h.mu.RLock()
-	sinks := make([]*StreamSink, len(h.streamSinks))
-	copy(sinks, h.streamSinks)
-	h.mu.RUnlock()
+	sinks := h.snapshotStreamSinks()
+	if len(sinks) == 0 {
+		return
+	}
 
 	for _, sink := range sinks {
 		if sink.filter.matches(entry, "", projectPath) {
@@ -472,10 +487,10 @@ func (h *EventHub) BroadcastHookEvent(ev HookEvent) {
 // Uses sendToStreamSinkSafe for the same close-during-broadcast protection
 // documented on BroadcastLogEntry.
 func (h *EventHub) BroadcastProcessOutput(entry proxy.LogEntry, projectPath string) {
-	h.mu.RLock()
-	sinks := make([]*StreamSink, len(h.streamSinks))
-	copy(sinks, h.streamSinks)
-	h.mu.RUnlock()
+	sinks := h.snapshotStreamSinks()
+	if len(sinks) == 0 {
+		return
+	}
 
 	for _, sink := range sinks {
 		if sink.filter.matches(entry, "", projectPath) {
