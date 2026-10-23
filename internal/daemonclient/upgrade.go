@@ -348,7 +348,10 @@ func (u *DaemonUpgrader) getNewVersion() string {
 	}
 
 	// Exec the binary with --version to get its actual version
-	cmd := exec.Command(binaryPath, "--version")
+	// A wedged binary must not hang the upgrade path indefinitely.
+	vctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(vctx, binaryPath, "--version")
 	output, err := cmd.Output()
 	if err != nil {
 		u.log("Warning: could not get version from %s: %v", binaryPath, err)

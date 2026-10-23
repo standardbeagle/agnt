@@ -1385,6 +1385,9 @@ func (f *guardedUpstreamFetcher) get(ctx context.Context, rawURL string, addr ne
 		},
 		TLSClientConfig:     f.tlsConfig,
 		TLSHandshakeTimeout: upstreamDialTimeout,
+		// An anonymous viewer can aim this fetch at a hostile upstream; cap
+		// the response header block (the transport default is 10 MiB).
+		MaxResponseHeaderBytes: 64 << 10,
 		// No connection pooling: a pooled connection is keyed by host, so reuse
 		// would let a later request ride a connection established for a
 		// separately-validated address.
