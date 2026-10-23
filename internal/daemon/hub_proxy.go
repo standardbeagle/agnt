@@ -92,6 +92,11 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 	}
 	if ext.Path != "" {
 		path = ext.Path
+	} else if own := d.getSessionProjectPath(conn); own != "" {
+		// A proxy without a path used to land on "." and so belong to no
+		// project: invisible to its own session's scoped listings and without
+		// an overlay endpoint.
+		path = own
 	}
 	bindAddress = ext.BindAddress
 	allowExternal = ext.AllowExternal
@@ -99,6 +104,9 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 	skipTLSVerify = ext.SkipTLSVerify
 
 	normalizedPath := normalizePath(path)
+	if !d.pathVisibleTo(conn, normalizedPath) {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "PROXY START: path belongs to another project than this session")
+	}
 
 	// Build a config.ProxyConfig that handleExplicitStart → buildProxyServerConfig
 	// will translate into a proxy.ProxyConfig. The port MCP arg is the
@@ -126,7 +134,13 @@ func (d *Daemon) hubHandleProxyStart(ctx context.Context, conn *hubpkg.Connectio
 	// The lookups are exact: a fuzzy Get matched a short id ("dev") against
 	// another project's compound id, skipped the start, and reported that
 	// project's proxy back as this one.
-	_, alreadyRunning := d.exactProxy(proxyID)
+	existing, alreadyRunning := d.exactProxy(proxyID)
+	if alreadyRunning && normalizePath(existing.Path) != normalizedPath {
+		// The id is taken by another project's proxy. Answering "already
+		// running" would hand this caller that project's listen address and
+		// public URL, and start nothing for them.
+		return conn.WriteErr(hubproto.ErrAlreadyExists, fmt.Sprintf("PROXY START: id %q is in use by a proxy of another project; choose a different id", proxyID))
+	}
 	if !alreadyRunning {
 		d.handleExplicitStart(ProxyEvent{
 			Type:         ExplicitStart,
@@ -332,7 +346,9 @@ func (d *Daemon) hubHandleProxyList(conn *hubpkg.Connection, cmd *hubproto.Comma
 		if value, ok := d.proxyConfigs.Load(p.ID); ok {
 			entry["config_name"] = value.(configuredProxy).name
 		}
-		if t, ok := tunnelsByID[p.ID]; ok {
+		// A tunnel id is only conventionally the proxy id; another project's
+		// tunnel under the same id must not leak its public URL here.
+		if t, ok := tunnelsByID[p.ID]; ok && normalizePath(t.Path) == normalizePath(p.Path) {
 			entry["tunnel_url"] = t.PublicURL
 			entry["tunnel_running"] = t.State == "connected"
 		}
@@ -596,10 +612,9 @@ func (d *Daemon) restartProxy(ctx context.Context, p *proxy.ProxyServer, callerS
 	// pointing the overlay and SCRIPT LIST at the old address.
 	d.retireExplicitProxyEntry(projectPath, proxyID)
 
-	// Remove from persisted state
-	if d.stateMgr != nil {
-		d.stateMgr.RemoveProxy(proxyID)
-	}
+	// Persisted state stays until the replacement exists: AddProxy below
+	// overwrites it by id, and if Create fails the entry is what lets the
+	// proxy come back when the daemon restarts.
 
 	// Wait for the old listener to release the port before rebinding it,
 	// rather than guessing with a fixed sleep. Stop() closes the listener
@@ -632,6 +647,10 @@ func (d *Daemon) restartProxy(ctx context.Context, p *proxy.ProxyServer, callerS
 		NamedTunnel:      namedTunnel,
 	})
 	if err != nil {
+		// The old server is gone and nothing replaced it. The caller gets the
+		// error; the agent and session log get a record that the proxy is down.
+		d.recordStartupEntry(proxyID, "", "error", "proxy_restart_failed",
+			fmt.Sprintf("proxy restart: stopped %s but could not recreate it: %v", proxyID, err), 0)
 		return nil, err
 	}
 

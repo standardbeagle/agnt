@@ -928,30 +928,31 @@ func (d *Daemon) bootstrap() error {
 	d.daemonStartupLog("info", "url_tracker_started", "URL tracker started")
 
 	// Start proxy event handler for event-driven proxy creation
-	d.wg.Add(1)
-	go d.handleProxyEvents()
-	d.daemonStartupLog("info", "proxy_event_loop_started", "proxy event loop started")
+	// The three loops start through goTracked so a Stop racing bootstrap cannot
+	// Add after Wait. A refused start is logged, never silent.
+	if d.goTracked(d.handleProxyEvents) {
+		d.daemonStartupLog("info", "proxy_event_loop_started", "proxy event loop started")
+	} else {
+		d.daemonStartupLog("warning", "proxy_event_loop_skipped", "proxy event loop not started: daemon is shutting down")
+	}
 
 	// Start the hook event drain goroutine. It pops events from the
 	// hookRing (pushed by the HOOK verb handler on each `agnt hook`
 	// RPC) and fans them out through the eventHub to any registered
 	// HookEventSinks. Exits when d.ctx is cancelled.
-	d.wg.Add(1)
-	go func() {
-		defer d.wg.Done()
-		d.drainHooks(d.ctx)
-	}()
-	d.daemonStartupLog("info", "hook_drain_started", "hook event drain started")
+	if d.goTracked(func() { d.drainHooks(d.ctx) }) {
+		d.daemonStartupLog("info", "hook_drain_started", "hook event drain started")
+	} else {
+		d.daemonStartupLog("warning", "hook_drain_skipped", "hook event drain not started: daemon is shutting down")
+	}
 
 	// Mark sessions whose heartbeats stopped as disconnected. Without this
 	// sweep the heartbeat timeout was never applied: every registered session
 	// stayed "active" for as long as it sat in the registry. Exits when d.ctx
 	// is cancelled.
-	d.wg.Add(1)
-	go func() {
-		defer d.wg.Done()
-		d.runHeartbeatSweep(d.ctx, d.sessionRegistry.HeartbeatTimeout()/4)
-	}()
+	if !d.goTracked(func() { d.runHeartbeatSweep(d.ctx, d.sessionRegistry.HeartbeatTimeout()/4) }) {
+		d.daemonStartupLog("warning", "heartbeat_sweep_skipped", "heartbeat sweep not started: daemon is shutting down")
+	}
 
 	return nil
 }

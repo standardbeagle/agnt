@@ -535,8 +535,14 @@ func (r *ProcessAutoRestarter) monitorProcess(processID string, myState *process
 		// it die and runs it through shouldRestart and the backoff. With false,
 		// a fast crasher got exactly one restart and then the monitor quit,
 		// never reaching MaxRestarts, crash_loop_backoff or restart_gave_up.
+		// The on-restart hook blocks for seconds; a stop landing in that window
+		// cancels monitorCtx, and relaunching then would resurrect a process
+		// the user just stopped.
+		if myState.monitorCtx.Err() != nil {
+			return
+		}
 		r.daemon.readySignaler.Reset(processID)
-		proc, startupErr := r.daemon.startScriptWithRetry(r.ctx, processID, myState.projectPath, myState.workingDir, myState.command, myState.args, myState.env, myState.expectedPorts, true)
+		proc, startupErr := r.daemon.startScriptWithRetry(myState.monitorCtx, processID, myState.projectPath, myState.workingDir, myState.command, myState.args, myState.env, myState.expectedPorts, true)
 
 		if startupErr != nil {
 			debug.Error("daemon", "Failed to restart process %s: %v", processID, startupErr)

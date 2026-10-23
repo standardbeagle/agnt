@@ -171,6 +171,12 @@ type enqueueHookResult struct {
 // so it can be unit-tested directly against a Daemon fixture that only
 // carries a hookRing.
 func (d *Daemon) enqueueHookFromBytes(data []byte) enqueueHookResult {
+	return d.enqueueHookFor(data, "")
+}
+
+// enqueueHookFor is enqueueHookFromBytes for a hook arriving on a connection
+// bound to boundSession ("" when unbound, the usual case for `agnt hook`).
+func (d *Daemon) enqueueHookFor(data []byte, boundSession string) enqueueHookResult {
 	if d.hookRing == nil {
 		return enqueueHookResult{errCode: hubproto.ErrInternal, errMsg: "hook ring buffer not initialized"}
 	}
@@ -199,9 +205,39 @@ func (d *Daemon) enqueueHookFromBytes(data []byte) enqueueHookResult {
 		ev.ProjectPath = payload.Tags["project_path"]
 		ev.Agent = payload.Tags["agent"]
 	}
+	d.bindHookProvenance(&ev, boundSession)
 
 	d.hookRing.Push(ev)
 	return enqueueHookResult{ok: true, ackMsg: "hook enqueued"}
+}
+
+// bindHookProvenance makes a hook's session and project agree with what the
+// daemon knows. The tags are caller-supplied, so a registered session's
+// recorded project overrides a differing project_path tag, and a connection
+// bound to a session speaks for that session whatever its tags say. This keeps
+// one session's hooks from being filed under another project; it is not
+// authentication; the socket is uid-scoped, and a hook naming no registered
+// session keeps its tags because nothing contradicts them.
+func (d *Daemon) bindHookProvenance(ev *HookEvent, boundSession string) {
+	if d.sessionRegistry == nil {
+		return
+	}
+	if boundSession != "" {
+		if _, ok := d.sessionRegistry.Get(boundSession); ok {
+			ev.SessionID = boundSession
+		}
+	}
+	if ev.SessionID == "" {
+		return
+	}
+	sess, ok := d.sessionRegistry.Get(ev.SessionID)
+	if !ok || sess.ProjectPath == "" {
+		return
+	}
+	if ev.ProjectPath != "" && normalizePath(ev.ProjectPath) != normalizePath(sess.ProjectPath) {
+		debug.Log("hook-hub", "hook project_path %q contradicts session %q (%q); using the session's", ev.ProjectPath, ev.SessionID, sess.ProjectPath)
+	}
+	ev.ProjectPath = sess.ProjectPath
 }
 
 // hubHandleHook is the HOOK verb handler. It lives on the socket accept
@@ -210,7 +246,7 @@ func (d *Daemon) enqueueHookFromBytes(data []byte) enqueueHookResult {
 // goroutine. This function is the thinnest possible Connection adapter
 // around enqueueHookFromBytes.
 func (d *Daemon) hubHandleHook(ctx context.Context, conn *hubpkg.Connection, cmd *hubproto.Command) error {
-	res := d.enqueueHookFromBytes(cmd.Data)
+	res := d.enqueueHookFor(cmd.Data, conn.SessionCode())
 	if res.ok {
 		return conn.WriteOK(res.ackMsg)
 	}

@@ -91,9 +91,15 @@ func normalizePath(path string) string {
 func getSessionScoped[T any](d *Daemon, conn *hubpkg.Connection, id string, getFn func(string, string) (T, error)) (T, error) {
 	var pathFilter string
 	if sessionCode := conn.SessionCode(); sessionCode != "" {
-		if session, ok := d.sessionRegistry.Get(sessionCode); ok {
-			pathFilter = session.ProjectPath
+		session, ok := d.sessionRegistry.Get(sessionCode)
+		if !ok {
+			// A bound session that is no longer registered has no project to
+			// confine the lookup to; an unscoped fuzzy match would reach into
+			// every project. Fail closed, like resolveProjectScope.
+			var zero T
+			return zero, fmt.Errorf("session %q is no longer registered: re-attach to resolve %q", sessionCode, id)
 		}
+		pathFilter = session.ProjectPath
 	}
 	return getFn(id, pathFilter)
 }
@@ -104,6 +110,11 @@ func getSessionScoped[T any](d *Daemon, conn *hubpkg.Connection, id string, getF
 // verbs; an unbound connection (the CLI, an MCP server before it attaches)
 // names its target explicitly and is not confined here.
 func (d *Daemon) pathVisibleTo(conn *hubpkg.Connection, projectPath string) bool {
+	if code := conn.SessionCode(); code != "" {
+		if _, ok := d.sessionRegistry.Get(code); !ok {
+			return false // bound to a retired session: confined to nothing
+		}
+	}
 	own := d.getSessionProjectPath(conn)
 	if own == "" || projectPath == "" {
 		return true

@@ -380,8 +380,10 @@ func (d *Daemon) hubHandleProcStop(ctx context.Context, conn *hubpkg.Connection,
 
 	// Unregister from auto-restart before stopping to prevent the monitor
 	// from restarting the process after an explicit user stop.
+	var priorReg autoRestartRegistration
+	hadReg := false
 	if d.autoRestarter != nil {
-		d.autoRestarter.Unregister(processID)
+		priorReg, hadReg = d.autoRestarter.Take(processID)
 	}
 
 	// PROC STOP <id> force skips the graceful SIGTERM window. StopProcess
@@ -405,6 +407,12 @@ func (d *Daemon) hubHandleProcStop(ctx context.Context, conn *hubpkg.Connection,
 		err = d.hub.ProcessManager().StopProcess(ctx, proc)
 	}
 	if err != nil {
+		// A stop that failed leaves the process running; without its
+		// registration a later crash would never be restarted.
+		if hadReg && proc.State().String() == "running" {
+			d.autoRestarter.Register(processID, priorReg.Config, proc.Command, proc.Args,
+				d.envAsLaunched(proc), priorReg.ExpectedPorts, proc.ProjectPath, priorReg.WorkingDir)
+		}
 		return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to stop: %v", err))
 	}
 	d.retireIncidentProcessOwner(processID)
@@ -562,19 +570,25 @@ func (d *Daemon) hubHandleProcCleanupPort(ctx context.Context, conn *hubpkg.Conn
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "invalid port number")
 	}
 
+	// Describe the holders first: once they are killed there is nothing left
+	// to read, and the caller needs to see what was taken down.
+	described := describePortHolders(ctx, port)
+
 	pids, protected, err := killPortHoldersGuarded(ctx, d.hub.ProcessManager(), port)
 	if err != nil {
 		return conn.WriteErr(hubproto.ErrInternal, err.Error())
 	}
 	if len(protected) > 0 {
 		return conn.WriteErr(hubproto.ErrInvalidArgs,
-			fmt.Sprintf("port %d is held by the daemon or a managed process (PIDs %v); use proc stop for managed processes", port, protected))
+			fmt.Sprintf("port %d is held by the daemon or a managed process (PIDs %v); use proc stop for managed processes\n%s",
+				port, protected, formatPortHolders(described, protected)))
 	}
 
 	resp := map[string]interface{}{
 		"port":         port,
 		"killed_count": len(pids),
 		"killed_pids":  pids,
+		"killed":       portHolderEntries(described, pids),
 	}
 
 	data, _ := json.Marshal(resp)
@@ -664,6 +678,34 @@ func (d *Daemon) restartProcess(ctx context.Context, proc *goprocess.ManagedProc
 		prior, wasAutoRestart = d.autoRestarter.Take(processID)
 	}
 
+	// Ports for pre-flight cleanup and EADDRINUSE recovery: the registered set
+	// when there is one, else the single port the URL tracker or command line
+	// reveals.
+	expectedPorts := prior.ExpectedPorts
+	if len(expectedPorts) == 0 {
+		expectedPorts = []int{d.getExpectedPortForProcess(proc)}
+	}
+
+	// Put the auto-restart registration back with what it had. The env is the
+	// registered one when present (the configured env, before secret
+	// injection), else the env the process ran with.
+	restoreAutoRestart := func() {
+		if !wasAutoRestart || d.autoRestarter == nil {
+			return
+		}
+		restartConfig := prior.Config
+		restartConfig.Enabled = true // Preserve the explicit enable
+		restartEnv := prior.Env
+		if restartEnv == nil {
+			restartEnv = env
+		}
+		restartDir := prior.WorkingDir
+		if restartDir == "" {
+			restartDir = workingDir
+		}
+		d.autoRestarter.Register(processID, restartConfig, command, args, restartEnv, expectedPorts, projectPath, restartDir)
+	}
+
 	// Stop the process if running
 	if proc.State().String() == "running" {
 		// Mark this stop as daemon-initiated so the health.OutageClassifier
@@ -675,17 +717,16 @@ func (d *Daemon) restartProcess(ctx context.Context, proc *goprocess.ManagedProc
 			debug.Warn("daemon", "error stopping process %s: %v", processID, err)
 			d.recordStartupEntry(processID, "", "warning", "stop_failed",
 				fmt.Sprintf("restart: failed to stop process: %v", err), 0)
+			// A process that is still running was not stopped: dropping it from
+			// the registry and launching a second copy would orphan it, holding
+			// its port, with nothing tracking it. Leave it as it was.
+			if proc.State().String() == "running" {
+				restoreAutoRestart()
+				return nil, fmt.Errorf("restart aborted: process %s is still running after a failed stop: %w", processID, err)
+			}
 		}
 		// Wait for process to fully stop
 		time.Sleep(100 * time.Millisecond)
-	}
-
-	// Ports for pre-flight cleanup and EADDRINUSE recovery: the registered set
-	// when there is one, else the single port the URL tracker or command line
-	// reveals.
-	expectedPorts := prior.ExpectedPorts
-	if len(expectedPorts) == 0 {
-		expectedPorts = []int{d.getExpectedPortForProcess(proc)}
 	}
 
 	ownerSession := callerSession
@@ -723,22 +764,7 @@ func (d *Daemon) restartProcess(ctx context.Context, proc *goprocess.ManagedProc
 	}
 	d.armReadiness(processID, expectedPorts)
 
-	// Put the auto-restart registration back with what it had. The env is the
-	// registered one when present (the configured env, before secret
-	// injection), else the env the process ran with.
-	if wasAutoRestart && d.autoRestarter != nil {
-		restartConfig := prior.Config
-		restartConfig.Enabled = true // Preserve the explicit enable
-		restartEnv := prior.Env
-		if restartEnv == nil {
-			restartEnv = env
-		}
-		restartDir := prior.WorkingDir
-		if restartDir == "" {
-			restartDir = workingDir
-		}
-		d.autoRestarter.Register(processID, restartConfig, command, args, restartEnv, expectedPorts, projectPath, restartDir)
-	}
+	restoreAutoRestart()
 
 	return newProc, nil
 }

@@ -451,7 +451,9 @@ func TestRun_ShortIDIsScopedToCallersProject(t *testing.T) {
 	respA, err := c.Run(sleeper)
 	require.NoError(t, err)
 	sleeper.Path = dirB
-	respB, err := c.Run(sleeper)
+	// Project B's process starts from an unbound connection: a connection
+	// bound to A may not RUN under B's path (PROC RUN refuses it too).
+	respB, err := connectClient(t, c.SocketPath()).Run(sleeper)
 	require.NoError(t, err)
 	require.NotEqual(t, respA["process_id"], respB["process_id"], "one short id, two projects, two processes")
 

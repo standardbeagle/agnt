@@ -102,7 +102,6 @@ func namedTunnelConfig(projectPath string, cfg *config.ProxyConfig) *proxy.Named
 // handleProxyEvents runs the proxy event handling loop.
 // It listens for events and creates/destroys proxies accordingly.
 func (d *Daemon) handleProxyEvents() {
-	defer d.wg.Done()
 	debug.Log("daemon", "Proxy event handler started")
 
 	for {

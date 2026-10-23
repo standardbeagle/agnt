@@ -561,6 +561,9 @@ func (d *Daemon) hubHandleRun(ctx context.Context, conn *hubpkg.Connection, cmd 
 		return conn.WriteErr(hubproto.ErrMissingParam, "RUN: path required (or send it from a connection bound to a session)")
 	}
 	projectPath = normalizePath(projectPath)
+	if !d.pathVisibleTo(conn, projectPath) {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "RUN: path belongs to another project than this session")
+	}
 
 	name := runProcessName(cfg.ID, projectPath)
 	processID := makeProcessID(projectPath, name)

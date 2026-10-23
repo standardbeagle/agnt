@@ -58,10 +58,31 @@ type sessionHostNoticePayload struct {
 	Message     string `json:"message"`
 }
 
+// visibleSessionHost looks up a session-host session by id for a verb that
+// acts on it. A connection bound to a session is confined to its own project,
+// like the other ID-scoped verbs; a session of another project reads as not
+// found rather than as forbidden, so ids do not confirm each other's existence.
+func (d *Daemon) visibleSessionHost(conn *hubpkg.Connection, id string) (*sessionhost.Session, bool) {
+	s, ok := d.sessionHosts.Get(id)
+	if !ok || !d.pathVisibleTo(conn, s.ProjectPath) {
+		return nil, false
+	}
+	return s, true
+}
+
 func (d *Daemon) hubHandleSessionHostNotice(conn *hubpkg.Connection, cmd *hubproto.Command) error {
 	payload, err := unmarshalCommand[sessionHostNoticePayload](cmd)
 	if err != nil || payload.SessionName == "" || payload.Message == "" {
 		return conn.WriteErr(hubproto.ErrInvalidArgs, "SESSION-HOST NOTICE requires session_name and message")
+	}
+	// The sink matches by name within a project; with no project it would match
+	// the first session of that name in any project and type into its PTY.
+	if payload.ProjectPath == "" {
+		return conn.WriteErr(hubproto.ErrInvalidArgs, "SESSION-HOST NOTICE requires project_path")
+	}
+	payload.ProjectPath = normalizePath(payload.ProjectPath)
+	if !d.pathVisibleTo(conn, payload.ProjectPath) {
+		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("agent notice not delivered: session %q not found for project %q", payload.SessionName, payload.ProjectPath))
 	}
 	delivered, dispatchErrs := d.eventHub.BroadcastAgentNotice(AgentNotice(payload))
 	if delivered == 0 {
@@ -75,6 +96,10 @@ type sessionHostAgentNoticeSink struct {
 }
 
 func (s sessionHostAgentNoticeSink) DeliverAgentNotice(notice AgentNotice) error {
+	// Registry.List treats an empty project as every project.
+	if notice.ProjectPath == "" {
+		return fmt.Errorf("session-host notice dropped: no project named for session %q", notice.SessionName)
+	}
 	for _, candidate := range s.registry.List(notice.ProjectPath, false) {
 		if candidate.Name != notice.SessionName {
 			continue
@@ -249,7 +274,7 @@ func (d *Daemon) hubHandleSessionHostKill(conn *hubpkg.Connection, cmd *hubproto
 	}
 	id := cmd.Args[0]
 
-	s, ok := d.sessionHosts.Get(id)
+	s, ok := d.visibleSessionHost(conn, id)
 	if !ok {
 		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("session-host session %q not found", id))
 	}
@@ -314,7 +339,7 @@ func (d *Daemon) hubHandleSessionHostResize(conn *hubpkg.Connection, cmd *hubpro
 	}
 	id := cmd.Args[0]
 
-	s, ok := d.sessionHosts.Get(id)
+	s, ok := d.visibleSessionHost(conn, id)
 	if !ok {
 		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("session-host session %q not found", id))
 	}
@@ -349,7 +374,7 @@ func (d *Daemon) hubHandleSessionHostStdin(conn *hubpkg.Connection, cmd *hubprot
 	}
 	id := cmd.Args[0]
 
-	s, ok := d.sessionHosts.Get(id)
+	s, ok := d.visibleSessionHost(conn, id)
 	if !ok {
 		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("session-host session %q not found", id))
 	}
@@ -388,7 +413,7 @@ func (d *Daemon) hubHandleSessionHostDetach(conn *hubpkg.Connection, cmd *hubpro
 	}
 	id := cmd.Args[0]
 
-	s, ok := d.sessionHosts.Get(id)
+	s, ok := d.visibleSessionHost(conn, id)
 	if !ok {
 		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("session-host session %q not found", id))
 	}
@@ -422,7 +447,7 @@ func (d *Daemon) hubHandleSessionHostAttach(ctx context.Context, conn *hubpkg.Co
 	}
 	id := cmd.Args[0]
 
-	s, ok := d.sessionHosts.Get(id)
+	s, ok := d.visibleSessionHost(conn, id)
 	if !ok {
 		return conn.WriteErr(hubproto.ErrNotFound, fmt.Sprintf("session-host session %q not found", id))
 	}
