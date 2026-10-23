@@ -295,8 +295,19 @@ func (t *URLTracker) scanProcess(p *process.ManagedProcess) {
 
 	// Read stdout and stderr separately — never CombinedOutput(), whose
 	// concatenation breaks a single byte cursor (see scanStreamForURLs).
-	stdout, _ := p.Stdout()
-	stderr, _ := p.Stderr()
+	//
+	// A stream whose scan window is spent is not snapshotted: Snapshot copies
+	// the whole ring (up to 256KB) under the ring's lock, and the scan would
+	// return without reading a byte of it. Without this, a stream that fills
+	// its window while the other stays quiet was copied every tick for the
+	// life of the process.
+	var stdout, stderr []byte
+	if stdoutScanned < maxScanBytes {
+		stdout, _ = p.Stdout()
+	}
+	if stderrScanned < maxScanBytes {
+		stderr, _ = p.Stderr()
+	}
 	if len(stdout) == 0 && len(stderr) == 0 {
 		return
 	}
