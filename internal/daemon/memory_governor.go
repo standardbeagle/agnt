@@ -36,6 +36,7 @@ func (d *Daemon) startMemoryGovernor() {
 	})
 	d.mem.Register(proxyHistoryReclaimer{d})
 	d.mem.Register(incidentDedupReclaimer{d})
+	d.mem.Register(sessionHostReclaimer{d})
 	d.mem.Start(d.ctx)
 }
 
@@ -107,4 +108,25 @@ func (d *Daemon) memoryStats() map[string]interface{} {
 		"num_gc":         m.NumGC,
 		"gc_cpu_percent": fmt.Sprintf("%.2f", m.GCCPUFraction*100),
 	}
+}
+
+// sessionHostReclaimer retires session-host sessions that exited past their
+// retention. The registry prunes only when a session is added, so without this
+// an idle daemon kept each finished session's 1MiB scrollback.
+type sessionHostReclaimer struct{ d *Daemon }
+
+func (sessionHostReclaimer) Name() string { return "sessionhost_exited" }
+
+func (r sessionHostReclaimer) Size() int64 {
+	if r.d.sessionHosts == nil {
+		return 0
+	}
+	return int64(r.d.sessionHosts.ExitedCount()) << 20
+}
+
+func (r sessionHostReclaimer) Reclaim(memgov.Level) int64 {
+	if r.d.sessionHosts == nil {
+		return 0
+	}
+	return int64(r.d.sessionHosts.PruneExited()) << 20
 }

@@ -608,17 +608,38 @@ func (r *Registry) Add(s *Session) {
 	r.totalCreated.Add(1)
 }
 
+// PruneExited retires sessions past their exit retention and returns how many
+// went. Add does this too, but only when a session is created; the memory
+// governor calls it so an idle daemon still lets go of finished sessions.
+func (r *Registry) PruneExited() int {
+	return r.pruneExited(time.Now())
+}
+
+// ExitedCount returns how many registered sessions have exited.
+func (r *Registry) ExitedCount() int {
+	n := 0
+	r.sessions.Range(func(_, v any) bool {
+		if v.(*Session).exitedAt.Load() != 0 {
+			n++
+		}
+		return true
+	})
+	return n
+}
+
 // pruneExited removes sessions that exited more than exitedRetention ago.
-func (r *Registry) pruneExited(now time.Time) {
+func (r *Registry) pruneExited(now time.Time) (pruned int) {
 	cutoff := now.Add(-exitedRetention).UnixNano()
 	r.sessions.Range(func(k, v any) bool {
 		if at := v.(*Session).exitedAt.Load(); at != 0 && at < cutoff {
 			if r.sessions.CompareAndDelete(k, v) {
 				r.totalKilled.Add(1)
+				pruned++
 			}
 		}
 		return true
 	})
+	return pruned
 }
 
 // Get looks up a session by id.
