@@ -56,6 +56,7 @@ func BenchmarkModifyResponse_Identity(b *testing.B) {
 			b.Fatal(err)
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
 	}
 }
 
@@ -158,6 +159,7 @@ func benchModifyEncoded(b *testing.B, encoding string, encode func(testing.TB, [
 				b.Fatalf("modifyResponse: %v", err)
 			}
 			got, err := io.ReadAll(check.Body)
+			check.Body.Close()
 			if err != nil {
 				b.Fatalf("read modified body: %v", err)
 			}
@@ -178,6 +180,7 @@ func benchModifyEncoded(b *testing.B, encoding string, encode func(testing.TB, [
 				if _, err := io.Copy(io.Discard, resp.Body); err != nil {
 					b.Fatal(err)
 				}
+				resp.Body.Close()
 			}
 		})
 	}

@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -83,79 +84,17 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 
 	// Check if response is compressed
 	encoding := strings.ToLower(resp.Header.Get("Content-Encoding"))
-	var bodyReader io.ReadCloser = resp.Body
-	// Set when an oversized unknown-length body is passed through mid-decode:
-	// the decompressor is handed downstream, so its deferred Close must not run.
-	passthrough := false
-	// closeDecoder releases the decompressor (zstd's owns goroutines). The
-	// passthrough path hands it downstream, so the body's Close must run it.
-	closeDecoder := func() {}
-
-	// Decompress if needed
-	if strings.Contains(encoding, "gzip") {
-		gzReader, err := gzip.NewReader(resp.Body)
-		if err != nil {
-			// If decompression fails, skip injection and pass through original
-			debug.Log("proxy", "Failed to decompress gzip response: %v", err)
-			return nil
-		}
-		defer func() {
-			if !passthrough {
-				gzReader.Close()
-			}
-		}()
-		bodyReader = gzReader
-		closeDecoder = func() { gzReader.Close() }
-	} else if strings.Contains(encoding, "deflate") {
-		deflateReader, err := newDeflateReader(resp.Body)
-		if err != nil {
-			// If decompression fails, skip injection and pass through original
-			debug.Log("proxy", "Failed to decompress deflate response: %v", err)
-			return nil
-		}
-		defer func() {
-			if !passthrough {
-				deflateReader.Close()
-			}
-		}()
-		bodyReader = deflateReader
-		closeDecoder = func() { deflateReader.Close() }
-	} else if strings.Contains(encoding, "br") {
-		brReader := brotli.NewReader(resp.Body)
-		brCloser := io.NopCloser(brReader)
-		defer func() {
-			if !passthrough {
-				brCloser.Close()
-			}
-		}()
-		bodyReader = brCloser
-	} else if strings.Contains(encoding, "zstd") {
-		zstdReader, err := zstd.NewReader(resp.Body)
-		if err != nil {
-			// If decompression fails, skip injection and pass through original
-			debug.Log("proxy", "Failed to decompress zstd response: %v", err)
-			return nil
-		}
-		defer func() {
-			if !passthrough {
-				zstdReader.Close()
-			}
-		}()
-		bodyReader = io.NopCloser(zstdReader)
-		closeDecoder = zstdReader.Close
-	} else if encoding != "" && encoding != "identity" {
+	compressed := encoding != "" && encoding != "identity"
+	if compressed && !knownContentEncoding(encoding) {
 		// Unsupported encoding - pass through without modification
 		debug.Log("proxy", "Unsupported Content-Encoding: %s - passing through without injection", encoding)
 		return nil
 	}
 
-	// Read the body. For identity (non-decompressed) responses the origin's
-	// Content-Length is the exact size, so presize the buffer to a single
-	// allocation and avoid io.ReadAll's grow-by-doubling memmove storm (the
-	// dominant cost on large HTML bodies). For decompressed streams the
-	// decompressed size is unknown, so fall back to io.ReadAll.
+	// The origin's Content-Length is the exact buffered size only for an identity
+	// body; a decompressed stream's size is unknown until it has been read.
 	var sizeHint int64 = -1
-	if bodyReader == resp.Body {
+	if !compressed {
 		sizeHint = resp.ContentLength
 	}
 	// A known-oversized identity body is passed through untouched: injection
@@ -165,19 +104,72 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 		debug.Log("proxy", "Skipping injection: body too large (%d bytes)", sizeHint)
 		return nil
 	}
-	// Reserve against the process-wide buffering budget. Injection holds the
-	// document plus two or three rewritten copies, so many concurrent large
-	// pages would otherwise multiply the 16MiB cap. Over budget the response is
-	// passed through uninjected, and that is reported (see noteInjectShed).
+	// Reserve against the process-wide buffering budget BEFORE touching the body:
+	// a decoder consumes bytes, so declining after one is open would forward a
+	// half-read stream. An unknown-length body can grow to the per-response cap,
+	// so that is what it reserves. Over budget the response is passed through
+	// uninjected, and that is reported (see noteInjectShed).
 	reserve := sizeHint
 	if reserve < 0 {
-		reserve = injectUnknownSizeReserve
+		reserve = maxInjectBodyBytes
 	}
 	if !injectBudget.tryReserve(reserve) {
 		ps.noteInjectShed(resp, reserve)
 		return nil
 	}
-	defer injectBudget.release(reserve)
+	// The buffered bytes live until the downstream client has consumed the
+	// body, so the reservation is released when the body is closed, not when
+	// this function returns. Every return that keeps the buffer hands that
+	// release to the body it installs; the others release now.
+	released := false
+	releaseNow := func() {
+		if !released {
+			released = true
+			injectBudget.release(reserve)
+		}
+	}
+	defer releaseNow()
+	holdUntilClosed := func(body io.ReadCloser) io.ReadCloser {
+		if released {
+			return body
+		}
+		released = true
+		var once sync.Once
+		return &heldBody{ReadCloser: body, onClose: func() { once.Do(func() { injectBudget.release(reserve) }) }}
+	}
+
+	var bodyReader io.Reader = resp.Body
+	// Set when an oversized unknown-length body is passed through mid-decode:
+	// the decompressor is handed downstream, so its deferred Close must not run.
+	passthrough := false
+	// closeDecoder releases the decompressor (zstd's owns goroutines). The
+	// passthrough path hands it downstream, so the body's Close must run it.
+	closeDecoder := func() {}
+	defer func() {
+		if !passthrough {
+			closeDecoder()
+		}
+	}()
+
+	if compressed {
+		// Record what the decoder constructor consumes so a failed construction
+		// can hand the untouched stream on.
+		rec := &recordReader{r: resp.Body, recording: true}
+		decoder, closer, err := newDecoder(encoding, rec)
+		if err != nil {
+			debug.Log("proxy", "Failed to decompress %s response: %v", encoding, err)
+			resp.Body = &passthroughReadCloser{
+				Reader: io.MultiReader(bytes.NewReader(rec.buf), resp.Body),
+				Closer: resp.Body,
+			}
+			return nil
+		}
+		rec.recording = false
+		rec.buf = nil
+		bodyReader = decoder
+		closeDecoder = closer
+	}
+
 	bodyBytes, truncated, err := readAllCapped(bodyReader, sizeHint, maxInjectBodyBytes)
 	if err != nil {
 		return err
@@ -186,19 +178,19 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 		// Unknown-length (chunked or decompressed) body exceeded the injection
 		// cap mid-read. Pass it through uncompressed without injection: the
 		// already-read head plus the in-flight decompressor reassemble the full
-		// stream downstream. Deferred decompressor Close is skipped because the
-		// reader is handed off.
+		// stream downstream. The decoder is closed by the body's Close instead of
+		// this function, because the reader is handed off.
 		passthrough = true
 		// Capture the origin body now: the closure runs after resp.Body is
 		// reassigned below, and resp.Body.Close() would call itself.
 		origBody := resp.Body
-		resp.Body = &passthroughReadCloser{
+		resp.Body = holdUntilClosed(&passthroughReadCloser{
 			Reader: io.MultiReader(bytes.NewReader(bodyBytes), bodyReader),
 			Closer: closerFunc(func() error {
 				closeDecoder()
 				return origBody.Close()
 			}),
-		}
+		})
 		resp.ContentLength = -1
 		resp.Header.Del("Content-Length")
 		resp.Header.Del("Content-Encoding")
@@ -258,7 +250,7 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 	}
 
 	// Update response with uncompressed modified content
-	resp.Body = io.NopCloser(bytes.NewReader(modifiedBody))
+	resp.Body = holdUntilClosed(io.NopCloser(bytes.NewReader(modifiedBody)))
 	resp.ContentLength = int64(len(modifiedBody))
 	resp.Header.Set("Content-Length", strconv.Itoa(len(modifiedBody)))
 
@@ -327,11 +319,6 @@ const maxInjectBodyBytes = 16 << 20 // 16 MiB
 // across all in-flight responses (every proxy in the process). A response whose
 // reservation does not fit is passed through uninjected.
 const injectBufferBudget = 64 << 20
-
-// injectUnknownSizeReserve is what a chunked or decompressed response (no known
-// length) reserves. It is an estimate: typical documents are far smaller, and
-// the per-response cap above still bounds the worst case.
-const injectUnknownSizeReserve = 1 << 20
 
 type bufferBudget struct {
 	limit int64
@@ -834,4 +821,66 @@ func (ps *ProxyServer) rewriteURLsInBodyFor(req *http.Request, body []byte) []by
 		})
 	}
 	return result
+}
+
+// knownContentEncoding reports whether newDecoder can decode encoding.
+func knownContentEncoding(encoding string) bool {
+	return strings.Contains(encoding, "gzip") || strings.Contains(encoding, "deflate") ||
+		strings.Contains(encoding, "br") || strings.Contains(encoding, "zstd")
+}
+
+// newDecoder opens the decompressor for encoding over r. closer releases it
+// (zstd's owns goroutines).
+func newDecoder(encoding string, r io.Reader) (io.Reader, func(), error) {
+	switch {
+	case strings.Contains(encoding, "gzip"):
+		gz, err := gzip.NewReader(r)
+		if err != nil {
+			return nil, nil, err
+		}
+		return gz, func() { gz.Close() }, nil
+	case strings.Contains(encoding, "deflate"):
+		df, err := newDeflateReader(r)
+		if err != nil {
+			return nil, nil, err
+		}
+		return df, func() { df.Close() }, nil
+	case strings.Contains(encoding, "br"):
+		return brotli.NewReader(r), func() {}, nil
+	default:
+		zr, err := zstd.NewReader(r)
+		if err != nil {
+			return nil, nil, err
+		}
+		return zr, zr.Close, nil
+	}
+}
+
+// recordReader keeps every byte it passes on while recording, so bytes a
+// decoder constructor consumed can be replayed if construction fails.
+type recordReader struct {
+	r         io.Reader
+	recording bool
+	buf       []byte
+}
+
+func (rr *recordReader) Read(p []byte) (int, error) {
+	n, err := rr.r.Read(p)
+	if rr.recording {
+		rr.buf = append(rr.buf, p[:n]...)
+	}
+	return n, err
+}
+
+// heldBody runs onClose (releasing an injection-budget reservation) when the
+// downstream client closes the body.
+type heldBody struct {
+	io.ReadCloser
+	onClose func()
+}
+
+func (h *heldBody) Close() error {
+	err := h.ReadCloser.Close()
+	h.onClose()
+	return err
 }

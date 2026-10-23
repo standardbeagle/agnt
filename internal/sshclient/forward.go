@@ -39,6 +39,25 @@ func RemoteDaemonSocketPath(client *ssh.Client) (string, error) {
 	return path, nil
 }
 
+// EnsureRemoteDaemon runs "agnt daemon ensure" on the remote host: start the
+// daemon detached if nothing answers, and succeed only once it does.
+// Bootstrapping installs the binary but never starts a daemon, so every
+// protocol request over a forwarded socket must follow this call.
+func EnsureRemoteDaemon(client *ssh.Client) error {
+	session, err := client.NewSession()
+	if err != nil {
+		return fmt.Errorf("sshclient: opening session to start remote daemon: %w", err)
+	}
+	defer session.Close()
+
+	var stderr bytes.Buffer
+	session.Stderr = &stderr
+	if err := session.Run("agnt daemon ensure"); err != nil {
+		return fmt.Errorf("sshclient: remote 'agnt daemon ensure' failed: %w (stderr: %s)", err, strings.TrimSpace(stderr.String()))
+	}
+	return nil
+}
+
 // LocalForwardSocketPath is platform-defined only in where the socket file
 // lives; the transport is a Unix-domain socket everywhere (listenLocalForward).
 //

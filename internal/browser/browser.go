@@ -290,9 +290,10 @@ func (b *Browser) buildArgs() []string {
 		)
 	}
 
-	if b.config.ProxyURL != "" {
-		args = append(args, fmt.Sprintf("--proxy-server=%s", b.config.ProxyURL))
-	}
+	// ProxyURL is deliberately not passed as --proxy-server: agnt's proxy is a
+	// reverse proxy, and a browser-wide forward proxy would send every external
+	// request (CDNs, APIs, auth) to the app backend. The browser reaches it by
+	// navigating to config.URL, which the daemon sets to the proxy's URL.
 
 	if dir := b.userDataDir(); dir != "" {
 		args = append(args, fmt.Sprintf("--user-data-dir=%s", dir))

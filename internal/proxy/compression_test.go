@@ -41,6 +41,7 @@ func TestModifyResponse_GzipCompression(t *testing.T) {
 	}
 
 	// Modify the response
+	t.Cleanup(func() { resp.Body.Close() }) // releases the injection-budget reservation
 	err = ps.modifyResponse(resp)
 	if err != nil {
 		t.Fatalf("modifyResponse failed: %v", err)
@@ -107,6 +108,7 @@ func TestModifyResponse_DeflateCompression(t *testing.T) {
 	}
 
 	// Modify the response
+	t.Cleanup(func() { resp.Body.Close() }) // releases the injection-budget reservation
 	err = ps.modifyResponse(resp)
 	if err != nil {
 		t.Fatalf("modifyResponse failed: %v", err)
@@ -160,6 +162,7 @@ func TestModifyResponse_DeflateZlibWrapped(t *testing.T) {
 		},
 		Body: io.NopCloser(&buf),
 	}
+	t.Cleanup(func() { resp.Body.Close() }) // releases the injection-budget reservation
 	if err := ps.modifyResponse(resp); err != nil {
 		t.Fatalf("modifyResponse failed on zlib-wrapped deflate (would be a 502): %v", err)
 	}
@@ -192,6 +195,7 @@ func TestModifyResponse_NoCompression(t *testing.T) {
 	}
 
 	// Modify the response
+	t.Cleanup(func() { resp.Body.Close() }) // releases the injection-budget reservation
 	err := ps.modifyResponse(resp)
 	if err != nil {
 		t.Fatalf("modifyResponse failed: %v", err)
@@ -235,6 +239,7 @@ func TestModifyResponse_NonHTMLSkipped(t *testing.T) {
 	}
 
 	// Modify the response
+	t.Cleanup(func() { resp.Body.Close() }) // releases the injection-budget reservation
 	err := ps.modifyResponse(resp)
 	if err != nil {
 		t.Fatalf("modifyResponse failed: %v", err)
@@ -276,6 +281,7 @@ func TestModifyResponse_CorruptGzipData(t *testing.T) {
 	}
 
 	// Modify the response (should not return error, just skip injection)
+	t.Cleanup(func() { resp.Body.Close() }) // releases the injection-budget reservation
 	err := ps.modifyResponse(resp)
 	if err != nil {
 		t.Errorf("modifyResponse should handle corrupt gzip gracefully, got error: %v", err)
@@ -318,6 +324,7 @@ func TestModifyResponse_BrotliCompression(t *testing.T) {
 	}
 
 	// Modify the response
+	t.Cleanup(func() { resp.Body.Close() }) // releases the injection-budget reservation
 	err = ps.modifyResponse(resp)
 	if err != nil {
 		t.Fatalf("modifyResponse failed: %v", err)
@@ -379,6 +386,7 @@ func TestModifyResponse_ZstdCompression(t *testing.T) {
 	}
 
 	// Modify the response
+	t.Cleanup(func() { resp.Body.Close() }) // releases the injection-budget reservation
 	err = ps.modifyResponse(resp)
 	if err != nil {
 		t.Fatalf("modifyResponse failed: %v", err)
@@ -427,6 +435,7 @@ func TestModifyResponse_UnsupportedCompression(t *testing.T) {
 	}
 
 	// Modify the response (should pass through without modification)
+	t.Cleanup(func() { resp.Body.Close() }) // releases the injection-budget reservation
 	err := ps.modifyResponse(resp)
 	if err != nil {
 		t.Fatalf("modifyResponse should handle unsupported encoding gracefully, got error: %v", err)

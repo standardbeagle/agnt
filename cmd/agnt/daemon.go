@@ -87,7 +87,19 @@ direct-streamlocal forwarding channel to it.`,
 	Run: runDaemonSocketPath,
 }
 
+var daemonEnsureCmd = &cobra.Command{
+	Use:   "ensure",
+	Short: "Start the daemon detached if it is not running, and verify it answers",
+	Long: `Start the daemon detached when nothing answers on the socket, then confirm it
+accepts a connection. Exits 0 only when the daemon is verifiably running.
+
+Used by 'agnt ssh' on the remote host: installing the binary does not start a
+daemon, and the session-host protocol requests that follow need one.`,
+	Run: runDaemonEnsure,
+}
+
 func init() {
+	daemonCmd.AddCommand(daemonEnsureCmd)
 	daemonCmd.AddCommand(daemonStartCmd)
 	daemonCmd.AddCommand(daemonStopCmd)
 	daemonCmd.AddCommand(daemonRestartCmd)
@@ -95,6 +107,21 @@ func init() {
 	daemonCmd.AddCommand(daemonInfoCmd)
 	daemonCmd.AddCommand(daemonCleanupCmd)
 	daemonCmd.AddCommand(daemonSocketPathCmd)
+}
+
+func runDaemonEnsure(cmd *cobra.Command, args []string) {
+	socketPath := getSocketPath(cmd)
+	if !daemonclient.IsRunning(socketPath) {
+		if err := startDetachedDaemon(socketPath); err != nil {
+			fmt.Fprintf(os.Stderr, "Failed to start daemon: %v\n", err)
+			os.Exit(1)
+		}
+	}
+	if !daemonclient.IsRunning(socketPath) {
+		fmt.Fprintf(os.Stderr, "Daemon started but is not answering on %s\n", socketPath)
+		os.Exit(1)
+	}
+	fmt.Println(socketPath)
 }
 
 func runDaemonSocketPath(cmd *cobra.Command, args []string) {

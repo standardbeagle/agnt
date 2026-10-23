@@ -184,17 +184,12 @@ func TestBrowserBuildArgsProxy(t *testing.T) {
 	b := New(config)
 	args := b.buildArgs()
 
-	// Check for proxy flag
-	hasProxy := false
+	// agnt's proxy is a reverse proxy: a forward-proxy flag would route every
+	// external request to the app backend.
 	for _, arg := range args {
-		if arg == "--proxy-server=http://127.0.0.1:12345" {
-			hasProxy = true
-			break
+		if strings.HasPrefix(arg, "--proxy-server") {
+			t.Errorf("args must not include a proxy-server flag, got %q", arg)
 		}
-	}
-
-	if !hasProxy {
-		t.Error("args should include proxy-server flag")
 	}
 }
 

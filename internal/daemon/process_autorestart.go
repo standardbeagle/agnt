@@ -201,11 +201,27 @@ func (r *ProcessAutoRestarter) Register(processID string, config AutoRestartConf
 
 	// Acquire semaphore outside the lock to prevent deadlock: monitor goroutines
 	// need r.mu.RLock, so we cannot hold the write lock while blocking on Acquire.
-	if err := r.monitorSem.Acquire(r.ctx, 1); err != nil {
-		monitorCancel()
-		r.removeIfCurrent(processID, state)
-		debug.Warn("daemon", "Cannot start monitor for %s: context cancelled", processID)
-		return
+	//
+	// The wait is bound to this registration's own context, not the daemon's:
+	// an Unregister, Take or re-Register of the id cancels monitorCtx and ends the
+	// wait. A full monitor pool is reported, because a process whose restarts are
+	// not being watched is otherwise indistinguishable from a healthy one.
+	if !r.monitorSem.TryAcquire(1) {
+		msg := fmt.Sprintf("auto-restart monitor capacity (%d) is exhausted; %s is not watched until a slot frees", maxConcurrentMonitors, processID)
+		debug.Warn("daemon", "%s", msg)
+		if r.daemon != nil {
+			r.daemon.daemonStartupLog("warning", "autorestart_capacity_exhausted", msg)
+		}
+		if err := r.monitorSem.Acquire(monitorCtx, 1); err != nil {
+			monitorCancel()
+			r.removeIfCurrent(processID, state)
+			if r.ctx.Err() != nil {
+				debug.Warn("daemon", "Cannot start monitor for %s: daemon shutting down", processID)
+			} else {
+				debug.Log("daemon", "Auto-restart registration for %s withdrawn while waiting for monitor capacity", processID)
+			}
+			return
+		}
 	}
 
 	// The Add must be atomic with the shutdown check: Shutdown sets shutdown

@@ -362,9 +362,15 @@ func getInstalledVersion(execPath string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	// Parse "agnt vX.Y.Z" format
-	version := strings.TrimSpace(string(output))
+	return parseVersionOutput(string(output)), nil
+}
+
+// parseVersionOutput extracts X.Y.Z from "agnt vX.Y.Z" on the first line:
+// --version goes on to report the daemon ("daemon: not running"), which is not
+// part of the version.
+func parseVersionOutput(output string) string {
+	version, _, _ := strings.Cut(strings.TrimSpace(output), "\n")
+	version = strings.TrimSpace(version)
 	version = strings.TrimPrefix(version, "agnt ")
-	version = strings.TrimPrefix(version, "v")
-	return version, nil
+	return strings.TrimPrefix(version, "v")
 }

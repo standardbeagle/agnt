@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/chromedp/cdproto/runtime"
@@ -78,6 +79,13 @@ func (d *Daemon) hubHandleAutomationStart(ctx context.Context, conn *hubpkg.Conn
 		proxyURL = p.URL()
 	}
 
+	// Traffic reaches the reverse proxy by navigating to it, not through a
+	// browser proxy setting: start at its URL, and root a path under it.
+	startURL := config.URL
+	if proxyURL != "" && (startURL == "" || strings.HasPrefix(startURL, "/")) {
+		startURL = strings.TrimRight(proxyURL, "/") + startURL
+	}
+
 	// Set headless mode (default true)
 	headless := true
 	if config.Headless != nil {
@@ -87,7 +95,7 @@ func (d *Daemon) hubHandleAutomationStart(ctx context.Context, conn *hubpkg.Conn
 	// Create session config
 	sessionConfig := chromedp.SessionConfig{
 		ID:       fullID,
-		URL:      config.URL,
+		URL:      startURL,
 		Headless: headless,
 		ProxyURL: proxyURL,
 		Path:     projectPath,

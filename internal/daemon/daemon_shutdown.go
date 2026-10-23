@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -134,6 +135,16 @@ func (d *Daemon) startupPortCleanup(ctx context.Context) int {
 			continue
 		}
 
+		// A persisted port only proves agnt once listened there. After a crash
+		// any other application may have taken it, so every holder must be
+		// positively identified as an agnt binary before anything is killed.
+		if foreign := foreignPortHolders(unmanagedLocal, remoteWindows); len(foreign) > 0 {
+			msg := fmt.Sprintf("port %d is held by a process agnt cannot show it started (PIDs: %v); not killed", port, foreign)
+			debug.Warn("daemon", "startup port cleanup: %s", msg)
+			d.daemonStartupLogPort("warning", "startup_port_cleanup_skipped_foreign", msg, port)
+			continue
+		}
+
 		all := append(append([]int{}, unmanagedLocal...), remoteWindows...)
 		procName := config.ProcessNameByPID(all[0])
 		debug.Info("daemon", "startup port cleanup: port %d held by %s (PIDs: %v), killing", port, procName, all)
@@ -189,6 +200,27 @@ func (d *Daemon) startupPortCleanup(ctx context.Context) int {
 		debug.Info("daemon", "startup port cleanup: freed %d port(s)", cleaned)
 	}
 	return cleaned
+}
+
+// portHolderIsAgnt reports whether pid's executable is an agnt binary (the
+// binary, its agnt-daemon copy, or the legacy devtool-mcp alias). A variable so
+// tests can stand in for a leaked agnt process.
+var portHolderIsAgnt = func(pid int) bool {
+	name := strings.ToLower(config.ProcessNameByPID(pid))
+	name = strings.TrimSuffix(name, ".exe")
+	return name == "agnt" || name == "agnt-daemon" || name == "devtool-mcp"
+}
+
+// foreignPortHolders returns the holders not proven to be agnt processes.
+// WSL Windows-side PIDs can never be proven, so they are always foreign.
+func foreignPortHolders(local, remoteWindows []int) []int {
+	foreign := append([]int(nil), remoteWindows...)
+	for _, pid := range local {
+		if !portHolderIsAgnt(pid) {
+			foreign = append(foreign, pid)
+		}
+	}
+	return foreign
 }
 
 // startupPortKillPlan splits a port probe result into the holders the guarded

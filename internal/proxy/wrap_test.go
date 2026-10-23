@@ -41,6 +41,7 @@ func TestModifyResponse_TopLevelWrapsInShell(t *testing.T) {
 	req.Header.Set("Sec-Fetch-Dest", "document")
 	resp := htmlResp(sampleDoc, req)
 
+	t.Cleanup(func() { resp.Body.Close() }) // releases the injection-budget reservation
 	if err := ps.modifyResponse(resp); err != nil {
 		t.Fatalf("modifyResponse: %v", err)
 	}
@@ -84,6 +85,7 @@ func TestShellAndContentFrameIDsDistinct(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/dashboard?q=1", nil)
 	req.Header.Set("Sec-Fetch-Dest", "document")
 	resp := htmlResp(sampleDoc, req)
+	t.Cleanup(func() { resp.Body.Close() }) // releases the injection-budget reservation
 	if err := ps.modifyResponse(resp); err != nil {
 		t.Fatalf("modifyResponse: %v", err)
 	}
@@ -110,6 +112,7 @@ func TestModifyResponse_ContentFrameInjectsInPlace(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/dashboard?q=1&"+frameMarkerParam+"=abc123", nil)
 	resp := htmlResp(sampleDoc, req)
 
+	t.Cleanup(func() { resp.Body.Close() }) // releases the injection-budget reservation
 	if err := ps.modifyResponse(resp); err != nil {
 		t.Fatalf("modifyResponse: %v", err)
 	}
@@ -139,6 +142,7 @@ func TestModifyResponse_FragmentNotWrapped(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/partial", nil)
 	resp := htmlResp(`<div class="row">fragment</div>`, req)
 
+	t.Cleanup(func() { resp.Body.Close() }) // releases the injection-budget reservation
 	if err := ps.modifyResponse(resp); err != nil {
 		t.Fatalf("modifyResponse: %v", err)
 	}
@@ -169,6 +173,7 @@ func TestModifyResponse_NestedIframeNotWrapped(t *testing.T) {
 	req.Header.Set("Sec-Fetch-Dest", "iframe")
 	resp := htmlResp(sampleDoc, req)
 
+	t.Cleanup(func() { resp.Body.Close() }) // releases the injection-budget reservation
 	if err := ps.modifyResponse(resp); err != nil {
 		t.Fatalf("modifyResponse: %v", err)
 	}
@@ -193,6 +198,7 @@ func TestModifyResponse_DocumentDestWraps(t *testing.T) {
 	req.Header.Set("Sec-Fetch-Dest", "document")
 	resp := htmlResp(sampleDoc, req)
 
+	t.Cleanup(func() { resp.Body.Close() }) // releases the injection-budget reservation
 	if err := ps.modifyResponse(resp); err != nil {
 		t.Fatalf("modifyResponse: %v", err)
 	}
@@ -211,6 +217,7 @@ func TestModifyResponse_FetchHTMLNotWrapped(t *testing.T) {
 	req.Header.Set("Sec-Fetch-Dest", "empty")
 	resp := htmlResp(sampleDoc, req)
 
+	t.Cleanup(func() { resp.Body.Close() }) // releases the injection-budget reservation
 	if err := ps.modifyResponse(resp); err != nil {
 		t.Fatalf("modifyResponse: %v", err)
 	}
@@ -303,6 +310,7 @@ func TestModifyResponse_NilRequestInjectsInPlace(t *testing.T) {
 	ps := &ProxyServer{ListenAddr: ":8080", ID: "px1"}
 	resp := htmlResp(sampleDoc, nil)
 
+	t.Cleanup(func() { resp.Body.Close() }) // releases the injection-budget reservation
 	if err := ps.modifyResponse(resp); err != nil {
 		t.Fatalf("modifyResponse: %v", err)
 	}
@@ -324,6 +332,7 @@ func TestStripFrameDenyHeaders(t *testing.T) {
 	resp.Header.Set("X-Frame-Options", "DENY")
 	resp.Header.Set("Content-Security-Policy", "default-src 'self'; frame-ancestors 'none'; img-src *")
 
+	t.Cleanup(func() { resp.Body.Close() }) // releases the injection-budget reservation
 	if err := ps.modifyResponse(resp); err != nil {
 		t.Fatalf("modifyResponse: %v", err)
 	}

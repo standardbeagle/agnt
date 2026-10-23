@@ -404,6 +404,10 @@ func initializeReconnectForwarding(host, projectRoot string, status *sshclient.S
 // permanently bound to the temporary's first daemon client.
 func (r *reconnectForwarding) start(client *sshclient.Client) {
 	r.connectDrops(client)
+	if err := sshclient.EnsureRemoteDaemon(client.SSH); err != nil {
+		fmt.Fprintf(os.Stderr, "agnt ssh: could not start remote daemon (%v) — forwarding disabled\n", err)
+		return
+	}
 	remotePath, err := sshclient.RemoteDaemonSocketPath(client.SSH)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "agnt ssh: could not discover remote daemon socket path (%v) — forwarding disabled\n", err)
@@ -671,6 +675,9 @@ func reattachRemoteSession(host string, client *sshclient.Client, name, remotePa
 // Returns an error wrapping sshclient.ErrSessionMissing when the session is
 // gone and allowCreate is false.
 func ensureRemoteSessionAttachable(host string, client *sshclient.Client, name, remotePath string, size sshclient.TermSize, allowCreate bool) error {
+	if err := sshclient.EnsureRemoteDaemon(client.SSH); err != nil {
+		return fmt.Errorf("agnt ssh: starting remote daemon for reconnect check: %w", err)
+	}
 	remoteSocketPath, err := sshclient.RemoteDaemonSocketPath(client.SSH)
 	if err != nil {
 		return fmt.Errorf("agnt ssh: discovering remote daemon socket for reconnect check: %w", err)

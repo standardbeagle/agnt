@@ -353,6 +353,7 @@ func TestModifyResponse_NoInjectionWithoutABody(t *testing.T) {
 				ContentLength: int64(len(doc)),
 				Request:       req,
 			}
+			t.Cleanup(func() { resp.Body.Close() }) // releases the injection-budget reservation
 			require.NoError(t, ps.modifyResponse(resp))
 			got, _ := io.ReadAll(resp.Body)
 			assert.Equal(t, doc, string(got), "the body must not be rewritten")
@@ -366,6 +367,7 @@ func TestModifyResponse_NoInjectionWithoutABody(t *testing.T) {
 			StatusCode: http.StatusOK, Header: http.Header{"Content-Type": {"text/html"}},
 			Body: io.NopCloser(strings.NewReader(doc)), ContentLength: int64(len(doc)), Request: req,
 		}
+		t.Cleanup(func() { resp.Body.Close() }) // releases the injection-budget reservation
 		require.NoError(t, ps.modifyResponse(resp))
 		got, _ := io.ReadAll(resp.Body)
 		assert.NotEqual(t, doc, string(got))

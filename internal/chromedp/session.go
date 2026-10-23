@@ -393,9 +393,9 @@ func (s *AutomationSession) buildAllocatorOpts(width, height int) []chromedp.Exe
 		opts = append(opts, chromedp.Headless)
 	}
 
-	if s.config.ProxyURL != "" {
-		opts = append(opts, chromedp.ProxyServer(s.config.ProxyURL))
-	}
+	// ProxyURL is not a Chrome --proxy-server: agnt's proxy is a reverse proxy,
+	// and a browser-wide forward proxy would send every external request to the
+	// app backend. Traffic goes through it by navigating to its URL.
 
 	return opts
 }

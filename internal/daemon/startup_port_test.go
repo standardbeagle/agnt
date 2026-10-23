@@ -91,6 +91,7 @@ func TestStartupPortCleanup_KillsOrphan(t *testing.T) {
 	// The blocker self-assigns its port (binds :0 and reports it back), so it
 	// owns the port from bind — no reserve-then-rebind TOCTOU window.
 	_, port := startEphemeralPortBlocker(t)
+	treatPortHoldersAsAgnt(t, true)
 
 	// Persist a proxy that uses this port
 	d.stateMgr.AddProxy(PersistentProxyConfig{
@@ -108,6 +109,39 @@ func TestStartupPortCleanup_KillsOrphan(t *testing.T) {
 	if ln2 != nil {
 		ln2.Close()
 	}
+}
+
+// treatPortHoldersAsAgnt stands in for the executable-name probe: the test
+// blockers are python, not agnt.
+func treatPortHoldersAsAgnt(t *testing.T, isAgnt bool) {
+	t.Helper()
+	orig := portHolderIsAgnt
+	portHolderIsAgnt = func(int) bool { return isAgnt }
+	t.Cleanup(func() { portHolderIsAgnt = orig })
+}
+
+// A persisted port taken over by an unrelated application after a crash must
+// not be killed: nothing proves the holder is agnt's.
+func TestStartupPortCleanup_SparesForeignHolder(t *testing.T) {
+	tmpDir := sockdir.Short(t)
+	d := New(DaemonConfig{
+		SocketPath:             tmpDir + "/test.sock",
+		EnableStatePersistence: true,
+		StatePath:              tmpDir + "/state.json",
+	})
+	require.NoError(t, d.Start())
+	defer func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
+		d.Stop(ctx)
+	}()
+
+	blockerPID, port := startEphemeralPortBlocker(t)
+	treatPortHoldersAsAgnt(t, false)
+	d.stateMgr.AddProxy(PersistentProxyConfig{ID: "stale-proxy", Port: port})
+
+	assert.Equal(t, 0, d.startupPortCleanup(context.Background()))
+	assert.True(t, pidAlive(blockerPID), "foreign holder must survive startup cleanup")
 }
 
 func TestStartupPortCleanup_SkipsManagedPIDs(t *testing.T) {
@@ -174,6 +208,7 @@ func TestStartupPortCleanup_MultipleProxies(t *testing.T) {
 	// Two self-assigning blockers — each owns its port from bind, no TOCTOU.
 	_, port1 := startEphemeralPortBlocker(t)
 	_, port2 := startEphemeralPortBlocker(t)
+	treatPortHoldersAsAgnt(t, true)
 
 	// Persist two proxies
 	d.stateMgr.AddProxy(PersistentProxyConfig{ID: "proxy-1", Port: port1})

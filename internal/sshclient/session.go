@@ -87,6 +87,9 @@ func OpenPTYSession(client *ssh.Client, name, cwd string, size TermSize) (*PTYSe
 // RemoteAttachCommand's doc comment for why that behavior moved here instead
 // of being expressed as remote CLI flags).
 func ensureRemoteSessionCreated(client *ssh.Client, name, cwd string, size TermSize) error {
+	if err := EnsureRemoteDaemon(client); err != nil {
+		return err
+	}
 	remoteSocketPath, err := RemoteDaemonSocketPath(client)
 	if err != nil {
 		return fmt.Errorf("sshclient: discovering remote daemon socket for session create: %w", err)

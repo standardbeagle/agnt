@@ -52,7 +52,8 @@ func TestBuildAllocatorOptsNoHeadless(t *testing.T) {
 	}
 }
 
-// TestBuildAllocatorOptsWithProxy verifies the proxy opt is appended.
+// TestBuildAllocatorOptsWithProxy verifies a reverse-proxy URL is never turned
+// into a browser-wide forward proxy.
 func TestBuildAllocatorOptsWithProxy(t *testing.T) {
 	base := NewSession(SessionConfig{ID: "a", Headless: true})
 	baseCount := len(base.buildAllocatorOpts(1920, 1080))
@@ -60,8 +61,8 @@ func TestBuildAllocatorOptsWithProxy(t *testing.T) {
 	withProxy := NewSession(SessionConfig{ID: "b", Headless: true, ProxyURL: "http://127.0.0.1:9999"})
 	proxyCount := len(withProxy.buildAllocatorOpts(1920, 1080))
 
-	if proxyCount != baseCount+1 {
-		t.Errorf("proxy opts = %d, want base(%d)+1", proxyCount, baseCount)
+	if proxyCount != baseCount {
+		t.Errorf("proxy opts = %d, want base(%d): ProxyURL must not add a Chrome proxy flag", proxyCount, baseCount)
 	}
 }
 

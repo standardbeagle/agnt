@@ -196,10 +196,10 @@ func TestOpenPTYSession_SendsPTYReqAndExecWithCorrectPayloads(t *testing.T) {
 func TestOpenPTYSession_MissingSessionListsCreatesThenBareAttaches(t *testing.T) {
 	fixture := newFixtureServer(t)
 	// OpenPTYSession is synchronous through the final exec reply, so the
-	// fixture must capture the complete five-event sequence without waiting
+	// fixture must capture the complete six-event sequence without waiting
 	// for the assertions below to start receiving. Capacity four deadlocked on
 	// the final "exec agnt attach" send before the fixture could reply.
-	events := make(chan string, 5)
+	events := make(chan string, 6)
 	fixture.streamLocalDial = func(socketPath string) (net.Conn, error) {
 		events <- "forward " + socketPath
 		client, server := net.Pipe()
@@ -221,6 +221,10 @@ func TestOpenPTYSession_MissingSessionListsCreatesThenBareAttaches(t *testing.T)
 			if req.WantReply {
 				req.Reply(true, nil)
 			}
+			if payload.Command == "agnt daemon ensure" {
+				_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
+				return
+			}
 			if payload.Command == "agnt daemon socket-path" {
 				_, _ = io.WriteString(channel, "/remote/agnt.sock\n")
 				_, _ = channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
@@ -241,7 +245,10 @@ func TestOpenPTYSession_MissingSessionListsCreatesThenBareAttaches(t *testing.T)
 	}
 	defer session.Close()
 
+	// The daemon is started and verified before any protocol request: a freshly
+	// bootstrapped host has the binary but no running daemon.
 	want := []string{
+		"exec agnt daemon ensure",
 		"exec agnt daemon socket-path",
 		"forward /remote/agnt.sock",
 		"SESSION-HOST LIST",
