@@ -34,7 +34,7 @@ type TrafficLogger struct {
 // unreachable, since the logger's lifecycle owner (ProxyServer) is out of this
 // file's reach. Tests call Close() for deterministic teardown.
 type logCallbackDispatcher struct {
-	ch        chan LogEntry
+	ch        chan *LogEntry // pointers: an eager 4096-slot value channel was ~900KB per proxy
 	done      chan struct{}
 	cb        atomic.Pointer[func(LogEntry)]
 	dropped   atomic.Int64
@@ -45,7 +45,7 @@ func newLogCallbackDispatcher() *logCallbackDispatcher {
 	d := &logCallbackDispatcher{
 		// 4096 mirrors the incident bus cap; deep enough to absorb bursts,
 		// bounded so a wedged consumer costs memory, not the producer.
-		ch:   make(chan LogEntry, 4096),
+		ch:   make(chan *LogEntry, 4096),
 		done: make(chan struct{}),
 	}
 	go d.run()
@@ -57,7 +57,8 @@ func (d *logCallbackDispatcher) run() {
 		select {
 		case <-d.done:
 			return
-		case entry := <-d.ch:
+		case e := <-d.ch:
+			entry := *e
 			cb := d.cb.Load()
 			if cb == nil || *cb == nil {
 				continue
@@ -84,7 +85,7 @@ func (d *logCallbackDispatcher) run() {
 // still surfaces it — only the live stream fan-out drops.
 func (d *logCallbackDispatcher) dispatch(entry LogEntry) {
 	select {
-	case d.ch <- entry:
+	case d.ch <- &entry:
 	default:
 		d.dropped.Add(1)
 	}
@@ -99,8 +100,10 @@ func NewTrafficLogger(maxSize int) *TrafficLogger {
 	if maxSize <= 0 {
 		maxSize = 1000 // Default to 1000 entries
 	}
+	// The ring grows as entries arrive (see log) rather than reserving
+	// maxSize x ~224B up front: most proxies never fill it, and an idle one
+	// should not pay GC scan cost for empty slots.
 	return &TrafficLogger{
-		entries: make([]LogEntry, maxSize),
 		maxSize: maxSize,
 	}
 }
@@ -319,7 +322,12 @@ func (tl *TrafficLogger) log(entry LogEntry) {
 	tl.mu.Lock()
 	pos := tl.head.Add(1) - 1
 	idx := int(pos % int64(tl.maxSize))
-	tl.entries[idx] = entry
+	if idx < len(tl.entries) {
+		tl.entries[idx] = entry
+	} else {
+		// Before the first wrap idx == len(entries), so this is an append.
+		tl.entries = append(tl.entries, entry)
+	}
 	tl.count.Add(1)
 	tl.mu.Unlock()
 
@@ -417,10 +425,9 @@ func (tl *TrafficLogger) Clear() {
 
 	tl.head.Store(0)
 	tl.count.Store(0)
-	// Zero out entries
-	for i := range tl.entries {
-		tl.entries[i] = LogEntry{}
-	}
+	// Drop the backing array so the memory (and any large payloads in it) is
+	// released, not just overwritten.
+	tl.entries = nil
 }
 
 // Stats returns logger statistics.
