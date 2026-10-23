@@ -617,9 +617,11 @@ func (b *MPSCBus) ingestToSession(pl *sessionPipeline, ev *IncidentEvent) {
 		event.payload = nil
 	}
 	merged, de := pl.dedup.Ingest(pl.inbox.SessionID, event)
-	// DedupEntry is a detached snapshot, but give Inbox explicit ownership of
-	// its sample (including nested remediation maps/slices and PayloadRef).
-	sample := cloneIncidentEvent(de.Last)
+	// DedupEntry is a detached snapshot (Ingest returns cloneDedupEntry, whose
+	// Last shares nothing with the deduplicator's stored event), so the Inbox
+	// can own de.Last directly, nested remediation maps/slices and PayloadRef
+	// included. Cloning it again was a pure extra copy per delivered event.
+	sample := de.Last
 	entry := &InboxEntry{
 		Fingerprint: ev.Fingerprint,
 		FirstSeenAt: de.First.ReceivedAt,
