@@ -24,6 +24,7 @@ var allowedUnscoped = map[string]string{
 	"internal/daemon/hub_helpers.go:explicit global flag on hub query":                                                "user passed global:true on a gated query (documented C6 override)",
 	"internal/daemon/hub_lifecycle.go:STOP-ALL global: count every proxy":                                             "STOP-ALL with explicit global:true is the deliberate admin-wide daemon-shutdown path (project-scoped is now the default; see daemon-architecture.md §Tool session-scoping)",
 	"internal/daemon/hub_lifecycle.go:RESTART-ALL global: restart every proxy":                                        "RESTART-ALL with explicit global:true is the deliberate admin-wide lifecycle path (project-scoped is now the default)",
+	"internal/daemon/memory_governor.go:memory governor: reclaim spans every project's proxies":                       "the memory governor trims every project's traffic log and idle page sessions to stay under the heap ceiling; it reads sizes and drops history, and returns nothing to any caller",
 	"internal/daemon/event_hub.go:alert toast fan-out to all browser overlays":                                        "alert toasts are browser-facing, not agent-bound delivery",
 }
 
