@@ -12,6 +12,7 @@ type TrafficLogger struct {
 	entries []LogEntry
 	maxSize int
 	head    atomic.Int64 // Next write position
+	trimmed atomic.Int64 // entries dropped by Trim, still reported as dropped
 	count   atomic.Int64 // Total entries written (for ID generation)
 	mu      sync.RWMutex // Protects entries slice
 	// disp is the async fan-out boundary for the onLogEntry callback. It is
@@ -438,7 +439,7 @@ func (tl *TrafficLogger) Stats() LoggerStats {
 		TotalEntries:     total,
 		AvailableEntries: int64(available),
 		MaxSize:          int64(tl.maxSize),
-		Dropped:          max(0, total-int64(tl.maxSize)),
+		Dropped:          max(0, total-int64(tl.maxSize)) + tl.trimmed.Load(),
 	}
 }
 

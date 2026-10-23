@@ -209,6 +209,35 @@ func (b *MPSCBus) AddSession(sessionID string, mcpNotify MCPNotifyFn, channelNot
 	}
 }
 
+// DedupLen returns the number of tracked dedup fingerprints across sessions.
+func (b *MPSCBus) DedupLen() int {
+	b.mu.RLock()
+	defer b.mu.RUnlock()
+	n := 0
+	for _, pl := range b.perSession {
+		n += pl.dedup.Len()
+	}
+	return n
+}
+
+// TrimDedup drops expired dedup fingerprints in every session and returns how
+// many fingerprints remain. The bus trims opportunistically on ingest only, so
+// an idle session otherwise keeps its last burst's events until the next one.
+func (b *MPSCBus) TrimDedup() (before, after int) {
+	b.mu.RLock()
+	pls := make([]*sessionPipeline, 0, len(b.perSession))
+	for _, pl := range b.perSession {
+		pls = append(pls, pl)
+	}
+	b.mu.RUnlock()
+	for _, pl := range pls {
+		before += pl.dedup.Len()
+		pl.dedup.Trim()
+		after += pl.dedup.Len()
+	}
+	return before, after
+}
+
 // RemoveSession tears down the session pipeline for sessionID. Delivery runs
 // synchronously on the central dispatch goroutine and consults stopCh under the
 // same lock that removes the pipeline, so once RemoveSession returns no new

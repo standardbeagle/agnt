@@ -605,24 +605,29 @@ func (pt *PageTracker) cleanupOldSessions() {
 
 	toRemove := len(pt.sessions) - pt.maxSessions
 	for i := 0; i < toRemove && i < len(allSessions); i++ {
-		victim := allSessions[i].id
-		if session, ok := pt.sessions[victim]; ok {
-			if key := normalizeURL(session.URL); pt.urlToSession[key] == victim {
-				delete(pt.urlToSession, key)
-			}
-			if session.BrowserSession != "" && pt.browserSessionToPage[session.BrowserSession] == victim {
-				delete(pt.browserSessionToPage, session.BrowserSession)
-			}
-		}
-		// Drop the frame mappings that still point at the evicted session.
-		for _, fid := range pt.sessionFrames[victim] {
-			if pt.frameToSession[fid] == victim {
-				delete(pt.frameToSession, fid)
-			}
-		}
-		delete(pt.sessionFrames, victim)
-		delete(pt.sessions, victim)
+		pt.evictSession(allSessions[i].id)
 	}
+}
+
+// evictSession removes a session and every index entry that still points at it.
+// Actor-internal.
+func (pt *PageTracker) evictSession(victim string) {
+	if session, ok := pt.sessions[victim]; ok {
+		if key := normalizeURL(session.URL); pt.urlToSession[key] == victim {
+			delete(pt.urlToSession, key)
+		}
+		if session.BrowserSession != "" && pt.browserSessionToPage[session.BrowserSession] == victim {
+			delete(pt.browserSessionToPage, session.BrowserSession)
+		}
+	}
+	// Drop the frame mappings that still point at the evicted session.
+	for _, fid := range pt.sessionFrames[victim] {
+		if pt.frameToSession[fid] == victim {
+			delete(pt.frameToSession, fid)
+		}
+	}
+	delete(pt.sessionFrames, victim)
+	delete(pt.sessions, victim)
 }
 
 // rekeySessionURL moves sessionID's urlToSession entry from oldURL to newURL.

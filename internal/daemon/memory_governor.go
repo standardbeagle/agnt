@@ -6,6 +6,8 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/memgov"
+	"github.com/standardbeagle/agnt/internal/proxy"
+	"github.com/standardbeagle/agnt/internal/scope"
 )
 
 // sessionReleaseEstimate is what a finished session is assumed to have freed,
@@ -32,7 +34,61 @@ func (d *Daemon) startMemoryGovernor() {
 			}
 		},
 	})
+	d.mem.Register(proxyHistoryReclaimer{d})
+	d.mem.Register(incidentDedupReclaimer{d})
 	d.mem.Start(d.ctx)
+}
+
+// proxyHistoryReclaimer trims every proxy's traffic log and idle page sessions.
+// It looks proxies up at reclaim time instead of registering one reclaimer per
+// proxy, so there is no registration to retire when a proxy stops.
+type proxyHistoryReclaimer struct{ d *Daemon }
+
+func (proxyHistoryReclaimer) Name() string { return "proxy_history" }
+
+func (r proxyHistoryReclaimer) all() []*proxy.ProxyServer {
+	if r.d.proxym == nil {
+		return nil
+	}
+	return r.d.proxym.ListScoped(scope.Unscoped("memory governor: reclaim spans every project's proxies"))
+}
+
+func (r proxyHistoryReclaimer) Size() int64 {
+	var n int64
+	for _, p := range r.all() {
+		n += p.RetainedBytes()
+	}
+	return n
+}
+
+func (r proxyHistoryReclaimer) Reclaim(l memgov.Level) int64 {
+	var n int64
+	for _, p := range r.all() {
+		n += p.Reclaim(l == memgov.Hard)
+	}
+	return n
+}
+
+// incidentDedupReclaimer drops expired dedup fingerprints (each holds two full
+// events) from idle sessions.
+type incidentDedupReclaimer struct{ d *Daemon }
+
+func (incidentDedupReclaimer) Name() string { return "incident_dedup" }
+
+func (r incidentDedupReclaimer) Size() int64 {
+	if r.d.incidentBus == nil {
+		return 0
+	}
+	// Roughly two events per fingerprint; sized in fingerprints x 1KB.
+	return int64(r.d.incidentBus.DedupLen()) << 10
+}
+
+func (r incidentDedupReclaimer) Reclaim(memgov.Level) int64 {
+	if r.d.incidentBus == nil {
+		return 0
+	}
+	before, after := r.d.incidentBus.TrimDedup()
+	return int64(before-after) << 10
 }
 
 // memoryStats is the governor's report for the doctor, with the runtime's own
