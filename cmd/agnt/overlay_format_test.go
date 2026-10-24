@@ -377,6 +377,27 @@ func TestFormatSketchText_NoDescription(t *testing.T) {
 	assertContains(t, result, "3 elements")
 }
 
+// A sketch asks for a throwaway HTML prototype first; the real build waits for
+// the user to confirm it.
+func TestFormatSketchText_PrototypeBeforeBuild(t *testing.T) {
+	for name, data := range map[string]map[string]interface{}{
+		"with description": {"description": "Login", "file_path": "/tmp/sketch.png", "element_count": 2},
+		"no description":   {"file_path": "/tmp/sketch.png", "element_count": 2},
+	} {
+		t.Run(name, func(t *testing.T) {
+			result := formatSketchText(makeEvent("sketch", "p1", data))
+
+			assertContains(t, result, "Prototype first")
+			assertContains(t, result, "/tmp/sketch.html")
+			proto := strings.Index(result, "self-contained HTML prototype")
+			build := strings.Index(result, "build the final version")
+			if proto < 0 || build < 0 || proto > build {
+				t.Errorf("prototype (at %d) must precede the final build (at %d)", proto, build)
+			}
+		})
+	}
+}
+
 func TestFormatSketchText_InvalidJSON(t *testing.T) {
 	event := ProxyEvent{Type: "sketch", ProxyID: "p1", Data: json.RawMessage(`{invalid}`)}
 	result := formatSketchText(event)

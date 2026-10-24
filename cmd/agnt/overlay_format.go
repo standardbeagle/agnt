@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -380,9 +381,27 @@ func formatSketchText(event ProxyEvent) string {
 	}
 
 	if data.Description != "" {
-		return data.Description + fmt.Sprintf("\n\n[Sketch: %s with %d elements]", data.FilePath, data.ElementCount)
+		return data.Description + fmt.Sprintf("\n\n[Sketch: %s with %d elements]", data.FilePath, data.ElementCount) + sketchPrototypeInstructions(data.FilePath)
 	}
-	return fmt.Sprintf("[Sketch saved: %s with %d elements]", data.FilePath, data.ElementCount)
+	return fmt.Sprintf("[Sketch saved: %s with %d elements]", data.FilePath, data.ElementCount) + sketchPrototypeInstructions(data.FilePath)
+}
+
+// sketchPrototypeInstructions tells the agent to turn a sketch into a quick
+// throwaway HTML prototype before any real implementation, so the user can
+// confirm the direction cheaply. The prototype sits beside the sketch file.
+func sketchPrototypeInstructions(sketchPath string) string {
+	proto := "the sketch's directory"
+	if sketchPath != "" {
+		proto = strings.TrimSuffix(sketchPath, filepath.Ext(sketchPath)) + ".html"
+	}
+	return fmt.Sprintf(`
+
+**Prototype first, then build:**
+1. Before touching the real codebase, write ONE self-contained HTML prototype of this sketch to %s
+   (inline CSS, no build step, no dependencies, placeholder content, roughly 60 lines or fewer). Do not read
+   other files first; speed matters more than polish here.
+2. Tell the user the prototype path in one line and ask them to confirm or correct the direction.
+3. Only after they confirm, build the final version in the project's real stack, using the prototype as the spec.`, proto)
 }
 
 // formatDesignStateText formats a design_state event into text for the AI agent.
