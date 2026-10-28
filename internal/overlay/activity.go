@@ -415,16 +415,52 @@ func (am *ActivityMonitor) CursorRowsContain(tail string) (found, ok bool) {
 		return false, false
 	}
 	am.screen.Lock()
-	cols, _ := am.screen.Size()
+	cols, rows := am.screen.Size()
 	cur := am.screen.Cursor()
-	var sb strings.Builder
-	for y := max(cur.Y-2, 0); y <= cur.Y; y++ {
+	rowText := func(y int) string {
+		var sb strings.Builder
 		for x := 0; x < cols; x++ {
 			sb.WriteRune(am.screen.Cell(x, y).Char)
+		}
+		return sb.String()
+	}
+	// Claude frames its input between two horizontal rules, with a footer
+	// below that can park the cursor outside any fixed window. When two rules
+	// are on screen, the text between the bottom pair is the input box.
+	lo, hi := -1, -1
+	for y := rows - 1; y >= 0; y-- {
+		if isRuleRow(rowText(y), cols) {
+			if hi < 0 {
+				hi = y
+			} else {
+				lo = y
+				break
+			}
+		}
+	}
+	var sb strings.Builder
+	if lo >= 0 {
+		for y := lo + 1; y < hi; y++ {
+			sb.WriteString(rowText(y))
+		}
+	} else {
+		for y := max(cur.Y-2, 0); y <= cur.Y; y++ {
+			sb.WriteString(rowText(y))
 		}
 	}
 	am.screen.Unlock()
 	return strings.Contains(AlnumOnly(sb.String()), want), true
+}
+
+// isRuleRow reports whether row is mostly box-drawing horizontal line.
+func isRuleRow(row string, cols int) bool {
+	n := 0
+	for _, r := range row {
+		if r == '─' || r == '━' || r == '-' {
+			n++
+		}
+	}
+	return cols >= 8 && n >= cols/2
 }
 
 // minCursorMatchRunes is the shortest tail CursorRowsContain will judge.

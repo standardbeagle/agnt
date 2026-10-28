@@ -1103,6 +1103,7 @@ func (o *Overlay) sendEntersUntilActivity(text string) {
 		found, ok := o.inputShows(tail)
 		if !ok || found || waited >= inputEchoWait {
 			shown = ok && found
+			debug.Log("overlay", "enter: pre-submit probe shown=%v ok=%v waited=%v", shown, ok, waited)
 			break
 		}
 		o.sleep(20 * time.Millisecond)
@@ -1155,11 +1156,14 @@ drained:
 		}
 		select {
 		case <-o.activityCh:
+			debug.Log("overlay", "enter: stopping retries, activity signal (shown=%v)", shown)
 			return // Agent is responding — message was accepted
 		case <-o.after(delay):
 			if accepted() {
+				debug.Log("overlay", "enter: stopping retries, input box no longer shows message")
 				return
 			}
+			debug.Log("overlay", "enter: retry after %v", delay)
 			o.writeTopty("\r")
 		}
 	}
