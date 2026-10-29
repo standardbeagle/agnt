@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strconv"
@@ -30,6 +31,12 @@ func runTestHelper(spec string) int {
 			return 2
 		}
 		return code
+	case spec == "event":
+		// Reports what a digest command receives: argv, env, stdin.
+		stdin, _ := io.ReadAll(os.Stdin)
+		fmt.Printf("args=%s\nlevel=%s\nmessage=%s\nstdin=%s", strings.Join(os.Args[1:], "|"),
+			os.Getenv("AGNT_EVENT_LEVEL"), os.Getenv("AGNT_EVENT_MESSAGE"), stdin)
+		return 0
 	case spec == "sleep":
 		time.Sleep(30 * time.Second)
 		return 0

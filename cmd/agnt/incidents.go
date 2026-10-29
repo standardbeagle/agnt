@@ -36,6 +36,8 @@ Examples:
   agnt incidents list --json            # preview; never marks anything read
   agnt incidents watch                  # NDJSON, one line per digest ping
   agnt incidents watch --register       # no agnt run: own a session, first line names it
+  agnt incidents read --json            # consuming pull: marks the rows it returns read
+  agnt incidents watch -- t3 thread send $THREAD "{message}"
   agnt incidents forwarding pause`,
 }
 
@@ -47,10 +49,35 @@ var incidentsListCmd = &cobra.Command{
 }
 
 var incidentsWatchCmd = &cobra.Command{
-	Use:   "watch",
-	Short: "Stream this session's incident digests as NDJSON",
-	Args:  cobra.NoArgs,
-	RunE:  runIncidentsWatch,
+	Use:   "watch [-- command [args...]]",
+	Short: "Stream this session's incident digests as NDJSON, or run a command per digest",
+	Long: `Stream this session's incident digests as NDJSON.
+
+With a command after "--", each digest runs that command instead (nothing is
+echoed to stdout): one run at a time, in stream order. Digests have already
+passed the incident pipeline's dedup, batch and activity gates, so the command
+sees the same stream an agent would.
+
+Inside the command's arguments {message}, {level}, {session} and {json} are
+replaced per digest. The same fields arrive as AGNT_EVENT_MESSAGE,
+AGNT_EVENT_LEVEL, AGNT_EVENT_SESSION and AGNT_EVENT_TYPE, and the JSON line is
+on stdin. The command is never run through a shell, and digest text can be
+page-authored, so treat it as untrusted input.
+
+Example (send each digest to a T3 Code thread):
+  agnt incidents watch -- t3 thread send "$THREAD" "{message}"`,
+	Args: cobra.ArbitraryArgs,
+	RunE: runIncidentsWatch,
+}
+
+var incidentsReadCmd = &cobra.Command{
+	Use:   "read",
+	Short: "Pull the session's incidents and mark the returned rows read",
+	Long: `Consuming pull from the session's incident inbox, the CLI form of the
+get_incidents tool with mark_read. Poll it with the returned cursor, or use
+"incidents list" for a preview that leaves unread state untouched.`,
+	Args: cobra.NoArgs,
+	RunE: runIncidentsRead,
 }
 
 var incidentsForwardingCmd = &cobra.Command{
@@ -69,7 +96,13 @@ func init() {
 	incidentsListCmd.Flags().StringSlice("severity", nil, "Only these severities (critical,error,warning,info)")
 	incidentsListCmd.Flags().String("since", "", "Cursor (RFC3339) from a previous result")
 	incidentsListCmd.Flags().Int("limit", 20, "Maximum incidents (max 100)")
-	incidentsCmd.AddCommand(incidentsListCmd, incidentsWatchCmd, incidentsForwardingCmd)
+	incidentsWatchCmd.Flags().Duration("exec-timeout", defaultExecTimeout, "Per-digest limit for a command given after --")
+	incidentsReadCmd.Flags().Bool("json", false, "Output the raw query result as JSON")
+	incidentsReadCmd.Flags().StringSlice("severity", nil, "Only these severities (critical,error,warning,info)")
+	incidentsReadCmd.Flags().String("since", "", "Cursor (RFC3339) from a previous result")
+	incidentsReadCmd.Flags().Int("limit", 20, "Maximum incidents (max 100)")
+	incidentsReadCmd.Flags().String("profile", "changed", "Triage lens: bug | changed | release | full")
+	incidentsCmd.AddCommand(incidentsListCmd, incidentsReadCmd, incidentsWatchCmd, incidentsForwardingCmd)
 }
 
 // incidentSession resolves the target session: flag, else environment. There is
@@ -109,6 +142,37 @@ func runIncidentsList(cmd *cobra.Command, _ []string) error {
 		Since:       since,
 		Limit:       limit,
 		Profile:     "full",
+	})
+	if err != nil {
+		return err
+	}
+	return writeIncidentList(cmd.OutOrStdout(), res, asJSON)
+}
+
+func runIncidentsRead(cmd *cobra.Command, _ []string) error {
+	code, err := incidentSession(cmd)
+	if err != nil {
+		return err
+	}
+	client, err := getSessionClient(cmd)
+	if err != nil {
+		return err
+	}
+	defer client.Close()
+
+	sev, _ := cmd.Flags().GetStringSlice("severity")
+	since, _ := cmd.Flags().GetString("since")
+	limit, _ := cmd.Flags().GetInt("limit")
+	profile, _ := cmd.Flags().GetString("profile")
+	asJSON, _ := cmd.Flags().GetBool("json")
+
+	res, err := client.IncidentQuery(protocol.IncidentQueryFilter{
+		SessionCode: code,
+		Severities:  sev,
+		Since:       since,
+		Limit:       limit,
+		Profile:     profile,
+		MarkRead:    true,
 	})
 	if err != nil {
 		return err
@@ -247,6 +311,13 @@ func runIncidentsWatch(cmd *cobra.Command, _ []string) error {
 	// session is rejected; the subscription itself is pinned to the session.
 	project, _ := os.Getwd()
 	enc := json.NewEncoder(cmd.OutOrStdout())
+	emit := func(l digestLine) { _ = enc.Encode(l) }
+	if dash := cmd.ArgsLenAtDash(); dash >= 0 {
+		timeout, _ := cmd.Flags().GetDuration("exec-timeout")
+		emit = digestCommandSink(ctx, cmd.Flags().Args()[dash:], timeout, os.Stderr, os.Stderr)
+	} else if len(cmd.Flags().Args()) > 0 {
+		return fmt.Errorf("unexpected arguments %q: put a command after --", cmd.Flags().Args())
+	}
 	if err != nil {
 		// No session in the environment and --register given: own one. Say which,
 		// on the first line, so the caller can pass it to its other commands.
@@ -265,7 +336,7 @@ func runIncidentsWatch(cmd *cobra.Command, _ []string) error {
 		client := daemonclient.NewClient(daemonclient.WithSocketPath(getSocketPath(cmd)))
 		err := client.StreamEvents(ctx, filter, func(entry proxy.LogEntry) error {
 			if line, ok := digestLineFor(code, entry); ok {
-				return enc.Encode(line)
+				emit(line)
 			}
 			return nil
 		})

@@ -1068,6 +1068,8 @@ Front ends that are not an MCP client (the Claude Mods pane, the OpenCode plugin
 | Command | Effect |
 |---------|--------|
 | `agnt incidents list [--severity S,...] [--since C] [--limit N] [--json]` | Preview of the session's incidents; never marks anything read |
+| `agnt incidents read [--severity S,...] [--since C] [--limit N] [--profile P] [--json]` | Consuming pull (the CLI form of `get_incidents` with `mark_read`); profile defaults to `changed`. Poll it with the returned cursor |
+| `agnt incidents watch [--exec-timeout D] -- COMMAND [ARGS...]` | Runs the command once per digest instead of printing it, sequentially and in stream order. `{message}`, `{level}`, `{session}` and `{json}` are replaced inside each argument; the same fields arrive as `AGNT_EVENT_*` environment variables and the JSON line is on stdin. Never run through a shell: digest text can be page-authored, so it is untrusted input. A failed run is reported on stderr and the stream continues. Example for T3 Code: `agnt incidents watch -- t3 thread send "$THREAD" "{message}"` (the message becomes the thread's next turn) |
 | `agnt incidents watch [--register]` | Streams one NDJSON line per digest ping (`type`, `session_code`, `level`, `message`, `payload`); reconnects every 2s. `--register` owns a session for this checkout when the agent was not started by `agnt run`: the first line is `{"type":"session","session_code":...}`, the session is heartbeated and unregistered on exit |
 | `agnt incidents forwarding pause\|resume` | Stops or restarts pings reaching the agent; incidents keep collecting |
 
