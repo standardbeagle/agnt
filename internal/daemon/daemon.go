@@ -264,7 +264,8 @@ type Daemon struct {
 	autoRestarter        *ProcessAutoRestarter                  // Process auto-restart manager
 	alertStore           *ProcessAlertStore                     // Ring buffer store for process output alerts
 	retentionCfg         atomic.Pointer[config.RetentionConfig] // Error-retention trigger gates
-	alertScanner         *overlay.AlertScanner                  // Scans daemon-managed process output for errors
+	alertScanners        sync.Map                               // projectPath -> *overlay.AlertScanner (lazy, config-driven; see alertScannerFor)
+	alertScannerMu       sync.Mutex                             // serializes lazy alertScanners creation per key
 	processExitInfo      *processExitInfoStore                  // In-memory death records (proc status + get_incidents)
 	startupErrorStore    *StartupLogStore                       // Ring buffer for startup events
 	eventHub             *EventHub                              // Routes alerts to overlay/MCP/stream sinks
@@ -704,24 +705,16 @@ func New(config DaemonConfig) *Daemon {
 		},
 	)
 
-	// alertScanner scans daemon-managed process output (proc run) for error
-	// patterns and routes matches into alertStore + eventHub — the same
-	// surfaces get_incidents and agnt monitor query. OnAlert fires after the
-	// scanner's severity-scaled batch window to avoid per-line churn: error-level
-	// alerts (a dying script / fatal line) flush fast, warnings/info keep the 3s
-	// anti-churn window. See the batch-window policy block in internal/overlay/alerts.go.
-	d.alertScanner = overlay.NewAlertScanner(overlay.AlertScannerConfig{
-		OnAlert: func(batch *overlay.AlertBatch) {
-			ts := time.Now()
-			for i := range batch.Matches {
-				d.ingestProcessAlert(batch.Matches[i], ts)
-			}
-			formatted := batch.Format()
-			if formatted != "" {
-				d.eventHub.Deliver(string(batch.MaxSeverity()), formatted)
-			}
-		},
-	})
+	// alertScanner(s) scan daemon-managed process output (proc run) for error
+	// patterns and route matches into alertStore + eventHub — the same
+	// surfaces get_incidents and agnt monitor query. There is one scanner PER
+	// PROJECT (not one daemon-wide): a project's .agnt.kdl `alerts` block
+	// (enabled/patterns/disable/batch-window/dedupe-window) previously had no
+	// consumer here — only the PTY-side scanner in cmd/agnt/pty_common.go
+	// applied it — so every project silently shared one hardcoded-default
+	// scanner. Construction is therefore deferred to alertScannerFor
+	// (config isn't resolvable yet at New() time, before any project is
+	// known); see that method and buildProjectAlertScanner below.
 
 	// Autostart manager fans every progress event out to the alert hub so
 	// that monitor/MCP watch subscribers see real-time autostart phases.
@@ -1102,9 +1095,14 @@ func (d *Daemon) Start() error {
 	// dead but whose members are still running. These are leftovers from
 	// a daemon crash mid-session: the session-pgid tracker from Slice A
 	// was in memory, so it could not fire. No project path is known yet
-	// at daemon startup -- the scan runs with default config (enabled).
-	// Per-project overrides via session.orphan-pgid-scan still apply if
-	// the daemon is later reinvoked with a projectPath.
+	// at daemon startup, so this pass runs with the default (enabled) and
+	// an empty knownProjects set — it can reap only pgids whose ownership
+	// evidence needs no project match. The daemon is never "reinvoked"
+	// with a projectPath later: instead, RunAutostartAsync
+	// (daemon_autostart.go) runs a second, project-scoped scan — deduped to
+	// once per project — the first time it loads that project's real
+	// .agnt.kdl, which is the actual point session.orphan-pgid-scan's
+	// per-project opt-out takes effect.
 	d.startupOrphanPGIDScan("")
 
 	// Restore proxies from persisted state
@@ -1196,6 +1194,97 @@ func (d *Daemon) SessionManager() *chromedp.SessionManager {
 // AutoRestarter returns the process auto-restart manager.
 func (d *Daemon) AutoRestarter() *ProcessAutoRestarter {
 	return d.autoRestarter
+}
+
+// alertScannerFor returns the process-output AlertScanner for projectPath,
+// building it on first use from that project's .agnt.kdl `alerts` block.
+// One scanner per project (not one daemon-wide): projects can set
+// conflicting alerts.enabled/patterns/disable/batch-window/dedupe-window, and
+// a shared scanner cannot honor both. Guarded by alertScannerMu rather than
+// sync.Map's own LoadOrStore so two racing first-lines for the same project
+// build exactly one scanner (LoadOrStore would still construct-then-discard
+// the loser, which double-starts the scanner's goroutine-on-first-alert
+// lazily — harmless today but wasteful and worth avoiding).
+func (d *Daemon) alertScannerFor(projectPath string) *overlay.AlertScanner {
+	projectPath = normalizePath(projectPath)
+	if v, ok := d.alertScanners.Load(projectPath); ok {
+		return v.(*overlay.AlertScanner)
+	}
+	d.alertScannerMu.Lock()
+	defer d.alertScannerMu.Unlock()
+	if v, ok := d.alertScanners.Load(projectPath); ok {
+		return v.(*overlay.AlertScanner)
+	}
+	scanner := d.buildProjectAlertScanner(projectPath)
+	d.alertScanners.Store(projectPath, scanner)
+	return scanner
+}
+
+// retireAlertScanner drops a project's cached scanner so the next output line
+// rebuilds it from the current `.agnt.kdl`. Stop flushes the old scanner's
+// pending batch, and can block on PTY-bound delivery, so it runs off the
+// caller's path; the swap itself is immediate. A line already holding the old
+// pointer when it stops is dropped by the stopped guard — the window is one
+// in-flight line per process.
+func (d *Daemon) retireAlertScanner(projectPath string) {
+	d.alertScannerMu.Lock()
+	old, ok := d.alertScanners.LoadAndDelete(normalizePath(projectPath))
+	d.alertScannerMu.Unlock()
+	if ok {
+		go old.(*overlay.AlertScanner).Stop()
+	}
+}
+
+// buildProjectAlertScanner constructs the process-output AlertScanner for one
+// project, applying its .agnt.kdl `alerts` block via the same
+// overlay.AlertScannerConfigFromAlerts builder the PTY-side scanner uses
+// (cmd/agnt/pty_common.go::setupAlertScanner) so the two paths cannot drift.
+// A config load failure or a disabled scanner still return a working (if
+// unconfigured / permanently-disabled) scanner rather than nil — callers
+// (startScriptWithRetry) always have a scanner to feed lines into; SetEnabled
+// governs whether it emits.
+func (d *Daemon) buildProjectAlertScanner(projectPath string) *overlay.AlertScanner {
+	cfg, err := config.LoadAgntConfig(projectPath)
+	if err != nil {
+		debug.Warn("daemon", "alerts: failed to load config for %q, using defaults: %v", projectPath, err)
+		d.recordStartupEntry("", "", "warning", "alert_config_load_failed",
+			fmt.Sprintf("project %q alert scanner using defaults: .agnt.kdl failed to load: %v", projectPath, err), 0)
+	}
+
+	scannerCfg := overlay.AlertScannerConfig{
+		OnAlert: func(batch *overlay.AlertBatch) {
+			ts := time.Now()
+			for i := range batch.Matches {
+				d.ingestProcessAlert(batch.Matches[i], ts)
+			}
+			formatted := batch.Format()
+			if formatted != "" {
+				d.eventHub.Deliver(string(batch.MaxSeverity()), formatted)
+			}
+		},
+	}
+
+	var alertsCfg *config.AlertsConfig
+	if cfg != nil {
+		alertsCfg = cfg.Alerts
+	}
+	if alertsCfg != nil {
+		fromCfg := overlay.AlertScannerConfigFromAlerts(alertsCfg, func(patternID, reason string) {
+			debug.Warn("daemon", "alerts: project %q custom pattern %q: %s", projectPath, patternID, reason)
+			d.recordStartupEntry("", "", "warning", "alert_pattern_invalid",
+				fmt.Sprintf("project %q custom alert pattern %q: %s", projectPath, patternID, reason), 0)
+		})
+		scannerCfg.BatchWindow = fromCfg.BatchWindow
+		scannerCfg.DedupeWindow = fromCfg.DedupeWindow
+		scannerCfg.DisabledIDs = fromCfg.DisabledIDs
+		scannerCfg.Patterns = fromCfg.Patterns
+	}
+
+	scanner := overlay.NewAlertScanner(scannerCfg)
+	if alertsCfg != nil && !alertsCfg.IsEnabled() {
+		scanner.SetEnabled(false)
+	}
+	return scanner
 }
 
 // ingestProcessAlert routes a single AlertScanner match to every agent-facing
@@ -1301,7 +1390,9 @@ func (d *Daemon) ApplyAlertsConfig(projectPath string, cfg *config.AlertsConfig)
 		RecoveryDebounce: holdCfg.GetRecoveryDebounce(),
 	}
 	projectPath = normalizePath(projectPath)
-
+	// The process-output scanner is built once per project from this same
+	// block; rebuild it so enabled/patterns/disable/windows edits apply.
+	d.retireAlertScanner(projectPath)
 	if pushCfg == nil {
 		d.alertPushConfigs.Delete(projectPath)
 	} else {

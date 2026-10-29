@@ -365,6 +365,55 @@ func parseElementCapture(data map[string]interface{}, timestamp time.Time, url s
 	return capture
 }
 
+// parseScreenshotCapture parses a screenshot capture from panel JSON data.
+// This is the fallback path taken when the browser's `addAttachment('screenshot', …)`
+// call has no imageBuffer to stream over the binary channel (see
+// indicator-data.js `actions.addAttachment`) — Area/Summary/Label still carry,
+// ImageData/FilePath stay empty because there is no image.
+func parseScreenshotCapture(data map[string]interface{}, timestamp time.Time, url string) ScreenshotCapture {
+	capture := ScreenshotCapture{
+		ID:        getStringField(data, "id"),
+		Timestamp: timestamp,
+		URL:       url,
+	}
+
+	if nested, ok := data["data"].(map[string]interface{}); ok {
+		capture.Summary = getStringField(nested, "summary")
+		if capture.Summary == "" {
+			capture.Summary = getStringField(nested, "label")
+		}
+		if area, ok := nested["area"].(map[string]interface{}); ok {
+			capture.Area.X = getIntField(area, "x")
+			capture.Area.Y = getIntField(area, "y")
+			capture.Area.Width = getIntField(area, "width")
+			capture.Area.Height = getIntField(area, "height")
+		}
+	}
+
+	return capture
+}
+
+// parseGenericCapture parses an indicator-panel attachment whose payload
+// shape is specific to captureType (audit result, style-edit diff) — see
+// GenericCapture. Label/Summary are lifted out for quick display; the rest
+// of the nested `data` rides through unmodified.
+func parseGenericCapture(captureType string, data map[string]interface{}, timestamp time.Time, url string) GenericCapture {
+	capture := GenericCapture{
+		ID:          getStringField(data, "id"),
+		Timestamp:   timestamp,
+		URL:         url,
+		CaptureType: captureType,
+	}
+
+	if nested, ok := data["data"].(map[string]interface{}); ok {
+		capture.Label = getStringField(nested, "label")
+		capture.Summary = getStringField(nested, "summary")
+		capture.Data = nested
+	}
+
+	return capture
+}
+
 // parseSketchCapture parses a sketch capture from panel JSON data.
 func parseSketchCapture(data map[string]interface{}, timestamp time.Time, url string) SketchCapture {
 	capture := SketchCapture{

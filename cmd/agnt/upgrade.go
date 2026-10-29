@@ -22,13 +22,19 @@ var upgradeCmd = &cobra.Command{
 
 This command:
   1. Detects how agnt was installed (npm, pip, go, or direct download)
-  2. Stops the running daemon gracefully
+  2. Stops the running daemon gracefully, so it never keeps running the
+     old binary after the package is replaced
   3. Updates the package using the appropriate package manager
-  4. Restarts the daemon with the new version
+  4. Leaves the daemon stopped — it auto-starts on the next agnt command,
+     picking up the newly installed binary
+
+Refuses to touch an install that is already at or ahead of the latest
+release (e.g. a local dev build) unless --force is given.
 
 Examples:
   agnt upgrade              # Auto-detect and upgrade
-  agnt upgrade --check      # Check for updates without installing`,
+  agnt upgrade --check      # Check for updates without installing
+  agnt upgrade --force      # Reinstall/downgrade even if already up to date`,
 	Run: runUpgrade,
 }
 
@@ -36,6 +42,7 @@ func init() {
 	rootCmd.AddCommand(upgradeCmd)
 
 	upgradeCmd.Flags().Bool("check", false, "Check for updates without installing")
+	upgradeCmd.Flags().Bool("force", false, "Upgrade even if the local version is already newer than or equal to the latest release")
 	upgradeCmd.Flags().Duration("timeout", defaultUpgradeTimeout, "Maximum time for the install step (it is killed past this)")
 }
 
@@ -121,6 +128,7 @@ func (m installMethod) String() string {
 
 func runUpgrade(cmd *cobra.Command, args []string) {
 	checkOnly, _ := cmd.Flags().GetBool("check")
+	force, _ := cmd.Flags().GetBool("force")
 	timeout, _ := cmd.Flags().GetDuration("timeout")
 	socketPath := getSocketPath(cmd)
 
@@ -132,30 +140,33 @@ func runUpgrade(cmd *cobra.Command, args []string) {
 
 	// Check for updates
 	fmt.Println("\nChecking for updates...")
-	latestVersion, err := checkLatestVersion()
+	latestVersion, err := checkLatestVersion(socketPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Failed to check for updates: %v\n", err)
 		os.Exit(1)
 	}
 
-	// Compare semantically. String inequality used to be enough to "upgrade",
-	// which reinstalled the published release over a newer local build.
-	newer, err := versionIsNewer(latestVersion, appVersion)
+	isNewer, proceed, err := decideUpgrade(appVersion, latestVersion, force)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Cannot compare the installed version (%s) with the latest release (%s): %v\n", appVersion, latestVersion, err)
-		fmt.Fprintf(os.Stderr, "Not upgrading, since that could replace a newer build with an older one. Reinstall manually via %s if you want the published release.\n", method)
+		fmt.Fprintf(os.Stderr, "Failed to compare versions (local %s, latest %s): %v\n", appVersion, latestVersion, err)
 		os.Exit(1)
 	}
-	if !newer {
+
+	if !proceed {
 		if latestVersion == appVersion {
 			fmt.Printf("Already at latest version (%s)\n", appVersion)
 		} else {
-			fmt.Printf("Installed version %s is newer than the latest release (%s); nothing to do.\n", appVersion, latestVersion)
+			fmt.Printf("Local version (%s) is already newer than the latest release (%s); not downgrading.\n", appVersion, latestVersion)
+			fmt.Println("Pass --force to upgrade/reinstall anyway.")
 		}
 		return
 	}
 
-	fmt.Printf("New version available: %s → %s\n", appVersion, latestVersion)
+	if isNewer {
+		fmt.Printf("New version available: %s → %s\n", appVersion, latestVersion)
+	} else {
+		fmt.Printf("Forcing reinstall of %s (local: %s)\n", latestVersion, appVersion)
+	}
 
 	if checkOnly {
 		fmt.Println("\nRun 'agnt upgrade' to install the update.")
@@ -237,6 +248,18 @@ func runUpgrade(cmd *cobra.Command, args []string) {
 	fmt.Println("The daemon will auto-start on next use.")
 }
 
+// decideUpgrade reports whether latestVersion is strictly newer than
+// localVersion (see versionIsNewer) and whether the caller should proceed:
+// newer, or force. A local dev build ahead of the latest tag is not
+// "upgraded" back to the release without force.
+func decideUpgrade(localVersion, latestVersion string, force bool) (isNewer, proceed bool, err error) {
+	isNewer, err = versionIsNewer(latestVersion, localVersion)
+	if err != nil {
+		return false, false, err
+	}
+	return isNewer, isNewer || force, nil
+}
+
 func detectInstallMethod() (installMethod, string) {
 	execPath, err := os.Executable()
 	if err != nil {
@@ -290,9 +313,9 @@ func detectInstallMethod() (installMethod, string) {
 	return installDirect, execPath
 }
 
-func checkLatestVersion() (string, error) {
+func checkLatestVersion(socketPath string) (string, error) {
 	// Use the updater to check for latest version
-	client := daemonclient.NewClient(daemonclient.WithSocketPath(daemonclient.DefaultSocketPath()))
+	client := daemonclient.NewClient(daemonclient.WithSocketPath(socketPath))
 	if err := client.Connect(); err == nil {
 		defer client.Close()
 		info, err := client.Info()

@@ -74,7 +74,7 @@ Data flow = daemon→IPC→overlay (overlay can't import daemon):
 - Displays rotating tip text between PTY start and first child output
 - Auto-expires after 30s, clears instantly on `OnFirstActivity` callback from ActivityMonitor
 - Message rotation on 2.5s timer
-- Writes above protected status bar row, uses cursor save/restore to avoid disturbing child cursor
+- Writes above protected status bar row through `writeOverChild`, restoring the child cursor by absolute CUP
 
 ## User Notifications (terminal toast stack)
 
@@ -101,7 +101,7 @@ tear the screen:
 - **Placement**: bottom-anchored on the rows directly above the status bar, newest last.
   Painted only in `StateIndicator` on the main screen (never over a child alt screen; a
   panel view returns to whatever the child repaints). Every paint is one buffered write
-  bracketed by cursor save/hide and restore/show, like `DrawIndicator`.
+  over the child (`writeOverChild`: cursor hide, rows, restore of the child's cursor), like `DrawIndicator`.
 - **Expiry**: one `time.AfterFunc` armed for the earliest pending TTL on every paint; the
   repaint clears rows it no longer uses. No per-notification goroutine, no ticker while idle.
 - **Splash arbitration**: the startup splash `YieldTo(overlay.HasNotifications)` and clears
@@ -132,10 +132,10 @@ reaches the terminal.
 
 **ProtectedWriter** (`internal/overlay/filter.go`):
 - Parses ANSI sequences
-- Blocks alt screen (`\x1b[?1049h`)
-- Enforces scroll region (`\x1b[r` → `\x1b[1;Nr`)
-- Clamps cursor moves to protected bottom row
-- Tracks the child's cursor; overlay draws restore it by absolute CUP, never CSI s/u (`internal/overlay/cursorpark.go`). Every draw over the child goes out through `drawOverChild`, which reads the cursor and writes the whole draw under the filter's lock (`HoldChildCursor`), so no child chunk can be tracked but not yet emitted when the restore is computed. Lock order: renderer/splash/screen locks → filter → gate; the filter's lock is only ever followed by the gate's.
+- Enforces scroll region (`\x1b[r` → `\x1b[1;Nr`); suppresses echoed DA1 replies
+- Holds a UTF-8 character split across PTY reads until it is complete; malformed UTF-8 goes out as U+FFFD
+- Feeds every byte it sends to the host (filtered child output, its own DECSTBM + CUP) into an embedded vt10x terminal, `hostModel`. That model's cursor, DECTCEM and alt-screen state are published after each write and are what overlay draws restore to. Emulator replies to DSR/DA go to `io.Discard`.
+- Overlay draws restore the child's cursor by absolute CUP, never CSI s/u (`internal/overlay/cursorpark.go`). Every draw over the child goes out through `drawOverChild`, which reads the cursor and writes the whole draw under the filter's lock (`HoldChildCursor`), so no child chunk can land between reading the position and restoring it. The draw's closing CUP is fed to `hostModel`, since it clears the host's pending-wrap flag. Lock order: renderer/splash/screen locks → filter → gate; the filter's lock is only ever followed by the gate's.
 
 **OutputGate** (`internal/overlay/gate.go`):
 - Freeze/unfreeze for menu display
@@ -155,7 +155,7 @@ The browser → agent channel is a per-session Unix-domain socket, on every plat
 
 - Sockets live in a per-user directory (`/tmp/agnt-overlay-<uid>/`, `%TEMP%\agnt-overlay-<user>\`), created `0700` and refused if it is a symlink or owned by someone else. Session codes repeat across users, so the directory is what keeps two users' `claude-1` apart.
 - The socket is `chmod 0600`: anything that can connect can type into the agent (`/type`, `/inject`, `/key`). `/inject` takes the daemon's plain-text sends (`agnt session send`, the browser's session send, the incident pipeline's PTY hint) and queues them as protected messages; `/type` answers before its Enter retries finish.
-- Injections are serialized (`injectMu`): one message's text and Enter retries finish before the next starts. After the first Enter, a retry is sent only while the agent stays silent and, when the screen showed the typed text before that Enter, only while it still shows it near the cursor (`ActivityMonitor.CursorRowsContain`). An agent that accepts a message and works silently gets no stray Enters.
+- Injections are serialized (`injectMu`): one message's text and Enter retries finish before the next starts. After the first Enter, a retry is sent only while the agent stays silent and, when the screen showed the typed text before that Enter, only while it still shows it in the input box — between the bottom two horizontal rules, or the three rows ending at the cursor when no rules are on screen (`ActivityMonitor.CursorRowsContain`). An agent that accepts a message and works silently gets no stray Enters.
 - Alert batches wait while the agent is active and are typed once it goes idle. An agent whose output never pauses gets the batch after `maxActivityDeferral` (2 minutes); the overload throttle bounds what piles up meanwhile.
 - An existing socket is unlinked only when nothing answers on it. A live one (a second run with the same `--session`) is an error.
 - A session whose overlay failed to start registers an empty endpoint with the daemon (`Overlay.Endpoint`).

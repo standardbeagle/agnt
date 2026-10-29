@@ -643,7 +643,7 @@ func (d *Daemon) processOutputCallback(processID, projectPath string, scriptEntr
 				Timestamp: time.Now(),
 			},
 		}, projectPath)
-		d.alertScanner.ProcessLineWithLifetime(line, processID, lifetimeOwner)
+		d.alertScannerFor(projectPath).ProcessLineWithLifetime(line, processID, lifetimeOwner)
 	}
 }
 

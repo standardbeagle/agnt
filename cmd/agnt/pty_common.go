@@ -9,8 +9,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"regexp"
-	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -699,67 +697,32 @@ func setupAlertScanner(projectPath, sessionCode string, netOverlay *Overlay, dae
 		},
 	}
 
-	// Apply config overrides
+	// Apply config overrides via the shared builder (also used by the
+	// daemon's per-project process-output scanner —
+	// internal/daemon/daemon.go::buildProjectAlertScanner). A bad pattern
+	// regex or an unrecognized severity string must not fail silently
+	// (AGENTS.md "No silent failures"): debug.Log alone never reaches the
+	// agent or session log, so surface it with notifyUser too.
 	if agntCfg.Alerts != nil {
-		if agntCfg.Alerts.BatchWindow > 0 {
-			scannerCfg.BatchWindow = time.Duration(agntCfg.Alerts.BatchWindow) * time.Second
+		fromCfg := overlay.AlertScannerConfigFromAlerts(agntCfg.Alerts, func(patternID, reason string) {
+			// Config load does not compile these, so this is the first place
+			// the mistake is detectable: say so on screen and in the
+			// self-error log (`agnt hook log`), not just the debug log.
+			debug.Log("alerts", "custom pattern %q: %s", patternID, reason)
+			notifyUser(overlay.LevelWarn, "alerts: custom pattern %q: %s", patternID, reason)
+			selflog.Record("alerts", "custom pattern %q: %s", patternID, reason)
+		})
+		if fromCfg.BatchWindow > 0 {
+			scannerCfg.BatchWindow = fromCfg.BatchWindow
 		}
-		if agntCfg.Alerts.DedupeWindow > 0 {
-			scannerCfg.DedupeWindow = time.Duration(agntCfg.Alerts.DedupeWindow) * time.Second
+		if fromCfg.DedupeWindow > 0 {
+			scannerCfg.DedupeWindow = fromCfg.DedupeWindow
 		}
-		scannerCfg.DisabledIDs = agntCfg.Alerts.Disable
-
-		// Convert custom patterns from config
-		patterns, problems := compileCustomAlertPatterns(agntCfg.Alerts.Patterns)
-		scannerCfg.Patterns = append(scannerCfg.Patterns, patterns...)
-		for _, p := range problems {
-			// A pattern declared in .agnt.kdl that cannot compile will never
-			// fire. Config load does not compile these, so this is the first
-			// and only place the mistake is detectable — say so on screen and
-			// in the self-error log (`agnt hook log`), not just the debug log.
-			notifyUser(overlay.LevelWarn, "%s", p)
-			selflog.Record("alerts", "%s", p)
-		}
+		scannerCfg.DisabledIDs = fromCfg.DisabledIDs
+		scannerCfg.Patterns = fromCfg.Patterns
 	}
 
 	return overlay.NewAlertScanner(scannerCfg)
-}
-
-// compileCustomAlertPatterns turns the `alerts.patterns` config block into
-// scanner patterns. A regex that does not compile is left out and reported in
-// problems (one user-facing line each) rather than dropped silently. Output
-// order follows the pattern ids so the messages are stable.
-func compileCustomAlertPatterns(cfgs map[string]*config.AlertPatternConfig) (patterns []*overlay.AlertPattern, problems []string) {
-	ids := make([]string, 0, len(cfgs))
-	for id := range cfgs {
-		ids = append(ids, id)
-	}
-	sort.Strings(ids)
-	for _, id := range ids {
-		pcfg := cfgs[id]
-		if pcfg == nil {
-			continue
-		}
-		compiled, err := regexp.Compile(pcfg.Pattern)
-		if err != nil {
-			problems = append(problems, fmt.Sprintf("alert pattern %q in %s is not a valid regular expression and will never fire: %v", id, config.AgntConfigFileName, err))
-			continue
-		}
-		sev := overlay.AlertSeverityError
-		switch pcfg.Severity {
-		case "warning", "warn":
-			sev = overlay.AlertSeverityWarning
-		case "info":
-			sev = overlay.AlertSeverityInfo
-		}
-		patterns = append(patterns, &overlay.AlertPattern{
-			ID:       id,
-			Pattern:  compiled,
-			Severity: sev,
-			Category: "custom",
-		})
-	}
-	return patterns, problems
 }
 
 // daemonClientAdapter wraps *daemon.Conn to implement overlay.DaemonClient.
@@ -2040,8 +2003,8 @@ func writeIfLive(ctx context.Context, w io.Writer, data []byte) {
 // overlayCore bundles the overlay component chain shared by the PTY pipeline
 // (setupTerminalOverlay) and the AI REPL (runAiClaudeOverlay): output gate,
 // terminal overlay, input router, the shared daemon connection with its
-// adapters, the AI summarizer, and the status fetcher (wired into
-// ActionRefreshStatus). Callers own lifecycle (Start/Stop the fetcher,
+// adapters, the AI summarizer, and the status fetcher (the input router
+// refreshes it directly after commands). Callers own lifecycle (Start/Stop the fetcher,
 // Close the conn) and wire their bespoke bits (output filter, gate
 // callbacks, resize) on top.
 type overlayCore struct {
@@ -2062,12 +2025,6 @@ func newOverlayCore(backend overlay.PtyReadWriter, width, height int, showIndica
 	cfg := overlay.DefaultConfig()
 	cfg.ShowIndicator = showIndicator
 	cfg.Version = appVersion
-	cfg.OnAction = func(action overlay.Action) error {
-		if action == overlay.ActionRefreshStatus && c.statusFetcher != nil {
-			c.statusFetcher.Refresh()
-		}
-		return nil
-	}
 
 	c.term = overlay.New(backend, width, height, cfg)
 	c.term.SetGate(c.gate)
@@ -2123,8 +2080,8 @@ func setupTerminalOverlay(ctx context.Context, handle *ptyHandle, rt *pipelineRu
 		}
 		rt.outputFilter = overlay.NewProtectedWriter(rt.outputGate, handle.Width, handle.Height, filterCfg)
 		rt.termOverlay.SetAltScreenChecker(rt.outputFilter.InAltScreen)
-		// The filter tracks the child's cursor from its own output stream, so
-		// overlay draws can restore it with an absolute CUP. Without this the
+		// The filter models the host terminal's cursor from the bytes it sends,
+		// so overlay draws can restore it with an absolute CUP. Without this the
 		// overlay uses the terminal's single SCP/RCP save slot, which the child
 		// TUI also uses — see internal/overlay/cursorpark.go.
 		overlay.SetChildCursorSource(rt.outputFilter.HoldChildCursor)

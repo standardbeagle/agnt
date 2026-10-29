@@ -371,8 +371,14 @@ func (c *ChannelConfig) GetEvents() []string {
 
 // AgntProjectMeta contains optional project metadata in .agnt.kdl.
 type AgntProjectMeta struct {
-	Type         string `kdl:"type"`
-	Name         string `kdl:"name"`
+	// Type and Name are accepted but have no effect: project type is
+	// auto-detected and nothing reads a configured name. Retained so existing
+	// .agnt.kdl files still parse; declaring either adds a no-effect warning
+	// to AgntConfig.Warnings (inspectAgntDocument).
+	Type string `kdl:"type"`
+	Name string `kdl:"name"`
+	// PortConflict is the port-conflict policy: "prompt" (default), "fail",
+	// "skip", or "auto-kill". See EffectivePortConflictPolicy.
 	PortConflict string `kdl:"port-conflict"`
 }
 
@@ -563,7 +569,9 @@ type ProxyConfig struct {
 	// CloudflareTunnelConfig for the Access requirement.
 	CloudflareTunnel *CloudflareTunnelConfig `kdl:"cloudflare-tunnel"`
 
-	// Websocket enables WebSocket proxying
+	// Websocket is accepted but has no effect: WebSocket upgrades are always
+	// proxied. Retained so existing .agnt.kdl files still parse; declaring it
+	// adds a no-effect warning to AgntConfig.Warnings (inspectAgntDocument).
 	Websocket bool `kdl:"websocket"`
 
 	// WaitFor lists script ids that must reach Running Healthy (or
@@ -869,15 +877,6 @@ func (c *AutoForwardConfig) GetSources() []string {
 	return c.Sources
 }
 
-// GetDebounceSeconds returns the declared debounce interval (defaults to 10).
-// Deprecated: nothing consumes it; see AutoForwardConfig.Debounce.
-func (c *AutoForwardConfig) GetDebounceSeconds() int {
-	if c == nil || c.Debounce <= 0 {
-		return 10
-	}
-	return c.Debounce
-}
-
 // GetSeverity returns the minimum severity (defaults to "error").
 func (c *AutoForwardConfig) GetSeverity() string {
 	if c == nil || c.Severity == "" {
@@ -1039,10 +1038,13 @@ func (c *AlertsConfig) IsEnabled() bool {
 
 // AIConfig configures AI agent behavior for run and ai commands.
 type AIConfig struct {
-	// Skill is a skill/persona name to use (e.g., "code-review", "debugging")
-	Skill string `kdl:"skill"`
-	// Env are environment variables to set for AI commands
-	Env map[string]string `kdl:"env"`
+	// Skill and Env are accepted but have no effect: nothing reads them (and
+	// secrets do not belong in a checked-in file; set variables in the shell
+	// or process manager). Retained so existing .agnt.kdl files still parse;
+	// declaring either adds a no-effect warning to AgntConfig.Warnings
+	// (inspectAgntDocument).
+	Skill string            `kdl:"skill"`
+	Env   map[string]string `kdl:"env"`
 	// Context is a brief project description injected at the top of the system
 	// prompt, before the agnt tools list. Use it to tell the AI what the project
 	// is, which ports/URLs to use, and any other startup context.
@@ -1196,6 +1198,10 @@ func LoadAgntConfigFile(path string) (*AgntConfig, error) {
 func ParseAgntConfig(data string) (*AgntConfig, error) {
 	cfg := DefaultAgntConfig()
 
+	if err := checkRemovedKeys(data); err != nil {
+		return nil, err
+	}
+
 	if err := kdl.Unmarshal([]byte(data), cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse KDL config: %w", err)
 	}
@@ -1212,6 +1218,9 @@ func ParseAgntConfig(data string) (*AgntConfig, error) {
 		return nil, err
 	}
 	cfg.Warnings = append(cfg.Warnings, docWarnings...)
+	if err := validateAlertPatterns(cfg.Alerts); err != nil {
+		return nil, err
+	}
 
 	// Validate dependencies if any scripts have them
 	if len(cfg.Scripts) > 0 {
@@ -1508,6 +1517,37 @@ func validateChannelConfig(cfg *ChannelConfig) error {
 	return nil
 }
 
+// removedTopLevelKeys names top-level .agnt.kdl blocks that shipped in
+// `agnt init`'s template and README but never had an AgntConfig field, so using
+// them hard-failed every parse with kdl-go's generic unknown-field error. This
+// turns that into a fix instead of a guess. (Keys that merely have no effect
+// are not listed here: they keep loading and warn; see inspectAgntDocument.)
+var removedTopLevelKeys = map[string]string{
+	"hooks": "hooks.on-response (toast/indicator/sound) was never implemented — there is no browser toast for AI responses. Use `alerts {}` for browser/process error delivery instead.",
+	"toast": "toast notification settings were never implemented. Use `alerts {}` for browser/process error delivery instead.",
+}
+
+// checkRemovedKeys does a best-effort loose parse for the keys in
+// removedTopLevelKeys. Parse failures in the loose pass are swallowed; the real
+// syntax error surfaces from the strict kdl.Unmarshal call that follows in
+// ParseAgntConfig.
+func checkRemovedKeys(data string) error {
+	doc, err := kdl.Parse(strings.NewReader(data))
+	if err != nil || doc == nil {
+		return nil
+	}
+	for _, n := range doc.Nodes {
+		if n == nil || n.Name == nil {
+			continue
+		}
+		name := n.Name.String()
+		if reason, ok := removedTopLevelKeys[name]; ok {
+			return fmt.Errorf("key %q removed: %s", name, reason)
+		}
+	}
+	return nil
+}
+
 // DefaultAgntConfigKDL returns the documented default config as text.
 //
 // Template convention, enforced by TestDefaultAgntConfigKDL_ExamplesParse: a
@@ -1526,8 +1566,9 @@ func DefaultAgntConfigKDL() string {
 
 // Optional project metadata
 // project {
-//     type "node"
-//     name "my-project"
+//     // What to do when an autostart script's port is already taken.
+//     // One of "prompt" (default, interactive), "fail", "skip", "auto-kill"
+//     port-conflict "prompt"
 // }
 
 // Scripts to run (use daemon process management)
@@ -1633,6 +1674,7 @@ proxies {
 // }
 
 // AI configuration for agnt run
+// Never put secrets (API keys, tokens) in this file: use the environment.
 // ai {
 //     // Short project description placed at the top of the system prompt
 //     // context "React + FastAPI app. Dev server: port 3000, API: port 8080."

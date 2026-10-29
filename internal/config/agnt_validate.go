@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"math"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -45,7 +46,7 @@ var validAutoForwardSeverities = []string{"error", "warning", "warn"}
 
 // validAlertPatternSeverities is the closed set for
 // `alerts.patterns.<id>.severity` (empty means error). Kept in step with
-// compileCustomAlertPatterns in cmd/agnt, which maps anything else to error.
+// AlertScannerConfigFromAlerts in internal/overlay, which maps anything else to error.
 // "warn" is also accepted, as an alias of "warning" (as for
 // alerts.auto-forward.severity): it loaded before this check existed.
 var validAlertPatternSeverities = []string{"error", "warning", "info"}
@@ -116,6 +117,30 @@ func validateAgntEnums(cfg *AgntConfig) error {
 				return fmt.Errorf("hook-rules.bash-patterns.%s: unknown action %q (accepted: %s)",
 					name, r.Action, strings.Join(validHookActions, ", "))
 			}
+		}
+	}
+	return nil
+}
+
+// validateAlertPatterns rejects an alert pattern that can never fire: an empty
+// or uncompilable regex. cmd/agnt compiles the same patterns again when the
+// scanner starts and reports any it cannot, which covers configs built
+// without ParseAgntConfig; a file on disk fails here instead of loading with
+// an alert that silently does nothing.
+func validateAlertPatterns(cfg *AlertsConfig) error {
+	if cfg == nil {
+		return nil
+	}
+	for _, id := range sortedKeys(cfg.Patterns) {
+		p := cfg.Patterns[id]
+		if p == nil {
+			continue
+		}
+		if p.Pattern == "" {
+			return fmt.Errorf("alerts.patterns.%s.pattern: empty", id)
+		}
+		if _, err := regexp.Compile(p.Pattern); err != nil {
+			return fmt.Errorf("alerts.patterns.%s.pattern: invalid regex %q: %w", id, p.Pattern, err)
 		}
 	}
 	return nil
@@ -196,6 +221,12 @@ func inspectAgntDocument(data string) (warnings []string, err error) {
 			for _, c := range top.Children {
 				if nodeName(c) == "auto-forward" && hasChild(c, "debounce") {
 					warnings = append(warnings, "alerts.auto-forward.debounce has no effect: nothing reads it; forwarded errors are deduplicated and batched by the alert queue")
+				}
+			}
+		case "project":
+			for _, key := range []string{"type", "name"} {
+				if hasChild(top, key) {
+					warnings = append(warnings, "project."+key+" has no effect: nothing reads it")
 				}
 			}
 		case "ai":

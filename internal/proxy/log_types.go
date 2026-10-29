@@ -71,6 +71,12 @@ const (
 	// and consumer processes (agnt mcp, agnt run) render it to the agent. The
 	// compact digest text rides in Custom.Message; Custom.Level is the severity.
 	LogTypeIncidentDigest LogEntryType = "incident_digest"
+	// LogTypeAuditCapture represents an indicator-panel audit-result
+	// attachment (`addAttachment('audit', ...)` in indicator.js).
+	LogTypeAuditCapture LogEntryType = "audit_capture"
+	// LogTypeStyleEditCapture represents an indicator-panel style-edit
+	// attachment (`addAttachment('style-edit', ...)` in style-editor.js).
+	LogTypeStyleEditCapture LogEntryType = "style-edit_capture"
 )
 
 // AllLogTypes lists every LogEntryType the traffic logger can emit. It is the
@@ -86,6 +92,7 @@ func AllLogTypes() []LogEntryType {
 		LogTypeDesignRequest, LogTypeDesignChat, LogTypeDesignEdit, LogTypeWalkthrough,
 		LogTypeResponsiveRequest, LogTypeResponsiveState, LogTypeDiagnostic,
 		LogTypeProcessOutput, LogTypeHook, LogTypeIncidentDigest,
+		LogTypeAuditCapture, LogTypeStyleEditCapture,
 	}
 }
 
@@ -416,6 +423,21 @@ type ElementCapture struct {
 	} `json:"rect,omitempty"`
 }
 
+// GenericCapture represents an indicator-panel attachment whose shape is
+// specific to its capture type (audit result, style-edit diff) and does not
+// warrant its own struct: Label/Summary are the common fields every
+// `addAttachment(type, data)` call carries, and Data preserves the rest
+// as-is for JSON flexibility (same treatment as SketchEntry.Sketch).
+type GenericCapture struct {
+	ID          string                 `json:"id"` // Reference ID for use in messages
+	Timestamp   time.Time              `json:"timestamp"`
+	URL         string                 `json:"url"`
+	CaptureType string                 `json:"capture_type"` // e.g. "audit", "style-edit"
+	Label       string                 `json:"label,omitempty"`
+	Summary     string                 `json:"summary"`
+	Data        map[string]interface{} `json:"data,omitempty"`
+}
+
 // SketchCapture represents a sketch capture from the panel with a reference ID.
 type SketchCapture struct {
 	ID           string                 `json:"id"` // Reference ID for use in messages
@@ -666,6 +688,8 @@ type LogEntry struct {
 	Diagnostic        *ProxyDiagnostic    `json:"diagnostic,omitempty"`
 	ProcessOutput     *ProcessOutputEvent `json:"process,omitempty"`
 	Hook              *HookLogEntry       `json:"hook,omitempty"`
+	AuditCapture      *GenericCapture     `json:"audit_capture,omitempty"`
+	StyleEditCapture  *GenericCapture     `json:"style-edit_capture,omitempty"`
 }
 
 // Timestamp returns the entry's event time regardless of payload type —
@@ -773,6 +797,14 @@ func (e LogEntry) Timestamp() time.Time {
 	case LogTypeIncidentDigest:
 		if e.Custom != nil {
 			return e.Custom.Timestamp
+		}
+	case LogTypeAuditCapture:
+		if e.AuditCapture != nil {
+			return e.AuditCapture.Timestamp
+		}
+	case LogTypeStyleEditCapture:
+		if e.StyleEditCapture != nil {
+			return e.StyleEditCapture.Timestamp
 		}
 	}
 	return time.Time{}

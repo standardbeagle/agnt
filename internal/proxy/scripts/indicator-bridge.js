@@ -70,6 +70,8 @@
     addAttachment: forward('addAttachment'),
     showMicroToast: forward('showMicroToast'),
     logHistoryEvent: forward('logHistoryEvent'),
+    setMessage: forward('setMessage'),
+    switchTab: forward('switchTab'),
     destroy: function() { /* content frames have no local indicator UI to destroy */ }
   };
   window.__devtool_indicator = bridgeSurface;

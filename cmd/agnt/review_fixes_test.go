@@ -153,30 +153,33 @@ func TestOverlaySocketsLiveInPerUserDir(t *testing.T) {
 	}
 }
 
-// TestCompileCustomAlertPatternsReportsBadRegex: an alerts.patterns entry that
-// cannot compile used to be dropped with a debug-log line; it is now reported.
-func TestCompileCustomAlertPatternsReportsBadRegex(t *testing.T) {
-	patterns, problems := compileCustomAlertPatterns(map[string]*config.AlertPatternConfig{
+// TestAlertScannerConfigFromAlertsReportsBadRegex: an alerts.patterns entry
+// that cannot compile used to be dropped with a debug-log line; it is now
+// reported, and a nil entry is skipped.
+func TestAlertScannerConfigFromAlertsReportsBadRegex(t *testing.T) {
+	var problems []string
+	out := overlay.AlertScannerConfigFromAlerts(&config.AlertsConfig{Patterns: map[string]*config.AlertPatternConfig{
 		"good":   {Pattern: `panic: .+`, Severity: "warning"},
 		"broken": {Pattern: `(unclosed`},
 		"nil":    nil,
-	})
-	if len(patterns) != 1 || patterns[0].ID != "good" {
-		t.Fatalf("patterns = %+v, want only the valid one", patterns)
+	}}, func(id, reason string) { problems = append(problems, id+": "+reason) })
+	if len(out.Patterns) != 1 || out.Patterns[0].ID != "good" {
+		t.Fatalf("patterns = %+v, want only the valid one", out.Patterns)
 	}
-	if len(problems) != 1 || !strings.Contains(problems[0], `"broken"`) || !strings.Contains(problems[0], "never fire") {
+	if len(problems) != 1 || !strings.HasPrefix(problems[0], "broken: ") || !strings.Contains(problems[0], "never fire") {
 		t.Fatalf("problems = %v, want one naming the broken pattern and its consequence", problems)
 	}
 }
 
-// TestCompileCustomAlertPatternsWarnAlias: config accepts severity "warn" as
+// TestAlertScannerConfigFromAlertsWarnAlias: config accepts severity "warn" as
 // an alias of "warning", so the scanner must rank it as a warning, not error.
-func TestCompileCustomAlertPatternsWarnAlias(t *testing.T) {
-	patterns, _ := compileCustomAlertPatterns(map[string]*config.AlertPatternConfig{
+func TestAlertScannerConfigFromAlertsWarnAlias(t *testing.T) {
+	var problems []string
+	out := overlay.AlertScannerConfigFromAlerts(&config.AlertsConfig{Patterns: map[string]*config.AlertPatternConfig{
 		"w": {Pattern: `deprecated`, Severity: "warn"},
-	})
-	if len(patterns) != 1 || patterns[0].Severity != overlay.AlertSeverityWarning {
-		t.Fatalf("patterns = %+v, want one warning-severity pattern", patterns)
+	}}, func(id, reason string) { problems = append(problems, id+": "+reason) })
+	if len(out.Patterns) != 1 || out.Patterns[0].Severity != overlay.AlertSeverityWarning || len(problems) != 0 {
+		t.Fatalf("patterns = %+v problems = %v, want one warning-severity pattern and no problem", out.Patterns, problems)
 	}
 }
 

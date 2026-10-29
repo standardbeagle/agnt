@@ -168,6 +168,17 @@ func TestLangChainProvider_OpenAICompatible(t *testing.T) {
 	}
 }
 
+// TestProviderReplicateRemoved pins that the dead ProviderReplicate constant
+// is gone: it was declared but never registered in providerRegistry and had
+// no case in NewLangChainProvider's provider switch, so any caller that
+// referenced it would always fail with "unknown provider" — a declared
+// capability that never worked.
+func TestProviderReplicateRemoved(t *testing.T) {
+	if _, ok := providerRegistry["replicate"]; ok {
+		t.Error(`providerRegistry still has a "replicate" entry; ProviderReplicate should stay removed unless it's actually implemented`)
+	}
+}
+
 // capturingModel records the call options a completion was made with.
 type capturingModel struct {
 	got llms.CallOptions

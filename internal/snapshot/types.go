@@ -33,10 +33,27 @@ type Config struct {
 	IgnoreRegions []IgnoreRegion `json:"ignore_regions,omitempty"`
 }
 
-// IgnoreRegion defines areas to skip during comparison
+// IgnoreRegion defines a rectangular area of the captured screenshot to
+// exclude from diffing — e.g. a timestamp or ad slot that legitimately
+// changes between runs. Selector documents which DOM element the rect came
+// from (resolved via getBoundingClientRect() before capture); the differ
+// itself only understands pixel bounds, since it never sees the DOM.
 type IgnoreRegion struct {
-	Selector string `json:"selector"`
-	Reason   string `json:"reason"`
+	Selector string `json:"selector,omitempty"`
+	Reason   string `json:"reason,omitempty"`
+	X        int    `json:"x"`
+	Y        int    `json:"y"`
+	Width    int    `json:"width"`
+	Height   int    `json:"height"`
+}
+
+// Contains reports whether pixel (x, y) falls inside this region. A region
+// with a non-positive Width or Height matches nothing.
+func (r IgnoreRegion) Contains(x, y int) bool {
+	if r.Width <= 0 || r.Height <= 0 {
+		return false
+	}
+	return x >= r.X && x < r.X+r.Width && y >= r.Y && y < r.Y+r.Height
 }
 
 // CompareResult holds the results of a baseline comparison

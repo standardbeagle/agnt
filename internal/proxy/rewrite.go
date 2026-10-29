@@ -154,7 +154,8 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 	if compressed {
 		// Record what the decoder constructor consumes so a failed construction
 		// can hand the untouched stream on.
-		rec := &recordReader{r: resp.Body, recording: true}
+		rec := &recordReader{r: resp.Body}
+		rec.recording.Store(true)
 		decoder, closer, err := newDecoder(encoding, rec)
 		if err != nil {
 			debug.Log("proxy", "Failed to decompress %s response: %v", encoding, err)
@@ -164,8 +165,9 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 			}
 			return nil
 		}
-		rec.recording = false
-		rec.buf = nil
+		// zstd's decoder reads rec from its own goroutine, so stop recording
+		// atomically and leave buf alone: rec is dropped with the decoder.
+		rec.recording.Store(false)
 		bodyReader = decoder
 		closeDecoder = closer
 	}
@@ -857,16 +859,17 @@ func newDecoder(encoding string, r io.Reader) (io.Reader, func(), error) {
 }
 
 // recordReader keeps every byte it passes on while recording, so bytes a
-// decoder constructor consumed can be replayed if construction fails.
+// decoder constructor consumed can be replayed if construction fails. buf is
+// read only on that failure path, where no decoder goroutine exists.
 type recordReader struct {
 	r         io.Reader
-	recording bool
+	recording atomic.Bool
 	buf       []byte
 }
 
 func (rr *recordReader) Read(p []byte) (int, error) {
 	n, err := rr.r.Read(p)
-	if rr.recording {
+	if rr.recording.Load() {
 		rr.buf = append(rr.buf, p[:n]...)
 	}
 	return n, err

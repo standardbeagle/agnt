@@ -4,6 +4,7 @@ import (
 	"io"
 	"log"
 	"sync"
+	"unicode/utf8"
 )
 
 const (
@@ -18,6 +19,8 @@ const (
 	attrItalic
 	attrBlink
 	attrWrap
+	attrWide     // first cell of a two-column character or cluster
+	attrWideCont // second cell of a two-column character or cluster
 )
 
 const (
@@ -62,10 +65,51 @@ const (
 	ChangedTitle
 )
 
+// Glyph is one cell of the screen.
+//
+// A cell holds one grapheme cluster: a base character plus any combining marks,
+// variation selectors, skin-tone modifiers or zero-width-joiner continuations
+// that belong with it. Char is the cluster's first rune, which is the whole
+// cluster for the common one-rune case; Extra holds the remaining runes.
+// Use Text to get the whole cluster.
+//
+// A cluster that is two columns wide (East Asian wide characters, emoji, most
+// ZWJ sequences, flags) occupies two adjacent cells. The first cell carries the
+// text and reports IsWide. The second is a continuation cell: it has no text
+// (Char is 0, Text is "") and reports IsWideContinuation. A renderer walking a
+// row must skip continuation cells; the terminal advances two columns for the
+// pair. The continuation carries the same colours as its first cell.
 type Glyph struct {
 	Char   rune
 	Mode   int16
 	FG, BG Color
+	// Extra is the rest of the cluster after Char, empty for a single-rune
+	// cell. It is set only on the first cell of a cluster.
+	Extra string
+}
+
+// Text returns the whole grapheme cluster in the cell, Char followed by Extra.
+// It is "" for a wide continuation cell and for a never-written cell.
+func (g Glyph) Text() string {
+	if g.Char == 0 {
+		return ""
+	}
+	if g.Extra == "" {
+		return string(g.Char)
+	}
+	return string(g.Char) + g.Extra
+}
+
+// IsWide reports whether the cell is the first of a two-column pair. The next
+// cell in the row is its continuation.
+func (g Glyph) IsWide() bool {
+	return g.Mode&attrWide != 0
+}
+
+// IsWideContinuation reports whether the cell is the second half of a wide
+// character. It has no text of its own; skip it when rendering.
+func (g Glyph) IsWideContinuation() bool {
+	return g.Mode&attrWideCont != 0
 }
 
 type line []Glyph
@@ -95,19 +139,43 @@ type State struct {
 	top, bottom   int // scroll limits
 	mode          ModeFlag
 	state         parseState
-	str           strEscape
-	csi           csiEscape
-	numlock       bool
-	tabs          []bool
-	title         string
-	colorOverride map[Color]Color
+	// The parser states as method values, bound once. Assigning t.parseEsc
+	// afresh on every escape sequence allocated a closure each time.
+	stateText, stateEsc, stateCSI, stateEscTest parseState
+	stateStr, stateStrEnd, stateAltCharset      parseState
+	str                                         strEscape
+	csi                                         csiEscape
+	numlock                                     bool
+	tabs                                        []bool
+	title                                       string
+	colorOverride                               map[Color]Color
+
+	// Grapheme-cluster assembly. A cluster can arrive in pieces (a base
+	// character now, its combining mark or joiner in the next Write), so the
+	// position of the cell holding the newest cluster outlives one call.
+	joinOK       bool   // the cell at (lastX, lastY) may still take a joining rune
+	lastX, lastY int    // newest cluster's first cell
+	prepend      bool   // newest cluster ends in a Prepend character: it absorbs whatever follows
+	clusterBuf   []byte // scratch for segmenting, reused to avoid garbage
+
+	// Bytes of a UTF-8 sequence cut off by the end of a Write.
+	pend  [utf8.UTFMax]byte
+	npend int
 }
 
 func newState(w io.Writer) *State {
-	return &State{
+	t := &State{
 		w:             w,
 		colorOverride: make(map[Color]Color),
 	}
+	t.stateText = t.parse
+	t.stateEsc = t.parseEsc
+	t.stateCSI = t.parseEscCSI
+	t.stateEscTest = t.parseEscTest
+	t.stateStr = t.parseEscStr
+	t.stateStrEnd = t.parseEscStrEnd
+	t.stateAltCharset = t.parseEscAltCharset
+	return t
 }
 
 func (t *State) logf(format string, args ...interface{}) {
@@ -236,7 +304,57 @@ func (t *State) restoreCursor() {
 }
 
 func (t *State) put(c rune) {
+	if c < 0x20 || c == 0x7F {
+		// Every escape sequence starts with a control character, and cursor
+		// motion (CR, LF, BS, HT) is one: none of them may be followed by a
+		// mark that reaches back across it to an earlier cell.
+		t.joinOK = false
+		t.prepend = false
+	}
 	t.state(c)
+}
+
+// write feeds UTF-8 bytes to the parser. A sequence cut off by the end of p is
+// held and completed by the next call, so a PTY read boundary falling inside a
+// character costs nothing. Invalid bytes are skipped. Callers hold the lock.
+func (t *State) write(p []byte) {
+	for len(p) > 0 {
+		if t.npend > 0 {
+			t.pend[t.npend] = p[0]
+			t.npend++
+			p = p[1:]
+			if !utf8.FullRune(t.pend[:t.npend]) {
+				continue
+			}
+			var rest [utf8.UTFMax]byte
+			r, sz := utf8.DecodeRune(t.pend[:t.npend])
+			nrest := copy(rest[:], t.pend[sz:t.npend])
+			t.npend = 0
+			t.putDecoded(r, sz)
+			t.write(rest[:nrest]) // an invalid sequence can end with bytes that are valid on their own
+			continue
+		}
+		if b := p[0]; b < utf8.RuneSelf {
+			t.put(rune(b))
+			p = p[1:]
+			continue
+		}
+		if !utf8.FullRune(p) {
+			t.npend = copy(t.pend[:], p)
+			return
+		}
+		r, sz := utf8.DecodeRune(p)
+		p = p[sz:]
+		t.putDecoded(r, sz)
+	}
+}
+
+func (t *State) putDecoded(r rune, size int) {
+	if r == utf8.RuneError && size == 1 {
+		t.logln("invalid utf8 sequence")
+		return
+	}
+	t.put(r)
 }
 
 func (t *State) putTab(forward bool) {
@@ -294,6 +412,9 @@ func (t *State) setChar(c rune, attr *Glyph, x, y int) {
 	}
 	t.changed |= ChangedScreen
 	t.dirty[y] = true
+	if t.lines[y][x].Mode&(attrWide|attrWideCont) != 0 {
+		t.blankWidePair(y, x)
+	}
 	t.lines[y][x] = *attr
 	t.lines[y][x].Char = c
 	//if t.options.BrightBold && attr.Mode&attrBold != 0 && attr.FG < 8 {
@@ -367,13 +488,23 @@ func (t *State) resize(cols, rows int) bool {
 		for i > 0 && !tabs[i] {
 			i--
 		}
-		for i += tabspaces; i < len(tabs); i += tabspaces {
-			tabs[i] = true
+		for i += tabspaces; i < len(t.tabs); i += tabspaces {
+			t.tabs[i] = true
 		}
 	}
 
 	t.cols = cols
 	t.rows = rows
+	t.joinOK, t.prepend = false, false
+	for i := 0; i < rows; i++ {
+		// Shrinking can cut a wide pair at the new right edge.
+		for _, l := range [2]line{t.lines[i], t.altLines[i]} {
+			if l[cols-1].Mode&attrWide != 0 {
+				l[cols-1] = t.cur.Attr
+				l[cols-1].Char = ' '
+			}
+		}
+	}
 	t.setScroll(0, rows-1)
 	t.moveTo(t.cur.X, t.cur.Y)
 	for i := 0; i < 2; i++ {
@@ -402,6 +533,14 @@ func (t *State) clear(x0, y0, x1, y1 int) {
 	t.changed |= ChangedScreen
 	for y := y0; y <= y1; y++ {
 		t.dirty[y] = true
+		// A wide pair cut by the edge of the range loses its other half too.
+		line := t.lines[y]
+		if line[x0].Mode&attrWideCont != 0 && x0 > 0 {
+			t.blankCell(y, x0-1)
+		}
+		if line[x1].Mode&attrWide != 0 && x1+1 < t.cols {
+			t.blankCell(y, x1+1)
+		}
 		for x := x0; x <= x1; x++ {
 			t.lines[y][x] = t.cur.Attr
 			t.lines[y][x].Char = ' '
@@ -409,8 +548,54 @@ func (t *State) clear(x0, y0, x1, y1 int) {
 	}
 }
 
+// blankCell erases one cell to the current pen's blank, without looking at
+// its neighbours. Callers that may split a wide pair use blankWidePair.
+func (t *State) blankCell(y, x int) {
+	t.changed |= ChangedScreen
+	t.dirty[y] = true
+	t.lines[y][x] = t.cur.Attr
+	t.lines[y][x].Char = ' '
+}
+
+// blankRange erases cells x0..x1 of row y, which the caller has already
+// arranged not to cut a wide pair.
+func (t *State) blankRange(y, x0, x1 int) {
+	for x := x0; x <= x1; x++ {
+		t.blankCell(y, x)
+	}
+}
+
+// blankWidePair erases the wide pair that has a cell at (y, x): both halves,
+// whichever one x names. A half left alone would render as a stray
+// continuation or as a wide character with no room.
+func (t *State) blankWidePair(y, x int) {
+	if t.lines[y][x].Mode&attrWideCont != 0 && x > 0 {
+		x--
+	}
+	t.blankCell(y, x)
+	if x+1 < t.cols {
+		t.blankCell(y, x+1)
+	}
+}
+
 func (t *State) clearAll() {
 	t.clear(0, 0, t.cols-1, t.rows-1)
+}
+
+// moveVertical moves the cursor dy rows (negative is up) the way xterm's
+// CUU/CUD do: a cursor inside the scroll region stops at the region's margin,
+// a cursor outside it stops at the screen edge. moveTo then applies the
+// origin-mode limits.
+func (t *State) moveVertical(dy int) {
+	y := t.cur.Y
+	lo, hi := 0, t.rows-1
+	if dy > 0 && y <= t.bottom {
+		hi = t.bottom
+	}
+	if dy < 0 && y >= t.top {
+		lo = t.top
+	}
+	t.moveTo(t.cur.X, clamp(y+dy, lo, hi))
 }
 
 func (t *State) moveAbsTo(x, y int) {
@@ -746,17 +931,25 @@ func (t *State) setAttr(attr []int) {
 }
 
 func (t *State) insertBlanks(n int) {
+	y := t.cur.Y
 	src := t.cur.X
 	dst := src + n
 	size := t.cols - dst
 	t.changed |= ChangedScreen
-	t.dirty[t.cur.Y] = true
+	t.dirty[y] = true
+	line := t.lines[y]
 
+	if line[src].Mode&attrWideCont != 0 {
+		t.blankWidePair(y, src) // the insertion point splits a wide pair
+	}
 	if dst >= t.cols {
-		t.clear(t.cur.X, t.cur.Y, t.cols-1, t.cur.Y)
+		t.clear(src, y, t.cols-1, y)
 	} else {
-		copy(t.lines[t.cur.Y][dst:dst+size], t.lines[t.cur.Y][src:src+size])
-		t.clear(src, t.cur.Y, dst-1, t.cur.Y)
+		copy(line[dst:dst+size], line[src:src+size])
+		t.blankRange(y, src, dst-1) // the copy left stale cells here; clear would misread them as pairs
+		if line[t.cols-1].Mode&attrWide != 0 {
+			t.blankCell(y, t.cols-1) // its second half was pushed off the edge
+		}
 	}
 }
 
@@ -775,17 +968,25 @@ func (t *State) deleteLines(n int) {
 }
 
 func (t *State) deleteChars(n int) {
+	y := t.cur.Y
 	src := t.cur.X + n
 	dst := t.cur.X
 	size := t.cols - src
 	t.changed |= ChangedScreen
-	t.dirty[t.cur.Y] = true
+	t.dirty[y] = true
+	line := t.lines[y]
 
+	if line[dst].Mode&attrWideCont != 0 {
+		t.blankWidePair(y, dst) // the deletion starts inside a wide pair
+	}
 	if src >= t.cols {
-		t.clear(t.cur.X, t.cur.Y, t.cols-1, t.cur.Y)
+		t.clear(dst, y, t.cols-1, y)
 	} else {
-		copy(t.lines[t.cur.Y][dst:dst+size], t.lines[t.cur.Y][src:src+size])
-		t.clear(t.cols-n, t.cur.Y, t.cols-1, t.cur.Y)
+		if line[src].Mode&attrWideCont != 0 {
+			t.blankWidePair(y, src) // its head is deleted, so it must not slide into view
+		}
+		copy(line[dst:dst+size], line[src:src+size])
+		t.blankRange(y, t.cols-n, t.cols-1)
 	}
 }
 
@@ -805,8 +1006,14 @@ func (t *State) String() string {
 	var view []rune
 	for y := 0; y < t.rows; y++ {
 		for x := 0; x < t.cols; x++ {
-			attr := t.Cell(x, y)
-			view = append(view, attr.Char)
+			g := t.Cell(x, y)
+			if g.IsWideContinuation() {
+				continue
+			}
+			view = append(view, g.Char)
+			if g.Extra != "" {
+				view = append(view, []rune(g.Extra)...)
+			}
 		}
 		view = append(view, '\n')
 	}

@@ -11,7 +11,7 @@ response.
   **ships today** and points at the spec for the full contract; it does not
   restate it.
 - **MCP tool surface:** [`mcp-tools.md` → `publish` Tool](mcp-tools.md#publish-tool)
-- **Config surface:** [`configuration.md` → Public Walkthrough Feedback](configuration.md#public-walkthrough-feedback-internalconfigfeedbackgo-feedback-in-agntkdl)
+- **Config surface:** [`configuration.md` → Public Walkthrough Feedback](configuration.md#public-walkthrough-feedback-internalconfigfeedbackgo-feedback-in-the-global-configkdl)
 
 **Four things that will bite you — read these before you hand out a link:**
 
@@ -455,7 +455,7 @@ the card with `Escape`.
 Retention is **500 rows OR 90 days, whichever comes first**, applied on load and
 on every read as well as on submission — so lowering either limit takes effect
 without waiting for new feedback. These limits are configurable and honored by
-the live limiter — see [`configuration.md`](configuration.md#public-walkthrough-feedback-internalconfigfeedbackgo-feedback-in-agntkdl).
+the live limiter — see [`configuration.md`](configuration.md#public-walkthrough-feedback-internalconfigfeedbackgo-feedback-in-the-global-configkdl).
 
 **What "client" means.** IPv4: the address. IPv6: the **/64** — one subscriber
 is routinely delegated a whole /64, so keying on the full address would give
@@ -868,9 +868,14 @@ On a suspected token leak or abuse:
 ## 11. Config example
 
 A KDL `feedback` block that parses against `internal/config` (all keys optional;
-omitted/invalid values fall back to the spec defaults shown):
+omitted/invalid values fall back to the spec defaults shown). **This is a
+global setting** — it lives in `~/.config/agnt/config.kdl`, the same file
+`agnt publish serve` and the daemon both load at startup, never in a
+project's `.agnt.kdl` (which has no `feedback` field and fails to parse if
+you write this block there):
 
 ```kdl
+// ~/.config/agnt/config.kdl
 feedback {
     rate-per-minute 10
     burst 5
@@ -924,4 +929,4 @@ and how many at once; they do not make a repeat view cheap.
 under the same transport/connection caps.
 
 Full config reference:
-[`configuration.md`](configuration.md#public-walkthrough-feedback-internalconfigfeedbackgo-feedback-in-agntkdl).
+[`configuration.md`](configuration.md#public-walkthrough-feedback-internalconfigfeedbackgo-feedback-in-the-global-configkdl).

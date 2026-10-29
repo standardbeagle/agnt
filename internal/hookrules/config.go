@@ -9,6 +9,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/selflog"
 )
 
 // LoadForProject returns the merged rule set for the given project path.
@@ -20,16 +21,25 @@ import (
 // semantics would require per-project reordering we have deliberately not
 // built.
 //
-// Errors loading config fall through silently to builtin-only. The callers
-// (check-bash / check-prompt) have a 1s fail-open budget and must not
-// surface config errors as hook failures.
+// A config load error falls through to builtin-only — never to zero rules.
+// Safety direction: builtin-only is the fail-closed choice for this hook
+// (the shipped protections stay active; only the operator's own overrides
+// silently stop applying), and the callers (check-bash / check-prompt) have
+// a 1s fail-open budget and must not surface config errors as hook
+// failures. That silent degrade must still be visible somewhere the
+// operator can find it, so it goes through selflog (always-on, no daemon
+// dependency) rather than debug.Log alone.
 func LoadForProject(projectDir string) *RuleSet {
 	base := BuiltinRuleSet()
 	if projectDir == "" {
 		return base
 	}
 	cfg, err := config.LoadAgntConfig(projectDir)
-	if err != nil || cfg == nil || cfg.HookRules == nil {
+	if err != nil {
+		selflog.Record("hookrules", "project %s: .agnt.kdl failed to parse, hook-rules overrides NOT applied (builtins only): %v", projectDir, err)
+		return base
+	}
+	if cfg == nil || cfg.HookRules == nil {
 		return base
 	}
 	return MergeOverrides(base, cfg.HookRules)

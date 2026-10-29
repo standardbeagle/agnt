@@ -90,9 +90,9 @@ type StreamSink struct {
 // streamFilter holds criteria for filtering events sent to a StreamSink.
 type streamFilter struct {
 	types       map[proxy.LogEntryType]bool
-	proxyID     string
+	proxyID     string // one id, or a comma-joined set (matches any member) — see csvSetContains
 	projectPath string // Filter to proxies whose Path matches this project directory
-	processID   string // Filter to specific process output
+	processID   string // one id, or a comma-joined set (matches any member) — see csvSetContains
 	severity    string // "error", "warning", "info" — matches against error/custom/diagnostic levels
 	grep        string // Substring match on process output lines
 	grepStream  string // "stdout", "stderr", or "" for both
@@ -106,7 +106,7 @@ func (f *streamFilter) matches(entry proxy.LogEntry, proxyID, proxyPath string) 
 	if len(f.types) > 0 && !f.types[entry.Type] {
 		return false
 	}
-	if f.proxyID != "" && proxyID != f.proxyID {
+	if f.proxyID != "" && !csvSetContains(f.proxyID, proxyID) {
 		return false
 	}
 	if f.projectPath != "" && proxyPath != f.projectPath {
@@ -120,7 +120,7 @@ func (f *streamFilter) matches(entry proxy.LogEntry, proxyID, proxyPath string) 
 		}
 	}
 	if f.processID != "" && entry.Type == proxy.LogTypeProcessOutput {
-		if entry.ProcessOutput == nil || entry.ProcessOutput.ProcessID != f.processID {
+		if entry.ProcessOutput == nil || !csvSetContains(f.processID, entry.ProcessOutput.ProcessID) {
 			return false
 		}
 	}
@@ -140,6 +140,28 @@ func (f *streamFilter) matches(entry proxy.LogEntry, proxyID, proxyPath string) 
 		}
 	}
 	return true
+}
+
+// csvSetContains reports whether val equals csv or is one of csv's
+// comma-separated members. A single id (the common case, no comma) matches
+// exactly like a plain string compare. Callers feed this the --proxy/--process
+// flag value forwarded verbatim from internal/tools/watch.go, which
+// comma-joins internal/tools.WatchInput.ProxyIDs/ProcessIDs
+// (cmd/agnt/monitor.go passes it through unsplit) — so a multi-id watch
+// request must match any member of the set, not the literal joined string.
+func csvSetContains(csv, val string) bool {
+	if csv == val {
+		return true
+	}
+	if !strings.Contains(csv, ",") {
+		return false
+	}
+	for _, part := range strings.Split(csv, ",") {
+		if strings.TrimSpace(part) == val {
+			return true
+		}
+	}
+	return false
 }
 
 // entryHasSeverity checks if a log entry matches the requested severity level.

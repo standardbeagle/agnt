@@ -19,9 +19,22 @@ func (d *Daemon) applyDevOIDC(server *proxy.ProxyServer) {
 		return
 	}
 	cfg, err := config.LoadAgntConfig(server.Path)
-	if err != nil || cfg == nil {
-		// A config that does not load is reported by the paths that start
-		// scripts and proxies from it; here it only means "no issuer".
+	if err != nil {
+		// applyDevOIDC is an independent config reload run on every proxy
+		// creation (hub_helpers.go wireProxyLogger), not only the autostart
+		// path — a parse error here would otherwise silently drop dev-oidc
+		// with no signal tied to this proxy at all.
+		server.SetDevOIDC(nil)
+		server.Logger().LogDiagnostic(proxy.ProxyDiagnostic{
+			Timestamp: time.Now(), Level: proxy.DiagnosticWarning, Category: "dev-oidc",
+			Event:   "dev_oidc_config_load_failed",
+			Message: fmt.Sprintf("could not load .agnt.kdl for %s, dev-oidc not configured: %v", server.Path, err),
+			Data:    map[string]any{"proxy_id": server.ID},
+		})
+		return
+	}
+	if cfg == nil {
+		// No .agnt.kdl at all: nothing declared, nothing to warn about.
 		server.SetDevOIDC(nil)
 		return
 	}

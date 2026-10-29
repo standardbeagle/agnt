@@ -39,9 +39,10 @@ The daemon reads the global file once, when it starts. Restart it
 
 A value outside what a key accepts fails the parse with the accepted values in
 the message: an unknown `port-conflict`, `alerts.preset`, shim rule `action` or
-hook rule `action`, a fractional or out-of-range port, a misspelt `depends-on`
+hook rule `action`, an empty or uncompilable `alerts.patterns` regex, a fractional or out-of-range port, a misspelt `depends-on`
 property. A few keys are still
-accepted but do nothing (`proxies.<id>.websocket`, `ai.skill`, `ai.env`; in the
+accepted but do nothing (`proxies.<id>.websocket`, `ai.skill`, `ai.env`, `project.type`, `project.name`,
+`alerts.auto-forward.debounce`, `alerts.incident-pipeline`; in the
 global file, `version` and `languages`); each is reported as a `config_warning`
 rather than failing, and none of them is documented below.
 
@@ -687,6 +688,7 @@ The values encode the security spec §5
 See the operator guide: **[public-walkthroughs.md](public-walkthroughs.md)**.
 
 ```kdl
+// ~/.config/agnt/config.kdl
 feedback {
     rate-per-minute 10       // sustained feedback POST budget per (share, client)
     burst 5                  // token-bucket burst allowance per (share, client)
@@ -771,6 +773,7 @@ caps hold whether or not you later point a tunnel at it):
 Like `feedback`, this block lives in the global `~/.config/agnt/config.kdl`.
 
 ```kdl
+// ~/.config/agnt/config.kdl
 public-plane {
     artifact-rate-per-minute 240   // sustained share GET budget per (share, client)
     artifact-burst 128             // token-bucket burst for share GETs per (share, client)
@@ -874,6 +877,63 @@ non-`*` characters, then fewest `*`), not insertion order. Unmatched commands in
 classes route by default; unknown commands (e.g. `npm install`, `go mod tidy`)
 pass through unless a rule says otherwise — an explicit `route` rule on such a
 command runs it as a managed one-shot.
+
+## Remaining `.agnt.kdl` keys
+
+Keys documented in `internal/config/agnt.go`'s struct tags but not called out
+above:
+
+| Key | Notes |
+|-----|-------|
+| `alerts.enabled` | Master on/off for process-output alert monitoring. Default: `true`. |
+| `alerts.patterns.<id> { pattern; severity }` | Custom alert regex, keyed by id. `severity`: `error`, `warning`, or `info`. |
+| `alerts.disable "<id>" ...` | Disables built-in pattern ids by name. |
+| `alerts.batch-window` | Seconds to batch alerts before delivery. Default: `3`. |
+| `alerts.dedupe-window` | Seconds within which a duplicate alert is suppressed. Default: `60`. |
+| `alerts.auto-forward { enabled; sources; severity }` | Auto-forwards browser/proxy errors to the agent. `sources`: `browser`, `http` (default both). `severity`: `error` or `warning` (default `error`). |
+| `alerts.outage-hold { enabled; window-ms; transport-err-threshold; transport-err-window-ms; recovery-debounce-ms; js-cascade-patterns }` | Suppresses transport-cascade noise (dev-server restarts) that the process-state classifier can't see. Default: enabled, 3s window. See `OutageHoldConfig` doc comment in `agnt.go`. |
+| `scripts.<name>.hooks { on-start; on-stop; on-crash; on-restart }` | Shell commands run at process lifecycle transitions; 5s timeout each, `AGNT_EVENT`/`AGNT_SCRIPT_ID`/`AGNT_EXIT_CODE` injected. |
+| `scripts.<name>.auto-restart` | Restart the process automatically on exit. Default: `false` (manual restart from the overlay). |
+| `scripts.<name>.shell` / `.shell-args` | Override the shell used for `run` (default: platform shell). See `ScriptConfig.ResolveShell`. |
+| `scripts.<name>.ports` | Ports this script uses, for pre-flight orphan cleanup and `EADDRINUSE` recovery. |
+| `scripts.<name>.depends-on` | Scripts that must be ready before this one starts. See "Script Dependency Timeouts" above. |
+| `proxies.<id>.wait-for` | Script ids that must be ready before the proxy forwards requests (503 with `agnt_proxy_not_ready` until then). Every entry must be a declared script in the same `scripts {}` block. |
+| `proxies.<id>.skip-tls-verify` | Disables upstream TLS cert verification (self-signed dev certs). Default: `false`. Listen side unaffected. |
+| `proxies.<id>.url-pattern` | Regex filtering which detected URL triggers this proxy, for scripts that print multiple URLs. |
+| `proxies.<id>.fallback-port` | Port used when script URL detection fails. |
+| `proxies.<id>.max-log-size` | Max traffic-log entries retained. |
+| `proxies.<id>.host` / `.port` / `.target` | Target host/port, or full backend URL (`target` is deprecated in favor of `url`). |
+| `session.orphan-pgid-scan` | Daemon-startup crash-recovery scan for orphaned process groups. Default: `true`. |
+| `setup.renudge-ttl-days` | Days to suppress the first-run setup nudge after a decline. Default: `7`. |
+| `ai.persist-context` | Writes the agnt steering block into the agent's always-loaded context file (`AGENTS.md`, `GEMINI.md`, …) for non-Claude agents. Default: `true`. |
+| `ai.context` | Short project description injected at the top of the system prompt (ports, URLs, what the project is). |
+
+## Live reconcile vs. restart required
+
+The daemon reconciles a running project's `.agnt.kdl` against its live state
+(`Daemon.ReconcileProjectConfig`, `internal/daemon/reconcile.go`) whenever the
+file changes. Three tiers:
+
+1. **Applied live, no restart** — `proxies.<id>.status-url` (display-only
+   address) and the `dev-oidc {}` block are pushed onto the running
+   proxy/issuer directly (`reconcile_apply.go`'s `applyStatusURLProject` /
+   `applyDevOIDCProject`).
+2. **Detected as changed → automatic restart** — any field folded into a
+   script's or proxy's *signature* (`reconcile.go`'s `scriptSignature` /
+   `proxySignature`): for scripts, `run`/`command`/`args`/`shell`/
+   `shell-args`/`cwd`/`env`; for proxies, the effective target
+   (`url`/`target`), `host`, `port`, `listen-port`, `bind`, `script`,
+   `url-pattern`, `fallback-port`, `max-log-size`, `skip-tls-verify`,
+   `allow-external`, `public-url`, `wait-for`, and `cloudflare-tunnel`. The
+   daemon stops and restarts the process/proxy with the new config on the
+   next reconcile pass — no full daemon restart needed, but the child
+   process does restart.
+3. **Next (re)start only** — everything else (`autostart`, `url-matchers`,
+   `hooks`, `auto-restart`, `ports`, `depends-on`, `alerts.*`, `session.*`,
+   `setup.*`, `ai.*`, `shims.*`) is read fresh each time a script/proxy is
+   (re)started, but editing it alone does not trigger a signature change, so
+   it takes effect on the next manual restart or session start, not
+   immediately.
 
 Routing semantics by class: dev servers start-or-reuse a managed process
 (configured scripts go through the script registry); one-shot builds/tests run

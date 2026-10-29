@@ -732,6 +732,7 @@ func (r *InputRouter) overviewStartScript() {
 // Must be called with overlay.mu held.
 func (r *InputRouter) overviewScriptAction(verb string, fn func(ScriptController, string) error) {
 	if r.scriptController == nil {
+		r.notifyActionError(verb + ": not connected to the daemon (try :reconnect)")
 		return
 	}
 	script := r.selectedScript()
@@ -740,13 +741,14 @@ func (r *InputRouter) overviewScriptAction(verb string, fn func(ScriptController
 	}
 	name := script.Name
 	r.overlay.mu.Unlock()
-	if err := fn(r.scriptController, name); err != nil {
-		r.overlay.Notify(Notification{Level: LevelError, Text: fmt.Sprintf("%s %s failed: %v", verb, name, err)})
-	}
+	err := fn(r.scriptController, name)
 	if r.statusFetcher != nil {
 		r.statusFetcher.Refresh()
 	}
 	r.overlay.mu.Lock()
+	if err != nil {
+		r.notifyActionError(fmt.Sprintf("%s %s failed: %v", verb, name, err))
+	}
 	r.overlay.draw()
 }
 
@@ -957,6 +959,14 @@ func (r *InputRouter) handleCommandInput(key string) {
 // calls (which do network I/O) and re-acquires it before returning, matching
 // the locking discipline of the surrounding menu handler.
 func (r *InputRouter) dispatchPaletteCommand(c PaletteCommand, args string) {
+	args = strings.TrimSpace(args)
+	// A required argument is written "<name>" in the registry; "[name]" is
+	// optional. Refuse loudly rather than doing nothing.
+	if strings.HasPrefix(c.Arg, "<") && args == "" {
+		r.notifyActionError(fmt.Sprintf("%s: argument required: %s %s", c.Name, c.Name, c.Arg))
+		return
+	}
+
 	// Summarize/reconnect mutate overlay state directly and expect the lock
 	// to be held, so handle them without releasing it.
 	switch c.Name {
@@ -975,9 +985,16 @@ func (r *InputRouter) dispatchPaletteCommand(c PaletteCommand, args string) {
 		r.overlay.mu.Lock()
 		return
 	case "dismiss":
-		if n, err := strconv.Atoi(strings.TrimSpace(args)); err == nil {
-			r.overlay.DismissNoticeByIndex(n)
+		n, err := strconv.Atoi(args)
+		if err != nil {
+			r.notifyActionError(fmt.Sprintf("dismiss: %q is not a notice number", args))
+			return
 		}
+		if shown := len(r.overlay.VisibleNotices()); n < 1 || n > shown {
+			r.notifyActionError(fmt.Sprintf("dismiss: no notice %d (%d shown)", n, shown))
+			return
+		}
+		r.overlay.DismissNoticeByIndex(n)
 		return
 	case "dismiss-all":
 		r.overlay.DismissAllNotices()
@@ -985,14 +1002,24 @@ func (r *InputRouter) dispatchPaletteCommand(c PaletteCommand, args string) {
 	}
 
 	if r.scriptController == nil {
+		r.notifyActionError(c.Name + ": not connected to the daemon (try :reconnect)")
 		return
+	}
+	var port int
+	if c.Name == "kill-port" {
+		p, err := strconv.Atoi(args)
+		if err != nil || p < 1 || p > 65535 {
+			r.notifyActionError(fmt.Sprintf("kill-port: %q is not a TCP port", args))
+			return
+		}
+		port = p
 	}
 
 	// :config rewrites panelItems and configEditor, which the status refresh
 	// rebuilds under the lock, so it does its file read here, lock held.
 	if c.Name == "config" {
 		if err := r.openConfigPanel(); err != nil {
-			r.overlay.notifyLocked(Notification{Level: LevelError, Text: fmt.Sprintf("config failed: %v", err)})
+			r.notifyActionError(fmt.Sprintf("config failed: %v", err))
 		}
 		return
 	}
@@ -1005,54 +1032,40 @@ func (r *InputRouter) dispatchPaletteCommand(c PaletteCommand, args string) {
 	}
 	switch c.Name {
 	case "start":
-		if args != "" {
-			if err := r.scriptController.StartScript(args); err != nil {
-				fail("start "+args, err)
-			}
+		if err := r.scriptController.StartScript(args); err != nil {
+			fail("start "+args, err)
 		}
 	case "stop":
-		if args != "" {
-			if err := r.scriptController.StopScript(args); err != nil {
-				fail("stop "+args, err)
-			}
+		if err := r.scriptController.StopScript(args); err != nil {
+			fail("stop "+args, err)
 		}
 	case "restart":
-		if args != "" {
-			if err := r.scriptController.RestartScript(args); err != nil {
-				fail("restart "+args, err)
-			}
+		if err := r.scriptController.RestartScript(args); err != nil {
+			fail("restart "+args, err)
 		}
 	case "kill-port":
-		if p, err := strconv.Atoi(strings.TrimSpace(args)); err == nil && p > 0 {
-			if err := r.scriptController.KillPort(p); err != nil {
-				fail(fmt.Sprintf("kill-port %d", p), err)
-			}
+		if err := r.scriptController.KillPort(port); err != nil {
+			fail(fmt.Sprintf("kill-port %d", port), err)
 		}
 	case "kill-orphans":
 		if err := r.scriptController.CleanOrphans(); err != nil {
 			fail("kill-orphans", err)
 		}
 	case "restart-proxy":
-		if args != "" {
-			if err := r.scriptController.RestartProxy(args); err != nil {
-				fail("restart-proxy "+args, err)
-			}
+		if err := r.scriptController.RestartProxy(args); err != nil {
+			fail("restart-proxy "+args, err)
 		}
 	case "stop-proxy":
-		if args != "" {
-			if err := r.scriptController.StopProxy(args); err != nil {
-				fail("stop-proxy "+args, err)
-			}
+		if err := r.scriptController.StopProxy(args); err != nil {
+			fail("stop-proxy "+args, err)
 		}
 	case "tunnel":
 		if err := r.runTunnelCommand(args); err != nil {
 			fail("tunnel", err)
 		}
 	case "stop-tunnel":
-		if args != "" {
-			if err := r.scriptController.StopTunnel(args); err != nil {
-				fail("stop-tunnel "+args, err)
-			}
+		if err := r.scriptController.StopTunnel(args); err != nil {
+			fail("stop-tunnel "+args, err)
 		}
 	case "tailscale":
 		if err := r.runTailscaleCommand(args); err != nil {
@@ -1063,16 +1076,21 @@ func (r *InputRouter) dispatchPaletteCommand(c PaletteCommand, args string) {
 			fail("as", err)
 		}
 	case "run":
-		if args != "" {
-			if err := r.scriptController.RunCommand(args); err != nil {
-				fail("run", err)
-			}
+		if err := r.scriptController.RunCommand(args); err != nil {
+			fail("run "+args, err)
 		}
 	}
 	if r.statusFetcher != nil {
 		r.statusFetcher.Refresh()
 	}
 	r.overlay.mu.Lock()
+}
+
+// notifyActionError reports a user-invoked command that was refused or
+// failed, as an error notification. Must be called with overlay.mu held (it
+// goes through notifyLocked, which repaints in place when notices are shown).
+func (r *InputRouter) notifyActionError(text string) {
+	r.overlay.notifyLocked(Notification{Level: LevelError, Text: text})
 }
 
 // fetchScriptOutput fetches script output and replaces the panel's content buffer.

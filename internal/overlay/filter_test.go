@@ -316,23 +316,25 @@ func TestProtectedWriter_SGRSequence(t *testing.T) {
 	}
 }
 
-func TestProtectedWriter_CursorDown_TrackedPastProtected(t *testing.T) {
+func TestProtectedWriter_CursorDown_StopsAtRegionBottom(t *testing.T) {
 	var buf bytes.Buffer
 	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
+	pw.EnforceScrollRegion() // the host has no protected region until the writer sets one
 
 	// Set cursor position to row 22 first
 	pw.Write([]byte("\x1b[22;1H"))
 	buf.Reset()
 
-	// Move down 5 rows — passes through, cursor tracked at 27
+	// Move down 5 rows — passes through; the terminal stops CUD at the
+	// scroll region's bottom margin (23), so the model must too.
 	pw.Write([]byte("\x1b[5B"))
 
 	if buf.String() != "\x1b[5B" {
 		t.Errorf("expected passthrough \\x1b[5B, got %q", buf.String())
 	}
-	if row := int(pw.cursorRow.Load()); row != 27 {
-		t.Errorf("expected cursor row 27, got %d", row)
+	if row := int(pw.cursorRow.Load()); row != 23 {
+		t.Errorf("expected cursor row 23, got %d", row)
 	}
 }
 

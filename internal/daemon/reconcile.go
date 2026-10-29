@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -31,12 +32,52 @@ type ReconcilePlan struct {
 	StartProxies   []string // declared + autostart, not currently running
 	StopProxies    []string // running, no longer declared
 	RestartProxies []string // running + declared, but target/port changed
+
+	// NeedsRestart names running, signature-unchanged scripts whose declared
+	// config changed in a field that cannot be applied to the live process
+	// (ports, depends-on — see scriptRuntimeFieldDiff). These are informational:
+	// nothing here is auto-applied by RunAutostart, since the field is by
+	// definition not part of scriptSignature. Each entry is
+	// "<name>: <field>[, <field>...]" so the response never silently drops
+	// a declared-but-unapplied edit (daemon-architecture.md § Silent Failure
+	// Prohibition). Cheap-to-reload fields (url-matchers, auto-restart) are
+	// applied live instead and never appear here.
+	NeedsRestart []string
 }
 
-// IsEmpty reports whether the plan would make no changes.
+// IsEmpty reports whether the plan would make no changes and flagged no
+// needs-restart edits.
 func (p ReconcilePlan) IsEmpty() bool {
 	return len(p.StartScripts) == 0 && len(p.StopScripts) == 0 && len(p.RestartScripts) == 0 &&
-		len(p.StartProxies) == 0 && len(p.StopProxies) == 0 && len(p.RestartProxies) == 0
+		len(p.StartProxies) == 0 && len(p.StopProxies) == 0 && len(p.RestartProxies) == 0 &&
+		len(p.NeedsRestart) == 0
+}
+
+// scriptRuntimeFieldDiff classifies a running script's config fields that
+// scriptSignature deliberately excludes (they do not change how the process
+// launches, so they never trigger RestartScripts). urlMatchersChanged and
+// autoRestartChanged are cheap to hot-reload directly onto the live process
+// (URLTracker.SetURLMatchers, ProcessAutoRestarter.Register/Unregister).
+// needsRestartFields lists fields that changed but can only take effect on
+// an actual relaunch (ports feed pre-flight cleanup at start time only;
+// depends-on only affects start-ordering). Hooks are deliberately not
+// listed: process_exit_watcher.go and process_autorestart.go read the hook
+// command fresh from d.scriptConfigs at fire time, so storing the edited
+// config (which the caller does regardless of this diff) is itself the full
+// hot-reload — no restart needed.
+func scriptRuntimeFieldDiff(old, new *config.ScriptConfig) (urlMatchersChanged, autoRestartChanged bool, needsRestartFields []string) {
+	if old == nil || new == nil {
+		return false, false, nil
+	}
+	urlMatchersChanged = !reflect.DeepEqual(old.URLMatchers, new.URLMatchers)
+	autoRestartChanged = old.AutoRestart != new.AutoRestart
+	if !reflect.DeepEqual(old.Ports, new.Ports) {
+		needsRestartFields = append(needsRestartFields, "ports")
+	}
+	if !reflect.DeepEqual(old.DependsOn, new.DependsOn) {
+		needsRestartFields = append(needsRestartFields, "depends-on")
+	}
+	return urlMatchersChanged, autoRestartChanged, needsRestartFields
 }
 
 // diffByKey classifies keys across desired and running signature maps:

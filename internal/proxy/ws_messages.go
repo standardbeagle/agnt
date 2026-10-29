@@ -64,6 +64,69 @@ type wsConnState struct {
 	voicePending int
 	voiceBacklog [][]byte
 	voiceStops   uint64
+
+	// unknownTypeCounts caps how many times each unrecognized message type
+	// gets logged per connection, so a malformed or out-of-date client
+	// cannot flood the diagnostic log (see logUnknownMessageType).
+	unknownTypeCounts map[string]int
+}
+
+// maxUnknownTypeLogsPerConn bounds diagnostic noise from a single connection
+// repeatedly sending the same unrecognized message type, and
+// maxUnknownTypesPerConn bounds how many distinct types are tracked, so a
+// client inventing a new type per frame cannot grow the map or the log.
+const (
+	maxUnknownTypeLogsPerConn = 5
+	maxUnknownTypesPerConn    = 16
+	maxUnknownTypeNameLen     = 64
+)
+
+// logUnknownMessageType records an unrecognized WS message type as a visible
+// diagnostic (LogDiagnostic — the agent-facing surface; see
+// proxy-server.md "Browser toasts are not the agent queue") instead of
+// silently dropping it, capped per connection to avoid flooding.
+//
+// Diagnostics reach the agent and are not marked untrusted, so an untrusted
+// connection's type string — text a tunnel visitor chose — is never put in
+// one: that connection gets a single diagnostic naming no type.
+func (c *wsConnState) logUnknownMessageType(msgType string) {
+	if !c.trusted {
+		if c.unknownTypeCounts != nil {
+			return
+		}
+		c.unknownTypeCounts = map[string]int{}
+		c.ps.logger.LogDiagnostic(ProxyDiagnostic{
+			Timestamp: c.timestamp,
+			Level:     DiagnosticWarning,
+			Category:  "websocket",
+			Event:     "unknown_message_type",
+			Message:   fmt.Sprintf("untrusted connection %s sent an unrecognized WS message type (further ones on this connection are suppressed)", c.connID),
+			Data:      map[string]any{"proxy_id": c.ps.ID, "conn_id": c.connID},
+		})
+		return
+	}
+	if len(msgType) > maxUnknownTypeNameLen {
+		msgType = msgType[:maxUnknownTypeNameLen]
+	}
+	if c.unknownTypeCounts == nil {
+		c.unknownTypeCounts = make(map[string]int)
+	}
+	n, seen := c.unknownTypeCounts[msgType]
+	if n >= maxUnknownTypeLogsPerConn || (!seen && len(c.unknownTypeCounts) >= maxUnknownTypesPerConn) {
+		return
+	}
+	c.unknownTypeCounts[msgType] = n + 1
+	suffix := ""
+	if n+1 == maxUnknownTypeLogsPerConn {
+		suffix = " (further occurrences of this type on this connection are suppressed)"
+	}
+	c.ps.logger.LogDiagnostic(ProxyDiagnostic{
+		Timestamp: c.timestamp,
+		Level:     DiagnosticWarning,
+		Category:  "websocket",
+		Event:     "unknown_message_type",
+		Message:   fmt.Sprintf("received unrecognized WS message type %q%s", msgType, suffix),
+	})
 }
 
 // voiceBacklogMaxFrames bounds the audio held while a Deepgram dial is in
@@ -163,6 +226,9 @@ var wsMessageHandlers = map[string]func(c *wsConnState, msg *wsMessage){
 	"sketch":             (*wsConnState).handleSketch,
 	"element_capture":    (*wsConnState).handleElementCapture,
 	"sketch_capture":     (*wsConnState).handleSketchCapture,
+	"screenshot_capture": (*wsConnState).handleScreenshotCaptureMsg,
+	"audit_capture":      (*wsConnState).handleAuditCapture,
+	"style-edit_capture": (*wsConnState).handleStyleEditCapture,
 	"design_state":       (*wsConnState).handleDesignState,
 	"design_request":     (*wsConnState).handleDesignRequest,
 	"design_chat":        (*wsConnState).handleDesignChat,
@@ -822,6 +888,30 @@ func (c *wsConnState) handleSketchCapture(msg *wsMessage) {
 	}
 
 	c.ps.logger.LogSketchCapture(capture)
+}
+
+// handleScreenshotCaptureMsg handles the JSON fallback of a screenshot
+// attachment: `addAttachment('screenshot', …)` in indicator-data.js takes
+// this path when it has no imageBuffer to stream over the binary channel
+// (see handleBinaryFrame), so there is no image to save — only the area and
+// summary are logged.
+func (c *wsConnState) handleScreenshotCaptureMsg(msg *wsMessage) {
+	capture := parseScreenshotCapture(msg.Data, c.timestamp, msg.URL)
+	c.record(LogEntry{Type: LogTypeScreenshotCapture, ScreenshotCapture: &capture})
+}
+
+// handleAuditCapture handles an audit-result attachment added from the
+// indicator panel's "Run audit" action (indicator.js `runAuditAction`).
+func (c *wsConnState) handleAuditCapture(msg *wsMessage) {
+	capture := parseGenericCapture("audit", msg.Data, c.timestamp, msg.URL)
+	c.record(LogEntry{Type: LogTypeAuditCapture, AuditCapture: &capture})
+}
+
+// handleStyleEditCapture handles a style-edit attachment added by the style
+// editor (style-editor.js `attachStyleEdits` / the React-props handoff).
+func (c *wsConnState) handleStyleEditCapture(msg *wsMessage) {
+	capture := parseGenericCapture("style-edit", msg.Data, c.timestamp, msg.URL)
+	c.record(LogEntry{Type: LogTypeStyleEditCapture, StyleEditCapture: &capture})
 }
 
 // handleDesignState handles design state when an element is selected for

@@ -375,12 +375,7 @@ func (am *ActivityMonitor) screenTail() []string {
 	for y := 0; y < rows; y++ {
 		var sb strings.Builder
 		for x := 0; x < cols; x++ {
-			g := am.screen.Cell(x, y)
-			if g.Char == 0 {
-				sb.WriteRune(' ')
-			} else {
-				sb.WriteRune(g.Char)
-			}
+			sb.WriteString(glyphText(am.screen.Cell(x, y)))
 		}
 		raw = append(raw, sb.String())
 	}
@@ -400,8 +395,9 @@ func (am *ActivityMonitor) screenTail() []string {
 	return out
 }
 
-// CursorRowsContain reports whether the cursor's row, together with the two
-// rows above it, shows tail. Only letters and digits are compared, because
+// CursorRowsContain reports whether the agent's input box shows tail: the rows
+// between the bottom two horizontal rules when two are on screen, else the
+// cursor's row together with the two rows above it. Only letters and digits are compared, because
 // input boxes add borders, padding and wrapping that differ between agents. A
 // message still waiting in the agent's input box shows there; one the agent
 // accepted is gone from it.
@@ -420,7 +416,7 @@ func (am *ActivityMonitor) CursorRowsContain(tail string) (found, ok bool) {
 	rowText := func(y int) string {
 		var sb strings.Builder
 		for x := 0; x < cols; x++ {
-			sb.WriteRune(am.screen.Cell(x, y).Char)
+			sb.WriteString(glyphText(am.screen.Cell(x, y)))
 		}
 		return sb.String()
 	}

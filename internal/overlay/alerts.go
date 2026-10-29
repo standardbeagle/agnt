@@ -3,13 +3,16 @@ package overlay
 import (
 	"crypto/sha256"
 	"fmt"
+	"maps"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/alert"
+	"github.com/standardbeagle/agnt/internal/config"
 )
 
 // The alert domain types live in internal/alert (their canonical home —
@@ -198,6 +201,73 @@ type AlertScanner struct {
 	recentLineHead int
 	recentLineLen  int
 	lineMu         sync.Mutex
+}
+
+// AlertScannerConfigFromAlerts translates a project's .agnt.kdl `alerts`
+// block into the Patterns/DisabledIDs/BatchWindow/DedupeWindow fields of an
+// AlertScannerConfig. It is the single place both agent-facing scanners
+// build from config, so the daemon's per-project process-output scanner
+// (internal/daemon/daemon.go::buildProjectAlertScanner) and the PTY-side
+// browser/HTTP scanner (cmd/agnt/pty_common.go::setupAlertScanner) parse
+// `alerts.patterns` / `alerts.disable` / `alerts.batch-window` /
+// `alerts.dedupe-window` identically instead of drifting.
+//
+// The caller still owns OnAlert, ActivityState, and RetryInterval/MaxPending
+// — those are delivery-surface concerns, not config concerns.
+//
+// onInvalidPattern, when non-nil, is called for every config problem this
+// function would otherwise have to drop silently: a pattern regex that
+// fails to compile, or a severity string that is neither "", "error",
+// "warning" (or its alias "warn"), nor "info". Callers must surface these visibly (notifyUser,
+// a daemon startup-log entry, …) — see AGENTS.md "No silent failures".
+func AlertScannerConfigFromAlerts(cfg *config.AlertsConfig, onInvalidPattern func(patternID, reason string)) AlertScannerConfig {
+	var out AlertScannerConfig
+	if cfg == nil {
+		return out
+	}
+	if cfg.BatchWindow > 0 {
+		out.BatchWindow = time.Duration(cfg.BatchWindow) * time.Second
+	}
+	if cfg.DedupeWindow > 0 {
+		out.DedupeWindow = time.Duration(cfg.DedupeWindow) * time.Second
+	}
+	out.DisabledIDs = cfg.Disable
+
+	// Sorted so problems are reported, and patterns tried, in a stable order.
+	for _, id := range slices.Sorted(maps.Keys(cfg.Patterns)) {
+		pcfg := cfg.Patterns[id]
+		if pcfg == nil {
+			continue
+		}
+		compiled, err := regexp.Compile(pcfg.Pattern)
+		if err != nil {
+			if onInvalidPattern != nil {
+				onInvalidPattern(id, fmt.Sprintf("invalid regex %q, the pattern will never fire: %v", pcfg.Pattern, err))
+			}
+			continue
+		}
+		var sev AlertSeverity
+		switch pcfg.Severity {
+		case "", "error":
+			sev = AlertSeverityError
+		case "warning", "warn": // "warn" loaded as warning before validation existed
+			sev = AlertSeverityWarning
+		case "info":
+			sev = AlertSeverityInfo
+		default:
+			if onInvalidPattern != nil {
+				onInvalidPattern(id, fmt.Sprintf("unknown severity %q (want error|warning|info); defaulting to error", pcfg.Severity))
+			}
+			sev = AlertSeverityError
+		}
+		out.Patterns = append(out.Patterns, &AlertPattern{
+			ID:       id,
+			Pattern:  compiled,
+			Severity: sev,
+			Category: "custom",
+		})
+	}
+	return out
 }
 
 // NewAlertScanner creates and starts a new AlertScanner with the given config.

@@ -41,11 +41,7 @@ func (r *Renderer) diffPanelFrame(frame *bytes.Buffer) (out *bytes.Buffer, overC
 			next := styleOf(glyph)
 			writeSGR(&diff, style, next, x == 0)
 			style = next
-			ch := glyph.Char
-			if ch == 0 {
-				ch = ' '
-			}
-			diff.WriteRune(ch)
+			diff.WriteString(glyphText(glyph))
 		}
 	}
 	if diff.Len() > 0 {

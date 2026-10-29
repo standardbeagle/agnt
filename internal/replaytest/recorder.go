@@ -169,17 +169,37 @@ func bodySig(body string) string {
 }
 
 func coalesceHits(sc *Scenario) {
-	if len(sc.Recordings) < 2 {
+	if len(sc.Recordings) >= 2 {
+		out := sc.Recordings[:1]
+		for _, r := range sc.Recordings[1:] {
+			last := &out[len(out)-1]
+			if recKey(*last) == recKey(r) && sc.Blobs[last.BodyRef] == sc.Blobs[r.BodyRef] {
+				last.Hits++
+				continue
+			}
+			out = append(out, r)
+		}
+		sc.Recordings = out
+	}
+	gcOrphanBlobs(sc)
+}
+
+// gcOrphanBlobs removes entries from sc.Blobs that no surviving Recording
+// references. coalesceHits drops duplicate Recordings but leaves their
+// BodyRef out of the survivor list — without this, sc.Blobs accumulates one
+// orphaned entry per coalesced duplicate, growing the persisted scenario
+// file with response bodies nothing will ever read again.
+func gcOrphanBlobs(sc *Scenario) {
+	if len(sc.Blobs) == 0 {
 		return
 	}
-	out := sc.Recordings[:1]
-	for _, r := range sc.Recordings[1:] {
-		last := &out[len(out)-1]
-		if recKey(*last) == recKey(r) && sc.Blobs[last.BodyRef] == sc.Blobs[r.BodyRef] {
-			last.Hits++
-			continue
-		}
-		out = append(out, r)
+	live := make(map[string]bool, len(sc.Recordings))
+	for _, r := range sc.Recordings {
+		live[r.BodyRef] = true
 	}
-	sc.Recordings = out
+	for ref := range sc.Blobs {
+		if !live[ref] {
+			delete(sc.Blobs, ref)
+		}
+	}
 }

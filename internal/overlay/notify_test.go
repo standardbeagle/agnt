@@ -137,14 +137,20 @@ func TestOverlay_NotifyPaintsAndExpires(t *testing.T) {
 	o := New(nil, w, h, DefaultConfig())
 	o.renderer = NewRenderer(rw, w, h)
 
-	o.Notify(Notification{Level: LevelInfo, Text: "hello", TTL: 30 * time.Millisecond})
+	// The TTL must outlast Notify's own synchronous paint: at 30ms a -race
+	// run lost the entry to pruning before its first snapshot about 4% of
+	// the time, and the test then reported a missing row, not a slow paint.
+	const ttl = 250 * time.Millisecond
+	start := time.Now()
+	o.Notify(Notification{Level: LevelInfo, Text: "hello", TTL: ttl})
+	require.Less(t, time.Since(start), ttl, "premise: Notify painted before the TTL ran out")
 	assert.Contains(t, rw.String(), " ● hello")
 	assert.True(t, o.HasNotifications())
 
-	require.Eventually(t, func() bool { return !o.HasNotifications() }, 2*time.Second, 5*time.Millisecond)
+	require.Eventually(t, func() bool { return !o.HasNotifications() }, 5*time.Second, 5*time.Millisecond)
 	require.Eventually(t, func() bool {
 		return strings.Contains(rw.String(), fmt.Sprintf("\x1b[%d;1H", h-1)+ClearLine)
-	}, 2*time.Second, 5*time.Millisecond, "expiry repaint clears the row")
+	}, 5*time.Second, 5*time.Millisecond, "expiry repaint clears the row")
 }
 
 func TestOverlay_NotifySkipsAltScreenAndHiddenState(t *testing.T) {

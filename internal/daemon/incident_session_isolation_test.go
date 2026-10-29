@@ -177,29 +177,32 @@ func TestProcessScannerDelayedCallbackRejectsReusedIDLifetime(t *testing.T) {
 	for _, code := range []string{"owner-a", "owner-b"} {
 		d.addIncidentSession(code)
 	}
-	d.alertScanner = overlay.NewAlertScanner(overlay.AlertScannerConfig{
-		BatchWindow: 10 * time.Millisecond,
+	scanner := overlay.NewAlertScanner(overlay.AlertScannerConfig{
+		// The window must comfortably exceed the register/retire calls below:
+		// with 10ms the batch timer could fire before the old owner was
+		// retired (preempted under -race load), delivering to owner-a.
+		BatchWindow: 200 * time.Millisecond,
 		OnAlert: func(batch *overlay.AlertBatch) {
 			for _, match := range batch.Matches {
 				d.ingestProcessIncident(match)
 			}
 		},
 	})
-	t.Cleanup(d.alertScanner.Stop)
+	t.Cleanup(scanner.Stop)
 
 	d.registerIncidentProcessOwner("reused-process", "owner-a")
 	owner, _ := d.incidentProcessOwner.Load("reused-process")
-	d.alertScanner.ProcessLineWithLifetime("panic: old lifetime", "reused-process", ownerAsIncidentResource(owner))
+	scanner.ProcessLineWithLifetime("panic: old lifetime", "reused-process", ownerAsIncidentResource(owner))
 	d.retireIncidentProcessOwner("reused-process")
 	d.registerIncidentProcessOwner("reused-process", "owner-b")
-	time.Sleep(50 * time.Millisecond)
+	time.Sleep(400 * time.Millisecond) // > BatchWindow: the stale batch has fired
 	for _, code := range []string{"owner-a", "owner-b"} {
 		entries, _ := d.incidentBus.QuerySession(code, incident.QueryFilter{})
 		require.Empty(t, entries, "stale process lifetime delivered to %s", code)
 	}
 
 	owner, _ = d.incidentProcessOwner.Load("reused-process")
-	d.alertScanner.ProcessLineWithLifetime("fatal: current lifetime", "reused-process", ownerAsIncidentResource(owner))
+	scanner.ProcessLineWithLifetime("fatal: current lifetime", "reused-process", ownerAsIncidentResource(owner))
 	require.Eventually(t, func() bool {
 		entries, _ := d.incidentBus.QuerySession("owner-b", incident.QueryFilter{})
 		return len(entries) == 1

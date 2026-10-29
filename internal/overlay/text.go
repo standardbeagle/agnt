@@ -1,16 +1,18 @@
 package overlay
 
-import "unicode/utf8"
+import (
+	"unicode/utf8"
 
-// RuneCells returns the number of terminal cells r occupies: two for wide
-// (East Asian Wide/Fullwidth, emoji) runes, one otherwise. Exposed for
-// cmd/agnt's line editor so cursor motion uses the same width table the
-// renderer pads with.
+	"github.com/rivo/uniseg"
+)
+
+// RuneCells returns the number of terminal cells r occupies on its own, from
+// uniseg: the table the renderer pads with (estimateVisibleLength) and the
+// host model draws with. Never less than one, because cmd/agnt's line editor
+// moves its cursor one rune at a time and a zero-cell move (CSI 0 D) would
+// still move one cell. Exposed for that line editor.
 func RuneCells(r rune) int {
-	if isWideChar(r) {
-		return 2
-	}
-	return 1
+	return max(uniseg.StringWidth(string(r)), 1)
 }
 
 // TruncateRunes shortens s to at most maxRunes runes, appending suffix only when

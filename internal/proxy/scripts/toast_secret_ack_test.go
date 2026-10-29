@@ -20,20 +20,26 @@ func TestToastSecretSavedOnlyOnAck(t *testing.T) {
 	if src == "" {
 		t.Fatal("toast module source not embedded")
 	}
-	if !strings.Contains(src, "message.type === 'secret_ack'") {
-		t.Fatal("toast.js does not handle the server's secret_ack")
-	}
-	handler := strings.Index(src, "function handleSecretAck")
-	okCheck := strings.Index(src, "ack.ok === true")
-	if handler < 0 || okCheck < handler {
-		t.Fatal("toast.js handleSecretAck must branch on ack.ok === true")
-	}
+	// The ack resolves the pending submission with ok only when the server
+	// said so, and a missing ack times out as a failure.
+	mustContain(t, "toast.js", src,
+		"message.type === 'secret_ack'",
+		"pending.cb(message.ok === true,",
+		"finish(false, 'No response — try again.');",
+	)
+	// "saved" is reported once, from onSubmitted, and onSubmitted runs only
+	// in finish's ok branch, never straight from the form's submit.
 	const saved = "saved to the agnt store"
 	if n := strings.Count(src, saved); n != 1 {
-		t.Fatalf("toast.js has %d %q messages, want exactly one (the ok:true branch)", n, saved)
+		t.Fatalf("toast.js has %d %q messages, want exactly one (onSubmitted)", n, saved)
 	}
-	if at := strings.Index(src, saved); at < okCheck {
-		t.Fatalf("toast.js reports %q outside the ack.ok === true branch", saved)
+	if n := strings.Count(src, "options.onSubmitted()"); n != 1 {
+		t.Fatalf("toast.js calls onSubmitted %d times, want exactly one (finish's ok branch)", n)
+	}
+	finish := strings.Index(src, "function finish(ok, reason)")
+	call := strings.Index(src, "if (ok) {\n            if (options.onSubmitted) options.onSubmitted();")
+	if finish < 0 || call < finish {
+		t.Fatal("toast.js must call onSubmitted only inside finish's ok branch")
 	}
 }
 

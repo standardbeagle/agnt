@@ -19,8 +19,8 @@ const GlobalConfigFile = "config.kdl"
 // Uses kdl struct tags for unmarshaling.
 type KDLConfig struct {
 	Version     string          `kdl:"version"`
-	Settings    KDLSettings     `kdl:"settings"`
 	Languages   KDLLanguages    `kdl:"languages"`
+	Settings    KDLSettings     `kdl:"settings"`
 	AI          *AIConfig       `kdl:"ai"`
 	Feedback    *KDLFeedback    `kdl:"feedback"`
 	PublicPlane *KDLPublicPlane `kdl:"public-plane"`
@@ -67,14 +67,16 @@ func requireWholeSeconds(field string, v float64) error {
 	return nil
 }
 
-// KDLLanguages holds language configurations.
+// KDLLanguages is the accepted-but-ignored `languages` block. It is declared
+// only so a config written from the old default template still parses;
+// ParseKDLConfig reports it with a no-effect warning.
 type KDLLanguages struct {
 	Go     *KDLLanguage `kdl:"go"`
 	Node   *KDLLanguage `kdl:"node"`
 	Python *KDLLanguage `kdl:"python"`
 }
 
-// KDLLanguage holds configuration for a specific language.
+// KDLLanguage mirrors the old per-language block shape (see KDLLanguages).
 type KDLLanguage struct {
 	Markers              []string               `kdl:"markers"`
 	Priority             int                    `kdl:"priority"`
@@ -82,37 +84,13 @@ type KDLLanguage struct {
 	Commands             map[string]*KDLCommand `kdl:"commands"`
 }
 
-// KDLCommand holds a command configuration.
-//
-// Timeout is float64 (not int) for the same reason as KDLSettings' timeout
-// fields: kdl-go silently truncates a float literal into an int struct field
-// with no error, and the consumer treats timeout 0 as the "no timeout / run
-// forever" sentinel — so a fractional `timeout 0.5` would silently collapse to
-// an unbounded run (the bound-into-absence hazard in
-// .claude/rules/config-contracts.md). Sub-second granularity is not supported,
-// so we REFUSE a fractional value at parse time rather than pretend to honor it.
+// KDLCommand mirrors the old per-command shape (see KDLLanguages).
 type KDLCommand struct {
 	Command    string            `kdl:"cmd"`
 	Args       []string          `kdl:"args"`
 	Timeout    float64           `kdl:"timeout"`
 	Persistent bool              `kdl:"persistent"`
 	Env        map[string]string `kdl:"env"`
-}
-
-// validateKDLCommands rejects any command whose timeout is not a whole number
-// of seconds, naming the command so the error is actionable. Reuses
-// requireWholeSeconds (the same guard KDLSettings.validate applies) so the
-// granularity rule lives in exactly one place.
-func validateKDLCommands(commands map[string]*KDLCommand) error {
-	for name, cmd := range commands {
-		if cmd == nil {
-			continue
-		}
-		if err := requireWholeSeconds(fmt.Sprintf("command %s.timeout", name), cmd.Timeout); err != nil {
-			return err
-		}
-	}
-	return nil
 }
 
 // LoadGlobalConfig loads the global configuration from the default location.
@@ -156,14 +134,6 @@ func ParseKDLConfig(data string) (*Config, error) {
 	if err := kdlCfg.Settings.validate(); err != nil {
 		return nil, err
 	}
-	for _, lang := range []*KDLLanguage{kdlCfg.Languages.Go, kdlCfg.Languages.Node, kdlCfg.Languages.Python} {
-		if lang == nil {
-			continue
-		}
-		if err := validateKDLCommands(lang.Commands); err != nil {
-			return nil, err
-		}
-	}
 
 	cfg := kdlConfigToConfig(&kdlCfg)
 	// `version` and `languages` are parsed for compatibility with config files
@@ -182,9 +152,6 @@ func ParseKDLConfig(data string) (*Config, error) {
 func kdlConfigToConfig(kdlCfg *KDLConfig) *Config {
 	cfg := DefaultConfig()
 
-	if kdlCfg.Version != "" {
-		cfg.Version = kdlCfg.Version
-	}
 	if kdlCfg.AI != nil {
 		cfg.AI = kdlCfg.AI
 	}
@@ -210,48 +177,5 @@ func kdlConfigToConfig(kdlCfg *KDLConfig) *Config {
 	if kdlCfg.Settings.GracefulTimeout > 0 {
 		cfg.Settings.GracefulTimeout = time.Duration(int64(kdlCfg.Settings.GracefulTimeout)) * time.Second
 	}
-
-	// Languages
-	if kdlCfg.Languages.Go != nil {
-		mergeLanguageConfig(cfg, "go", kdlCfg.Languages.Go)
-	}
-	if kdlCfg.Languages.Node != nil {
-		mergeLanguageConfig(cfg, "node", kdlCfg.Languages.Node)
-	}
-	if kdlCfg.Languages.Python != nil {
-		mergeLanguageConfig(cfg, "python", kdlCfg.Languages.Python)
-	}
-
 	return cfg
-}
-
-// mergeLanguageConfig merges KDL language config into the main config.
-func mergeLanguageConfig(cfg *Config, name string, kdlLang *KDLLanguage) {
-	langCfg := cfg.Languages[name]
-
-	if len(kdlLang.Markers) > 0 {
-		langCfg.Markers = kdlLang.Markers
-	}
-	if kdlLang.Priority > 0 {
-		langCfg.Priority = kdlLang.Priority
-	}
-	langCfg.PackageManagerDetect = kdlLang.PackageManagerDetect
-
-	// Merge commands
-	for cmdName, kdlCmd := range kdlLang.Commands {
-		if kdlCmd == nil {
-			continue
-		}
-		cmdCfg := CommandConfig{
-			Command: kdlCmd.Command,
-			Args:    kdlCmd.Args,
-			// Validated whole seconds (validateKDLCommands), so the int cast is lossless.
-			Timeout:    int(kdlCmd.Timeout),
-			Persistent: kdlCmd.Persistent,
-			Env:        kdlCmd.Env,
-		}
-		langCfg.Commands[cmdName] = cmdCfg
-	}
-
-	cfg.Languages[name] = langCfg
 }

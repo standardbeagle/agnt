@@ -572,6 +572,8 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 
 		if handler, ok := wsMessageHandlers[msg.Type]; ok {
 			handler(connState, &msg)
+		} else {
+			connState.logUnknownMessageType(msg.Type)
 		}
 	}
 }

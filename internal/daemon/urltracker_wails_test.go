@@ -9,12 +9,10 @@ import (
 // TestWailsConfigURLMatchersLoading tests that URL matchers from config are parsed correctly
 func TestWailsConfigURLMatchersLoading(t *testing.T) {
 	t.Parallel()
-	// This is the exact config from beagle-term/.agnt.kdl
+	// Taken from beagle-term/.agnt.kdl, minus `project { type name }` and
+	// `websocket true`: those keys had no consumer and now fail parse with a
+	// "key removed" error (internal/config checkRemovedKeys).
 	kdlConfig := `
-project {
-    type "wails"
-    name "beagle-term"
-}
 
 scripts {
     frontend-dev {
@@ -36,7 +34,6 @@ proxies {
     wails-dev {
         script "wails-dev"
         fallback-port 34115
-        websocket true
     }
 }
 `

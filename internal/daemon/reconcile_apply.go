@@ -8,6 +8,7 @@ import (
 
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/scope"
 	"github.com/standardbeagle/go-cli-server/script"
 )
@@ -45,6 +46,10 @@ func (d *Daemon) ReconcileProjectConfig(ctx context.Context, projectPath string)
 
 	// Running = scripts currently materialized for this project, keyed by name,
 	// signed from the config snapshot captured when each was last started.
+	//
+	// Ad-hoc launches (RUN, inline PROC RUN) are skipped: .agnt.kdl never
+	// declared them, so reconcile must not stop them as "running, not desired".
+	// A config script that has left the config is still stopped.
 	running := make(map[string]string)
 	for _, entry := range d.scriptRegistry.List(projectPath) {
 		switch entry.State() {
@@ -89,8 +94,17 @@ func (d *Daemon) ReconcileProjectConfig(ctx context.Context, projectPath string)
 		}
 	}
 	plan := computeReconcile(desired, running, desiredProxies, runningProxies)
+	// Applied unconditionally, ahead of the plan.IsEmpty() early return below:
+	// alerts config and automation.max-sessions are not part of the
+	// script/proxy signature diff, so an edit to only those fields produces
+	// an empty plan. RunAutostart (the plan's apply path, further down) used
+	// to be the only caller that applied them — but it is never reached on
+	// an empty plan, so that kind of edit silently never took effect.
+	d.applyProjectRuntimeConfig(projectPath, cfg)
 	d.applyProxyDisplayConfig(projectPath, cfg)
 	d.applyDevOIDCProject(projectPath, cfg)
+	d.applyAuthBreakoutProject(projectPath, cfg)
+	d.reconcileScriptRuntimeFields(&plan, cfg, projectPath)
 
 	log := d.startupLog(projectPath)
 	if plan.IsEmpty() {
@@ -164,6 +178,100 @@ func (d *Daemon) ReconcileProjectConfig(ctx context.Context, projectPath string)
 		return plan, fmt.Errorf("config reconcile: %s", strings.Join(applyErrs, "; "))
 	}
 	return plan, nil
+}
+
+// applyAuthBreakoutProject re-applies the top-level auth-breakout block to
+// every already-running proxy of the project after a config reconcile, so
+// enabling, editing, or removing it takes effect without restarting the
+// proxy — the same live-reapply shape as applyProxyDisplayConfig and
+// applyDevOIDCProject just above. SetAuthBreakout(nil) on a disabled/removed
+// block is deliberate: hub_helpers.go's applyAuthBreakout (the create-time
+// chokepoint for a freshly started proxy) only ever installs rules and never
+// clears them, so it cannot be reused here without leaving a stale breakout
+// active after the block is deleted from .agnt.kdl.
+func (d *Daemon) applyAuthBreakoutProject(projectPath string, cfg *config.AgntConfig) {
+	if cfg == nil {
+		return
+	}
+	var ab *proxy.AuthBreakout
+	if cfg.AuthBreakout.IsEnabled() {
+		ab = &proxy.AuthBreakout{Mode: cfg.AuthBreakout.GetMode(), Patterns: cfg.AuthBreakout.GetPatterns()}
+	}
+	for _, p := range d.proxym.ListScoped(scope.Project(projectPath)) {
+		p.SetAuthBreakout(ab)
+	}
+}
+
+// reconcileScriptRuntimeFields hot-reloads the cheap per-script fields
+// (url-matchers, auto-restart) directly onto already-running, signature-
+// unchanged scripts, and records any change to a field that genuinely needs
+// a restart (ports, depends-on) on plan.NeedsRestart so the reconcile
+// response never silently drops it. Scripts already in
+// Start/Stop/RestartScripts are skipped — those are about to be
+// (re)launched via RunAutostart, which stores their full new config anyway.
+func (d *Daemon) reconcileScriptRuntimeFields(plan *ReconcilePlan, cfg *config.AgntConfig, projectPath string) {
+	if cfg == nil {
+		return
+	}
+	changing := make(map[string]bool, len(plan.StartScripts)+len(plan.StopScripts)+len(plan.RestartScripts))
+	for _, n := range plan.StartScripts {
+		changing[n] = true
+	}
+	for _, n := range plan.StopScripts {
+		changing[n] = true
+	}
+	for _, n := range plan.RestartScripts {
+		changing[n] = true
+	}
+
+	for name, newCfg := range cfg.GetAutostartScripts() {
+		if changing[name] {
+			continue
+		}
+		processID := makeProcessID(projectPath, name)
+		oldVal, ok := d.scriptConfigs.Load(processID)
+		if !ok {
+			continue
+		}
+		oldCfg, ok := oldVal.(*config.ScriptConfig)
+		if !ok {
+			continue
+		}
+
+		urlMatchersChanged, autoRestartChanged, needsRestartFields := scriptRuntimeFieldDiff(oldCfg, newCfg)
+		if !urlMatchersChanged && !autoRestartChanged && len(needsRestartFields) == 0 {
+			continue
+		}
+
+		if urlMatchersChanged {
+			d.urlTracker.SetURLMatchers(processID, newCfg.URLMatchers)
+		}
+		if autoRestartChanged {
+			if newCfg.AutoRestart {
+				if proc, err := d.hub.ProcessManager().Get(processID); err == nil {
+					workingDir := resolveWorkingDir(projectPath, newCfg.Cwd)
+					expectedPorts := d.getExpectedPortsForScript(name, newCfg, cfg.Proxies, workingDir, proc.Command, proc.Args)
+					restartConfig := DefaultAutoRestartConfig()
+					restartConfig.Enabled = true
+					d.autoRestarter.Register(processID, restartConfig, proc.Command, proc.Args, proc.Env, expectedPorts, proc.ProjectPath, proc.WorkingDir)
+				}
+			} else if d.autoRestarter != nil {
+				d.autoRestarter.Unregister(processID)
+			}
+		}
+		if len(needsRestartFields) > 0 {
+			plan.NeedsRestart = append(plan.NeedsRestart,
+				fmt.Sprintf("%s: %s changed (needs restart)", name, strings.Join(needsRestartFields, ", ")))
+		}
+
+		// Persist the full edited config as the new snapshot. Safe here —
+		// unlike the scriptSignature-changed case task 3 guards against,
+		// none of these fields alter what the live OS process actually is;
+		// this only updates the declared-intent metadata hooks/auto-restart/
+		// url-matchers read live and ports/depends-on will pick up on the
+		// next real restart.
+		d.scriptConfigs.Store(processID, newCfg)
+	}
 }
 
 // applyProxyDisplayConfig pushes display-only proxy settings onto proxies that

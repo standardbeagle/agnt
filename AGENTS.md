@@ -39,7 +39,7 @@ make install-hooks    # once per clone: core.hooksPath=.githooks
 | Daemon: persistent state, socket IPC hub | `internal/daemon/` |
 | Text IPC protocol | `internal/protocol/` |
 | Business logic: project detection, reverse proxy | `internal/project/`, `internal/proxy/` |
-| Process management (vendored module) | `github.com/standardbeagle/go-cli-server/process` — there is no `internal/process` |
+| Process management (our module, vendored) | `github.com/standardbeagle/go-cli-server/process` — there is no `internal/process` |
 | Incident pipeline (the only agent alert path) | `internal/incident/` |
 | PTY overlay UI | `internal/overlay/`, `cmd/agnt/overlay*.go` |
 
@@ -83,7 +83,7 @@ The first three listeners are hardened to public standard in every posture: read
 - KDL for app config (`.agnt.kdl`); JSON for content data, API contracts, and LLM-facing formats.
 - MCP tool errors are `CallToolResult{IsError: true}`, never Go errors.
 - `github.com/standardbeagle/go-sdk` is a fork of the MCP go-sdk adding `ServerSession.Notify`; used without a `replace` so `go install` works. Swap back when upstream PR #898 merges.
-- `vendor/` is a plain copy of the module versions in `go.mod`; never edit a file under it. A fix to `go-cli-server` (or any dependency) goes upstream and arrives as a version bump, because a patch that lives only in `vendor/` is dropped by the next `go mod vendor` and never reaches `go install` builds. `make vendor-check` enforces this in CI and in the release build.
+- `go-cli-server` and `vt10x` are our own modules. `vendor/` is a plain copy of the module versions in `go.mod`; never edit a file under it. A fix to `go-cli-server` (or any dependency) goes upstream and arrives as a version bump, because a patch that lives only in `vendor/` is dropped by the next `go mod vendor` and never reaches `go install` builds. `make vendor-check` enforces this in CI and in the release build.
 
 ## Where things are documented
 

@@ -13,6 +13,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/config"
 	"github.com/standardbeagle/agnt/internal/daemon/health"
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/overlay"
 	"github.com/standardbeagle/agnt/internal/platform"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/go-cli-server/process"
@@ -404,10 +405,17 @@ func (d *Daemon) Stop(ctx context.Context) error {
 		d.daemonStartupLog("info", "incident_bus_closed", "incident bus closed")
 	}
 
-	// Stop the alert scanner (cancels any pending time.AfterFunc batch flush).
-	if d.alertScanner != nil {
-		d.alertScanner.Stop()
-		d.daemonStartupLog("info", "alert_scanner_stopped", "alert scanner stopped")
+	// Stop every per-project alert scanner (cancels any pending
+	// time.AfterFunc batch flush). One scanner per project — see
+	// alertScannerFor / buildProjectAlertScanner in daemon.go.
+	stoppedScanners := 0
+	d.alertScanners.Range(func(_, v any) bool {
+		v.(*overlay.AlertScanner).Stop()
+		stoppedScanners++
+		return true
+	})
+	if stoppedScanners > 0 {
+		d.daemonStartupLog("info", "alert_scanner_stopped", fmt.Sprintf("%d alert scanner(s) stopped", stoppedScanners))
 	}
 
 	// Stop the hold buffer goroutine. Pending entries are dropped. Swap to nil

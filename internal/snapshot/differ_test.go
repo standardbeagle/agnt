@@ -236,6 +236,84 @@ func TestCompareKnownChangedPixels(t *testing.T) {
 	assert.False(t, isRed(1, 1), "unchanged pixel (1,1) must not be red")
 }
 
+// TestCompareIgnoreRegionExcludesChangedPixels proves an ignore region drops
+// a changed pixel from both the diff numerator AND the totalPixels
+// denominator — not just skips flagging it, which would still deflate the
+// ratio by leaving totalPixels unchanged.
+func TestCompareIgnoreRegionExcludesChangedPixels(t *testing.T) {
+	dir := t.TempDir()
+	white := color.RGBA{R: 255, G: 255, B: 255, A: 255}
+	red := color.RGBA{R: 255, G: 0, B: 0, A: 255}
+
+	// 4x5 = 20 pixels. Change 3 pixels; one of them, (0,0), sits inside an
+	// ignore region covering the top-left 2x2 block.
+	const w, h = 4, 5
+	base := solidImage(w, h, white)
+	cur := solidImage(w, h, white)
+	changed := [][2]int{{0, 0}, {3, 4}, {2, 2}}
+	for _, p := range changed {
+		cur.Set(p[0], p[1], red)
+	}
+
+	basePath := filepath.Join(dir, "base.png")
+	curPath := filepath.Join(dir, "cur.png")
+	writePNG(t, basePath, base)
+	writePNG(t, curPath, cur)
+
+	d := NewDiffer(0.01)
+	region := IgnoreRegion{Selector: ".clock", Width: 2, Height: 2} // covers (0,0),(1,0),(0,1),(1,1)
+
+	ratio, diff, err := d.Compare(basePath, curPath, region)
+	require.NoError(t, err)
+	require.NotNil(t, diff)
+	// 1 remaining diff pixel (2,2) or (3,4) each, minus 4 excluded pixels:
+	// 2 diffs / 16 pixels = 0.125, vs 3/20 = 0.15 without the region.
+	assert.InDelta(t, 2.0/16.0, ratio, 1e-9)
+
+	// The excluded pixel is neither flagged red nor left as an unmarked
+	// mismatch — it's rendered dimmed, same treatment as a true match.
+	r, g, b, _ := diff.At(0, 0).RGBA()
+	assert.False(t, r == 0xffff && g == 0 && b == 0, "excluded pixel (0,0) must not be flagged red")
+}
+
+// TestCompareIgnoreRegionOutsideBoundsIsNoop confirms a region that covers
+// nothing (zero width/height, or positioned off-image) changes nothing.
+func TestCompareIgnoreRegionOutsideBoundsIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	white := color.RGBA{R: 255, G: 255, B: 255, A: 255}
+	red := color.RGBA{R: 255, G: 0, B: 0, A: 255}
+
+	const w, h = 4, 5
+	base := solidImage(w, h, white)
+	cur := solidImage(w, h, white)
+	cur.Set(1, 1, red)
+
+	basePath := filepath.Join(dir, "base.png")
+	curPath := filepath.Join(dir, "cur.png")
+	writePNG(t, basePath, base)
+	writePNG(t, curPath, cur)
+
+	d := NewDiffer(0.01)
+
+	withNoop, _, err := d.Compare(basePath, curPath, IgnoreRegion{Width: 0, Height: 0}, IgnoreRegion{X: 100, Y: 100, Width: 5, Height: 5})
+	require.NoError(t, err)
+	withNone, _, err := d.Compare(basePath, curPath)
+	require.NoError(t, err)
+	assert.Equal(t, withNone, withNoop)
+}
+
+func TestIgnoreRegionContains(t *testing.T) {
+	r := IgnoreRegion{X: 2, Y: 3, Width: 4, Height: 5}
+	assert.True(t, r.Contains(2, 3), "top-left corner is inclusive")
+	assert.True(t, r.Contains(5, 7), "bottom-right-1 is inclusive")
+	assert.False(t, r.Contains(6, 3), "x at X+Width is exclusive")
+	assert.False(t, r.Contains(2, 8), "y at Y+Height is exclusive")
+	assert.False(t, r.Contains(1, 3), "x before X is outside")
+
+	zero := IgnoreRegion{X: 0, Y: 0, Width: 0, Height: 10}
+	assert.False(t, zero.Contains(0, 0), "zero width matches nothing")
+}
+
 func TestCompareDimensionMismatch(t *testing.T) {
 	dir := t.TempDir()
 	white := color.RGBA{R: 255, G: 255, B: 255, A: 255}

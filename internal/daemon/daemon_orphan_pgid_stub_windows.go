@@ -12,3 +12,8 @@ package daemon
 func (d *Daemon) startupOrphanPGIDScan(projectPath string) int {
 	return 0
 }
+
+// projectOrphanPGIDScanOnce is a no-op on Windows for the same reason as
+// startupOrphanPGIDScan above. Mirrors the unix signature so the
+// RunAutostartAsync call site (daemon_autostart.go) builds unconditionally.
+func (d *Daemon) projectOrphanPGIDScanOnce(projectPath string) {}

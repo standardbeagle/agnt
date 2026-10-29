@@ -47,7 +47,7 @@ func TestAlertIngest_ManagedProcessStampsProjectPath(t *testing.T) {
 	// Drive the production scanner the same way real process output does:
 	// a matching error line for this managed process ID. OnAlert flushes
 	// after the batch window and writes into d.alertStore.
-	daemon.alertScanner.ProcessLine("panic: boom runtime error", processID)
+	daemon.alertScannerFor(wantProject).ProcessLine("panic: boom runtime error", processID)
 
 	// The scanner's batch window (default 3s) gates delivery, so wait for
 	// the entry to land before asserting its ProjectPath.

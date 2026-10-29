@@ -12,6 +12,15 @@
     gap: 10
   };
 
+  // Secret-entry submissions awaiting the daemon's 'secret_ack' reply, keyed
+  // by secret name: { token, cb(ok, error) }. The wire protocol (ws_messages.go)
+  // carries no per-request id, only the name, so only the most recent
+  // in-flight submission for a given name can be resolved — a second submit
+  // of the same name before the first acks replaces the pending entry, and
+  // the stale timeout below no-ops via the token check.
+  var pendingSecretAcks = {};
+  var SECRET_ACK_TIMEOUT_MS = 10000;
+
   // State
   var state = {
     container: null,
@@ -274,17 +283,81 @@
       form.appendChild(secretInput);
       form.appendChild(submitBtn);
 
+      // Inline status line: the ONLY place a submission's real outcome is
+      // shown. A prior version dismissed the toast (and claimed "saved") the
+      // instant WebSocket.send() returned true — the daemon's actual
+      // secret_ack (ws_messages.go) had no listener, so a rejected or
+      // never-persisted secret was reported to the visitor as a success.
+      var statusEl = document.createElement('div');
+      statusEl.setAttribute('role', 'status');
+      statusEl.style.cssText = [
+        'font-size:12px', 'margin-top:4px', 'min-height:14px',
+        'color:' + TOKENS.colors.textMuted
+      ].join(';');
+
       form.onsubmit = function(ev) {
         ev.preventDefault();
         var v = secretInput.value;
         if (!v) return;
-        var sent = window.__devtool_core && window.__devtool_core.send &&
-          window.__devtool_core.send('secret_submit', { name: options.name, value: v });
+        var core = window.__devtool_core;
+        var sent = core && core.send && core.send('secret_submit', { name: options.name, value: v });
         secretInput.value = '';
-        if (options.onSubmitted) options.onSubmitted(!!sent);
+
+        if (!sent) {
+          statusEl.textContent = 'Not connected — try again once reconnected.';
+          statusEl.style.color = TOKENS.colors.error;
+          return;
+        }
+
+        submitBtn.disabled = true;
+        secretInput.disabled = true;
+        statusEl.textContent = 'Saving…';
+        statusEl.style.color = TOKENS.colors.textMuted;
+
+        var settled = false;
+        function finish(ok, reason) {
+          if (settled) return;
+          settled = true;
+          submitBtn.disabled = false;
+          secretInput.disabled = false;
+          if (ok) {
+            if (options.onSubmitted) options.onSubmitted();
+          } else {
+            // Left open on failure so the visitor can retry without
+            // re-triggering the whole toast (Silent Failure Prohibition: a
+            // rejected or unanswered secret_ack must never look like success).
+            // A prompt the user closed while waiting has no status line left
+            // to show it, so the failure gets a toast of its own.
+            if (options.isOpen && !options.isOpen()) {
+              error(options.name + ': ' + reason, 'Secret not saved');
+              return;
+            }
+            statusEl.textContent = reason;
+            statusEl.style.color = TOKENS.colors.error;
+            secretInput.focus();
+          }
+        }
+
+        var token = {};
+        pendingSecretAcks[options.name] = {
+          token: token,
+          // ack.error is the server's reason (a store failure, or a
+          // connection not allowed to write secrets); say it, not just "no".
+          cb: function(ok, reason) {
+            finish(ok, ok ? '' : (reason ? 'Not saved: ' + reason + ' — try again.' : 'Rejected — try again.'));
+          }
+        };
+        setTimeout(function() {
+          var pending = pendingSecretAcks[options.name];
+          if (pending && pending.token === token) {
+            delete pendingSecretAcks[options.name];
+            finish(false, 'No response — try again.');
+          }
+        }, SECRET_ACK_TIMEOUT_MS);
       };
 
       content.appendChild(form);
+      content.appendChild(statusEl);
     }
 
     toast.appendChild(content);
@@ -328,19 +401,24 @@
     var id = state.nextId++;
     var duration = options.duration || config.duration;
 
-    // Secret-entry toasts persist until submitted or dismissed.
+    // Secret-entry toasts persist until submitted or dismissed. onSubmitted
+    // now fires only once the daemon's secret_ack confirms the value was
+    // actually stored (createToastElement's own status line handles the
+    // in-place failure/retry case, so this toast just closes out on success).
     if (options.input === 'secret' && options.name) {
       duration = 0;
       options.showProgress = false;
-      options.onSubmitted = function(sent) {
-        dismiss(id);
-        if (sent) {
-          // Sent is not saved: the server answers with secret_ack, and only
-          // that says whether the store took it (or refused the connection).
-          awaitSecretAck(options.name);
-        } else {
-          error('Could not submit ' + options.name + ' — connection unavailable, try again', 'Secret not saved');
+      // isOpen tells the form whether its toast is still showing (dismissed
+      // toasts leave state at once but stay in the DOM through the fade-out).
+      options.isOpen = function() {
+        for (var i = 0; i < state.toasts.length; i++) {
+          if (state.toasts[i].id === id) return true;
         }
+        return false;
+      };
+      options.onSubmitted = function() {
+        dismiss(id);
+        info(options.name + ' saved to the agnt store (value never shared with the agent)', 'Secret received');
       };
     }
 
@@ -474,51 +552,8 @@
     return show({ type: 'info', message: message, title: title });
   }
 
-  // Secret submissions waiting for the server's secret_ack, by secret name.
-  // The ack comes back on the connection that sent the secret_submit, which
-  // is this frame's own. With no ack in SECRET_ACK_TIMEOUT_MS the outcome is
-  // unknown, and the user is told so rather than told it was saved.
-  var SECRET_ACK_TIMEOUT_MS = 10000;
-  var pendingSecrets = {};
-
-  function awaitSecretAck(name) {
-    var prev = pendingSecrets[name];
-    if (prev) {
-      clearTimeout(prev.timer);
-      dismiss(prev.toastId);
-    }
-    var waitingId = show({ type: 'info', title: 'Secret sent', message: 'Saving ' + name + '…', duration: SECRET_ACK_TIMEOUT_MS });
-    pendingSecrets[name] = {
-      toastId: waitingId,
-      timer: setTimeout(function() {
-        if (!pendingSecrets[name] || pendingSecrets[name].toastId !== waitingId) return;
-        delete pendingSecrets[name];
-        dismiss(waitingId);
-        error('No confirmation that ' + name + ' was saved — check the agnt store and submit it again if it is missing', 'Secret not confirmed');
-      }, SECRET_ACK_TIMEOUT_MS)
-    };
-  }
-
-  function handleSecretAck(ack) {
-    var name = ack.name;
-    var pending = pendingSecrets[name];
-    if (!pending) return;
-    clearTimeout(pending.timer);
-    dismiss(pending.toastId);
-    delete pendingSecrets[name];
-    if (ack.ok === true) {
-      info(name + ' saved to the agnt store (value never shared with the agent)', 'Secret received');
-    } else {
-      error('Could not save ' + name + ': ' + (ack.error || 'the server refused it'), 'Secret not saved');
-    }
-  }
-
   // Listen for toast messages from WebSocket (via core message handlers)
   function handleMessage(message) {
-    if (message.type === 'secret_ack') {
-      handleSecretAck(message.payload || message);
-      return;
-    }
     if (message.type === 'toast') {
       var payload = message.payload || message;
       show({
@@ -529,6 +564,17 @@
         input: payload.input,
         name: payload.name
       });
+      return;
+    }
+    // The daemon's reply to 'secret_submit' (ws_messages.go: {type:
+    // 'secret_ack', name, ok, error?}). Resolves the in-flight submission for that
+    // name registered by createToastElement's form handler above.
+    if (message.type === 'secret_ack') {
+      var pending = pendingSecretAcks[message.name];
+      if (pending) {
+        delete pendingSecretAcks[message.name];
+        pending.cb(message.ok === true, typeof message.error === 'string' ? message.error : '');
+      }
     }
   }
 

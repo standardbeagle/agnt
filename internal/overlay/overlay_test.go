@@ -7,6 +7,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/standardbeagle/vt10x"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -180,12 +181,59 @@ func TestRendererEstimateVisibleLength(t *testing.T) {
 		{Bold + FgGreen + "test" + Reset, 4},
 		{"", 0},
 		{FgBlue + FgRed + "", 0},
+		{"⚡ ⏰ ✨", 8},             // BMP emoji-presentation: wide
+		{"👁 🗄", 3},               // text-presentation emoji: narrow
+		{"👩‍💻" + FgRed + "x", 3}, // ZWJ sequence is one wide cluster
+		{"⚠️", 2},                // VS16 widens its base
+		{"é", 1},                // combining mark takes no cell
 	}
 
 	for _, tt := range tests {
 		got := r.estimateVisibleLength(tt.input)
 		if got != tt.expected {
 			t.Errorf("estimateVisibleLength(%q) = %d, want %d", tt.input, got, tt.expected)
+		}
+	}
+}
+
+// The status bar is laid out from estimateVisibleLength; the host terminal
+// is modelled by vt10x. They must agree cell for cell, or the bar's padding
+// wraps onto the next line or leaves a gap. Every glyph the renderer draws
+// is in this sweep.
+func TestEstimateVisibleLengthMatchesHostModel(t *testing.T) {
+	r := NewRenderer(&bytes.Buffer{}, 80, 24)
+	glyphs := []string{"⏎", "⏰", "⏸", "⚙", "⚠", "⚡", "⛏", "✓", "✖", "✗", "✨", "●", "○", "▲", "▸", "█", "▎",
+		"─", "│", "╭", "⠋", "🌐", "🐳", "👁", "📋", "📖", "📚", "📡", "📦", "📮", "🔇", "🔍", "🔗", "🔨",
+		"🗄", "🚀", "🚢", "🟣", "🧪", "⚠️", "👩‍💻", "🇯🇵", "👍🏽", "é", "日本", "ａ"}
+	for _, g := range glyphs {
+		term := vt10x.New(vt10x.WithSize(20, 2))
+		_, _ = term.Write([]byte(FgRed + g + Reset))
+		if got, want := r.estimateVisibleLength(FgRed+g+Reset), term.Cursor().X; got != want {
+			t.Errorf("%q: estimate %d cells, host model advanced %d", g, got, want)
+		}
+	}
+}
+
+func TestTruncateANSIDropsAClusterThatDoesNotFit(t *testing.T) {
+	r := NewRenderer(&bytes.Buffer{}, 80, 24)
+	s := FgRed + "ab👩‍💻cd"
+	cases := []struct {
+		max  int
+		want string
+	}{
+		{2, FgRed + "ab" + Reset},
+		{3, FgRed + "ab" + Reset},
+		{4, FgRed + "ab👩‍💻" + Reset},
+		{5, FgRed + "ab👩‍💻c" + Reset},
+		{99, s + Reset},
+	}
+	for _, tc := range cases {
+		got := r.truncateANSI(s, tc.max)
+		if got != tc.want {
+			t.Errorf("truncateANSI(%d) = %q, want %q", tc.max, got, tc.want)
+		}
+		if n := r.estimateVisibleLength(got); n > tc.max {
+			t.Errorf("truncateANSI(%d) is %d cells wide", tc.max, n)
 		}
 	}
 }

@@ -407,6 +407,98 @@ func TestParseSketchCapture_Full(t *testing.T) {
 	assert.NotNil(t, capture.Sketch)
 }
 
+// ── parseScreenshotCapture ──────────────────────────────────────────────────
+
+func TestParseScreenshotCapture_Full(t *testing.T) {
+	data := map[string]interface{}{
+		"id": "ctx_ss1",
+		"data": map[string]interface{}{
+			"label":   "Full screen (800x600)",
+			"summary": "Full screen screenshot 800x600",
+			"area": map[string]interface{}{
+				"x":      float64(0),
+				"y":      float64(0),
+				"width":  float64(800),
+				"height": float64(600),
+			},
+		},
+	}
+
+	capture := parseScreenshotCapture(data, testTS, testURL)
+
+	assert.Equal(t, "ctx_ss1", capture.ID)
+	assert.Equal(t, "Full screen screenshot 800x600", capture.Summary)
+	assert.Equal(t, 800, capture.Area.Width)
+	assert.Equal(t, 600, capture.Area.Height)
+	assert.Equal(t, testURL, capture.URL)
+	// No imageBuffer arrived over this fallback JSON path.
+	assert.Empty(t, capture.ImageData)
+	assert.Empty(t, capture.FilePath)
+}
+
+func TestParseScreenshotCapture_FallsBackToLabelWhenNoSummary(t *testing.T) {
+	data := map[string]interface{}{
+		"id": "ctx_ss2",
+		"data": map[string]interface{}{
+			"label": "Full screen (800x600)",
+		},
+	}
+
+	capture := parseScreenshotCapture(data, testTS, testURL)
+
+	assert.Equal(t, "Full screen (800x600)", capture.Summary)
+}
+
+// ── parseGenericCapture ─────────────────────────────────────────────────────
+
+func TestParseGenericCapture_Audit(t *testing.T) {
+	data := map[string]interface{}{
+		"id": "ctx_audit1",
+		"data": map[string]interface{}{
+			"label":     "Accessibility audit",
+			"summary":   "12 issues found",
+			"auditType": "accessibility",
+			"result":    map[string]interface{}{"issues": float64(12)},
+		},
+	}
+
+	capture := parseGenericCapture("audit", data, testTS, testURL)
+
+	assert.Equal(t, "ctx_audit1", capture.ID)
+	assert.Equal(t, "audit", capture.CaptureType)
+	assert.Equal(t, "Accessibility audit", capture.Label)
+	assert.Equal(t, "12 issues found", capture.Summary)
+	require.NotNil(t, capture.Data)
+	assert.Equal(t, "accessibility", capture.Data["auditType"])
+}
+
+func TestParseGenericCapture_StyleEdit(t *testing.T) {
+	data := map[string]interface{}{
+		"id": "ctx_style1",
+		"data": map[string]interface{}{
+			"label":    "header: 2 changes",
+			"summary":  "header: 2 style changes",
+			"selector": ".header",
+			"changes":  []interface{}{"color", "padding"},
+		},
+	}
+
+	capture := parseGenericCapture("style-edit", data, testTS, testURL)
+
+	assert.Equal(t, "style-edit", capture.CaptureType)
+	assert.Equal(t, ".header", capture.Data["selector"])
+}
+
+func TestParseGenericCapture_MissingData(t *testing.T) {
+	data := map[string]interface{}{"id": "ctx_missing"}
+
+	capture := parseGenericCapture("audit", data, testTS, testURL)
+
+	assert.Equal(t, "ctx_missing", capture.ID)
+	assert.Empty(t, capture.Label)
+	assert.Nil(t, capture.Data)
+}
+
 // ── parseDesignState ────────────────────────────────────────────────────────
 
 func TestParseDesignState_Full(t *testing.T) {

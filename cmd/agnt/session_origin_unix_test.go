@@ -43,7 +43,11 @@ func TestAttachAndSessionHostsCommandsExposeRemoteSurface(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = client.SessionHostKill(created.SessionID) })
+	t.Cleanup(func() {
+		if err := client.SessionHostKill(created.SessionID); err != nil {
+			t.Errorf("SessionHostKill(%s): %v", created.SessionID, err)
+		}
+	})
 
 	oldCWD, err := os.Getwd()
 	if err != nil {

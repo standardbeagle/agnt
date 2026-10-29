@@ -157,6 +157,12 @@ func newDaemonConfig(appCfg *config.Config, socketPath, publicAddr string) daemo
 	}
 	return daemon.DaemonConfig{
 		SocketPath: socketPath,
+		// Thread the operator's settings{} block through to the process
+		// manager. DefaultConfig() seeds Settings with the same values that
+		// used to be hardcoded here (0 / DefaultBufferSize /
+		// DefaultGracefulTimeout), and kdlConfigToConfig only overrides a
+		// field when the KDL value is positive, so this is a strict
+		// superset of the old hardcoded behavior — never zero/negative.
 		ProcessConfig: process.ManagerConfig{
 			DefaultTimeout:    settings.DefaultTimeout,
 			MaxOutputBuffer:   settings.MaxOutputBuffer,

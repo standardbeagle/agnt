@@ -19,18 +19,19 @@ import (
 // The indicator redraw runs on a 200ms ticker with no knowledge of the child's
 // frame boundaries, so this is a race the child always eventually loses.
 //
-// So we never touch the save slot. The PTY output filter already tracks the
-// child's cursor row/column and its DECTCEM visibility from the child's own
-// output stream; drawOverChild reads that state and restores it with an absolute
-// CUP, leaving the terminal's save slot to the child.
+// So we never touch the save slot. The PTY output filter feeds everything it
+// sends to the host terminal into a terminal emulator, whose cursor row/column
+// and DECTCEM visibility are the host's; drawOverChild reads that state and
+// restores it with an absolute CUP, leaving the terminal's save slot to the
+// child.
 //
 // The position has to be read and the draw emitted with no child output in
-// between. The filter advances its tracked cursor byte by byte and hands the
-// chunk to the terminal only at the end of Write, so a position read during a
-// Write (or before it, with the draw emitted after it) is not where the
-// terminal's cursor is when the restore arrives; the child's next relative
-// output then lands at the wrong place. drawOverChild therefore reads the
-// cursor and emits the whole draw while the filter holds its lock.
+// between. The child keeps writing while the overlay formats its bytes, so a
+// position read before a child chunk and a draw emitted after it restores to
+// where the child *was*, and a renderer that redraws with relative moves
+// (Claude Code, Ink) then erases and repaints the wrong rows. drawOverChild
+// therefore reads the cursor and emits the whole draw while the filter holds
+// its lock (ProtectedWriter.HoldChildCursor).
 //
 // When no cursor source is registered (unit tests, non-PTY callers) this falls
 // back to the historical SCP/RCP pair — correct on its own, since in that case
@@ -38,8 +39,9 @@ import (
 
 // childCursorSource calls fn with the child PTY's cursor row/column
 // (1-indexed) and whether the child currently has the cursor visible, and
-// holds the child's output back until fn returns. fn must not draw through
-// anything that takes the source's own lock.
+// holds the child's output back until fn returns. fn must end its draw by
+// restoring that position, and must not draw through anything that takes the
+// source's own lock.
 type childCursorSource func(fn func(row, col int, visible bool))
 
 // There is exactly one child PTY and one host terminal per process, so the
@@ -82,11 +84,6 @@ func drawOverChild(emit func(park string, parked parkedCursor)) {
 		return
 	}
 	src(func(row, col int, visible bool) {
-		if row < 1 || col < 1 {
-			// The filter has not seen enough output to know where the child is.
-			emit(CursorSave+CursorHide, parkedCursor{})
-			return
-		}
 		emit(CursorHide, parkedCursor{row: row, col: col, visible: visible, tracked: true})
 	})
 }

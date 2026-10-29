@@ -303,7 +303,19 @@ func TestSSHClientSurfaces_WithRealSSHFixture(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = dclient.SessionHostKill(created.SessionID) })
+	// Kill over a connection of its own: the test retires dclient's session,
+	// and a connection bound to a retired session sees no session-host.
+	t.Cleanup(func() {
+		killer := daemonclient.NewClientWithPath(remoteSocket)
+		if err := killer.Connect(); err != nil {
+			t.Errorf("connect to kill %s: %v", created.SessionID, err)
+			return
+		}
+		defer killer.Close()
+		if err := killer.SessionHostKill(created.SessionID); err != nil {
+			t.Errorf("SessionHostKill(%s): %v", created.SessionID, err)
+		}
+	})
 	root := &cobra.Command{Use: "fixture"}
 	root.PersistentFlags().String("socket", localSocket, "")
 	hosts := &cobra.Command{Use: "hosts"}
