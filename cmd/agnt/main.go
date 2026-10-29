@@ -25,22 +25,27 @@ var rootCmd = &cobra.Command{
   - Reverse proxy with traffic logging and frontend instrumentation
   - Process management with output capture`,
 	Version: appVersion,
-	// Default behavior: if stdin is not a terminal, run as MCP server
-	Run: func(cmd *cobra.Command, args []string) {
-		if !isTerminal(os.Stdin) {
-			// Running as MCP server (stdin is a pipe)
-			runServe(cmd, args)
-		} else {
-			// Interactive terminal - show help
-			cmd.Help()
-		}
-	},
+	// Run is assigned in init(): launchInteractive reaches runCommand, which
+	// reads rootCmd, so an initializer here is an initialization cycle.
+}
+
+// runRoot is the bare `agnt` behavior: with stdin as a pipe it is an MCP
+// server; in a terminal it picks an installed coding agent and starts it
+// under `agnt run`.
+func runRoot(cmd *cobra.Command, args []string) {
+	if !isTerminal(os.Stdin) {
+		runServe(cmd, args)
+		return
+	}
+	launchInteractive(cmd)
 }
 
 var debugMode bool
 var debugLogFile string
 
 func init() {
+	rootCmd.Run = runRoot
+
 	// Set version for script injection (must be before any proxy is created)
 	scripts.Version = appVersion
 

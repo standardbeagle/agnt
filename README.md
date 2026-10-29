@@ -55,6 +55,19 @@ Traditional AI coding assistants are blind to what's happening in the browser. T
 
 ## Quick Start
 
+### Just run it
+
+In any project directory, no install and no config file:
+
+```bash
+npx @standardbeagle/agnt
+```
+
+(or plain `agnt` once installed). agnt finds the coding agents on your PATH,
+starts the only one it finds or asks which one to use, and runs it with the
+proxy, overlay and dev-server setup wired in. In an empty directory it says so
+in the status bar, so you can tell the agent what to build.
+
 ### Installation
 
 **npm** (recommended):

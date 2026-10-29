@@ -1767,6 +1767,9 @@ func runOverlayPipeline(
 		rt.stdinModal = rawRelay
 		rt.restoreNotifier = setUserNotifier(overlay.NewLineNotifier(os.Stderr, true))
 	}
+	if msg := emptyProjectNotice(projectPath); msg != "" {
+		notifyUserID("empty-project", overlay.LevelInfo, "%s", msg)
+	}
 
 	// Initial indicator draw after a short delay so the child has a chance
 	// to clear/redraw first.
