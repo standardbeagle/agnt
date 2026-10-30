@@ -11,6 +11,7 @@ import (
 	"github.com/standardbeagle/agnt/internal/daemonclient"
 	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/hookrules"
+	"github.com/standardbeagle/agnt/internal/platform"
 	"github.com/standardbeagle/agnt/internal/protocol"
 	"github.com/standardbeagle/agnt/internal/shims"
 )
@@ -155,6 +156,10 @@ func shimPassthrough(command string, args []string) int {
 	return execRealBinary(real, command, args)
 }
 
+// shimWatchPollInterval is how often the watcher probes the daemon. A var so
+// tests can drive the loop without waiting out real polls.
+var shimWatchPollInterval = 5 * time.Second
+
 // runShimWatch is the detached cleanup watcher. Poll cadence is 5s; a dead
 // daemon gets a 30s grace window so the auto-restart path
 // (ResilientClient.EnsureHubRunning) wins the race. Exits when the
@@ -164,10 +169,19 @@ func runShimWatch(socketPath string) int {
 	if socketPath == "" {
 		socketPath = daemonclient.DefaultSocketPath()
 	}
-	const (
-		pollInterval = 5 * time.Second
-		deadGrace    = 30 * time.Second
-	)
+	const deadGrace = 30 * time.Second
+	// Claim the manifest slot before the first superseded check. The daemon
+	// records the pid only after Start returns, so a first poll that trusted
+	// the manifest found the previous watcher's pid, took itself for
+	// superseded and exited at birth: no watcher ever ran.
+	birth, _ := platform.ProcessBirthID(os.Getpid())
+	if err := shims.WithManifest(func(m *shims.Manifest) {
+		m.WatcherPID = os.Getpid()
+		m.WatcherBirth = birth
+	}); err != nil {
+		fmt.Fprintf(os.Stderr, "agnt shim watch: claim manifest: %v\n", err)
+		return 1
+	}
 	var deadSince time.Time
 	for {
 		alive := daemonclient.IsRunning(socketPath)
@@ -206,6 +220,6 @@ func runShimWatch(socketPath string) int {
 			return 0
 		}
 
-		time.Sleep(pollInterval)
+		time.Sleep(shimWatchPollInterval)
 	}
 }

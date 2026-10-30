@@ -35,7 +35,10 @@ func (d *Daemon) ensureShimWatcher() {
 		return
 	}
 	pid := cmd.Process.Pid
-	_ = cmd.Process.Release()
+	// Reap it whenever it exits: a released child that exits stays a zombie
+	// of the daemon for the daemon's whole life. Wait does not hold the
+	// watcher back; it outlives the daemon (own session) by design.
+	go func() { _ = cmd.Wait() }()
 	birth, _ := platform.ProcessBirthID(pid)
 	if err := shims.WithManifest(func(m *shims.Manifest) {
 		m.WatcherPID = pid
