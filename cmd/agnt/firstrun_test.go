@@ -190,7 +190,7 @@ func newFlowDeps(rec *flowRec, args []string, hasConfigSeq []bool, setupPgid int
 				return setupPgid, setupErr
 			}
 			rec.events = append(rec.events, "launch:coding")
-			return 0, nil
+			return codingPGID, nil
 		},
 		reap: func(pgid int) {
 			rec.events = append(rec.events, "reap")
@@ -199,6 +199,9 @@ func newFlowDeps(rec *flowRec, args []string, hasConfigSeq []bool, setupPgid int
 		notice: func(msg string) { rec.notices = append(rec.notices, msg) },
 	}
 }
+
+// codingPGID is the process group every fake coding-phase launch reports.
+const codingPGID = 5151
 
 // TestRunFirstRunFlow_SuppressedNudgeIsLoud pins that launching with no config
 // under a still-valid negative marker tells the user why nothing autostarts,
@@ -214,7 +217,7 @@ func TestRunFirstRunFlow_SuppressedNudgeIsLoud(t *testing.T) {
 			return &firstRunMarker{LastNudge: now.Add(-24 * time.Hour)}, nil
 		}
 		require.NoError(t, runFirstRunFlow(d))
-		assert.Equal(t, []string{"launch:coding"}, rec.events)
+		assert.Equal(t, []string{"launch:coding", "reap"}, rec.events)
 		require.Len(t, rec.notices, 1)
 		assert.Contains(t, rec.notices[0], ".agnt.kdl")
 		assert.Contains(t, rec.notices[0], "agnt init")
@@ -244,9 +247,9 @@ func TestRunFirstRunFlow(t *testing.T) {
 		rec := &flowRec{}
 		// hasConfig true at gate → skip; outcome read never happens.
 		require.NoError(t, runFirstRunFlow(newFlowDeps(rec, args, []bool{true}, 0, nil)))
-		assert.Equal(t, []string{"launch:coding"}, rec.events)
+		assert.Equal(t, []string{"launch:coding", "reap"}, rec.events)
 		assert.Empty(t, rec.written, "skip path writes no marker")
-		assert.Empty(t, rec.reaped, "skip path reaps nothing")
+		assert.Equal(t, []int{codingPGID}, rec.reaped, "the coding child's group is reaped when it ends")
 		assert.Equal(t, args, rec.launchArg[0], "args replayed verbatim")
 	})
 
@@ -254,11 +257,11 @@ func TestRunFirstRunFlow(t *testing.T) {
 		rec := &flowRec{}
 		// gate=false (fire), outcome=true (config written) → relaunch.
 		require.NoError(t, runFirstRunFlow(newFlowDeps(rec, args, []bool{false, true}, 4242, nil)))
-		assert.Equal(t, []string{"launch:setup", "reap", "launch:coding"}, rec.events,
-			"setup → reap → coding, in that order")
+		assert.Equal(t, []string{"launch:setup", "reap", "launch:coding", "reap"}, rec.events,
+			"setup → reap → coding → reap, in that order")
 		require.Len(t, rec.written, 1)
 		assert.True(t, rec.written[0].Permanent, "positive outcome writes permanent marker")
-		assert.Equal(t, []int{4242}, rec.reaped, "setup child's pgid is reaped")
+		assert.Equal(t, []int{4242, codingPGID}, rec.reaped, "each phase's own group is reaped")
 		// Byte-identical replay across both phases.
 		require.Len(t, rec.launchArg, 2)
 		assert.Equal(t, args, rec.launchArg[0])

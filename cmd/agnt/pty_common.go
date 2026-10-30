@@ -1385,9 +1385,11 @@ func firstRunOrCoding(projectPath string, args []string,
 		if autoConfigured {
 			return nil
 		}
-		if _, err := launch(true, args); err != nil {
+		pgid, err := launch(true, args)
+		if err != nil {
 			return err
 		}
+		reap(pgid) // the session is over; see runFirstRunFlow
 		if hasResolvedConfig(projectPath) {
 			// Best-effort: a failed marker write only re-shows the setup nudge
 			// next run. debug.Log is the only safe channel on the PTY path.

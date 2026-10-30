@@ -105,23 +105,33 @@ type firstRunDeps struct {
 // Phase 2 reuses d.args by value, so the relaunched child's argv is
 // byte-identical to the original — no separate capture/quote round-trip.
 func runFirstRunFlow(d firstRunDeps) error {
+	// Every phase's process group is reaped as soon as the phase ends. After
+	// setup, so backgrounded jobs (npm run dev &, etc.) can't hold ports the
+	// coding child needs. After coding, because the session is over and agnt
+	// is the one process sure to be there: the daemon reaps the group on
+	// session cleanup too, but not when it is down or never registered the
+	// session, and then the agent's MCP servers and jobs leaked.
+	launchAndReap := func(setupPhase bool) error {
+		pgid, err := d.launch(setupPhase, d.args)
+		if err != nil {
+			return err
+		}
+		d.reap(pgid)
+		return nil
+	}
+
 	marker, _ := d.readMarker()
 	hasConfig := d.hasConfig()
 	if decideSetupGate(hasConfig, marker, d.now, d.ttl) == skipSetup {
 		if !hasConfig && d.notice != nil {
 			d.notice(unconfiguredNotice(marker, d.now, d.ttl))
 		}
-		_, err := d.launch(false, d.args)
-		return err
+		return launchAndReap(false)
 	}
 
-	pgid, err := d.launch(true, d.args)
-	if err != nil {
+	if err := launchAndReap(true); err != nil {
 		return err
 	}
-	// Reap the setup child's process group before phase 2 so backgrounded
-	// jobs (npm run dev &, etc.) can't hold ports the coding child needs.
-	d.reap(pgid)
 
 	positive := d.hasConfig()
 	if err := d.writeMarker(setupOutcomeMarker(positive, d.now)); err != nil {
@@ -130,8 +140,7 @@ func runFirstRunFlow(d firstRunDeps) error {
 	if !positive {
 		return nil
 	}
-	_, err = d.launch(false, d.args)
-	return err
+	return launchAndReap(false)
 }
 
 // unconfiguredNotice is the message shown when `agnt run` launches with no
