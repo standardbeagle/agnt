@@ -597,15 +597,6 @@ func (d *Daemon) restartProxy(ctx context.Context, p *proxy.ProxyServer, callerS
 	// script↔proxy index along with the rest of the per-proxy tracking.
 	linkedScript := d.linkedScriptForProxy(p.ID)
 
-	// Stop the proxy
-	if err := d.proxym.Stop(ctx, proxyID); err != nil {
-		debug.Warn("daemon", "error stopping proxy %s: %v", proxyID, err)
-		d.recordStartupEntry(proxyID, "", "warning", "proxy_stop_failed",
-			fmt.Sprintf("proxy restart: failed to stop proxy: %v", err), 0)
-	} else {
-		d.retireIncidentProxyOwner(proxyID)
-	}
-
 	// The admin entry belongs to the server that is going away. It is retired
 	// here and registered again below against the new one, because a restart
 	// need not come back on the same port: the entry would otherwise keep
@@ -613,14 +604,27 @@ func (d *Daemon) restartProxy(ctx context.Context, p *proxy.ProxyServer, callerS
 	d.retireExplicitProxyEntry(projectPath, proxyID)
 
 	// Persisted state stays until the replacement exists: AddProxy below
-	// overwrites it by id, and if Create fails the entry is what lets the
-	// proxy come back when the daemon restarts.
-
-	// Wait for the old listener to release the port before rebinding it,
-	// rather than guessing with a fixed sleep. Stop() closes the listener
-	// synchronously, so this returns almost immediately in the common case.
-	if boundPort > 0 {
-		waitPortFree(boundPort, 2*time.Second)
+	// overwrites it by id, and if the restart fails the entry is what lets
+	// the proxy come back when the daemon restarts.
+	//
+	// Replace keeps the id registered from stop to start, so the
+	// config-driven start path cannot create the proxy again in between and
+	// take the port (it used to, and the restart then failed on its own
+	// declared listen-port).
+	stopped := func(stopErr error) {
+		if stopErr != nil {
+			debug.Warn("daemon", "error stopping proxy %s: %v", proxyID, stopErr)
+			d.recordStartupEntry(proxyID, "", "warning", "proxy_stop_failed",
+				fmt.Sprintf("proxy restart: failed to stop proxy: %v", stopErr), 0)
+		} else {
+			d.retireIncidentProxyOwner(proxyID)
+		}
+		// Wait for the old listener to release the port before rebinding it,
+		// rather than guessing with a fixed sleep. Stop() closes the listener
+		// synchronously, so this returns almost immediately in the common case.
+		if boundPort > 0 {
+			waitPortFree(boundPort, 2*time.Second)
+		}
 	}
 
 	// Recreate on the SAME port. For a port the daemon picked this is
@@ -631,7 +635,7 @@ func (d *Daemon) restartProxy(ctx context.Context, p *proxy.ProxyServer, callerS
 	// user declared (`listen-port`) stays strict: it means "this port or
 	// nothing", so the restart fails loud rather than drift, and the new
 	// server's own crash auto-restart keeps refusing to drift too.
-	newProxy, err := d.proxym.Create(ctx, proxy.ProxyConfig{
+	newProxy, err := d.proxym.Replace(ctx, p, proxy.ProxyConfig{
 		ID:               proxyID,
 		TargetURL:        targetURL,
 		ListenPort:       boundPort,
@@ -645,7 +649,7 @@ func (d *Daemon) restartProxy(ctx context.Context, p *proxy.ProxyServer, callerS
 		SkipTLSVerify:    skipTLSVerify,
 		AutoRestart:      autoRestart,
 		NamedTunnel:      namedTunnel,
-	})
+	}, stopped)
 	if err != nil {
 		// The old server is gone and nothing replaced it. The caller gets the
 		// error; the agent and session log get a record that the proxy is down.

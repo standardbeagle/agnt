@@ -3,12 +3,13 @@ package proxy
 import (
 	"context"
 	"errors"
-	"github.com/standardbeagle/agnt/internal/pathutil"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
 
 	"github.com/standardbeagle/agnt/internal/debug"
+	"github.com/standardbeagle/agnt/internal/pathutil"
 	"github.com/standardbeagle/agnt/internal/scope"
 	"golang.org/x/sync/semaphore"
 )
@@ -44,6 +45,15 @@ func NewProxyManager() *ProxyManager {
 func (pm *ProxyManager) Create(ctx context.Context, config ProxyConfig) (*ProxyServer, error) {
 	if pm.shuttingDown.Load() {
 		return nil, errors.New("proxy manager is shutting down")
+	}
+
+	// An id that is taken is final before anything binds. Checked only after
+	// the bind, a duplicate start failed on the port the existing proxy holds
+	// instead, and a caller retrying on "address in use" (createWithRetry)
+	// took the port and the id the moment a restart released them. The
+	// LoadOrStore below still settles two Creates that both pass this check.
+	if _, exists := pm.proxies.Load(config.ID); exists {
+		return nil, ErrProxyExists
 	}
 
 	// Create proxy server
@@ -88,6 +98,65 @@ func (pm *ProxyManager) Create(ctx context.Context, config ProxyConfig) (*ProxyS
 	pm.activeCount.Add(1)
 	pm.totalStarted.Add(1)
 
+	return proxy, nil
+}
+
+// Replace stops old and starts a server from config in its place under the
+// same id (config.ID must be old.ID). The registry entry stays on old until
+// the new server is up, so a Create of that id gets ErrProxyExists for the
+// whole restart rather than winning the gap between stop and start. stopped,
+// if set, runs once old is stopped, with its stop error ("not running" is
+// not one), before the new server binds. If the new server does not start,
+// old's entry is retired as Stop would have and the start error returned.
+func (pm *ProxyManager) Replace(ctx context.Context, old *ProxyServer, config ProxyConfig, stopped func(stopErr error)) (*ProxyServer, error) {
+	if config.ID != old.ID {
+		return nil, fmt.Errorf("replace proxy %s: config id %q differs", old.ID, config.ID)
+	}
+	stopErr := old.Stop(ctx)
+	if errors.Is(stopErr, errProxyNotRunning) {
+		stopErr = nil
+	}
+	if stopped != nil {
+		stopped(stopErr)
+	}
+
+	retireOld := func() {
+		if pm.proxies.CompareAndDelete(old.ID, old) {
+			pm.activeCount.Add(-1)
+		}
+	}
+	if pm.shuttingDown.Load() {
+		retireOld()
+		return nil, errors.New("proxy manager is shutting down")
+	}
+	proxy, err := NewProxyServer(config)
+	if err != nil {
+		retireOld()
+		return nil, err
+	}
+	if err := proxy.Start(ctx); err != nil {
+		proxy.pageTracker.Stop()
+		proxy.chaosEngine.Stop()
+		retireOld()
+		return nil, err
+	}
+	if !pm.proxies.CompareAndSwap(old.ID, old, proxy) {
+		// Someone stopped old while it was being replaced: honour that stop.
+		if err := proxy.Stop(ctx); err != nil {
+			debug.Log("proxy", "error stopping replacement for %s, retired during the restart: %v", old.ID, err)
+		}
+		return nil, fmt.Errorf("proxy %s was stopped while it was being restarted", old.ID)
+	}
+	if pm.shuttingDown.Load() {
+		if pm.proxies.CompareAndDelete(old.ID, proxy) {
+			pm.activeCount.Add(-1)
+		}
+		if err := proxy.Stop(ctx); err != nil {
+			debug.Log("proxy", "error stopping proxy %s lost to shutdown race: %v", old.ID, err)
+		}
+		return nil, errors.New("proxy manager is shutting down")
+	}
+	pm.totalStarted.Add(1)
 	return proxy, nil
 }
 

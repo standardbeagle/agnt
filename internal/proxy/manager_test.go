@@ -5,6 +5,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
+
 	"github.com/standardbeagle/agnt/internal/scope"
 )
 
@@ -434,4 +437,48 @@ func TestProxyManager_Shutdown(t *testing.T) {
 	if err == nil {
 		t.Error("Expected error when creating proxy after shutdown")
 	}
+}
+
+// TestProxyManager_ReplaceHoldsTheIDAcrossTheRestart pins the restart race
+// RESTART-ALL lost: a Create of the same id and port issued while the old
+// server is stopped (the config-driven start path retrying on "address in
+// use") must get ErrProxyExists, not the freed port, and the replacement must
+// come back on the declared port under the same id with the count unchanged.
+// A start that fails retires the old entry rather than leaving a dead proxy
+// registered.
+func TestProxyManager_ReplaceHoldsTheIDAcrossTheRestart(t *testing.T) {
+	pm := NewProxyManager()
+	ctx := context.Background()
+	t.Cleanup(func() { _, _ = pm.StopAll(ctx) })
+
+	cfg := ProxyConfig{ID: "api", TargetURL: "http://127.0.0.1:1", MaxLogSize: 100, StrictListenPort: true}
+	old, err := pm.Create(ctx, cfg)
+	require.NoError(t, err)
+	cfg.ListenPort = old.BoundPort()
+
+	var duringRestart error
+	replacement, err := pm.Replace(ctx, old, cfg, func(stopErr error) {
+		require.NoError(t, stopErr)
+		_, duringRestart = pm.Create(ctx, cfg)
+	})
+	require.NoError(t, err)
+	assert.ErrorIs(t, duringRestart, ErrProxyExists, "a Create inside the restart window must not take the id")
+	assert.NotSame(t, old, replacement)
+	assert.Equal(t, cfg.ListenPort, replacement.BoundPort(), "declared port kept")
+	got, err := pm.Get("api")
+	require.NoError(t, err)
+	assert.Same(t, replacement, got)
+	assert.Equal(t, int64(1), int64(pm.ActiveCount()))
+
+	_, err = pm.Create(ctx, cfg)
+	assert.ErrorIs(t, err, ErrProxyExists, "a taken id is refused before anything binds")
+
+	// A replacement that cannot be built fails, and the stopped proxy is
+	// retired rather than left registered.
+	squatter, err := pm.Replace(ctx, replacement, ProxyConfig{ID: "api", TargetURL: "://bad", MaxLogSize: 100}, nil)
+	require.Error(t, err)
+	assert.Nil(t, squatter)
+	_, err = pm.Get("api")
+	assert.ErrorIs(t, err, ErrProxyNotFound)
+	assert.Equal(t, int64(0), int64(pm.ActiveCount()))
 }
