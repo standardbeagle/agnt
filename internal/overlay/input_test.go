@@ -917,101 +917,74 @@ func TestPanelRefreshIgnoresWrongPanel(t *testing.T) {
 	assert.Equal(t, "original", content, "should not update non-active panel")
 }
 
-func TestEagerRefreshOnUnfreeze(t *testing.T) {
-	router, ov, fetcher := newPanelTestRouter(t)
+// blockingFetcher holds every GetScriptOutput call until release closes,
+// standing in for a daemon that stops answering.
+type blockingFetcher struct {
+	mockOutputFetcher
+	release chan struct{}
+}
 
-	// Set up gate so hideMenu can freeze/unfreeze
+func (b *blockingFetcher) GetScriptOutput(name string, n int) (string, error) {
+	<-b.release
+	return b.mockOutputFetcher.GetScriptOutput(name, n)
+}
+
+// A slow daemon must never reach the keyboard goroutine. Closing the panel
+// view from a script panel used to fetch that script's output before
+// unfreezing the agent's output, and arrowing onto a script panel fetched it
+// inline: with the daemon stalled, typing and the agent's screen froze for up
+// to the connection's 30s timeout. Both paths now return at once, the gate
+// unfreezes, and the panel fills from the refresh goroutine when the daemon
+// answers.
+func TestSlowDaemonNeverBlocksPanelKeys(t *testing.T) {
+	router, ov, _ := newPanelTestRouter(t)
+	fetcher := &blockingFetcher{release: make(chan struct{})}
+	fetcher.output = "late output"
+	router.SetOutputFetcher(fetcher)
 	gate := NewOutputGate(&writeRecorder{})
 	ov.SetGate(gate)
+	t.Cleanup(router.Stop)
 
-	// Pre-fill panel with stale content
-	ov.mu.Lock()
-	ov.panelItems[1].SetContent("stale content")
-	ov.mu.Unlock()
-
-	// Update daemon output (simulates new output arriving while frozen)
-	fetcher.setOutput("fresh content from daemon")
-
-	// Open and close the overlay to trigger hideMenu -> before-unfreeze callback
-	ov.mu.Lock()
-	ov.showPanelDirect()
-	ov.panelMode = true
-	ov.panelIndex = 1
-	ov.mu.Unlock()
-
-	ov.mu.Lock()
-	router.exitPanelMode()
-	ov.mu.Unlock()
-
-	// Verify the panel content was refreshed from the daemon
-	ov.mu.Lock()
-	content := ov.panelItems[1].Content
-	ov.mu.Unlock()
-	assert.Equal(t, "fresh content from daemon", content)
-
-	// Verify the fetcher was called for the correct panel
-	fetcher.mu.Lock()
-	calls := fetcher.calls
-	fetcher.mu.Unlock()
-	found := false
-	for _, c := range calls {
-		if c == "dev" {
-			found = true
-			break
+	returns := func(what string, fn func()) {
+		t.Helper()
+		done := make(chan struct{})
+		go func() { defer close(done); fn() }()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			close(fetcher.release)
+			t.Fatalf("%s blocked on the stalled daemon", what)
 		}
 	}
-	assert.True(t, found, "expected eager refresh call for 'dev' panel")
-}
 
-func TestEagerRefreshSkippedWhenNoProcessPanel(t *testing.T) {
-	router, ov, fetcher := newPanelTestRouter(t)
-
-	gate := NewOutputGate(&writeRecorder{})
-	ov.SetGate(gate)
-
-	// Set active panel to overview (not a process panel)
+	// Open the view on the overview, then arrow onto the script panel.
 	ov.mu.Lock()
 	ov.showPanelDirect()
-	ov.panelMode = true
-	ov.panelIndex = 0 // overview
 	ov.mu.Unlock()
-
-	initialCount := fetcher.getCallCount()
-
+	require.True(t, gate.IsFrozen(), "opening the panel view must hold agent output")
+	returns("arrowing onto a script panel", func() { router.handleMenuKey("Right") })
 	ov.mu.Lock()
-	router.exitPanelMode()
+	assert.Equal(t, 1, ov.panelIndex, "Right from the overview lands on the script panel")
+	assert.NotEqual(t, "late output", ov.panelItems[1].Content, "content cannot arrive before the daemon answers")
 	ov.mu.Unlock()
 
-	// No daemon fetch should have happened for the overview panel
-	assert.Equal(t, initialCount, fetcher.getCallCount())
-}
+	// Closing from the script panel returns and releases agent output.
+	returns("closing from a script panel", func() { router.handleMenuKey("q") })
+	assert.False(t, gate.IsFrozen(), "closing must unfreeze agent output without waiting on the daemon")
+	assert.NotEqual(t, StateMenu, ov.State(), "q closed the panel view")
+	assert.Equal(t, 0, fetcher.getCallCount(), "no fetch completed while the daemon stalled")
 
-func TestEagerRefreshSkippedWithoutFetcher(t *testing.T) {
-	rec := &writeRecorder{}
-	cfg := DefaultConfig()
-	cfg.ShowIndicator = false
-	ov := New(rec, 80, 24, cfg)
-	router := NewInputRouter(rec, ov)
-	// No output fetcher set
-
-	gate := NewOutputGate(&writeRecorder{})
-	ov.SetGate(gate)
-
-	ov.panelItems = []PanelItem{
-		{Type: "overview", Label: "overview"},
-		{Type: "process", ID: "dev", Label: "dev"},
-	}
-
+	// Reopen onto the script panel; once the daemon answers, it fills.
 	ov.mu.Lock()
 	ov.showPanelDirect()
-	ov.panelMode = true
-	ov.panelIndex = 1
 	ov.mu.Unlock()
-
-	// Should not panic or fail without a fetcher
-	ov.mu.Lock()
-	router.exitPanelMode()
-	ov.mu.Unlock()
+	returns("arrowing onto a script panel again", func() { router.handleMenuKey("Right") })
+	close(fetcher.release)
+	require.Eventually(t, func() bool {
+		ov.mu.Lock()
+		defer ov.mu.Unlock()
+		return ov.panelItems[1].Content == "late output"
+	}, 5*time.Second, time.Millisecond, "the refresh goroutine fills the panel once the daemon answers")
 }
 
 func TestPanelRefreshDoubleStartReplacesOld(t *testing.T) {

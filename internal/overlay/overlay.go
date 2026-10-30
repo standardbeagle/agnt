@@ -308,9 +308,8 @@ type Overlay struct {
 	gate *OutputGate
 
 	// Callbacks
-	onFreeze         func()               // Called when screen should freeze (stop PTY output)
-	onUnfreeze       func()               // Called when screen should unfreeze (send SIGWINCH)
-	onBeforeUnfreeze func(panelID string) // Called before gate unfreeze with the active process panel ID
+	onFreeze         func() // Called when screen should freeze (stop PTY output)
+	onUnfreeze       func() // Called when screen should unfreeze (send SIGWINCH)
 	childInAltScreen func() bool
 
 	// childScreen renders the child's current screen as an ANSI repaint. Set
@@ -395,16 +394,6 @@ type gateDirectWriter struct {
 
 func (w gateDirectWriter) Write(p []byte) (int, error) {
 	return w.gate.WriteDirect(p)
-}
-
-// SetBeforeUnfreezeCallback sets a callback that fires before the gate unfreezes
-// when closing the overlay. The callback receives the ID of the active process
-// panel (empty string if no process panel was active). This allows the panel's
-// cached content to be refreshed from the daemon before the overlay fully closes.
-func (o *Overlay) SetBeforeUnfreezeCallback(fn func(panelID string)) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.onBeforeUnfreeze = fn
 }
 
 // SetChildScreenSource registers a renderer for the child's current screen.
@@ -758,16 +747,6 @@ func formatStartupLog(entries []StartupLogEntry) string {
 }
 
 func (o *Overlay) hideMenu() {
-	// Capture the active process panel ID before resetting state.
-	// This lets the before-unfreeze callback refresh the panel's cached
-	// content from the daemon so it's up-to-date for the next open.
-	var activePanelID string
-	if o.panelMode && o.panelIndex < len(o.panelItems) {
-		if p := o.panelItems[o.panelIndex]; p.Type == "process" {
-			activePanelID = p.ID
-		}
-	}
-
 	o.panelMode = false
 	o.panelIndex = 0
 	// panelItems are intentionally NOT cleared — they persist across open/close
@@ -793,16 +772,6 @@ func (o *Overlay) hideMenu() {
 		// No model available: fall back to clearing and letting the child's
 		// own repaint fill the screen.
 		o.renderer.ClearVisible()
-	}
-
-	// Refresh the active panel's content from the daemon before unfreezing.
-	// This captures any output that arrived while the overlay was open,
-	// ensuring the panel history is complete for the next open.
-	if activePanelID != "" && o.onBeforeUnfreeze != nil {
-		cb := o.onBeforeUnfreeze
-		o.mu.Unlock()
-		cb(activePanelID)
-		o.mu.Lock()
 	}
 
 	// Start a transition spinner on the status bar before unfreezing.

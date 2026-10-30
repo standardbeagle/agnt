@@ -200,16 +200,8 @@ func (r *InputRouter) SetScriptController(ctrl ScriptController) {
 }
 
 // SetOutputFetcher sets the output fetcher for viewing process output.
-// Also wires up the before-unfreeze callback so the active process panel
-// is refreshed from the daemon when the overlay closes.
 func (r *InputRouter) SetOutputFetcher(fetcher ProcessOutputFetcher) {
 	r.outputFetcher = fetcher
-	r.overlay.SetBeforeUnfreezeCallback(func(panelID string) {
-		if panelID == "" || r.outputFetcher == nil {
-			return
-		}
-		r.eagerRefreshPanel(panelID)
-	})
 }
 
 // SetDaemonConnector sets the daemon connector for connecting to the daemon.
@@ -664,7 +656,6 @@ func (r *InputRouter) openScriptPanel(name string) {
 			r.overlay.panelIndex = i
 			panel := &r.overlay.panelItems[i]
 			if r.outputFetcher != nil {
-				r.fetchScriptOutput(panel)
 				r.startPanelRefresh(panel.ID)
 			}
 			r.overlay.renderer.ClearScreen()
@@ -1098,30 +1089,8 @@ func (r *InputRouter) notifyActionError(text string) {
 	r.overlay.notifyLocked(Notification{Level: LevelError, Text: text})
 }
 
-// fetchScriptOutput fetches script output and replaces the panel's content buffer.
-// Script output includes restart markers from the ScriptRegistry, so no diffing is needed.
-// Must be called with overlay.mu held (temporarily releases during I/O).
+// maxPanelLines is how many trailing lines of script output a process panel holds.
 const maxPanelLines = 2000
-
-func (r *InputRouter) fetchScriptOutput(panel *PanelItem) {
-	if r.outputFetcher == nil {
-		return
-	}
-	r.overlay.mu.Unlock()
-	output, err := r.outputFetcher.GetScriptOutput(panel.ID, maxPanelLines)
-	r.overlay.mu.Lock()
-
-	if err != nil {
-		// Best-effort panel fill; keep whatever content the panel already has.
-		debug.Log("overlay", "fetchScriptOutput %q failed: %v", panel.ID, err)
-		return
-	}
-	if output == "" {
-		return
-	}
-	output = strings.TrimRight(output, "\n")
-	panel.SetContent(output)
-}
 
 // startPanelRefresh starts a background goroutine that periodically polls
 // script output for the given process panel and redraws on change.
@@ -1147,7 +1116,13 @@ func (r *InputRouter) stopPanelRefresh() {
 }
 
 // runPanelRefresh is the background loop that polls script output.
+//
+// It fetches once immediately: the panel's first fill comes from here, never
+// from the keyboard goroutine, because a daemon call there (30s timeout on the
+// shared connection) froze typing and the agent's screen whenever the daemon
+// was slow.
 func (r *InputRouter) runPanelRefresh(stop <-chan struct{}, panelID string) {
+	r.refreshPanelContent(panelID)
 	ticker := time.NewTicker(panelRefreshInterval)
 	defer ticker.Stop()
 	r.panelRefreshLoop(stop, ticker.C, panelID)
@@ -1237,31 +1212,6 @@ func (r *InputRouter) refreshPanelContent(panelID string) {
 	r.overlay.draw()
 }
 
-// eagerRefreshPanel fetches the latest output for a process panel by ID.
-// Unlike refreshPanelContent, this does not check panelMode since it runs
-// during the hide transition when panelMode has already been cleared.
-// Called from the before-unfreeze callback without overlay.mu held.
-func (r *InputRouter) eagerRefreshPanel(panelID string) {
-	output, err := r.outputFetcher.GetScriptOutput(panelID, maxPanelLines)
-	if err != nil {
-		// Best-effort eager fill during the hide transition; keep prior content.
-		debug.Log("overlay", "eagerRefreshPanel %q failed: %v", panelID, err)
-		return
-	}
-	output = strings.TrimRight(output, "\n")
-
-	r.overlay.mu.Lock()
-	defer r.overlay.mu.Unlock()
-
-	for i := range r.overlay.panelItems {
-		p := &r.overlay.panelItems[i]
-		if p.Type == "process" && p.ID == panelID {
-			p.SetContent(output)
-			return
-		}
-	}
-}
-
 // closeCurrentPanel removes the current panel if the process has stopped.
 // Must be called with overlay.mu held.
 func (r *InputRouter) closeCurrentPanel() {
@@ -1322,7 +1272,6 @@ func (r *InputRouter) handlePanelNav(delta int) {
 	// Fetch content for the focused panel and manage refresh ticker
 	panel := &r.overlay.panelItems[newIndex]
 	if panel.Type == "process" && r.outputFetcher != nil {
-		r.fetchScriptOutput(panel)
 		r.startPanelRefresh(panel.ID)
 	} else {
 		r.stopPanelRefresh()
