@@ -13,7 +13,7 @@ Ctrl+→ from the agent's screen opens the panel view on the **overview**, which
 | Esc | close the panel view | back to the overview |
 | q | close the panel view | close the panel view |
 | Tab / → / Ctrl+→ | next panel | next panel; nothing on the last |
-| Shift+Tab / ← / Ctrl+← | nothing (first panel) | previous panel |
+| Shift+Tab / ← / Ctrl+← | close the panel view | previous panel |
 | ↑↓ j k, Home/End g G | move the script highlight | scroll (PgUp/PgDn by page) |
 | Enter, 1-9 | open the highlighted / Nth script | 1-9 open the Nth script |
 | x | — | close a stopped/failed script panel |

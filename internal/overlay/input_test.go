@@ -227,16 +227,24 @@ func TestIsPanelOpenShortcut(t *testing.T) {
 	}
 }
 
-// TestPanelNavIsCappedAtBothEnds pins the arrow keys inside the panel view:
-// they stop at the overview and at the last panel instead of falling out to
-// the agent's screen. Leaving is Esc or q only.
-func TestPanelNavIsCappedAtBothEnds(t *testing.T) {
+// TestPanelNavBacksOutFromOverviewAndCapsAtLast pins the arrow keys inside the
+// panel view: every "previous" key on the overview returns to the agent's
+// screen (the mirror of Ctrl+Right opening the view), and "next" stops at the
+// last panel instead of wrapping.
+func TestPanelNavBacksOutFromOverviewAndCapsAtLast(t *testing.T) {
 	router, ov, _ := newPanelTestRouter(t)
-	ov.mu.Lock()
-	ov.panelItems = append(ov.panelItems, PanelItem{Type: "log", ID: "log", Label: "log"})
-	ov.panelIndex = 0
-	ov.mu.Unlock()
-
+	reset := func() {
+		ov.mu.Lock()
+		ov.panelItems = []PanelItem{
+			{Type: "overview", Label: "overview"},
+			{Type: "process", ID: "dev", Label: "dev"},
+			{Type: "log", ID: "log", Label: "log"},
+		}
+		ov.panelIndex = 0
+		ov.panelMode = true
+		ov.state.Store(int32(StateMenu))
+		ov.mu.Unlock()
+	}
 	at := func(want int, after string) {
 		t.Helper()
 		ov.mu.Lock()
@@ -247,9 +255,13 @@ func TestPanelNavIsCappedAtBothEnds(t *testing.T) {
 	}
 
 	for _, key := range []string{"Ctrl+Left", "Left", "Shift+Tab"} {
+		reset()
 		router.handleMenuKey(key)
-		at(0, key+" on the overview")
+		assert.NotEqual(t, StateMenu, ov.State(), "%s on the overview must return to the agent's screen", key)
+		assert.False(t, ov.panelMode, "%s on the overview left panel mode on", key)
 	}
+
+	reset()
 	router.handleMenuKey("Ctrl+Right")
 	router.handleMenuKey("Ctrl+Right")
 	at(2, "two Ctrl+Right")
@@ -257,11 +269,12 @@ func TestPanelNavIsCappedAtBothEnds(t *testing.T) {
 		router.handleMenuKey(key)
 		at(2, key+" on the last panel")
 	}
-	router.handleMenuKey("Ctrl+Left")
-	at(1, "Ctrl+Left from the last panel")
-
-	router.handleMenuKey("q")
-	assert.NotEqual(t, StateMenu, ov.State(), "q must still close the panel view")
+	router.handleMenuKey("Left")
+	at(1, "Left from the last panel")
+	router.handleMenuKey("Left")
+	at(0, "Left back to the overview")
+	router.handleMenuKey("Left")
+	assert.NotEqual(t, StateMenu, ov.State(), "Left from the overview must return to the agent's screen")
 }
 
 // TestCtrlArrowInterceptedFromIndicator verifies that Ctrl+Right from the

@@ -461,7 +461,7 @@ func (r *InputRouter) handleMenuKey(key string) {
 		r.handlePanelNav(1)
 		return
 
-	case "Ctrl+Left", "Left", "Shift+Tab": // previous panel; stops at the overview
+	case "Ctrl+Left", "Left", "Shift+Tab": // previous panel; from the overview, back to the agent
 		r.handlePanelNav(-1)
 		return
 
@@ -1305,11 +1305,14 @@ func (r *InputRouter) handlePanelNav(delta int) {
 
 	wasInPanelMode := r.overlay.panelMode
 
-	// Capped at both ends: the overview is the first panel and the log the
-	// last. Leaving the panel view is Esc or q, never an arrow, so stepping
-	// back never drops the user onto the agent's screen mid-browse.
+	// Stepping back past the overview returns to the agent's screen, the
+	// mirror of Ctrl+Right opening the view there. Forward stops at the log.
 	newIndex := r.overlay.panelIndex + delta
-	if newIndex < 0 || newIndex >= len(r.overlay.panelItems) {
+	if newIndex < 0 {
+		r.exitPanelMode()
+		return
+	}
+	if newIndex >= len(r.overlay.panelItems) {
 		return
 	}
 
