@@ -1198,11 +1198,11 @@ func LoadAgntConfigFile(path string) (*AgntConfig, error) {
 func ParseAgntConfig(data string) (*AgntConfig, error) {
 	cfg := DefaultAgntConfig()
 
-	if err := checkRemovedKeys(data); err != nil {
+	fielded, err := withoutDeadTopLevelBlocks(data)
+	if err != nil {
 		return nil, err
 	}
-
-	if err := kdl.Unmarshal([]byte(data), cfg); err != nil {
+	if err := kdl.Unmarshal([]byte(fielded), cfg); err != nil {
 		return nil, fmt.Errorf("failed to parse KDL config: %w", err)
 	}
 
@@ -1517,35 +1517,40 @@ func validateChannelConfig(cfg *ChannelConfig) error {
 	return nil
 }
 
-// removedTopLevelKeys names top-level .agnt.kdl blocks that shipped in
-// `agnt init`'s template and README but never had an AgntConfig field, so using
-// them hard-failed every parse with kdl-go's generic unknown-field error. This
-// turns that into a fix instead of a guess. (Keys that merely have no effect
-// are not listed here: they keep loading and warn; see inspectAgntDocument.)
-var removedTopLevelKeys = map[string]string{
-	"hooks": "hooks.on-response (toast/indicator/sound) was never implemented — there is no browser toast for AI responses. Use `alerts {}` for browser/process error delivery instead.",
-	"toast": "toast notification settings were never implemented. Use `alerts {}` for browser/process error delivery instead.",
+// deadTopLevelBlocks names top-level .agnt.kdl blocks that shipped in `agnt
+// init`'s template and README but never had an AgntConfig field. They are in
+// users' files, so they load and warn like every other no-effect key
+// (config-contracts.md): withoutDeadTopLevelBlocks drops them before the
+// unmarshaller, which rejects unknown nodes, and inspectAgntDocument reports
+// each as having no effect.
+var deadTopLevelBlocks = map[string]string{
+	"hooks": "hooks.on-response (toast/indicator/sound) was never implemented; use alerts {} for browser and process error delivery",
+	"toast": "toast settings were never implemented; use alerts {} for browser and process error delivery",
 }
 
-// checkRemovedKeys does a best-effort loose parse for the keys in
-// removedTopLevelKeys. Parse failures in the loose pass are swallowed; the real
-// syntax error surfaces from the strict kdl.Unmarshal call that follows in
-// ParseAgntConfig.
-func checkRemovedKeys(data string) error {
+// withoutDeadTopLevelBlocks returns data with the deadTopLevelBlocks removed,
+// unchanged when it has none. A syntax error is left for kdl.Unmarshal to
+// report, so the message is the same with or without these blocks.
+func withoutDeadTopLevelBlocks(data string) (string, error) {
 	doc, err := kdl.Parse(strings.NewReader(data))
-	if err != nil || doc == nil {
-		return nil
+	if err != nil {
+		return data, nil
 	}
+	kept := doc.Nodes[:0:0]
 	for _, n := range doc.Nodes {
-		if n == nil || n.Name == nil {
-			continue
-		}
-		name := n.Name.String()
-		if reason, ok := removedTopLevelKeys[name]; ok {
-			return fmt.Errorf("key %q removed: %s", name, reason)
+		if _, dead := deadTopLevelBlocks[nodeName(n)]; !dead {
+			kept = append(kept, n)
 		}
 	}
-	return nil
+	if len(kept) == len(doc.Nodes) {
+		return data, nil
+	}
+	doc.Nodes = kept
+	var out strings.Builder
+	if err := kdl.Generate(doc, &out); err != nil {
+		return "", fmt.Errorf("failed to parse KDL config: drop no-effect blocks: %w", err)
+	}
+	return out.String(), nil
 }
 
 // DefaultAgntConfigKDL returns the documented default config as text.

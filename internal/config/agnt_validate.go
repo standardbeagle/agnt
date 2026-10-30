@@ -193,6 +193,10 @@ func inspectAgntDocument(data string) (warnings []string, err error) {
 		return nil, fmt.Errorf("failed to parse KDL config: %w", err)
 	}
 	for _, top := range doc.Nodes {
+		if reason, dead := deadTopLevelBlocks[nodeName(top)]; dead {
+			warnings = append(warnings, nodeName(top)+" has no effect: "+reason)
+			continue
+		}
 		switch nodeName(top) {
 		case "scripts":
 			for _, script := range top.Children {

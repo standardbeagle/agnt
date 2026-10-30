@@ -966,11 +966,12 @@ func TestParseAIConfig(t *testing.T) {
 	}
 }
 
-// TestParseAgntConfig_RemovedKeys pins the friendly "key X removed: reason"
-// error for top-level blocks that shipped in the `agnt init` template / README
-// but never had a field (see checkRemovedKeys). A config carrying one must not
-// fall through to kdl-go's generic unknown-field error.
-func TestParseAgntConfig_RemovedKeys(t *testing.T) {
+// TestParseAgntConfig_DeadTopLevelBlocksLoadAndWarn: hooks {} and toast {}
+// shipped in the `agnt init` template and README but never had a field. They
+// are in users' files, so a config carrying one loads, keeps every other key,
+// and says the block has no effect (config-contracts.md). They used to fail
+// the whole parse, which dropped the project's hook-rules overrides with it.
+func TestParseAgntConfig_DeadTopLevelBlocksLoadAndWarn(t *testing.T) {
 	tests := []struct {
 		name  string
 		input string
@@ -980,18 +981,31 @@ func TestParseAgntConfig_RemovedKeys(t *testing.T) {
     on-response {
         toast true
     }
-}`, `"hooks" removed`},
+}`, "hooks has no effect"},
 		{"toast", `toast {
     duration 4000
-}`, `"toast" removed`},
+}`, "toast has no effect"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			_, err := ParseAgntConfig(tt.input)
-			require.Error(t, err)
-			assert.Contains(t, err.Error(), tt.want)
+			cfg, err := ParseAgntConfig(tt.input + `
+scripts {
+    dev {
+        run "npm run dev"
+    }
+}
+`)
+			require.NoError(t, err)
+			require.Contains(t, cfg.Scripts, "dev", "the rest of the config must still load")
+			assert.Equal(t, "npm run dev", cfg.Scripts["dev"].Run)
+			require.Len(t, cfg.Warnings, 1)
+			assert.Contains(t, cfg.Warnings[0], tt.want)
 		})
 	}
+
+	_, err := ParseAgntConfig("hooks {\n  on-response {\n")
+	require.Error(t, err, "a syntax error is still an error")
+	assert.Contains(t, err.Error(), "failed to parse KDL config")
 }
 
 // TestREADME_ConfigExample_Parses extracts the ```kdl fenced .agnt.kdl

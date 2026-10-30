@@ -28,6 +28,7 @@ These predate the rule and are in users' files, so removing the field would make
 |-----|------|--------------------|
 | `proxies.<n>.websocket`, `ai.skill`, `ai.env`, `project.type`, `project.name` | `.agnt.kdl` | `AgntConfig.Warnings` → `surfaceConfigWarnings` → startup log (`config_warning`) |
 | `alerts.auto-forward.debounce`, `alerts.incident-pipeline` | `.agnt.kdl` | `AgntConfig.Warnings` (as above) |
+| top-level `hooks { … }`, `toast { … }` (shipped in the old `agnt init` template; no field, so `withoutDeadTopLevelBlocks` drops them before unmarshal) | `.agnt.kdl` | `AgntConfig.Warnings` (as above) |
 | `version`, `languages { … }` | global `config.kdl` | `Config.Warnings` (the daemon start path must log them; `debug.Log` alone does not count) |
 
 They are not in the default template or `docs/configuration.md`. Do not add a key to this list: a new key gets a consumer or is rejected at parse time. Detection is by presence in the document (`inspectAgntDocument`, `agnt_validate.go`), not by value, so `websocket false` warns too.
