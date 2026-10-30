@@ -248,8 +248,19 @@ func TestSessionBasedCleanup(t *testing.T) {
 		t.Fatalf("Failed to connect client1: %v", err)
 	}
 
-	// Register session for client1
-	_, err := client1.SessionRegister("session1", "/tmp/overlay1", project1, "test", nil)
+	// Register session1 as owned by a wrapper that is confirmed gone. A
+	// connection close by itself is no cleanup authority: in production
+	// owner_pid is the agnt wrapper, while SessionRegister would record this
+	// still-live test PID. The owner is set at registration because a session
+	// is immutable once it is in the registry (autostart's duplicate scan reads
+	// OwnerPID without a lock).
+	_, err := client1.Conn().Request(protocol.VerbSession, protocol.SubVerbRegister, "session1").
+		WithJSON(protocol.SessionRegisterConfig{
+			OverlayPath: "/tmp/overlay1",
+			ProjectPath: project1,
+			Command:     "test",
+			OwnerPID:    1 << 30, // deliberately nonexistent PID
+		}).JSON()
 	if err != nil {
 		t.Fatalf("Failed to register session1: %v", err)
 	}
@@ -299,18 +310,6 @@ func TestSessionBasedCleanup(t *testing.T) {
 	}
 	if len(procsList) != 2 {
 		t.Fatalf("Expected 2 processes, got %d", len(procsList))
-	}
-
-	// Mark the registered wrapper identity as confirmed gone. A connection close
-	// by itself is no longer cleanup authority: in production owner_pid belongs
-	// to the agnt wrapper, while this in-process fixture otherwise records the
-	// still-live test PID.
-	if session, ok := daemon.sessionRegistry.Get("session1"); ok {
-		session.mu.Lock()
-		session.OwnerPID = 1 << 30 // deliberately nonexistent PID
-		session.mu.Unlock()
-	} else {
-		t.Fatal("session1 missing before disconnect")
 	}
 
 	// Close client1 (confirmed-dead owner triggers cleanup for project1 only)
