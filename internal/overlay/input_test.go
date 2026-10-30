@@ -204,28 +204,64 @@ func TestInputBatchingMultipleEscapeSequences(t *testing.T) {
 	}
 }
 
-// TestPanelShortcutDelta verifies Ctrl+Arrow detection.
-func TestPanelShortcutDelta(t *testing.T) {
+// TestIsPanelOpenShortcut verifies that Ctrl+Right is the only key that opens
+// the panel view from the agent's screen.
+func TestIsPanelOpenShortcut(t *testing.T) {
 	tests := []struct {
 		name  string
 		input []byte
-		want  int
+		want  bool
 	}{
-		{"Ctrl+Right", []byte("\x1b[1;5C"), 1},
-		{"Ctrl+Left", []byte("\x1b[1;5D"), -1},
-		{"plain Right", []byte("\x1b[C"), 0},
-		{"plain Left", []byte("\x1b[D"), 0},
-		{"regular text", []byte("hello"), 0},
-		{"Ctrl+Up", []byte("\x1b[1;5A"), 0},
+		{"Ctrl+Right", []byte("\x1b[1;5C"), true},
+		{"Ctrl+Left stays the agent's", []byte("\x1b[1;5D"), false},
+		{"plain Right", []byte("\x1b[C"), false},
+		{"plain Left", []byte("\x1b[D"), false},
+		{"regular text", []byte("hello"), false},
+		{"Ctrl+Up", []byte("\x1b[1;5A"), false},
+		{"Ctrl+Right with trailing text", []byte("\x1b[1;5Cx"), false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := panelShortcutDelta(tt.input)
-			if got != tt.want {
-				t.Errorf("panelShortcutDelta(%q) = %d, want %d", tt.input, got, tt.want)
-			}
+			assert.Equal(t, tt.want, isPanelOpenShortcut(tt.input), "isPanelOpenShortcut(%q)", tt.input)
 		})
 	}
+}
+
+// TestPanelNavIsCappedAtBothEnds pins the arrow keys inside the panel view:
+// they stop at the overview and at the last panel instead of falling out to
+// the agent's screen. Leaving is Esc or q only.
+func TestPanelNavIsCappedAtBothEnds(t *testing.T) {
+	router, ov, _ := newPanelTestRouter(t)
+	ov.mu.Lock()
+	ov.panelItems = append(ov.panelItems, PanelItem{Type: "log", ID: "log", Label: "log"})
+	ov.panelIndex = 0
+	ov.mu.Unlock()
+
+	at := func(want int, after string) {
+		t.Helper()
+		ov.mu.Lock()
+		defer ov.mu.Unlock()
+		assert.Equal(t, StateMenu, ov.State(), "after %s: the panel view closed", after)
+		assert.True(t, ov.panelMode, "after %s: left panel mode", after)
+		assert.Equal(t, want, ov.panelIndex, "after %s", after)
+	}
+
+	for _, key := range []string{"Ctrl+Left", "Left", "Shift+Tab"} {
+		router.handleMenuKey(key)
+		at(0, key+" on the overview")
+	}
+	router.handleMenuKey("Ctrl+Right")
+	router.handleMenuKey("Ctrl+Right")
+	at(2, "two Ctrl+Right")
+	for _, key := range []string{"Ctrl+Right", "Right", "\t"} {
+		router.handleMenuKey(key)
+		at(2, key+" on the last panel")
+	}
+	router.handleMenuKey("Ctrl+Left")
+	at(1, "Ctrl+Left from the last panel")
+
+	router.handleMenuKey("q")
+	assert.NotEqual(t, StateMenu, ov.State(), "q must still close the panel view")
 }
 
 // TestCtrlArrowInterceptedFromIndicator verifies that Ctrl+Right from the

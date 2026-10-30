@@ -6,14 +6,14 @@ invariants that matter most are repeated in CLAUDE.md's gotchas.
 
 ## Panel Navigation
 
-Ctrl+→ / Ctrl+← from the agent's screen opens the panel view on the **overview**, which is the hub every other panel is reached from. Tab order is fixed by type (`panelRank`, `internal/overlay/overlay.go`): overview, summary, scripts, proxies, config, log — panels created later (a script started after the first open, the config editor) slot into their type's place instead of after the log.
+Ctrl+→ from the agent's screen opens the panel view on the **overview**, which is the hub every other panel is reached from. Ctrl+← on the agent's screen is the agent's own key (word-left in Claude's input box) and is passed through untouched. Tab order is fixed by type (`panelRank`, `internal/overlay/overlay.go`): overview, summary, scripts, proxies, config, log — panels created later (a script started after the first open, the config editor) slot into their type's place instead of after the log.
 
 | Key | Overview | Any other panel |
 |---|---|---|
 | Esc | close the panel view | back to the overview |
 | q | close the panel view | close the panel view |
-| Tab / → / Ctrl+→ | next panel | next panel |
-| Shift+Tab / ← / Ctrl+← | close (no panel before it) | previous panel |
+| Tab / → / Ctrl+→ | next panel | next panel; nothing on the last |
+| Shift+Tab / ← / Ctrl+← | nothing (first panel) | previous panel |
 | ↑↓ j k, Home/End g G | move the script highlight | scroll (PgUp/PgDn by page) |
 | Enter, 1-9 | open the highlighted / Nth script | 1-9 open the Nth script |
 | x | — | close a stopped/failed script panel |

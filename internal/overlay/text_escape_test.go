@@ -12,7 +12,7 @@ import (
 // width that cuts it. A byte-offset cut split "←" or "→" (3 bytes each) and
 // wrote invalid UTF-8 to the terminal.
 func TestStartupSplash_TruncatesOnRuneBoundary(t *testing.T) {
-	const tip = "Tip: Press Ctrl+←/→ to browse process, proxy, and log panels"
+	const tip = "Tip: Press Ctrl+→ to browse process, proxy, and log panels"
 	for width := 14; width <= utf8.RuneCountInString(tip)+4; width++ {
 		out := &splashSafeWriter{}
 		NewStartupSplash(out, width, 24).render(tip)

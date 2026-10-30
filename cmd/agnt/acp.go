@@ -460,7 +460,7 @@ func sanitizeAgentName(agent string) string {
 }
 
 // runACPOverlay runs the interactive REPL with the full terminal overlay
-// (raw mode, status bar, Ctrl+←/→ panels, message injection). It mirrors
+// (raw mode, status bar, Ctrl+→ panels, message injection). It mirrors
 // runAiClaudeOverlay, swapping the per-turn query for an ACP prompt turn:
 // the acpClient renders streamed updates straight into the raw-mode writer.
 func runACPOverlay(ctx context.Context, conn *acp.ClientSideConnection, client *acpClient, sid acp.SessionId, systemContext string, gate *acpAlertGate, pauseForwarding func(bool)) error {
@@ -568,7 +568,7 @@ func runACPOverlay(ctx context.Context, conn *acp.ClientSideConnection, client *
 	}
 
 	fmt.Fprintln(rawWriter, "agnt acp - interactive mode")
-	fmt.Fprintln(rawWriter, "Type /exit or /quit to exit, Ctrl+D for EOF. Ctrl+←/→ for panels.")
+	fmt.Fprintln(rawWriter, "Type /exit or /quit to exit, Ctrl+D for EOF. Ctrl+→ for panels.")
 	if systemContext != "" {
 		fmt.Fprintln(rawWriter, "[agnt context injected on first turn]")
 	}

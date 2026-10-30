@@ -380,9 +380,11 @@ func (r *InputRouter) Run() error {
 						r.setForwarding(paused)
 						continue
 					}
-					// Intercept Ctrl+Arrow for direct panel browsing
-					if delta := panelShortcutDelta(buf); delta != 0 {
-						r.enterPanelBrowse(delta)
+					// Ctrl+Right opens the panel view. Ctrl+Left stays the
+					// agent's (word-left in its input box): there is nothing to
+					// the left of the agent's screen.
+					if isPanelOpenShortcut(buf) {
+						r.enterPanelBrowse()
 						continue
 					}
 					r.ptmx.Write(buf)
@@ -457,7 +459,7 @@ func (r *InputRouter) handleMenuKey(key string) {
 		r.handlePanelNav(1)
 		return
 
-	case "Ctrl+Left", "Left", "Shift+Tab": // previous panel; from overview, close
+	case "Ctrl+Left", "Left", "Shift+Tab": // previous panel; stops at the overview
 		r.handlePanelNav(-1)
 		return
 
@@ -1300,14 +1302,11 @@ func (r *InputRouter) handlePanelNav(delta int) {
 
 	wasInPanelMode := r.overlay.panelMode
 
+	// Capped at both ends: the overview is the first panel and the log the
+	// last. Leaving the panel view is Esc or q, never an arrow, so stepping
+	// back never drops the user onto the agent's screen mid-browse.
 	newIndex := r.overlay.panelIndex + delta
-	if newIndex < 0 {
-		if r.overlay.panelMode {
-			r.exitPanelMode()
-		}
-		return
-	}
-	if newIndex >= len(r.overlay.panelItems) {
+	if newIndex < 0 || newIndex >= len(r.overlay.panelItems) {
 		return
 	}
 
@@ -1330,22 +1329,15 @@ func (r *InputRouter) handlePanelNav(delta int) {
 	r.overlay.draw()
 }
 
-// panelShortcutDelta checks if a collected input buffer matches a panel
-// navigation shortcut (Ctrl+Right or Ctrl+Left). Returns +1, -1, or 0.
-func panelShortcutDelta(buf []byte) int {
-	s := string(buf)
-	switch s {
-	case "\x1b[1;5C": // Ctrl+Right
-		return 1
-	case "\x1b[1;5D": // Ctrl+Left
-		return -1
-	}
-	return 0
+// isPanelOpenShortcut reports whether a collected input buffer is Ctrl+Right,
+// the one key that opens the panel view from the agent's screen.
+func isPanelOpenShortcut(buf []byte) bool {
+	return string(buf) == "\x1b[1;5C"
 }
 
 // forwardingHotkey maps Ctrl+Up → pause and Ctrl+Down → resume agent forwarding.
 // Returns (paused, true) on a match, (false, false) otherwise. These sit in the
-// same Ctrl+Arrow family the overlay already owns (panelShortcutDelta), so they
+// same Ctrl+Arrow family as the panel shortcut (isPanelOpenShortcut), so they
 // don't collide with the wrapped AI tool, which sees plain Up/Down for history.
 func forwardingHotkey(buf []byte) (paused bool, ok bool) {
 	switch string(buf) {
@@ -1357,10 +1349,10 @@ func forwardingHotkey(buf []byte) (paused bool, ok bool) {
 	return false, false
 }
 
-// enterPanelBrowse opens the panel view on the overview. Called when
-// Ctrl+Arrow is pressed from the indicator state; either direction opens the
-// overview, the one screen every other panel is reached from.
-func (r *InputRouter) enterPanelBrowse(delta int) {
+// enterPanelBrowse opens the panel view on the overview, the one screen every
+// other panel is reached from. Called when Ctrl+Right is pressed from the
+// agent's screen.
+func (r *InputRouter) enterPanelBrowse() {
 	r.overlay.mu.Lock()
 	defer r.overlay.mu.Unlock()
 

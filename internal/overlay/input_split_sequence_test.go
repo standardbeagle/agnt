@@ -180,3 +180,27 @@ func TestIntroducerSeparatedFromItsSequenceDegradesToPassthrough(t *testing.T) {
 		t.Errorf("overlay state = %v, want StateIndicator (a fragment was acted on)", ov.State())
 	}
 }
+
+// Ctrl+Left on the agent's screen is the agent's key (word-left in Claude's
+// input box): it reaches the child verbatim, opens nothing, and typing after
+// it still reaches the child.
+func TestCtrlLeftOnAgentScreenReachesTheAgent(t *testing.T) {
+	const seq = "\x1b[1;5D"
+	_, ov, pw, rec := splitRouter(t, StateIndicator)
+
+	if _, err := pw.Write([]byte(seq)); err != nil {
+		t.Fatal(err)
+	}
+	rec.waitForWrites(1, 2*time.Second)
+	if _, err := pw.Write([]byte("hi")); err != nil {
+		t.Fatal(err)
+	}
+	rec.waitForWrites(2, 2*time.Second)
+
+	if got := string(childBytes(rec)); got != seq+"hi" {
+		t.Errorf("child received %q, want %q", got, seq+"hi")
+	}
+	if ov.State() != StateIndicator {
+		t.Errorf("overlay state = %v, want StateIndicator (Ctrl+Left opened the panel view)", ov.State())
+	}
+}
