@@ -9,7 +9,7 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 
 	"github.com/standardbeagle/agnt/internal/debug"
@@ -81,7 +81,7 @@ func runPTYChild(ctx context.Context, args []string, socketPath string, sessionC
 	env := append(os.Environ(), "AGNT_PROJECT_PATH="+projectPath, hookrules.AgntRunEnv+"=1", "AGNT_SESSION_CODE="+sessionCode)
 	c.Env = shimChildEnv(env, projectPath)
 
-	ptmx, err := pty.Start(c)
+	ptmx, err := startPollablePTY(c)
 	stopSpinner()
 	if err != nil {
 		return 0, fmt.Errorf("failed to start pty: %w", err)
@@ -118,7 +118,7 @@ func runPTYChild(ctx context.Context, args []string, socketPath string, sessionC
 	if useTermOverlay && showIndicator && height > 1 {
 		childHeight = height - 1
 	}
-	if err := pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(childHeight), Cols: uint16(width)}); err != nil {
+	if err := setPTYSize(ptmx, &unix.Winsize{Row: uint16(childHeight), Col: uint16(width)}); err != nil {
 		notifyUser(overlay.LevelWarn, "error setting pty size: %s", err)
 	}
 
@@ -146,7 +146,7 @@ func runPTYChild(ctx context.Context, args []string, socketPath string, sessionC
 		SessionPGID:  sessionPGID,
 		EnableSplash: true,
 		Resize: func(childCols, childRows int) error {
-			return pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(childRows), Cols: uint16(childCols)})
+			return setPTYSize(ptmx, &unix.Winsize{Row: uint16(childRows), Col: uint16(childCols)})
 		},
 		Interrupt: func() {
 			// Send SIGINT to the entire process group so all children
@@ -183,9 +183,7 @@ func runPTYChild(ctx context.Context, args []string, socketPath string, sessionC
 	// SIGCHLD/SIGSTOP/SIGCONT are fundamentally Unix-only.
 	go handleSIGCHLD(ctx, rt.Done(), c, ptmx, oldState, rt, &width, &height)
 
-	awaitChildExit(ctx, rt.Done(), c, ptmx, childExitGrace)
-	rt.Stop()
-	waitErr := c.Wait()
+	waitErr := awaitSessionEnd(ctx, rt, c, ptmx)
 	finishSession(height, waitErr, ctx.Err() != nil, rt)
 	return sessionPGID, nil
 }

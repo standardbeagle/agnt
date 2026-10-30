@@ -7,11 +7,14 @@ import (
 	"errors"
 	"io"
 	"os/exec"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
 
 	"github.com/creack/pty"
+	"github.com/stretchr/testify/require"
 )
 
 // TestChildStoppedObservesStopWithoutReaping pins the Ctrl+Z peek. The
@@ -88,7 +91,7 @@ func TestAwaitChildExitEscalatesPastIgnoredSignals(t *testing.T) {
 
 	returned := make(chan struct{})
 	go func() {
-		awaitChildExit(ctx, done, c, ptmx, 100*time.Millisecond)
+		awaitChildExit(ctx, done, nil, c, ptmx, 100*time.Millisecond)
 		close(returned)
 	}()
 	select {
@@ -112,7 +115,70 @@ func TestAwaitChildExitEscalatesPastIgnoredSignals(t *testing.T) {
 func TestAwaitChildExitReturnsOnNormalExit(t *testing.T) {
 	done := make(chan struct{})
 	close(done)
-	awaitChildExit(context.Background(), done, nil, nil, time.Hour)
+	awaitChildExit(context.Background(), done, nil, nil, nil, time.Hour)
+}
+
+// TestAwaitChildExitEndsWhenAJobOutlivesTheAgent: the agent exits while a
+// job it backgrounded still holds the PTY slave, so the output stream never
+// ends. That is Ctrl+C out of Claude Code with an MCP server or dev server
+// still running, and agnt used to wait forever. The agent's exit must end the
+// session, and reapSessionPGID must leave nothing of its group alive. Real
+// PTY and processes, so no t.Parallel().
+func TestAwaitChildExitEndsWhenAJobOutlivesTheAgent(t *testing.T) {
+	// The job ignores SIGHUP (as nohup and many Node servers do): a plain
+	// job dies of the hangup when the session leader exits, ends the output
+	// by itself, and the test would pass against the old wait.
+	// The ignore is set before the fork so the job inherits it: a trap set
+	// inside the job races the leader's exit and its hangup.
+	c := exec.Command("sh", "-c", `trap "" HUP; sleep 600 & echo $!; exit 0`)
+	ptmx, err := startPollablePTY(c)
+	if err != nil {
+		t.Skipf("cannot start a PTY child: %v", err)
+	}
+	defer ptmx.Close()
+	pgid := c.Process.Pid
+	defer func() { _ = syscall.Kill(-pgid, syscall.SIGKILL) }()
+
+	var out strings.Builder
+	done := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(&out, ptmx)
+		close(done)
+	}()
+	childExited := make(chan struct{})
+	go func() {
+		_ = c.Wait()
+		close(childExited)
+	}()
+
+	returned := make(chan struct{})
+	go func() {
+		awaitChildExit(context.Background(), done, childExited, c, ptmx, time.Hour)
+		close(returned)
+	}()
+	select {
+	case <-returned:
+	case <-time.After(30 * time.Second):
+		t.Fatal("awaitChildExit did not return after the agent exited with a job still holding the PTY")
+	}
+	select {
+	case <-childExited:
+	default:
+		t.Fatal("awaitChildExit returned before the agent exited")
+	}
+
+	jobPID, err := strconv.Atoi(strings.TrimSpace(strings.SplitN(out.String(), "\n", 2)[0]))
+	if err != nil {
+		t.Fatalf("job pid not echoed: %q", out.String())
+	}
+	if err := syscall.Kill(jobPID, 0); err != nil {
+		t.Fatalf("job %d already gone before the reap (%v): the test proves nothing", jobPID, err)
+	}
+
+	reapSessionPGID(pgid)
+	require.Eventually(t, func() bool {
+		return errors.Is(syscall.Kill(-pgid, 0), syscall.ESRCH)
+	}, 10*time.Second, 10*time.Millisecond, "session group %d still has members after reapSessionPGID", pgid)
 }
 
 // TestChildStoppedLeavesExitedChildForWait covers the other half of the

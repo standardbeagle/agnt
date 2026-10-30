@@ -10,7 +10,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/creack/pty"
+	"golang.org/x/sys/unix"
 	"golang.org/x/term"
 
 	"github.com/standardbeagle/agnt/internal/debug"
@@ -35,19 +35,44 @@ func reapSessionPGID(pgid int) {
 // for the child to go before trying something stronger.
 const childExitGrace = 2 * time.Second
 
-// awaitChildExit blocks until the PTY output stream ends (done), which is how
-// a normal session finishes. If ctx is cancelled first (SIGINT/SIGTERM to
-// agnt), the shared pipeline has already forwarded one SIGINT to the child's
-// process group; an agent that ignores or merely debounces that signal would
-// otherwise leave agnt unkillable short of SIGKILL, since further signals to
-// agnt are absorbed by the already-cancelled context. So escalate, one grace
-// period per step: SIGTERM to the group, SIGKILL to the group, and finally
-// close the PTY master so the output copy ends even when something outside the
-// group still holds the slave open. Mirrors the Windows path, which kills and
-// waits 2s. Kept here (not run.go) for that file's line budget.
-func awaitChildExit(ctx context.Context, done <-chan struct{}, c *exec.Cmd, ptmx *os.File, grace time.Duration) {
+// outputDrainGrace is how long the session waits, after the agent itself
+// exits, for the PTY output to end on its own.
+const outputDrainGrace = 500 * time.Millisecond
+
+// awaitChildExit blocks until the session is over: the PTY output stream ends
+// (done), which is how a normal session finishes, or the agent process exits
+// (childExited) and the output does not end within outputDrainGrace.
+//
+// The output ends only when every holder of the PTY slave has closed it, and
+// anything the agent started inherits the slave: an MCP server, a hook, a
+// backgrounded `npm run dev &`. One of those outliving the agent (Ctrl+C out
+// of Claude Code) used to keep agnt waiting forever. The agent's exit ends
+// the session, so the master is closed to end the output copy (which works
+// only because startPollablePTY keeps the master in the poller), and the
+// caller's reapSessionPGID stops what the agent left in its group.
+//
+// If ctx is cancelled first (SIGINT/SIGTERM to agnt), the shared pipeline
+// has already forwarded one SIGINT to the child's process group; an agent
+// that ignores or merely debounces that signal would otherwise leave agnt
+// unkillable short of SIGKILL, since further signals to agnt are absorbed by
+// the already-cancelled context. So escalate, one grace period per step:
+// SIGTERM to the group, SIGKILL to the group, and finally close the PTY
+// master so the output copy ends even when something outside the group still
+// holds the slave open. Mirrors the Windows path, which kills and waits 2s.
+// Kept here (not run.go) for that file's line budget.
+func awaitChildExit(ctx context.Context, done, childExited <-chan struct{}, c *exec.Cmd, ptmx *os.File, grace time.Duration) {
 	select {
 	case <-done:
+		return
+	case <-childExited:
+		select {
+		case <-done:
+			return
+		case <-time.After(outputDrainGrace):
+		}
+		debug.Log("run", "agent exited but the PTY is still held open; closing it and reaping the session group")
+		_ = ptmx.Close()
+		<-done
 		return
 	case <-ctx.Done():
 	}
@@ -70,6 +95,23 @@ func awaitChildExit(ctx context.Context, done <-chan struct{}, c *exec.Cmd, ptmx
 	}
 	_ = ptmx.Close()
 	<-done
+}
+
+// awaitSessionEnd waits out the PTY session, stops the overlay pipeline and
+// returns the child's exit status. The child's own exit ends the session too
+// (awaitChildExit), so it is waited for alongside the output stream rather
+// than after it. Kept here for run.go's line budget.
+func awaitSessionEnd(ctx context.Context, rt *pipelineRuntime, c *exec.Cmd, ptmx *os.File) error {
+	childExited := make(chan struct{})
+	var waitErr error
+	go func() {
+		waitErr = c.Wait()
+		close(childExited)
+	}()
+	awaitChildExit(ctx, rt.Done(), childExited, c, ptmx, childExitGrace)
+	rt.Stop()
+	<-childExited
+	return waitErr
 }
 
 // signalChildGroup sends sig to the PTY child's process group, falling back
@@ -175,7 +217,7 @@ func handleSIGCHLD(ctx context.Context, done <-chan struct{}, c *exec.Cmd, ptmx 
 				if rt.termOverlay != nil && rt.termOverlay.ShowIndicator() && h > 1 {
 					ch = h - 1
 				}
-				_ = pty.Setsize(ptmx, &pty.Winsize{Rows: uint16(ch), Cols: uint16(w)})
+				_ = setPTYSize(ptmx, &unix.Winsize{Row: uint16(ch), Col: uint16(w)})
 				if rt.termOverlay != nil {
 					rt.termOverlay.SetSize(w, h)
 				}
@@ -212,16 +254,16 @@ func handleSIGCHLD(ctx context.Context, done <-chan struct{}, c *exec.Cmd, ptmx 
 // buffer, so the child must redraw). The original size is always restored;
 // when the current size can't be read, it falls back to the supplied signal.
 func jiggleRepaint(ptmx *os.File, fallback func()) {
-	ws, err := pty.GetsizeFull(ptmx)
-	if err != nil || ws == nil || ws.Rows <= 1 {
+	ws, err := getPTYSize(ptmx)
+	if err != nil || ws == nil || ws.Row <= 1 {
 		if fallback != nil {
 			fallback()
 		}
 		return
 	}
 	shrunk := *ws
-	shrunk.Rows = ws.Rows - 1
-	_ = pty.Setsize(ptmx, &shrunk)
+	shrunk.Row = ws.Row - 1
+	_ = setPTYSize(ptmx, &shrunk)
 	time.Sleep(15 * time.Millisecond)
-	_ = pty.Setsize(ptmx, ws)
+	_ = setPTYSize(ptmx, ws)
 }
