@@ -387,7 +387,9 @@ func (r *InputRouter) Run() error {
 						r.enterPanelBrowse()
 						continue
 					}
-					r.ptmx.Write(buf)
+					if _, err := r.ptmx.Write(buf); err != nil {
+						debug.Log("input", "passthrough: %d typed bytes not delivered to the agent: %v", len(buf), err)
+					}
 				}
 			}
 		}
@@ -599,6 +601,7 @@ func (r *InputRouter) handlePaste(text string) {
 func (r *InputRouter) exitPanelMode() {
 	r.stopPanelRefresh()
 	r.overlay.hideMenu()
+	debug.Log("input", "panel view closed (state=%v, gate frozen=%v)", r.overlay.State(), r.overlay.gate != nil && r.overlay.gate.IsFrozen())
 }
 
 // panelBack is Escape: from a panel opened off the overview it returns to the
@@ -1357,6 +1360,7 @@ func (r *InputRouter) enterPanelBrowse() {
 	defer r.overlay.mu.Unlock()
 
 	r.overlay.showPanelDirect()
+	debug.Log("input", "panel view opened (gate frozen=%v)", r.overlay.gate != nil && r.overlay.gate.IsFrozen())
 
 	// Start at overview (index 0)
 	r.overlay.panelMode = true
