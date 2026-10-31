@@ -2,7 +2,9 @@ package overlay
 
 import (
 	"bytes"
+	"fmt"
 	"io"
+	"regexp"
 	"testing"
 	"time"
 )
@@ -202,5 +204,54 @@ func TestCtrlLeftOnAgentScreenReachesTheAgent(t *testing.T) {
 	}
 	if ov.State() != StateIndicator {
 		t.Errorf("overlay state = %v, want StateIndicator (Ctrl+Left opened the panel view)", ov.State())
+	}
+}
+
+// Under any-motion mouse tracking (Claude Code turns it on) the terminal sends
+// a report for every cell the pointer crosses, many per read, with keypresses
+// in between. Each sequence must reach the child inside one write. A report
+// cut across two writes -- worst right after "\x1b[" -- makes Claude Code drop
+// the keypresses that follow, so typing dies while the overlay's own hotkeys
+// keep working.
+//
+// Every read here is whole; the only thing that can cut a sequence is the
+// router itself. Several rounds, because the cut depended on goroutine timing.
+func TestMouseFloodReachesTheChildOneWholeSequencePerWrite(t *testing.T) {
+	_, _, pw, rec := splitRouter(t, StateHidden)
+
+	var sent []byte
+	for round := 0; round < 40; round++ {
+		var read []byte
+		for i := 0; i < 7; i++ {
+			read = append(read, fmt.Sprintf("\x1b[<35;%d;%dM", 10+i, 5+round)...)
+		}
+		read = append(read, 'a'+byte(round%26))
+		if _, err := pw.Write(read); err != nil {
+			t.Fatal(err)
+		}
+		sent = append(sent, read...)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	for len(childBytes(rec)) < len(sent) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if got := childBytes(rec); !bytes.Equal(got, sent) {
+		t.Fatalf("child received %d bytes, want the %d sent, in order", len(got), len(sent))
+	}
+
+	// Every write boundary must fall between sequences, never inside one.
+	inside := make([]bool, len(sent)+1)
+	for _, span := range regexp.MustCompile(`\x1b\[<[0-9;]+[Mm]`).FindAllIndex(sent, -1) {
+		for p := span[0] + 1; p < span[1]; p++ {
+			inside[p] = true
+		}
+	}
+	off := 0
+	for n, w := range rec.getWrites() {
+		off += len(w)
+		if inside[off] {
+			t.Errorf("write %d ends mid-sequence: %q", n, w[max(0, len(w)-12):])
+		}
 	}
 }

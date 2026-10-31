@@ -250,11 +250,16 @@ func (r *InputRouter) Run() error {
 	r.running.Store(true)
 	defer r.running.Store(false)
 
-	inputCh := make(chan byte, 16)
+	// Input moves in the scanner's chunks, never byte by byte: a chunk holds
+	// only whole sequences, and passthrough writes whole chunks. Bytes pushed
+	// singly were drained by passthrough mid-burst, so a mouse report reached
+	// the agent in two writes — and a report cut right after "\x1b[" makes
+	// Claude Code drop the keypresses that follow it. Under any-motion mouse
+	// tracking the reports never stop, so typing died while every key the
+	// overlay binds itself still worked.
+	inputCh := make(chan []byte, 16)
 	errCh := make(chan error, 1)
 
-	// Start a goroutine to read from the input source using the win32-input-mode
-	// iterator. The iterator handles buffer boundaries and escape sequence parsing.
 	inputSrc := r.input
 	if inputSrc == nil {
 		inputSrc = os.Stdin
@@ -264,11 +269,11 @@ func (r *InputRouter) Run() error {
 		flush = win32PendingFlush
 	}
 	go func() {
-		for b := range scanWin32Input(inputSrc, flush) {
+		for chunk := range scanWin32Chunks(inputSrc, flush) {
 			// Once Stop has ended the loop below nobody drains inputCh, so a
 			// blind send would block forever and pin the scanner with it.
 			select {
-			case inputCh <- b:
+			case inputCh <- chunk:
 			case <-r.done:
 				return
 			}
@@ -307,84 +312,76 @@ func (r *InputRouter) Run() error {
 				r.handleMenuKey(key)
 			}
 
-		case b := <-inputCh:
+		case chunk := <-inputCh:
 			// Cancel any pending escape timer
 			if escTimer != nil {
 				escTimer.Stop()
 				escTimer = nil
 			}
 
-			// Modal capture: a startup prompt owns input. Divert the byte to
-			// it and skip normal handling so the prompt and the router never
-			// both consume from os.Stdin.
-			if mc := r.modalInput.Load(); mc != nil {
-				select {
-				case *mc <- b:
-				default:
-				}
-				continue
-			}
+			// Each byte is routed by the state at that byte, because a key
+			// early in the chunk can change it (open or close the panel view).
+			for i := 0; i < len(chunk); i++ {
+				b := chunk[i]
 
-			// If process viewer is active, any key closes it
-			if r.viewerActive {
-				r.closeProcessViewer()
-				continue
-			}
-
-			if r.overlay.IsActive() {
-				// Overlay is capturing input
-				r.handleOverlayInput(b)
-
-				// If we're now waiting for more escape sequence bytes, start a timer
-				if r.escReader.IsPending() {
-					wait := escTimeout
-					if r.escReader.InPaste() {
-						wait = pasteTimeout
-					}
-					escTimer = time.NewTimer(wait)
-				}
-			} else {
-				// Pass through to PTY - batch with any pending bytes to keep
-				// multi-byte escape sequences (e.g. arrow keys \x1b[A) intact.
-				buf := []byte{b}
-
-				// If this looks like the start of an escape sequence, give the
-				// producer goroutine a moment to push the rest of the sequence
-				// into the channel before we drain.
-				if b == 0x1b {
-					time.Sleep(1 * time.Millisecond)
-				}
-
-				drain := true
-				for drain {
+				// Modal capture: a startup prompt owns input. Divert the byte
+				// to it and skip normal handling so the prompt and the router
+				// never both consume from os.Stdin.
+				if mc := r.modalInput.Load(); mc != nil {
 					select {
-					case nb := <-inputCh:
-						buf = append(buf, nb)
+					case *mc <- b:
 					default:
-						drain = false
 					}
+					continue
 				}
-				if len(buf) > 0 {
-					// Intercept Ctrl+Up/Down to pause/resume agent forwarding,
-					// even mid-passthrough, so an overwhelmed agent can be muted
-					// instantly without opening the overlay.
-					if paused, ok := forwardingHotkey(buf); ok {
-						r.setForwarding(paused)
-						continue
-					}
-					// Ctrl+Right opens the panel view. Ctrl+Left stays the
-					// agent's (word-left in its input box): there is nothing to
-					// the left of the agent's screen.
-					if isPanelOpenShortcut(buf) {
-						r.enterPanelBrowse()
-						continue
-					}
-					if _, err := r.ptmx.Write(buf); err != nil {
-						debug.Log("input", "passthrough: %d typed bytes not delivered to the agent: %v", len(buf), err)
-					}
+
+				// If process viewer is active, any key closes it
+				if r.viewerActive {
+					r.closeProcessViewer()
+					continue
 				}
+
+				if r.overlay.IsActive() {
+					r.handleOverlayInput(b)
+					continue
+				}
+
+				// The rest of the chunk belongs to the agent.
+				r.passthrough(chunk[i:])
+				break
+			}
+
+			// If the overlay is waiting for more escape sequence bytes, start a timer
+			if r.overlay.IsActive() && r.escReader.IsPending() {
+				wait := escTimeout
+				if r.escReader.InPaste() {
+					wait = pasteTimeout
+				}
+				escTimer = time.NewTimer(wait)
 			}
 		}
+	}
+}
+
+// passthrough hands one chunk of the agent's input to the PTY in a single
+// write, after the hotkeys the overlay keeps for itself on the agent's screen.
+// A chunk ends on a sequence boundary, so the agent never sees half of one.
+func (r *InputRouter) passthrough(buf []byte) {
+	// Intercept Ctrl+Up/Down to pause/resume agent forwarding, even
+	// mid-passthrough, so an overwhelmed agent can be muted instantly without
+	// opening the overlay.
+	if paused, ok := forwardingHotkey(buf); ok {
+		r.setForwarding(paused)
+		return
+	}
+	// Ctrl+Right opens the panel view. Ctrl+Left stays the agent's (word-left
+	// in its input box): there is nothing to the left of the agent's screen.
+	if isPanelOpenShortcut(buf) {
+		r.enterPanelBrowse()
+		return
+	}
+	if _, err := r.ptmx.Write(buf); err != nil {
+		debug.Log("input", "passthrough: %d typed bytes not delivered to the agent: %v", len(buf), err)
 	}
 }
 
@@ -1743,8 +1740,25 @@ func ScanWin32Input(r io.Reader) iter.Seq[byte] {
 	return scanWin32Input(r, win32PendingFlush)
 }
 
+// scanWin32Input is scanWin32Chunks one byte at a time.
 func scanWin32Input(r io.Reader, flushAfter time.Duration) iter.Seq[byte] {
 	return func(yield func(byte) bool) {
+		for chunk := range scanWin32Chunks(r, flushAfter) {
+			for _, b := range chunk {
+				if !yield(b) {
+					return
+				}
+			}
+		}
+	}
+}
+
+// scanWin32Chunks reads r and yields each parsed burst whole. A burst holds
+// only complete sequences — a sequence cut by a read boundary stays in the
+// remainder until it completes or its hold budget runs out — so a consumer
+// that writes chunk by chunk never splits a sequence across two writes.
+func scanWin32Chunks(r io.Reader, flushAfter time.Duration) iter.Seq[[]byte] {
+	return func(yield func([]byte) bool) {
 		type readResult struct {
 			data []byte
 			err  error
@@ -1771,12 +1785,7 @@ func scanWin32Input(r io.Reader, flushAfter time.Duration) iter.Seq[byte] {
 		}()
 
 		emit := func(bs []byte) bool {
-			for _, b := range bs {
-				if !yield(b) {
-					return false
-				}
-			}
-			return true
+			return len(bs) == 0 || yield(bs)
 		}
 
 		var pending []byte
