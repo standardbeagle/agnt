@@ -7,6 +7,9 @@ import (
 	"regexp"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // A terminal does not promise to deliver an escape sequence in one read. Over
@@ -26,7 +29,8 @@ const (
 )
 
 // splitRouter builds a router whose input arrives through a pipe and whose
-// child writes land in a recorder, with the scanner's hold budget shrunk.
+// child writes land in a recorder, running the win32 scanner (as on Windows)
+// with its hold budget shrunk.
 func splitRouter(t *testing.T, state State) (*InputRouter, *Overlay, *io.PipeWriter, *writeRecorder) {
 	t.Helper()
 	rec := &writeRecorder{}
@@ -39,6 +43,7 @@ func splitRouter(t *testing.T, state State) (*InputRouter, *Overlay, *io.PipeWri
 	pr, pw := io.Pipe()
 	router := NewInputRouter(rec, ov)
 	router.input = pr
+	router.decodeWin32 = true
 	router.pendingFlush = testPendingFlush
 
 	go func() { _ = router.Run() }()
@@ -253,5 +258,34 @@ func TestMouseFloodReachesTheChildOneWholeSequencePerWrite(t *testing.T) {
 		if inside[off] {
 			t.Errorf("write %d ends mid-sequence: %q", n, w[max(0, len(w)-12):])
 		}
+	}
+}
+
+// Outside Windows the terminal sends plain VT bytes, so each read reaches the
+// agent unchanged and in one write: nothing is held, and the focus reports
+// the agent turned on are not filtered out.
+func TestPlainReadsReachTheChildUnchanged(t *testing.T) {
+	rec := &writeRecorder{}
+	cfg := DefaultConfig()
+	cfg.ShowIndicator = true
+	ov := New(rec, 80, 24, cfg)
+	ov.renderer = NewRenderer(&bytes.Buffer{}, 80, 24)
+	ov.state.Store(int32(StateIndicator))
+	pr, pw := io.Pipe()
+	router := NewInputRouter(rec, ov)
+	router.input = pr
+	router.decodeWin32 = false
+	go func() { _ = router.Run() }()
+	t.Cleanup(func() { router.Stop(); _ = pw.Close() })
+
+	reads := []string{"a", "\x1b[I", "\x1b[<35;10;5M\x1b[<35;11;5Mb", "\x1b[O", "\x1b[1;5"}
+	for _, r := range reads {
+		if _, err := pw.Write([]byte(r)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	require.Eventually(t, func() bool { return len(rec.getWrites()) == len(reads) }, 2*time.Second, time.Millisecond)
+	for i, w := range rec.getWrites() {
+		assert.Equal(t, reads[i], string(w), "read %d reaches the child as one unchanged write", i)
 	}
 }

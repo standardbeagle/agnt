@@ -7,6 +7,7 @@ import (
 	"iter"
 	"math"
 	"os"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -151,6 +152,13 @@ type InputRouter struct {
 	// Zero means the production value.
 	pendingFlush time.Duration
 
+	// decodeWin32 runs input through the win32-input-mode scanner. Only a
+	// native Windows console sends those sequences: under Linux and WSL the
+	// terminal's keys arrive as plain VT bytes. There the scanner had nothing
+	// to decode, yet it held sequences on a timer and dropped the focus
+	// reports the agent had asked for, so it is off outside Windows.
+	decodeWin32 bool
+
 	// modalInput, when set, diverts raw input bytes to the referenced channel
 	// instead of the normal PTY/overlay handling. It exists so a one-off
 	// startup prompt (e.g. the port-conflict Y/n question) can read a
@@ -191,10 +199,11 @@ func (r *InputRouter) SetInput(in io.Reader) {
 // NewInputRouter creates a new InputRouter.
 func NewInputRouter(ptmx PtyReadWriter, overlay *Overlay) *InputRouter {
 	return &InputRouter{
-		ptmx:      ptmx,
-		overlay:   overlay,
-		done:      make(chan struct{}),
-		escReader: NewEscapeSequenceReader(),
+		ptmx:        ptmx,
+		overlay:     overlay,
+		done:        make(chan struct{}),
+		escReader:   NewEscapeSequenceReader(),
+		decodeWin32: runtime.GOOS == "windows",
 	}
 }
 
@@ -272,8 +281,12 @@ func (r *InputRouter) Run() error {
 	if flush == 0 {
 		flush = win32PendingFlush
 	}
+	chunks := readChunks(inputSrc)
+	if r.decodeWin32 {
+		chunks = scanWin32Chunks(inputSrc, flush)
+	}
 	go func() {
-		for chunk := range scanWin32Chunks(inputSrc, flush) {
+		for chunk := range chunks {
 			// Once Stop has ended the loop below nobody drains inputCh, so a
 			// blind send would block forever and pin the scanner with it.
 			select {
@@ -1770,6 +1783,23 @@ func scanWin32Input(r io.Reader, flushAfter time.Duration) iter.Seq[byte] {
 				if !yield(b) {
 					return
 				}
+			}
+		}
+	}
+}
+
+// readChunks yields each read of r as one chunk, unchanged: the bytes reach
+// the agent exactly as the terminal delivered them.
+func readChunks(r io.Reader) iter.Seq[[]byte] {
+	return func(yield func([]byte) bool) {
+		for {
+			buf := make([]byte, 4096)
+			n, err := r.Read(buf)
+			if n > 0 && !yield(buf[:n]) {
+				return
+			}
+			if err != nil {
+				return
 			}
 		}
 	}
