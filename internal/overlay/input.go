@@ -127,6 +127,10 @@ type InputRouter struct {
 	// can never be satisfied by a keypress from minutes earlier.
 	configDiscardArmed bool
 
+	// ctrlCExitArmed is set by a Ctrl+C in panel view. A second Ctrl+C closes
+	// the panels; any other key disarms it, as with configDiscardArmed.
+	ctrlCExitArmed bool
+
 	// Process viewer state
 	viewerActive         bool
 	viewerUsingAltScreen bool
@@ -422,6 +426,23 @@ func (r *InputRouter) handleMenuKey(key string) {
 		return
 	}
 
+	// Ctrl+C twice closes the panels from anywhere, the palette and config
+	// editor included: it is the exit people reach for when nothing else
+	// they press seems to work. One press only arms it, because the agent's
+	// own Ctrl+C means interrupt and a stray one must not lose the view.
+	if key == "\x03" || key == "Ctrl+C" {
+		if r.ctrlCExitArmed {
+			r.overlay.commandInput = false
+			r.overlay.commandBuffer = ""
+			r.exitPanelMode()
+			return
+		}
+		r.ctrlCExitArmed = true
+		r.overlay.notifyLocked(Notification{Level: LevelInfo, Text: "Ctrl+C again to close the panels"})
+		return
+	}
+	r.ctrlCExitArmed = false
+
 	// Command palette captures ALL keys while active. This must run before the
 	// global menu switch below: otherwise Enter/Up/Down/q/x/1-9 are stolen by
 	// panel navigation (the original bug — Enter selected a script instead of
@@ -588,6 +609,7 @@ func (r *InputRouter) handlePaste(text string) {
 // exitPanelMode closes panel mode entirely.
 // Must be called with overlay.mu held.
 func (r *InputRouter) exitPanelMode() {
+	r.ctrlCExitArmed = false
 	r.stopPanelRefresh()
 	r.overlay.hideMenu()
 	debug.Log("input", "panel view closed (state=%v, gate frozen=%v)", r.overlay.State(), r.overlay.gate != nil && r.overlay.gate.IsFrozen())
@@ -1847,22 +1869,23 @@ func scanWin32Chunks(r io.Reader, flushAfter time.Duration) iter.Seq[[]byte] {
 // csiKeys maps a complete CSI sequence to the key name the overlay binds it
 // to. A sequence that is not here is consumed and discarded, not reported.
 var csiKeys = map[string]string{
-	"\x1b[A":    "Up",
-	"\x1b[B":    "Down",
-	"\x1b[C":    "Right",
-	"\x1b[D":    "Left",
-	"\x1b[H":    "Home",
-	"\x1b[F":    "End",
-	"\x1b[1~":   "Home",
-	"\x1b[4~":   "End",
-	"\x1b[3~":   "Delete",
-	"\x1b[5~":   "PageUp",
-	"\x1b[6~":   "PageDown",
-	"\x1b[Z":    "Shift+Tab",
-	"\x1b[1;5C": "Ctrl+Right",
-	"\x1b[1;5D": "Ctrl+Left",
-	"\x1b[1;5A": "Ctrl+Up",
-	"\x1b[1;5B": "Ctrl+Down",
+	"\x1b[A":     "Up",
+	"\x1b[B":     "Down",
+	"\x1b[C":     "Right",
+	"\x1b[D":     "Left",
+	"\x1b[H":     "Home",
+	"\x1b[F":     "End",
+	"\x1b[1~":    "Home",
+	"\x1b[4~":    "End",
+	"\x1b[3~":    "Delete",
+	"\x1b[5~":    "PageUp",
+	"\x1b[6~":    "PageDown",
+	"\x1b[Z":     "Shift+Tab",
+	"\x1b[1;5C":  "Ctrl+Right",
+	"\x1b[1;5D":  "Ctrl+Left",
+	"\x1b[1;5A":  "Ctrl+Up",
+	"\x1b[1;5B":  "Ctrl+Down",
+	"\x1b[99;5u": "Ctrl+C", // kitty keyboard protocol
 }
 
 // ss3Keys maps the byte after ESC O, which a terminal in application cursor
