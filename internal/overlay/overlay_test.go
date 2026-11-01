@@ -47,7 +47,7 @@ func TestDraw_AllVisibleScreensIncludeStatusBar(t *testing.T) {
 
 		out := buf.String()
 		assert.Contains(t, out, "Ctrl+→", "panel screen must show the status bar")
-		assert.Contains(t, out, "Esc Close", "panel keybind footer must remain")
+		assert.Contains(t, ansiSeq.ReplaceAllString(out, ""), "Esc Close", "panel keybind footer must remain")
 		assert.Contains(t, out, fmt.Sprintf("\x1b[%d;1H", h), "status bar targets the bottom row")
 		assert.Contains(t, out, fmt.Sprintf("\x1b[%d;1H", h-1), "panel footer sits one row above the status bar")
 	})

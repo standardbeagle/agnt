@@ -202,12 +202,12 @@ func TestPanelFooterShowsLiveNotification(t *testing.T) {
 func TestFooterHintsOnlyOfferKeysThatWork(t *testing.T) {
 	running := PanelItem{Type: "process", ID: "web", ProcessState: "running"}
 	stopped := PanelItem{Type: "process", ID: "web", ProcessState: "stopped"}
-	assert.NotContains(t, panelHints(running, Status{}, OverviewActions{}), "x Close")
-	assert.Contains(t, panelHints(stopped, Status{}, OverviewActions{}), "x Close")
-	assert.Contains(t, panelHints(running, Status{}, OverviewActions{}), "Esc Overview")
+	assert.NotContains(t, hintTexts(panelHints(running, Status{}, OverviewActions{})), "x Close")
+	assert.Contains(t, hintTexts(panelHints(stopped, Status{}, OverviewActions{})), "x Close")
+	assert.Contains(t, hintTexts(panelHints(running, Status{}, OverviewActions{})), "Esc Overview")
 
 	overview := PanelItem{Type: "overview"}
-	assert.Contains(t, panelHints(overview, Status{DaemonConnected: ConnectionConnected}, OverviewActions{}), ": Cmds",
+	assert.Contains(t, hintTexts(panelHints(overview, Status{DaemonConnected: ConnectionConnected}, OverviewActions{})), ": Cmds",
 		"the palette works with no scripts, so its hint must show with none")
 }
 
@@ -319,4 +319,12 @@ func TestKittyCtrlCIsNamed(t *testing.T) {
 		key, _ = r.Feed(b)
 	}
 	assert.Equal(t, "Ctrl+C", key)
+}
+
+func hintTexts(hints []panelHint) []string {
+	out := make([]string, len(hints))
+	for i, h := range hints {
+		out[i] = h.String()
+	}
+	return out
 }

@@ -17,6 +17,23 @@ Ctrl+→ from the agent's screen opens the panel view on the **overview**, which
 | ↑↓ j k, Home/End g G | move the script highlight | scroll (PgUp/PgDn by page) |
 | Enter, 1-9 | open the highlighted / Nth script | 1-9 open the Nth script |
 | x | — | close a stopped/failed script panel |
+| Ctrl+C twice | quit agnt | quit agnt |
+
+The mouse works too, while the panel view is open:
+
+| Mouse | Does |
+|---|---|
+| click a tab, or ‹ › | open that panel, or the next one scrolled off that side |
+| click × on a tab | close that stopped/failed script panel |
+| click a script row | highlight it; click the highlighted row again to open it |
+| click a footer hint | press its key (hints with no single key, such as ↑↓, do nothing) |
+| click "↑ N more" / "↓ N newer · End" | page up / jump back to the live tail |
+| click "x close" in a script header | close that panel |
+| wheel | step the script list or palette by one, scroll text by three lines |
+
+Opening the panel view turns on click reports (modes 1000 and 1006, in `showPanelDirect`); closing it (`hideMenu`) puts back the agent's own mouse mode, read from the output filter's model of the host terminal (`ProtectedWriter.ChildMouseRestore`). Without that model, as when the filter is off, the panels leave the mouse alone. Clicks are matched against the regions the last frame drew (`PanelHit`, recorded by the draw functions, `internal/overlay/panel_mouse.go`) and run through the same key handler a keypress does. Only presses act; releases and motion change nothing. While the panels hold the mouse the terminal's own text selection needs Shift (most terminals) or Alt (some).
+
+Process tabs show their state: ● running, ✗ failed, ○ stopped, ◌ starting.
 
 A paste while a panel is open is one unit, never a run of keys: the escape reader collects a bracketed paste (`ESC [200~` … `ESC [201~`, which the terminal sends because the agent enables mode 2004) and reports it as one `Paste:` key. The command palette takes it as typed text on one line (a pasted newline is not Enter), the config editor inserts it verbatim, and any other panel ignores it with a toast. A paste over 64 KiB is dropped whole; one that goes quiet for a second is abandoned.
 

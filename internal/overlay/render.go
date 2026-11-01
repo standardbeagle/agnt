@@ -316,6 +316,10 @@ type Renderer struct {
 	panelTermW int
 	panelTermH int
 
+	// panelHits are the clickable regions of the last panel frame, rebuilt
+	// by every DrawPanelView (see PanelHitAt).
+	panelHits []PanelHit
+
 	// Animation frame counter for starting-state indicator. Incremented
 	// atomically on each DrawIndicator call; read by processStateIcon
 	// to produce frame-based animation when a process is starting.
@@ -784,6 +788,17 @@ func (r *Renderer) EnterAltScreen() {
 	r.flushBuffer(buf)
 }
 
+// WriteControl writes a terminal control sequence outside any frame.
+func (r *Renderer) WriteControl(seq string) {
+	r.mu.Lock()
+	r.beginBuffer()
+	r.write(seq)
+	buf := r.buf
+	r.buf = nil
+	r.mu.Unlock()
+	r.flushBuffer(buf)
+}
+
 // ExitAltScreen switches back to the main screen buffer.
 // The main screen content that was preserved when EnterAltScreen was called is restored.
 func (r *Renderer) ExitAltScreen() {
@@ -804,6 +819,7 @@ func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Sta
 	r.beginBuffer()
 
 	r.write(ClearScreen + CursorHome + CursorHide)
+	r.panelHits = r.panelHits[:0]
 
 	if activeIndex >= len(panels) {
 		activeIndex = len(panels) - 1
@@ -881,7 +897,7 @@ func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Sta
 		r.write(style)
 	} else {
 		r.write(BgBrightBlack + FgWhite)
-		hint = " " + strings.Join(panelHints(active, status, actions), "  ") + fmt.Sprintf("  (%d/%d) ", activeIndex+1, len(panels))
+		hint = r.footerHints(footerRow, panelHints(active, status, actions)) + fmt.Sprintf(" (%d/%d) ", activeIndex+1, len(panels))
 	}
 	hint = r.padRight(r.truncateANSI(hint, r.width), r.width)
 	r.write(hint)
@@ -899,48 +915,112 @@ func (r *Renderer) DrawPanelView(panels []PanelItem, activeIndex int, status Sta
 	r.flushBuffer(buf)
 }
 
+// panelHint is one footer hint: the keys, what they do, and the key a click
+// on it presses ("" when a click has nothing single to press, as for ↑↓).
+type panelHint struct {
+	Keys, Label, Key string
+}
+
+func (h panelHint) String() string { return h.Keys + " " + h.Label }
+
 // panelHints lists the keys that do something on the active panel, most
 // used first, so truncation on a narrow terminal drops the rarest. Each
 // panel offers only what works there: an "x" hint on a running script, or
 // "1-9" with no scripts to jump to, advertises a key that does nothing.
-func panelHints(active PanelItem, status Status, actions OverviewActions) []string {
+func panelHints(active PanelItem, status Status, actions OverviewActions) []panelHint {
 	switch active.Type {
 	case "overview":
-		var parts []string
+		var parts []panelHint
 		if n := len(status.Scripts); n > 0 {
-			open := "⏎ Open"
+			open := panelHint{"⏎", "Open", "\r"}
 			if n > 1 {
-				open = fmt.Sprintf("⏎/1-%d Open", min(n, 9))
+				open.Keys = fmt.Sprintf("⏎/1-%d", min(n, 9))
 			}
-			parts = append(parts, "↑↓ Select", open, "a/s/r Script")
+			parts = append(parts, panelHint{"↑↓", "Select", ""}, open, panelHint{"a/s/r", "Script", ""})
 		}
-		parts = append(parts, ": Cmds")
+		parts = append(parts, panelHint{":", "Cmds", ":"})
 		if actions.SummarizeEnabled {
-			parts = append(parts, "m Summarize")
+			parts = append(parts, panelHint{"m", "Summarize", "m"})
 		}
 		if status.DaemonConnected != ConnectionConnected {
-			parts = append(parts, "c Reconnect")
+			parts = append(parts, panelHint{"c", "Reconnect", "c"})
 		}
-		return append(parts, "Tab Panels", "Esc Close")
+		return append(parts, panelHint{"Tab", "Panels", "\t"}, panelHint{"Esc", "Close", "Escape"})
 	case "config":
 		// The editor swallows every key it can use, so its hint lists what it
 		// does with them rather than the panel-browser bindings that no longer
 		// apply while typing.
-		return []string{"^S Save", "Esc Close", "↑↓←→ Move"}
+		return []panelHint{{"^S", "Save", "Ctrl+S"}, {"Esc", "Close", "Escape"}, {"↑↓←→", "Move", ""}}
 	}
-	parts := []string{"↑↓ Scroll", "Tab Panels"}
+	parts := []panelHint{{"↑↓", "Scroll", ""}, {"Tab", "Panels", "\t"}}
 	if n := len(status.Scripts); n > 0 {
-		parts = append(parts, fmt.Sprintf("1-%d Script", min(n, 9)))
+		parts = append(parts, panelHint{fmt.Sprintf("1-%d", min(n, 9)), "Script", ""})
 	}
 	if active.Type == "process" && active.IsDone() {
-		parts = append(parts, "x Close")
+		parts = append(parts, panelHint{"x", "Close", "x"})
 	}
-	return append(parts, "Esc Overview", "q Quit")
+	return append(parts, panelHint{"Esc", "Overview", "Escape"}, panelHint{"q", "Quit", "q"})
+}
+
+// footerHints renders the hints on row as chips, keys bold, and records a
+// clickable region for each one a click can press. Caller holds r.mu.
+func (r *Renderer) footerHints(row int, hints []panelHint) string {
+	var b strings.Builder
+	col := 1
+	for _, h := range hints {
+		b.WriteString(" ")
+		col++
+		w := uniseg.StringWidth(h.String())
+		if h.Key != "" {
+			r.addHit(PanelHit{Row: row, Col: col, End: min(col+w, r.width+1), Kind: hitKey, Key: h.Key})
+			b.WriteString(Bold + FgBrightWhite + h.Keys + Reset + BgBrightBlack + FgWhite + " " + h.Label)
+		} else {
+			b.WriteString(FgBrightWhite + h.Keys + FgWhite + " " + h.Label)
+		}
+		col += w
+		b.WriteString(" ")
+		col++
+	}
+	return b.String()
+}
+
+// tabStateGlyph is a process tab's state at a glance: running, failed or
+// stopped. Other panels carry no state and show none.
+func tabStateGlyph(panel PanelItem) (glyph, color string) {
+	if panel.Type != "process" {
+		return "", ""
+	}
+	switch panel.ProcessState {
+	case "running":
+		return "●", FgGreen
+	case "failed":
+		return "✗", FgRed
+	case "stopped":
+		return "○", FgBrightBlack
+	case "starting", "restarting":
+		return "◌", FgYellow
+	}
+	return "", ""
+}
+
+// tabCells is the width of a tab without its separator:
+// " [glyph ]label[ ×] ".
+func tabCells(panel PanelItem) int {
+	w := uniseg.StringWidth(panel.Label) + 2
+	if g, _ := tabStateGlyph(panel); g != "" {
+		w += 2
+	}
+	if panel.IsDone() {
+		w += 2
+	}
+	return w
 }
 
 // drawPanelTabBar draws the horizontal tab bar showing all panels. When the
 // tabs do not fit, it shows a window around the active tab with ‹ › marking
 // the panels scrolled off either side, so the active tab is always visible.
+// Every tab is clickable, the ‹ › markers step to the next hidden panel, and
+// a finished process tab carries a × that closes it.
 func (r *Renderer) drawPanelTabBar(panels []PanelItem, activeIndex int) {
 	// Row 1: Tab bar with panel labels
 	r.moveTo(1, 1)
@@ -948,19 +1028,19 @@ func (r *Renderer) drawPanelTabBar(panels []PanelItem, activeIndex int) {
 
 	first, last := tabWindow(panels, activeIndex, r.width)
 
-	// Build tab bar fitting within screen width
 	var tabBar strings.Builder
+	col := 1
 	if first > 0 {
-		tabBar.WriteString(FgBrightBlack + "‹" + Reset)
+		tabBar.WriteString(FgBrightWhite + Bold + "‹" + Reset)
+		r.addHit(PanelHit{Row: 1, Col: col, End: col + 1, Kind: hitTab, Index: first - 1})
 	} else {
 		tabBar.WriteString(" ")
 	}
+	col++
 
 	for i := first; i <= last; i++ {
 		panel := panels[i]
-		label := panel.Label
 
-		// Choose tab style based on type
 		var tabColor string
 		switch panel.Type {
 		case "process":
@@ -972,26 +1052,35 @@ func (r *Renderer) drawPanelTabBar(panels []PanelItem, activeIndex int) {
 		default:
 			tabColor = FgBrightBlack
 		}
-
+		style := FgBrightBlack // inactive: dimmed
 		if i == activeIndex {
-			// Active tab: bold with underline, brighter
-			tabBar.WriteString(tabColor + Bold + Underline)
-			tabBar.WriteString(" " + label + " ")
-			tabBar.WriteString(Reset)
-		} else {
-			// Inactive tab: dimmed
-			tabBar.WriteString(FgBrightBlack)
-			tabBar.WriteString(" " + label + " ")
-			tabBar.WriteString(Reset)
+			style = tabColor + Bold + Underline
 		}
 
-		// Tab separator
+		w := tabCells(panel)
+		r.addHit(PanelHit{Row: 1, Col: col, End: col + w, Kind: hitTab, Index: i})
+
+		tabBar.WriteString(style + " ")
+		if g, gc := tabStateGlyph(panel); g != "" {
+			tabBar.WriteString(Reset + gc + g + Reset + style + " ")
+		}
+		tabBar.WriteString(panel.Label)
+		if panel.IsDone() {
+			// The × sits after the label; recorded last, it wins the click.
+			tabBar.WriteString(" " + Reset + FgBrightBlack + "×" + Reset + style)
+			r.addHit(PanelHit{Row: 1, Col: col + w - 2, End: col + w - 1, Kind: hitCloseTab, Index: i})
+		}
+		tabBar.WriteString(" " + Reset)
+		col += w
+
 		if i < last {
 			tabBar.WriteString(FgBrightBlack + "│" + Reset)
+			col++
 		}
 	}
 	if last < len(panels)-1 {
-		tabBar.WriteString(FgBrightBlack + " ›" + Reset)
+		tabBar.WriteString(" " + FgBrightWhite + Bold + "›" + Reset)
+		r.addHit(PanelHit{Row: 1, Col: col, End: col + 2, Kind: hitTab, Index: last + 1})
 	}
 
 	r.write(tabBar.String())
@@ -1000,7 +1089,6 @@ func (r *Renderer) drawPanelTabBar(panels []PanelItem, activeIndex int) {
 	r.moveTo(2, 1)
 	r.write(ClearLine)
 
-	// Draw a gradient separator spanning the width
 	half := r.width / 2
 	for i := 0; i < r.width; i++ {
 		if i < half {
@@ -1012,10 +1100,10 @@ func (r *Renderer) drawPanelTabBar(panels []PanelItem, activeIndex int) {
 }
 
 // tabWindow returns the first and last panel indexes whose tabs fit in width,
-// always including activeIndex. A tab is " label " plus a one-cell separator;
+// always including activeIndex. A tab is tabCells plus a one-cell separator;
 // two cells are held back for the ‹ › overflow markers.
 func tabWindow(panels []PanelItem, activeIndex, width int) (first, last int) {
-	cell := func(i int) int { return len([]rune(panels[i].Label)) + 3 }
+	cell := func(i int) int { return tabCells(panels[i]) + 1 }
 	total := 1
 	for i := range panels {
 		total += cell(i)
@@ -1452,6 +1540,7 @@ func (r *Renderer) drawScriptsSection(row, col, width, bottom int, scripts []Scr
 		}
 
 		r.moveTo(row, col+1)
+		r.addHit(PanelHit{Row: row, Col: col + 1, End: col + width, Kind: hitScript, Index: i})
 		if selected {
 			// Plain, color-free line under reverse video for a clean bar.
 			plain := fmt.Sprintf("%s%s %s %-9s", num, icon, padCell(s.Name, nameW), s.State)
@@ -1460,6 +1549,10 @@ func (r *Renderer) drawScriptsSection(row, col, width, bottom int, scripts []Scr
 			}
 			if s.LastError != "" && s.State == "failed" {
 				plain += " " + s.LastError
+			}
+			// The bar says what Enter (or a second click) does, when it fits.
+			if w := width - 1 - uniseg.StringWidth(openTag); uniseg.StringWidth(plain) < w {
+				plain = padCell(plain, w) + openTag
 			}
 			r.write(Reverse + padCell(plain, width-1) + Reset)
 			row++
@@ -1492,7 +1585,7 @@ func (r *Renderer) drawScriptsSection(row, col, width, bottom int, scripts []Scr
 	}
 	if hidden := len(scripts) - visible; hidden > 0 && row < bottom {
 		r.moveTo(row, col+1)
-		r.write(fmt.Sprintf("%s  %d of %d shown · ↑↓ to scroll%s", FgBrightBlack, visible, len(scripts), Reset))
+		r.write(fmt.Sprintf("%s  %d of %d shown · ↑↓ or wheel to scroll%s", FgBrightBlack, visible, len(scripts), Reset))
 		row++
 	}
 	if row < bottom {
@@ -1500,6 +1593,9 @@ func (r *Renderer) drawScriptsSection(row, col, width, bottom int, scripts []Scr
 	}
 	return row
 }
+
+// openTag ends the highlighted script's bar: what Enter does there.
+const openTag = "⏎ open "
 
 // maxScriptRows caps the overview script list; the rest scroll into view
 // with the selection.
@@ -1792,23 +1888,23 @@ func (r *Renderer) drawProcessPanelContent(startRow, col, width, maxRows int, pa
 			state = "stopped"
 		}
 		stateColor := StateColorCode(state)
-		r.write(fmt.Sprintf("%s %s%s%s", panel.ID, stateColor+Bold, state, Reset))
+		header := fmt.Sprintf("%s %s%s%s", panel.ID, stateColor+Bold, state, Reset)
+		r.write(header)
 		if panel.IsDone() {
-			r.write(fmt.Sprintf("  %sx%s close", FgBrightBlack+Bold, Reset))
+			r.writeCloseButton(row, col+r.estimateVisibleLength(header))
 		}
 		row++
 	} else {
 		// Script header info
 		r.moveTo(row, col)
 		stateColor := StateColorCode(script.State)
-		r.write(fmt.Sprintf("%s %s%s%s",
-			script.Command,
-			stateColor+Bold, script.State, Reset))
+		header := fmt.Sprintf("%s %s%s%s", script.Command, stateColor+Bold, script.State, Reset)
 		if script.StartCount > 1 {
-			r.write(fmt.Sprintf(" %sstarts:%d%s", FgBrightBlack, script.StartCount, Reset))
+			header += fmt.Sprintf(" %sstarts:%d%s", FgBrightBlack, script.StartCount, Reset)
 		}
+		r.write(header)
 		if panel.IsDone() {
-			r.write(fmt.Sprintf("  %sx%s close", FgBrightBlack+Bold, Reset))
+			r.writeCloseButton(row, col+r.estimateVisibleLength(header))
 		}
 		row++
 
@@ -1835,6 +1931,16 @@ func (r *Renderer) drawProcessPanelContent(startRow, col, width, maxRows int, pa
 
 	// Output content with scroll support
 	r.drawScrollableContent(row, col, width, startRow+maxRows-row, panel)
+}
+
+// writeCloseButton ends a finished process panel's header line with an
+// "x close" button; the cursor is at end, the column after the header on
+// row. Caller holds r.mu.
+func (r *Renderer) writeCloseButton(row, end int) {
+	r.write("  ")
+	start := end + 2
+	r.write(BgBrightBlack + FgBrightWhite + " x close " + Reset)
+	r.addHit(PanelHit{Row: row, Col: start, End: start + 9, Kind: hitKey, Key: "x"})
 }
 
 // drawScrollableContent renders panel content with vertical scroll support.
@@ -1906,15 +2012,18 @@ func (r *Renderer) drawScrollIndicators(startRow, col, width, availLines int, pa
 		fromLine = 0
 	}
 
+	// Each marker is a button: ↑ pages up, ↓ jumps back to the live tail.
+	marker := func(row int, text, key string) {
+		c := col + width - uniseg.StringWidth(text) - 1
+		r.moveTo(row, c)
+		r.write(BgBrightBlack + FgBrightWhite + text + Reset)
+		r.addHit(PanelHit{Row: row, Col: c, End: c + uniseg.StringWidth(text), Kind: hitKey, Key: key})
+	}
 	if panel.ScrollOffset > 0 {
-		indicator := fmt.Sprintf("↓ %d", panel.ScrollOffset)
-		r.moveTo(startRow+availLines-1, col+width-len(indicator)-1)
-		r.write(FgBrightBlack + indicator + Reset)
+		marker(startRow+availLines-1, fmt.Sprintf(" ↓ %d newer · End ", panel.ScrollOffset), "End")
 	}
 	if fromLine > 0 {
-		indicator := fmt.Sprintf("↑ %d", fromLine)
-		r.moveTo(startRow, col+width-len(indicator)-1)
-		r.write(FgBrightBlack + indicator + Reset)
+		marker(startRow, fmt.Sprintf(" ↑ %d more ", fromLine), "PageUp")
 	}
 }
 

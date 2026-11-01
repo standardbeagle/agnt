@@ -441,6 +441,16 @@ func (r *InputRouter) handleOverlayInput(b byte) {
 func (r *InputRouter) handleMenuKey(key string) {
 	r.overlay.mu.Lock()
 	defer r.overlay.mu.Unlock()
+	r.handleMenuKeyLocked(key)
+}
+
+// handleMenuKeyLocked is handleMenuKey with overlay.mu held; a click runs
+// the key it stands for through here.
+func (r *InputRouter) handleMenuKeyLocked(key string) {
+	if ev, ok := parseSGRMouse(key); ok {
+		r.handlePanelMouse(ev)
+		return
+	}
 
 	// A bracketed paste is text, never a run of key commands: read key by key
 	// its 'q' closes the panel and its digits open scripts.
@@ -1635,6 +1645,9 @@ func (r *EscapeSequenceReader) Feed(b byte) (key string, complete bool) {
 		if seq == bracketedPasteStart {
 			r.state = escInPaste
 			return "", false
+		}
+		if strings.HasPrefix(seq, "\x1b[<") {
+			return seq, true // SGR mouse report, read by parseSGRMouse
 		}
 		return csiKeys[seq], true
 	}

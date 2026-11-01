@@ -72,6 +72,11 @@ type ProtectedWriter struct {
 	// Alt screen, published from the model with the cursor.
 	inAltScreen atomic.Bool
 
+	// The child's mouse tracking mode and encoding (vt10x mouse mode bits),
+	// published from the model with the cursor, so the panel view can put
+	// them back after borrowing the mouse.
+	mouseModes atomic.Uint32
+
 	// DECTCEM (mode 25), published from the model with the cursor. The
 	// overlay reads this so a status-bar draw restores the child's own
 	// cursor visibility instead of forcing the cursor visible on top of a
@@ -521,6 +526,13 @@ func (pw *ProtectedWriter) publishCursor() {
 	pw.cursorCol.Store(int32(c.X + 1))
 	pw.cursorVisible.Store(mode&vt10x.ModeHide == 0)
 	pw.inAltScreen.Store(mode&vt10x.ModeAltScreen != 0)
+	pw.mouseModes.Store(uint32(mode & (vt10x.ModeMouseMask | vt10x.ModeMouseSgr)))
+}
+
+// ChildMouseRestore returns the bytes that put the host terminal back in the
+// child's mouse modes after the panel view borrowed the mouse.
+func (pw *ProtectedWriter) ChildMouseRestore() string {
+	return mouseRestoreSequence(vt10x.ModeFlag(pw.mouseModes.Load()))
 }
 
 // enforceScrollRegion writes the scroll region sequence to protect bottom rows.

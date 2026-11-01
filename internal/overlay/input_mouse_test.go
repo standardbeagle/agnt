@@ -18,10 +18,11 @@ func feedAll(r *EscapeSequenceReader, seq string) []string {
 }
 
 // A terminal reports mouse motion as an escape sequence on stdin. The reader
-// must consume the whole report and emit nothing: emitting Escape closes the
-// panel, and the bytes left over after that go straight to the child process,
-// where they appear as text in its input field.
-func TestEscapeSequenceReader_SwallowsMouseReports(t *testing.T) {
+// must consume the whole report and never emit Escape or a fragment: Escape
+// closes the panel, and the bytes left over after that go straight to the
+// child process, where they appear as text in its input field. An SGR report
+// comes out whole, once, for the panel view's mouse handling; others vanish.
+func TestEscapeSequenceReader_MouseReportsNeverTypeKeys(t *testing.T) {
 	tests := []struct {
 		name string
 		seq  string
@@ -40,7 +41,13 @@ func TestEscapeSequenceReader_SwallowsMouseReports(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			r := NewEscapeSequenceReader()
-			if keys := feedAll(r, tt.seq); len(keys) != 0 {
+			keys := feedAll(r, tt.seq)
+			if _, sgr := parseSGRMouse(tt.seq); sgr {
+				// SGR reports drive the panel view's mouse: one whole key.
+				if len(keys) != 1 || keys[0] != tt.seq {
+					t.Errorf("SGR report produced keys %q; want it whole, once", keys)
+				}
+			} else if len(keys) != 0 {
 				t.Errorf("mouse report produced keys %q; it must be swallowed", keys)
 			}
 			if r.IsPending() {

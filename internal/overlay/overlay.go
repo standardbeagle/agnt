@@ -271,6 +271,11 @@ type Overlay struct {
 	configEditor *ConfigEditor
 	panelMode    bool // Whether in panel view (vs indicator)
 
+	// childMouseRestore hands the mouse back to the child (SetChildMouseRestore);
+	// mouseBorrowed is set while the panel view has mouse reports on.
+	childMouseRestore func() string
+	mouseBorrowed     bool
+
 	// Overview panel: interactive script selection
 	overviewSelectedIdx int // Selected script row in overview (0-based)
 
@@ -405,6 +410,15 @@ func (o *Overlay) SetChildScreenSource(fn func(maxRows int) []byte) {
 	o.childScreen = fn
 }
 
+// SetChildMouseRestore sets where the panel view gets the bytes that hand
+// the mouse back to the child. Without it the panels leave the mouse alone:
+// they could not put the child's mode back.
+func (o *Overlay) SetChildMouseRestore(fn func() string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.childMouseRestore = fn
+}
+
 // SetAltScreenChecker sets a callback that reports whether the child process
 // is currently in the alternate screen buffer. Used to decide whether the
 // overlay can safely use alt screen for menus (only when child is on main screen).
@@ -523,6 +537,11 @@ func (o *Overlay) showPanelDirect() {
 	o.panelMode = false
 	o.panelIndex = 0
 	o.buildPanelItems()
+
+	if o.childMouseRestore != nil && !o.mouseBorrowed {
+		o.renderer.WriteControl(panelMouseOn)
+		o.mouseBorrowed = true
+	}
 }
 
 // buildPanelItems merges current status into the panel list.
@@ -749,6 +768,10 @@ func formatStartupLog(entries []StartupLogEntry) string {
 func (o *Overlay) hideMenu() {
 	o.panelMode = false
 	o.panelIndex = 0
+	if o.mouseBorrowed {
+		o.renderer.WriteControl(o.childMouseRestore())
+		o.mouseBorrowed = false
+	}
 	// panelItems are intentionally NOT cleared — they persist across open/close
 
 	if o.showBar.Load() {

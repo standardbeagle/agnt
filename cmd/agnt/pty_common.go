@@ -2111,6 +2111,7 @@ func setupTerminalOverlay(ctx context.Context, handle *ptyHandle, rt *pipelineRu
 		}
 		rt.outputFilter = overlay.NewProtectedWriter(rt.outputGate, handle.Width, handle.Height, filterCfg)
 		rt.termOverlay.SetAltScreenChecker(rt.outputFilter.InAltScreen)
+		rt.termOverlay.SetChildMouseRestore(rt.outputFilter.ChildMouseRestore)
 		// The filter models the host terminal's cursor from the bytes it sends,
 		// so overlay draws can restore it with an absolute CUP. Without this the
 		// overlay uses the terminal's single SCP/RCP save slot, which the child
