@@ -126,6 +126,10 @@ type InputRouter struct {
 	// can never be satisfied by a keypress from minutes earlier.
 	configDiscardArmed bool
 
+	// quit shuts agnt down; set by the session (SetQuitHandler). Without
+	// one, Ctrl+C twice only closes the panels.
+	quit func()
+
 	// ctrlCExitArmed is set by a Ctrl+C in panel view. A second Ctrl+C closes
 	// the panels; any other key disarms it, as with configDiscardArmed.
 	ctrlCExitArmed bool
@@ -203,6 +207,12 @@ func NewInputRouter(ptmx PtyReadWriter, overlay *Overlay) *InputRouter {
 		escReader:   NewEscapeSequenceReader(),
 		decodeWin32: runtime.GOOS == "windows",
 	}
+}
+
+// SetQuitHandler sets what Ctrl+C twice in the panels calls to shut agnt
+// down.
+func (r *InputRouter) SetQuitHandler(fn func()) {
+	r.quit = fn
 }
 
 // SetScriptController sets the script controller for stopping/restarting scripts.
@@ -439,19 +449,25 @@ func (r *InputRouter) handleMenuKey(key string) {
 		return
 	}
 
-	// Ctrl+C twice closes the panels from anywhere, the palette and config
-	// editor included: it is the exit people reach for when nothing else
-	// they press seems to work. One press only arms it, because the agent's
-	// own Ctrl+C means interrupt and a stray one must not lose the view.
+	// Ctrl+C twice quits agnt from anywhere in the panels, the palette and
+	// config editor included, as Ctrl+C twice quits most terminal programs.
+	// One press only arms it, so a stray one does nothing.
 	if key == "\x03" || key == "Ctrl+C" {
 		if r.ctrlCExitArmed {
 			r.overlay.commandInput = false
 			r.overlay.commandBuffer = ""
 			r.exitPanelMode()
+			if r.quit != nil {
+				r.quit()
+			}
 			return
 		}
 		r.ctrlCExitArmed = true
-		r.overlay.notifyLocked(Notification{Level: LevelInfo, Text: "Ctrl+C again to close the panels"})
+		text := "Ctrl+C again to quit agnt"
+		if r.quit == nil {
+			text = "Ctrl+C again to close the panels"
+		}
+		r.overlay.notifyLocked(Notification{Level: LevelInfo, Text: text})
 		return
 	}
 	r.ctrlCExitArmed = false

@@ -1350,6 +1350,25 @@ func suppressAutostartDuringSetup(setupPhase bool) func() {
 	return func() { skipAutostart = prev }
 }
 
+// runSession validates the project config, then runs the first-run gate and
+// the agent phases through child. quit ends the session exactly as a SIGINT
+// to agnt does, setup phase included (no coding phase follows it); the
+// panels' Ctrl+C twice calls it.
+func runSession(ctx context.Context, args []string, child func(ctx context.Context, quit func(), setupPhase bool, args []string) (int, error)) error {
+	projectPath, _ := os.Getwd()
+	if err := validateResolvedConfig(projectPath); err != nil {
+		return err
+	}
+	ctx, quit := context.WithCancel(ctx)
+	defer quit()
+	return firstRunOrCoding(projectPath, args, func(setupPhase bool, a []string) (int, error) {
+		if ctx.Err() != nil {
+			return 0, nil
+		}
+		return child(ctx, quit, setupPhase, a)
+	}, reapSessionPGID)
+}
+
 // firstRunOrCoding is the shared run-orchestration wiring for both platform
 // entrypoints. It drives the optional first-run two-phase setup→relaunch flow
 // for ANY agent (the gate is verb-driven, not Claude-specific). Only the launch
@@ -1532,6 +1551,9 @@ type ptyHandle struct {
 	// and overlay.PtyReadWriter so the same overlay/InputRouter code
 	// drives both backends without conditional compilation.
 	Backend overlay.PtyReadWriter
+
+	// Quit shuts the whole session down, as a SIGINT to agnt does.
+	Quit func()
 
 	// Width/Height are the host terminal dimensions at PTY start.
 	Width, Height int
@@ -2071,6 +2093,7 @@ func setupTerminalOverlay(ctx context.Context, handle *ptyHandle, rt *pipelineRu
 	rt.outputGate = core.gate
 	rt.termOverlay = core.term
 	rt.inputRouter = core.router
+	core.router.SetQuitHandler(handle.Quit)
 	rt.daemonConn = core.daemonConn
 	rt.statusFetcher = core.statusFetcher
 

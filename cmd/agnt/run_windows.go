@@ -38,25 +38,16 @@ func runPlatformPTY(commandArgs []string, _socketPath string, _sessionCode strin
 // (Claude only — Slice A/B scope) around the normal single coding-phase launch.
 // The per-phase ConPTY work lives in runConPTYChild.
 func runWithConPTY(ctx context.Context, args []string, socketPath string, sessionCode string) error {
-	projectPath, _ := os.Getwd()
-
-	if err := validateResolvedConfig(projectPath); err != nil {
-		return err
-	}
-
-	// The per-phase adapter is resolved inside runConPTYChild; the gate itself
-	// is verb-driven and agent-agnostic.
-	return firstRunOrCoding(projectPath, args,
-		func(setupPhase bool, a []string) (int, error) {
-			return runConPTYChild(ctx, a, socketPath, sessionCode, setupPhase)
-		}, reapSessionPGID)
+	return runSession(ctx, args, func(ctx context.Context, quit func(), setupPhase bool, a []string) (int, error) {
+		return runConPTYChild(ctx, quit, a, socketPath, sessionCode, setupPhase)
+	})
 }
 
 // runConPTYChild runs one ConPTY phase to completion. setupPhase selects the
 // setup-mode system prompt and suppresses autostart (the project has no config
 // yet); the coding phase uses the normal prompt with autostart enabled. The
 // returned pgid is always 0 on Windows (Job Objects, not POSIX groups).
-func runConPTYChild(ctx context.Context, args []string, socketPath string, sessionCode string, setupPhase bool) (int, error) {
+func runConPTYChild(ctx context.Context, quit func(), args []string, socketPath string, sessionCode string, setupPhase bool) (int, error) {
 	command := args[0]
 	cmdArgs := args[1:]
 
@@ -135,6 +126,7 @@ func runConPTYChild(ctx context.Context, args []string, socketPath string, sessi
 
 	processExited := make(chan struct{})
 	handle := &ptyHandle{
+		Quit:             quit,
 		Backend:          ptmx,
 		Width:            width,
 		Height:           height,

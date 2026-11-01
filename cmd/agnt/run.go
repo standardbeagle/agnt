@@ -44,25 +44,16 @@ func runPlatformPTY(commandArgs []string, _socketPath string, _sessionCode strin
 // (Claude only — Slice A/B scope) around the normal single coding-phase
 // launch. The per-phase PTY work lives in runPTYChild.
 func runWithPTY(ctx context.Context, args []string, socketPath string, sessionCode string) error {
-	projectPath, _ := os.Getwd()
-
-	if err := validateResolvedConfig(projectPath); err != nil {
-		return err
-	}
-
-	// The per-phase adapter is resolved inside runPTYChild; the gate itself is
-	// verb-driven and agent-agnostic.
-	return firstRunOrCoding(projectPath, args,
-		func(setupPhase bool, a []string) (int, error) {
-			return runPTYChild(ctx, a, socketPath, sessionCode, setupPhase)
-		}, reapSessionPGID)
+	return runSession(ctx, args, func(ctx context.Context, quit func(), setupPhase bool, a []string) (int, error) {
+		return runPTYChild(ctx, quit, a, socketPath, sessionCode, setupPhase)
+	})
 }
 
 // runPTYChild runs one PTY phase to completion and returns the child's pgid
 // for post-exit reaping. setupPhase selects the setup-mode system prompt and
 // suppresses autostart (the project has no config yet); the coding phase uses
 // the normal prompt with autostart enabled.
-func runPTYChild(ctx context.Context, args []string, socketPath string, sessionCode string, setupPhase bool) (int, error) {
+func runPTYChild(ctx context.Context, quit func(), args []string, socketPath string, sessionCode string, setupPhase bool) (int, error) {
 	command := args[0]
 	cmdArgs := args[1:]
 
@@ -140,6 +131,7 @@ func runPTYChild(ctx context.Context, args []string, socketPath string, sessionC
 	defer func() { _ = term.Restore(int(os.Stdin.Fd()), oldState) }()
 
 	handle := &ptyHandle{
+		Quit:         quit,
 		Backend:      ptmx,
 		Width:        width,
 		Height:       height,

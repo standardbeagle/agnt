@@ -278,7 +278,7 @@ func TestStatusUpdateAddsAndRemovesProxyTabs(t *testing.T) {
 
 // Ctrl+C twice closes the panels from any panel and from inside the palette;
 // one press, or a press separated from the next by another key, does not.
-func TestDoubleCtrlCClosesPanels(t *testing.T) {
+func TestDoubleCtrlCQuitsFromThePanels(t *testing.T) {
 	for _, ctrlC := range []string{"\x03", "Ctrl+C"} {
 		o, router := newNavOverlay(t, []PanelItem{
 			{Type: "overview", Label: "overview"},
@@ -287,6 +287,8 @@ func TestDoubleCtrlCClosesPanels(t *testing.T) {
 		o.panelIndex = 1
 		// The armed notice paints from its own goroutine.
 		o.renderer.SetOutput(&safeWriter{})
+		quits := 0
+		router.SetQuitHandler(func() { quits++ })
 
 		router.handleMenuKey(ctrlC)
 		assert.Equal(t, StateMenu, o.State(), "one Ctrl+C only arms the exit")
@@ -296,6 +298,7 @@ func TestDoubleCtrlCClosesPanels(t *testing.T) {
 		router.handleMenuKey(ctrlC)
 		assert.NotEqual(t, StateMenu, o.State(), "second Ctrl+C closes the panels")
 		assert.False(t, router.ctrlCExitArmed, "closing clears the armed state")
+		assert.Equal(t, 1, quits, "second Ctrl+C quits agnt")
 
 		o.state.Store(int32(StateMenu))
 		o.commandInput = true
@@ -305,6 +308,7 @@ func TestDoubleCtrlCClosesPanels(t *testing.T) {
 		router.handleMenuKey(ctrlC)
 		assert.NotEqual(t, StateMenu, o.State(), "Ctrl+C twice closes from the palette")
 		assert.False(t, o.commandInput, "the palette does not reopen with the panels")
+		assert.Equal(t, 2, quits, "Ctrl+C twice quits from the palette")
 	}
 }
 
