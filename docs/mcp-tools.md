@@ -818,6 +818,11 @@ Returns shell command string for streaming daemon events via `agnt monitor` CLI.
 
 **Indicator & Modes**:
 - `indicator.show/hide/toggle/togglePanel()`
+- `indicator.setPanelLayout('left'|'right'|'float')` / `indicator.panelLayout()` — the developer
+  panel docks as a left drawer by default (pushes the app's frame aside while open; overlays it
+  when less than 320px of app would remain), docks right, or floats detached. Dragging the panel
+  header detaches it; dropping it on a side edge re-docks; the inner edge (docked) or corner
+  (float) resizes. Persisted per origin in `localStorage['__devtool_panel_layout']`.
 - `sketch.open/close/toggle/save/toJSON/fromJSON()`
 - `design.start/stop/selectElement/next/previous/addAlternative/chat()`
 - `responsive.open/close/toggle/setWidth/getState()` — responsive mode (4th indicator mode)

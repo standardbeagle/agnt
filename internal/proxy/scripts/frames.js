@@ -191,6 +191,33 @@
       return shell && typeof shell.__devtool_resize_content === 'function'
         ? shell.__devtool_resize_content(w, h)
         : { ok: false, error: 'no chrome shell' };
+    },
+    // insetContent narrows the full-bleed content frame so a docked panel
+    // sits beside the app instead of over it: side 'left' or 'right' with a
+    // width in px, or null to restore full bleed. A stylesheet rule keyed on
+    // an attribute of the shell's <html>, so the agent's viewport resize
+    // (__devtool_resize_content inline styles) still wins. Returns false
+    // outside the chrome shell, where there is no frame to move.
+    insetContent: function(side, px) {
+      var shell = context.shell();
+      if (!shell || shell !== window) { return false; }
+      var doc = shell.document;
+      var root = doc.documentElement;
+      if (side !== 'left' && side !== 'right') {
+        root.removeAttribute('data-agnt-dock');
+        return true;
+      }
+      if (!doc.getElementById('__devtool-dock-inset-style')) {
+        var style = doc.createElement('style');
+        style.id = '__devtool-dock-inset-style';
+        style.textContent =
+          'html[data-agnt-dock] #__devtool_content_frame { width: calc(100% - var(--agnt-dock-width)); }\n' +
+          'html[data-agnt-dock="left"] #__devtool_content_frame { left: var(--agnt-dock-width); }';
+        doc.head.appendChild(style);
+      }
+      root.style.setProperty('--agnt-dock-width', px + 'px');
+      root.setAttribute('data-agnt-dock', side);
+      return true;
     }
   };
   window.__devtool_context = context;

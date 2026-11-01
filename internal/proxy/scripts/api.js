@@ -221,12 +221,16 @@
       hide: indicator.hide,
       toggle: indicator.toggle,
       togglePanel: indicator.togglePanel,
+      setPanelLayout: indicator.setPanelLayout,
+      panelLayout: indicator.panelLayout,
       destroy: indicator.destroy
     } : {
       show: indicatorNotLoaded,
       hide: indicatorNotLoaded,
       toggle: indicatorNotLoaded,
       togglePanel: indicatorNotLoaded,
+      setPanelLayout: indicatorNotLoaded,
+      panelLayout: indicatorNotLoaded,
       destroy: indicatorNotLoaded
     },
 

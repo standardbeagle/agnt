@@ -228,7 +228,7 @@ proxy {action: "exec", id: "app", code: "__devtool.interactions.getLastClickCont
 
 ### 2. The Floating Indicator
 
-Every proxied page gets a small floating bug icon. Click it to:
+Every proxied page gets a small floating bug icon. Click it (or press Ctrl+Y) to open the developer panel: a drawer docked on the left that pushes your app aside. Drag its header to detach it into a floating window, drop it on either edge to dock it again, and drag its edge to resize. From the panel you can:
 
 - **Send messages** directly to your AI agent
 - **Take screenshots** of specific areas

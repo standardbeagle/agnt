@@ -58,11 +58,13 @@
   var InteractionsTabComponent = I.InteractionsTabComponent;
   var HistoryTabComponent = I.HistoryTabComponent;
   var ChaosTabComponent = I.ChaosTabComponent;
+  var panelLayout = I.panelLayout;
 
   // Initialize
   function init() {
     if (state.container) return;
     loadPrefs();
+    panelLayout.load();
     // Nested (iframe) instance — e.g. the live frame inside responsive mode,
     // which loads this same proxied page and therefore re-injects this script.
     // The page's own global key hooks live inside the frame and cannot reach
@@ -832,49 +834,65 @@
     }, 750);
   }
 
-  // Inject container query styles for responsive tabs
-  function injectContainerQueryStyles() {
-    if (getInMount('__devtool-container-style')) return;
+  // Panel stylesheet: header, tab grid, tool grid, dock/float chrome, and the
+  // resize handle. Lives in the mount root beside the panel. Rules here (not
+  // inline cssText) so :hover, :focus-visible and [data-dock] variants work.
+  function injectPanelStyles() {
+    if (getInMount('__devtool-panel-style')) return;
 
+    var c = TOKENS.colors;
+    var tint = 'color-mix(in srgb, ' + c.primary + ' 12%, transparent)';
     var style = document.createElement('style');
-    style.id = '__devtool-container-style';
+    style.id = '__devtool-panel-style';
     style.textContent = [
-      // Make panel a container for container queries
-      '#__devtool-panel {',
-      '  container-type: inline-size;',
-      '  container-name: devtool-panel;',
+      '#__devtool-panel { container-type: inline-size; container-name: devtool-panel; }',
+      '#__devtool-panel:focus { outline: none; }',
+      '#__devtool-panel[data-dock="left"] { border-right: 1px solid ' + c.border + '; }',
+      '#__devtool-panel[data-dock="right"] { border-left: 1px solid ' + c.border + '; }',
+      '#__devtool-panel[data-dock="left"], #__devtool-panel[data-dock="right"] { border-radius: 0; box-shadow: ' + TOKENS.shadow.md + '; }',
+      '#__devtool-panel[data-dock="float"] { border: 1px solid ' + c.border + '; border-radius: ' + TOKENS.radius.lg + '; box-shadow: ' + TOKENS.shadow.lg + '; }',
+      // Header: title, persona chip, position switch, close. The whole bar
+      // (minus its buttons) is the drag handle.
+      '.__devtool-panel-header {',
+      '  display: flex; align-items: center; gap: 8px; flex: 0 0 auto;',
+      '  padding: 6px 8px 6px 12px; min-height: 40px; box-sizing: border-box;',
+      '  background: ' + c.surfaceAlt + '; border-bottom: 1px solid ' + c.border + ';',
+      '  cursor: grab; user-select: none; touch-action: none;',
       '}',
-      // Tab bar uses CSS grid - horizontal row with auto-sizing columns
+      '#__devtool-panel[data-dock="float"] .__devtool-panel-header { border-radius: ' + TOKENS.radius.lg + ' ' + TOKENS.radius.lg + ' 0 0; }',
+      '.__devtool-panel-title { flex: 1 1 auto; min-width: 0; display: flex; align-items: center; gap: 6px;',
+      '  font-size: 13px; font-weight: 600; color: ' + c.text + '; white-space: nowrap; overflow: hidden; }',
+      '.__devtool-panel-grip { color: ' + c.textMuted + '; display: inline-flex; }',
+      '.__devtool-mode-switch { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid ' + c.border + '; border-radius: ' + TOKENS.radius.sm + '; flex: 0 0 auto; }',
+      '.__devtool-icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 26px; height: 26px; padding: 0;',
+      '  border: none; border-radius: 4px; background: transparent; color: ' + c.textMuted + '; cursor: pointer; flex: 0 0 auto; }',
+      '.__devtool-icon-btn:hover { background: ' + c.border + '; color: ' + c.text + '; }',
+      '.__devtool-icon-btn[aria-pressed="true"] { background: ' + tint + '; color: ' + c.primary + '; }',
+      '.__devtool-icon-btn:focus-visible, .__devtool-tab:focus-visible, .__devtool-tool-btn:focus-visible { outline: 2px solid ' + c.primary + '; outline-offset: 1px; }',
+      // Tabs: two even rows of four (one row of eight when wide) instead of
+      // one crushed row.
       '.__devtool-tab-bar {',
-      '  display: grid !important;',
-      '  grid-template-columns: repeat(8, 1fr) auto;',
-      '  gap: 0;',
-      '  align-items: center;',
+      '  display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px;',
+      '  padding: 8px; flex: 0 0 auto; background: ' + c.surface + '; border-bottom: 1px solid ' + c.border + ';',
       '}',
-      // Tab buttons - centered text, no overflow
-      '.__devtool-tab {',
-      '  justify-content: center;',
-      '  text-align: center;',
-      '  min-width: 0;',
-      '  white-space: nowrap !important;',
-      '}',
-      // Short label hidden by default (wide panel shows full labels)
-      '.__devtool-tab-short { display: none; }',
-      '.__devtool-tab-full { display: inline; }',
-      // Container query: narrow panel (< 420px) - show short labels
-      '@container devtool-panel (max-width: 420px) {',
-      '  .__devtool-tab { padding: 6px 4px !important; font-size: 11px !important; }',
-      '  .__devtool-tab-short { display: inline; }',
-      '  .__devtool-tab-full { display: none; }',
-      '}',
-      // Container query: very narrow panel (< 300px) - minimal padding
-      '@container devtool-panel (max-width: 300px) {',
-      '  .__devtool-tab { padding: 4px 2px !important; font-size: 10px !important; }',
-      '}',
-      // Container query: wide panel (> 520px) - comfortable spacing
-      '@container devtool-panel (min-width: 520px) {',
-      '  .__devtool-tab { padding: 10px 14px !important; }',
-      '}'
+      '@container devtool-panel (min-width: 680px) { .__devtool-tab-bar { grid-template-columns: repeat(8, 1fr); } }',
+      '.__devtool-tab { display: flex; align-items: center; justify-content: center; gap: 4px; min-width: 0;',
+      '  padding: 6px 8px; border: none; border-radius: ' + TOKENS.radius.sm + '; background: transparent;',
+      '  font-family: inherit; font-size: 12px; font-weight: 500; line-height: 1.2; color: ' + c.textMuted + '; cursor: pointer; white-space: nowrap;',
+      '  transition: ' + IND_MOTION.transition('color 0.15s ease, background 0.15s ease') + '; }',
+      '.__devtool-tab:hover { color: ' + c.text + '; background: ' + c.surfaceAlt + '; }',
+      '.__devtool-tab[aria-selected="true"] { color: ' + c.primary + '; background: ' + tint + '; }',
+      // Resize handle: inner edge of a docked drawer, corner of a float window.
+      '.__devtool-panel-resize { position: absolute; z-index: 1; touch-action: none; }',
+      '#__devtool-panel[data-dock="left"] .__devtool-panel-resize { top: 0; bottom: 0; right: -4px; width: 8px; cursor: ew-resize; }',
+      '#__devtool-panel[data-dock="right"] .__devtool-panel-resize { top: 0; bottom: 0; left: -4px; width: 8px; cursor: ew-resize; }',
+      '#__devtool-panel[data-dock="left"] .__devtool-panel-resize:hover, #__devtool-panel[data-dock="right"] .__devtool-panel-resize:hover {',
+      '  background: linear-gradient(to right, transparent 3px, ' + c.primary + ' 3px, ' + c.primary + ' 5px, transparent 5px); }',
+      '#__devtool-panel[data-dock="float"] .__devtool-panel-resize { right: 2px; bottom: 2px; width: 14px; height: 14px; cursor: nwse-resize;',
+      '  background: linear-gradient(135deg, transparent 50%, ' + c.border + ' 50%, ' + c.border + ' 60%, transparent 60%, transparent 75%, ' + c.border + ' 75%, ' + c.border + ' 85%, transparent 85%); }',
+      // Drop target shown while a dragged window is over a side edge.
+      '.__devtool-snap-hint { position: fixed; top: 0; bottom: 0; display: none; pointer-events: none; z-index: ' + IND_Z.panel + ';',
+      '  background: ' + tint + '; border: 2px dashed ' + c.primary + '; box-sizing: border-box; }'
     ].join('\n');
     styleTarget().appendChild(style);
   }
@@ -963,21 +981,19 @@
   }
 
   function createPanel() {
-    // Inject container query styles
-    injectContainerQueryStyles();
+    injectPanelStyles();
 
     var panel = document.createElement('div');
     panel.id = '__devtool-panel';
-    panel.style.cssText = STYLES.panel + '; display: flex; flex-direction: column;';
+    panel.style.cssText = STYLES.panel;
     panel.style.display = 'none';
     panel.style.opacity = '0';
-    panel.style.transform = 'translateY(8px)';
+    panel.style.transform = panelLayout.closedTransform();
 
-    // Tab bar (replaces header)
-    var tabBar = createTabBar();
-    panel.appendChild(tabBar);
+    var header = createPanelHeader();
+    panel.appendChild(header);
+    panel.appendChild(createTabBar());
 
-    // Tab content area
     var tabContent = document.createElement('div');
     tabContent.id = '__devtool-tab-content';
     tabContent.style.cssText = STYLES.tabContent;
@@ -985,72 +1001,81 @@
 
     state.panel = panel;
     state.container.appendChild(panel);
+    panelLayout.attach(panel, header);
 
-    // Load active tab from localStorage
     try {
       var savedTab = localStorage.getItem('__devtool_active_tab');
-      if (savedTab) {
+      if (savedTab && TAB_IDS.indexOf(savedTab) >= 0) {
         state.activeTab = savedTab;
       }
     } catch (e) {
       // Ignore localStorage errors
     }
 
-    // Initial render
     switchTab(state.activeTab);
   }
 
-  function createTabBar() {
-    var tabBar = document.createElement('div');
-    tabBar.className = '__devtool-tab-bar';
-    tabBar.style.cssText = STYLES.tabBar;
+  // Panel header: drag handle (detach / move / re-dock), persona chip,
+  // position switch, close.
+  function createPanelHeader() {
+    var header = document.createElement('div');
+    header.className = '__devtool-panel-header';
+    header.title = 'Drag to move or detach';
 
-    var tabs = [
-      { id: 'compose', label: 'Message', short: 'Msg', title: 'Send message to agent' },
-      { id: 'overview', label: 'Overview', short: 'Info', title: 'Page overview' },
-      { id: 'errors', label: 'Errors', short: 'Err', title: 'JavaScript errors' },
-      { id: 'network', label: 'Network', short: 'Net', title: 'Network requests' },
-      { id: 'performance', label: 'Perf', short: 'Perf', title: 'Performance metrics' },
-      { id: 'interactions', label: 'Interact', short: 'Intx', title: 'User interactions' },
-      { id: 'history', label: 'History', short: 'Hist', title: 'Event history' },
-      { id: 'chaos', label: 'Chaos', short: '⛈', title: 'Chaos engineering — failure injection' }
-    ];
-
-    tabs.forEach(function(tabInfo) {
-      var tab = document.createElement('button');
-      tab.id = '__devtool-tab-' + tabInfo.id;
-      tab.className = '__devtool-tab';
-      tab.style.cssText = STYLES.tab;
-      // Add both full and short labels as spans for container query switching
-      tab.innerHTML = '<span class="__devtool-tab-full">' + tabInfo.label + '</span>' +
-                      '<span class="__devtool-tab-short">' + tabInfo.short + '</span>';
-      if (tabInfo.title) tab.title = tabInfo.title;
-      tab.onclick = function() { switchTab(tabInfo.id); };
-
-      // Highlight active tab
-      if (state.activeTab === tabInfo.id) {
-        tab.style.cssText = STYLES.tab + ';' + STYLES.tabActive;
-      }
-
-      tabBar.appendChild(tab);
-    });
+    var title = document.createElement('div');
+    title.className = '__devtool-panel-title';
+    title.innerHTML = '<span class="__devtool-panel-grip">' + ICONS.grip + '</span><span>agnt</span>';
+    header.appendChild(title);
 
     // Dev OIDC persona chip (persona-chip.js). It renders nothing when the
     // project declares no dev-oidc block.
     if (window.__devtool_personaChip) {
-      tabBar.appendChild(window.__devtool_personaChip.create());
+      header.appendChild(window.__devtool_personaChip.create());
     }
 
-    // Close button at the end
+    header.appendChild(panelLayout.createModeSwitch());
+
     var closeBtn = document.createElement('button');
-    closeBtn.style.cssText = STYLES.tabCloseBtn;
+    closeBtn.type = 'button';
+    closeBtn.className = '__devtool-icon-btn';
     closeBtn.innerHTML = ICONS.close;
     closeBtn.setAttribute('aria-label', 'Close panel');
-    closeBtn.title = 'Close panel';
+    closeBtn.title = 'Close panel (Ctrl+Y)';
     closeBtn.onclick = function(e) { e.stopPropagation(); togglePanel(false); };
-    closeBtn.onmouseenter = function() { closeBtn.style.color = TOKENS.colors.text; };
-    closeBtn.onmouseleave = function() { closeBtn.style.color = TOKENS.colors.textMuted; };
-    tabBar.appendChild(closeBtn);
+    header.appendChild(closeBtn);
+
+    return header;
+  }
+
+  var TABS = [
+    { id: 'compose', label: 'Message', title: 'Send message to agent' },
+    { id: 'overview', label: 'Overview', title: 'Page overview' },
+    { id: 'errors', label: 'Errors', title: 'JavaScript errors' },
+    { id: 'network', label: 'Network', title: 'Network requests' },
+    { id: 'performance', label: 'Perf', title: 'Performance metrics' },
+    { id: 'interactions', label: 'Interact', title: 'User interactions' },
+    { id: 'history', label: 'History', title: 'Event history' },
+    { id: 'chaos', label: 'Chaos', title: 'Chaos engineering — failure injection' }
+  ];
+  var TAB_IDS = TABS.map(function(t) { return t.id; });
+
+  function createTabBar() {
+    var tabBar = document.createElement('div');
+    tabBar.className = '__devtool-tab-bar';
+    tabBar.setAttribute('role', 'tablist');
+
+    TABS.forEach(function(tabInfo) {
+      var tab = document.createElement('button');
+      tab.type = 'button';
+      tab.id = '__devtool-tab-' + tabInfo.id;
+      tab.className = '__devtool-tab';
+      tab.setAttribute('role', 'tab');
+      tab.setAttribute('aria-selected', String(state.activeTab === tabInfo.id));
+      tab.textContent = tabInfo.label;
+      tab.title = tabInfo.title;
+      tab.onclick = function() { switchTab(tabInfo.id); };
+      tabBar.appendChild(tab);
+    });
 
     return tabBar;
   }
@@ -1065,17 +1090,9 @@
       // Ignore localStorage errors
     }
 
-    // Update tab bar highlighting
-    var tabs = ['compose', 'overview', 'errors', 'network', 'performance', 'interactions', 'history', 'chaos'];
-    tabs.forEach(function(id) {
+    TAB_IDS.forEach(function(id) {
       var tab = getInMount('__devtool-tab-' + id);
-      if (tab) {
-        if (id === tabId) {
-          tab.style.cssText = STYLES.tab + ';' + STYLES.tabActive;
-        } else {
-          tab.style.cssText = STYLES.tab;
-        }
-      }
+      if (tab) tab.setAttribute('aria-selected', String(id === tabId));
     });
 
     // Render tab content
@@ -1116,11 +1133,6 @@
       case 'compose':
         renderComposeTab(content);
         break;
-    }
-
-    // Adjust panel width for history tab (needs more room for timestamps)
-    if (state.panel) {
-      state.panel.style.width = (tabId === 'history') ? '540px' : '480px';
     }
 
     // Start update interval for active tab
@@ -1311,7 +1323,7 @@
     var textarea = document.createElement('textarea');
     textarea.id = '__devtool-message';
     textarea.style.cssText = STYLES.textarea;
-    textarea.placeholder = 'Describe what you need help with... (Ctrl+Enter to send)';
+    textarea.placeholder = 'Describe what you need help with\u2026';
     textarea.value = store.message.val;
     textarea.onfocus = function() {
       card.style.cssText = STYLES.messageCard + ';' + STYLES.messageCardFocused;
@@ -1381,22 +1393,8 @@
         var newHeight = Math.min(Math.max(measured, 80), 200);
         if (newHeight === textareaLastHeight) return;
 
-        var previousHeight = state.panel ? state.panel.offsetHeight : 0;
         textarea.style.height = newHeight + 'px';
         textareaLastHeight = newHeight;
-
-        // Reposition panel to expand upward on next frame to let the
-        // textarea height change settle before we read panel.offsetHeight.
-        if (state.panel && state.isExpanded) {
-          requestAnimationFrame(function() {
-            var panelHeight = state.panel ? state.panel.offsetHeight : 0;
-            var heightDiff = panelHeight - previousHeight;
-            if (heightDiff !== 0) {
-              var currentTop = parseInt(state.panel.style.top) || 0;
-              state.panel.style.top = (currentTop - heightDiff) + 'px';
-            }
-          });
-        }
       });
     }
 
@@ -1421,15 +1419,33 @@
     compose.appendChild(card);
     container.appendChild(compose);
 
-    // Toolbar with actions
+    // Send row sits directly under the message: the primary action stays
+    // next to the input it acts on.
+    var sendRow = document.createElement('div');
+    sendRow.style.cssText = 'display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin: 8px 0 16px;';
+    var sendHint = document.createElement('span');
+    sendHint.textContent = 'Ctrl+Enter';
+    sendHint.style.cssText = 'font-size: 11px; color: ' + TOKENS.colors.textMuted + ';';
+    var sendBtn = document.createElement('button');
+    sendBtn.type = 'button';
+    sendBtn.style.cssText = STYLES.sendBtn;
+    sendBtn.innerHTML = ICONS.send + ' Send';
+    sendBtn.title = 'Send message (Ctrl+Enter)';
+    sendBtn.onclick = handleSend;
+    sendBtn.onmouseenter = function() { sendBtn.style.background = TOKENS.colors.primaryDark; };
+    sendBtn.onmouseleave = function() { sendBtn.style.background = TOKENS.colors.primary; };
+    sendRow.appendChild(sendHint);
+    sendRow.appendChild(sendBtn);
+    container.appendChild(sendRow);
+
+    var toolsLabel = document.createElement('div');
+    toolsLabel.textContent = 'Capture & tools';
+    toolsLabel.style.cssText = 'font-size: 11px; font-weight: 600; letter-spacing: 0.4px; text-transform: uppercase; color: ' + TOKENS.colors.textMuted + '; margin-bottom: 8px;';
+    container.appendChild(toolsLabel);
+
     var toolbar = document.createElement('div');
     toolbar.style.cssText = STYLES.toolbar;
 
-    // Action buttons container (wraps for responsive layout)
-    var actionsContainer = document.createElement('div');
-    actionsContainer.style.cssText = STYLES.toolbarActions;
-
-    // Tool buttons (Gestalt: Similarity - all secondary actions look alike)
     var refreshBtn = createToolBtn('Refresh', ICONS.refresh, refreshContent);
     refreshBtn.title = 'Reload the app (content frame) without dropping the agnt connection';
     var screenshotBtn = createToolBtn('Screenshot', ICONS.screenshot, startScreenshotMode);
@@ -1437,10 +1453,10 @@
     var sketchBtn = createToolBtn('Sketch', ICONS.sketch, openSketch);
     var designBtn = createToolBtn('Design', ICONS.design, startDesignMode);
     state.inspectBtn = createToolBtn('Inspect', ICONS.inspect, startInspectMode);
-    state.inspectBtn.title = 'Live style editor \u2014 inspect and edit CSS';
+    state.inspectBtn.title = 'Live style editor — inspect and edit CSS';
     var responsiveBtn = createToolBtn('Responsive', ICONS.responsive, startResponsiveMode);
-    responsiveBtn.title = 'Responsive mode \u2014 live iframe at controllable width';
-    // Override hover handlers to preserve active state
+    responsiveBtn.title = 'Responsive mode — live iframe at controllable width';
+    // Inline active-state colors (updateInspectBtnState) must survive hover-out.
     state.inspectBtn.onmouseleave = function() {
       var sw = targetWindow();
       var active = sw.__devtool_style_editor && sw.__devtool_style_editor.isOpen();
@@ -1450,33 +1466,22 @@
         state.inspectBtn.style.color = TOKENS.colors.textMuted;
       }
     };
-    var auditDropdown = createActionsDropdown();
 
-    actionsContainer.appendChild(refreshBtn);
-    actionsContainer.appendChild(screenshotBtn);
-    actionsContainer.appendChild(elementBtn);
-    actionsContainer.appendChild(sketchBtn);
-    actionsContainer.appendChild(designBtn);
-    actionsContainer.appendChild(state.inspectBtn);
-    actionsContainer.appendChild(responsiveBtn);
-    actionsContainer.appendChild(auditDropdown);
-    toolbar.appendChild(actionsContainer);
-
-    // Send button (visual hierarchy - primary action, auto-pushed right via margin-left: auto)
-    var sendBtn = document.createElement('button');
-    sendBtn.style.cssText = STYLES.sendBtn;
-    sendBtn.innerHTML = ICONS.send + ' Send';
-    sendBtn.title = 'Send message (Ctrl+Enter)';
-    sendBtn.onclick = handleSend;
-    sendBtn.onmouseenter = function() { sendBtn.style.background = TOKENS.colors.primaryDark; };
-    sendBtn.onmouseleave = function() { sendBtn.style.background = TOKENS.colors.primary; };
-    toolbar.appendChild(sendBtn);
-
+    toolbar.appendChild(screenshotBtn);
+    toolbar.appendChild(elementBtn);
+    toolbar.appendChild(sketchBtn);
+    toolbar.appendChild(designBtn);
+    toolbar.appendChild(state.inspectBtn);
+    toolbar.appendChild(responsiveBtn);
+    toolbar.appendChild(createActionsDropdown());
+    toolbar.appendChild(refreshBtn);
     container.appendChild(toolbar);
   }
 
   function createToolBtn(label, icon, onClick) {
     var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = '__devtool-tool-btn';
     btn.style.cssText = STYLES.toolBtn;
     btn.innerHTML = icon + ' ' + label;
     btn.onclick = onClick;
@@ -2977,6 +2982,7 @@
     // Hide panel immediately without animation so overlay is the topmost interactive layer
     state.panel.style.display = 'none';
     state.isExpanded = false;
+    panelLayout.apply();
     if (state.tabUpdateInterval) {
       clearInterval(state.tabUpdateInterval);
       state.tabUpdateInterval = null;
@@ -3390,8 +3396,8 @@
       // A close still inside its fade must not hide the panel we reopen now.
       clearTimeout(state.panelHideTimeout);
       state.panelHideTimeout = null;
-      updatePanelPosition();
-      state.panel.style.display = 'flex'; // Changed to flex for column layout
+      panelLayout.apply();
+      state.panel.style.display = 'flex';
       // Promote the panel to a compositor layer just for the duration of the
       // 0.2s opacity+transform transition. Cleared below after the transition
       // completes so we don't pin GPU memory for an idle panel.
@@ -3402,7 +3408,7 @@
         // destroy() or a close may land before this frame.
         if (!state.panel || !state.isExpanded) return;
         state.panel.style.opacity = '1';
-        state.panel.style.transform = 'translateY(0)';
+        state.panel.style.transform = 'none';
       });
       // Release will-change after the enter transition settles (0.2s +
       // small safety margin). Stored on state so rapid toggles replace it.
@@ -3424,7 +3430,9 @@
       state.prevFocus = null;
       state.panel.style.willChange = 'transform, opacity';
       state.panel.style.opacity = '0';
-      state.panel.style.transform = 'translateY(8px)';
+      state.panel.style.transform = panelLayout.closedTransform();
+      // Release the app's inset now so it reflows while the drawer fades.
+      panelLayout.apply();
       clearTimeout(state.panelWillChangeTimeout);
       // Stored so a reopen (or destroy) inside the fade can cancel it; the
       // guard covers a callback already queued when that happens.
@@ -3443,22 +3451,6 @@
     }
   }
 
-  function updatePanelPosition() {
-    if (!state.panel || !state.bug) return;
-    var rect = state.bug.getBoundingClientRect();
-    var panelH = state.panel.offsetHeight || 300;
-
-    var x = rect.left;
-    var y = rect.top - panelH - 12;
-
-    if (x + 380 > window.innerWidth) x = window.innerWidth - 390;
-    if (x < 10) x = 10;
-    if (y < 10) y = rect.bottom + 12;
-
-    state.panel.style.left = x + 'px';
-    state.panel.style.top = y + 'px';
-  }
-
   // Drag handling
   function handleDragStart(e) {
     if (e.button !== 0) return;
@@ -3470,7 +3462,7 @@
 
     // rAF-batch drag updates. Each mousemove updates pendingDelta only; the
     // rAF callback applies the style write once per frame and then runs the
-    // dependent layout reads (updatePanelPosition, positionSparkline).
+    // dependent layout read (positionSparkline).
     // Coalescing multiple mousemove events into one frame avoids synchronous
     // layout thrash from reading bounding rects after each style write.
     var rafId = 0;
@@ -3491,7 +3483,6 @@
       state.position = { x: x, y: y };
       state.bug.style.left = x + 'px';
       state.bug.style.bottom = y + 'px';
-      updatePanelPosition();
       positionSparkline();
     }
 
@@ -3781,6 +3772,7 @@
     if (state.container) {
       state.container.style.display = 'block';
       state.isVisible = true;
+      panelLayout.apply();
       savePrefs();
     }
   }
@@ -3789,6 +3781,7 @@
     if (state.container) {
       state.container.style.display = 'none';
       state.isVisible = false;
+      panelLayout.apply();
       savePrefs();
     }
   }
@@ -3809,6 +3802,7 @@
     clearTimeout(state.panelHideTimeout);
     clearTimeout(state.panelWillChangeTimeout);
     state.panelHideTimeout = null;
+    panelLayout.detach();
     if (state.container && state.container.parentNode) {
       state.container.parentNode.removeChild(state.container);
     }
@@ -3861,6 +3855,9 @@
     destroy: destroy,
     togglePanel: togglePanel,
     switchTab: switchTab,
+    // Panel position: 'left' | 'right' (docked drawer) | 'float' (detached).
+    setPanelLayout: panelLayout.setMode,
+    panelLayout: panelLayout.current,
     setMessage: actions.setMessage,
     setActivityState: setActivityState,
     addAttachment: addAttachment,

@@ -17,6 +17,7 @@ func TestFrameContextAdapterContract(t *testing.T) {
 		"cleanURL: function(raw)",
 		"contentURL: function(raw, id)",
 		"syncURL: function(raw)",
+		"insetContent: function(side, px)",
 	} {
 		if !strings.Contains(framesJS, symbol) {
 			t.Errorf("frame context adapter missing %q", symbol)

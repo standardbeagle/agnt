@@ -246,55 +246,22 @@
     // Panel - the main interface
     panel: [
       'position: fixed',
-      'width: 480px',
+      'display: flex',
+      'flex-direction: column',
+      'box-sizing: border-box',
       'background: ' + TOKENS.colors.surface,
-      'border-radius: ' + TOKENS.radius.lg,
-      'box-shadow: ' + TOKENS.shadow.lg,
+      // Radius, border and shadow vary by dock mode: see injectPanelStyles.
       'z-index: ' + IND_Z.panel,
+      // visible so the docked resize handle can straddle the inner edge;
+      // the tab content scrolls inside its own box.
       'overflow: visible',
       'font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif',
       'font-size: 14px',
       'color: ' + TOKENS.colors.text,
       'transition: ' + IND_MOTION.transition('opacity 0.2s ease, transform 0.2s ease'),
-      // Scope layout/style invalidation to the panel. paint is omitted because
-      // the audit dropdown megaMenu inside the panel uses position:absolute
-      // with bottom:calc(100% + 4px) to open upward and its box-shadow extends
-      // outside the panel's bounds.
+      // Geometry (dock/float position and size) is written by
+      // indicator-layout.js. Scope layout/style invalidation to the panel.
       'contain: layout style'
-    ].join(';'),
-
-    // Header - minimal, functional
-    header: [
-      'display: flex',
-      'align-items: center',
-      'justify-content: space-between',
-      'padding: ' + TOKENS.spacing.md + ' ' + TOKENS.spacing.lg,
-      'background: ' + TOKENS.colors.surfaceAlt,
-      'border-bottom: 1px solid ' + TOKENS.colors.border
-    ].join(';'),
-
-    headerTitle: [
-      'font-weight: 600',
-      'font-size: 13px',
-      'color: ' + TOKENS.colors.textMuted,
-      'text-transform: uppercase',
-      'letter-spacing: 0.5px'
-    ].join(';'),
-
-    closeBtn: [
-      'background: none',
-      'border: none',
-      'color: ' + TOKENS.colors.textMuted,
-      'cursor: pointer',
-      'padding: 4px',
-      'border-radius: ' + TOKENS.radius.sm,
-      'display: flex',
-      'transition: ' + IND_MOTION.transition('background 0.15s ease')
-    ].join(';'),
-
-    // Compose area - the main content
-    compose: [
-      'padding: ' + TOKENS.spacing.lg
     ].join(';'),
 
     // Message card - groups message + attachments (Gestalt: Common Region)
@@ -420,31 +387,19 @@
     // Toolbar - secondary actions (Gestalt: Similarity)
     // Flexbox with wrap for responsive fit
     toolbar: [
-      'display: flex',
-      'flex-wrap: wrap',
-      'align-items: center',
-      'gap: 6px',
-      'padding: 10px ' + TOKENS.spacing.md,
-      'background: ' + TOKENS.colors.surfaceAlt,
-      'border-top: 1px solid ' + TOKENS.colors.border
-    ].join(';'),
-
-    // Container for action buttons (left side)
-    toolbarActions: [
-      'display: flex',
-      'flex-wrap: wrap',
-      'align-items: center',
-      'gap: 6px',
-      'flex: 1 1 auto',
-      'min-width: 0'
+      'display: grid',
+      'grid-template-columns: repeat(auto-fill, minmax(112px, 1fr))',
+      'gap: 6px'
     ].join(';'),
 
     toolBtn: [
-      'display: inline-flex',
+      'display: flex',
       'align-items: center',
-      'justify-content: center',
-      'gap: 4px',
-      'padding: 6px 10px',
+      'justify-content: flex-start',
+      'gap: 6px',
+      'width: 100%',
+      'box-sizing: border-box',
+      'padding: 7px 10px',
       'background: transparent',
       'border: 1px solid ' + TOKENS.colors.border,
       'border-radius: ' + TOKENS.radius.sm,
@@ -462,7 +417,7 @@
       'align-items: center',
       'justify-content: center',
       'gap: 5px',
-      'padding: 8px 14px',
+      'padding: 8px 16px',
       'background: ' + TOKENS.colors.primary,
       'border: none',
       'border-radius: ' + TOKENS.radius.sm,
@@ -471,8 +426,7 @@
       'color: ' + TOKENS.colors.textInverse,
       'cursor: pointer',
       'transition: ' + IND_MOTION.transition('background 0.15s ease, transform 0.1s ease'),
-      'white-space: nowrap',
-      'margin-left: auto'
+      'white-space: nowrap'
     ].join(';'),
 
     // Selection overlays
@@ -542,16 +496,18 @@
     // Dropdown container
     dropdownContainer: [
       'position: relative',
-      'display: inline-block'
+      'display: block'
     ].join(';'),
 
     // Dropdown button with chevron
     dropdownBtn: [
-      'display: inline-flex',
+      'display: flex',
       'align-items: center',
-      'justify-content: center',
-      'gap: 4px',
-      'padding: 6px 10px',
+      'justify-content: flex-start',
+      'gap: 6px',
+      'width: 100%',
+      'box-sizing: border-box',
+      'padding: 7px 10px',
       'background: transparent',
       'border: 1px solid ' + TOKENS.colors.border,
       'border-radius: ' + TOKENS.radius.sm,
@@ -686,40 +642,6 @@
       'border-top: none'
     ].join(';'),
 
-    // Tab styles
-    tabBar: [
-      'display: flex',
-      'align-items: center',
-      'background: ' + TOKENS.colors.surfaceAlt,
-      'border-bottom: 1px solid ' + TOKENS.colors.border,
-      'overflow-x: auto',
-      'overflow-y: hidden',
-      'padding: 0 ' + TOKENS.spacing.sm,
-      'gap: ' + TOKENS.spacing.xs
-    ].join(';'),
-
-    tab: [
-      'padding: 8px 12px',
-      'font-size: 12px',
-      'font-weight: 500',
-      'border: none',
-      'background: transparent',
-      'color: ' + TOKENS.colors.textMuted,
-      'cursor: pointer',
-      'border-bottom: 2px solid transparent',
-      'transition: ' + IND_MOTION.transition('color 0.15s ease, border-color 0.15s ease'),
-      'white-space: nowrap',
-      'position: relative',
-      'display: flex',
-      'align-items: center',
-      'gap: 4px'
-    ].join(';'),
-
-    tabActive: [
-      'color: ' + TOKENS.colors.primary,
-      'border-bottom-color: ' + TOKENS.colors.primary
-    ].join(';'),
-
     tabBadge: [
       'min-width: 16px',
       'height: 16px',
@@ -755,27 +677,14 @@
 
     tabContent: [
       'padding: ' + TOKENS.spacing.lg,
-      'max-height: 400px',
+      // Fills the panel below the header and tab grid; scrolls on its own.
+      'flex: 1 1 auto',
+      'min-height: 0',
       'overflow-y: auto',
       'overflow-x: hidden',
       // Switching tabs rewrites tabContent.innerHTML; scope layout/style to
       // this subtree so a tab swap does not invalidate the rest of the panel.
-      // paint is intentionally omitted to avoid any interaction with the audit
-      // megaMenu dropdown inside the Compose tab, which uses position:absolute
-      // with bottom:calc(100% + 4px) to open upward. The existing overflow-y:
-      // auto already clips within-box content.
       'contain: layout style'
-    ].join(';'),
-
-    tabCloseBtn: [
-      'margin-left: auto',
-      'background: none',
-      'border: none',
-      'color: ' + TOKENS.colors.textMuted,
-      'cursor: pointer',
-      'padding: 4px',
-      'display: flex',
-      'flex-shrink: 0'
     ].join(';'),
 
     // Tab content specific styles
@@ -911,6 +820,7 @@
   // Icons (compact SVGs)
   var ICONS = {
     logo: '<svg width="24" height="24" viewBox="0 0 24 24" fill="white"><path d="M12 2L2 7l10 5 10-5-10-5zM2 17l10 5 10-5M2 12l10 5 10-5"/></svg>',
+    grip: '<svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><circle cx="9" cy="6" r="1.6"/><circle cx="15" cy="6" r="1.6"/><circle cx="9" cy="12" r="1.6"/><circle cx="15" cy="12" r="1.6"/><circle cx="9" cy="18" r="1.6"/><circle cx="15" cy="18" r="1.6"/></svg>',
     close: '<svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6L6 18M6 6l12 12"/></svg>',
     send: '<svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M2.01 21L23 12 2.01 3 2 10l15 2-15 2z"/></svg>',
     screenshot: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>',

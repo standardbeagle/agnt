@@ -114,6 +114,9 @@ var (
 	//go:embed indicator-tabs.js
 	indicatorTabsJS string
 
+	//go:embed indicator-layout.js
+	indicatorLayoutJS string
+
 	//go:embed persona-chip.js
 	personaChipJS string
 
@@ -390,21 +393,23 @@ var moduleOrder = []moduleEntry{
 	// the bridge and skips its own hotkey registration, then overwrites the
 	// forwarding surface with the real implementation.
 	{"indicator-bridge", nil},
-	// The floating indicator is split into four modules sharing symbols via
+	// The floating indicator is split into five modules sharing symbols via
 	// the window.__devtool_indicator_internal namespace, in load order:
 	// indicator-styles (design tokens/STYLES/ICONS) → indicator-data
 	// (reactive store, data refresh, chaos client) → indicator-tabs (VanJS
-	// tab components) → indicator (chrome shell: bug, panel, hotkeys,
-	// capture modes). Later modules alias earlier ones at eval time; the
-	// chrome shell assigns its runtime-invoked functions back onto the
-	// namespace, so all four must load contiguously in this order.
+	// tab components) → indicator-layout (docked drawer / floating window
+	// geometry, header drag, resize, shell content-frame inset) → indicator
+	// (chrome shell: bug, panel, hotkeys, capture modes). Later modules alias
+	// earlier ones at eval time; the chrome shell assigns its runtime-invoked
+	// functions back onto the namespace, so they must load in this order.
 	{"indicator-styles", []string{"ui-tokens"}},
 	{"indicator-data", []string{"core", "utils", "indicator-styles"}},
 	{"indicator-tabs", []string{"indicator-data", "indicator-styles"}},
-	// persona-chip: dev-oidc persona switcher mounted in the indicator's tab
-	// bar; self-contained, so it only needs the design tokens.
+	{"indicator-layout", []string{"core", "frames", "indicator-data"}},
+	// persona-chip: dev-oidc persona switcher mounted in the indicator's panel
+	// header; self-contained, so it only needs the design tokens.
 	{"persona-chip", []string{"ui-tokens", "frames"}},
-	{"indicator", []string{"core", "utils", "sketch", "design", "style-editor", "toast", "framework-detector", "api-tracker", "shadow-root", "indicator-bridge", "indicator-styles", "indicator-data", "indicator-tabs", "persona-chip"}},
+	{"indicator", []string{"core", "utils", "sketch", "design", "style-editor", "toast", "framework-detector", "api-tracker", "shadow-root", "indicator-bridge", "indicator-styles", "indicator-data", "indicator-tabs", "indicator-layout", "persona-chip"}},
 	{"snapshot-helper", []string{"core"}},
 	{"diagnostics", []string{"utils", "core"}},
 	{"session", []string{"core"}},
@@ -461,6 +466,7 @@ var moduleRole = map[string]Role{
 	"indicator-styles": RoleChrome,
 	"indicator-data":   RoleChrome,
 	"indicator-tabs":   RoleChrome,
+	"indicator-layout": RoleChrome,
 	"persona-chip":     RoleChrome,
 	"indicator":        RoleChrome,
 	"walkthrough":      RoleChrome,
@@ -573,6 +579,7 @@ var moduleScript = map[string]string{
 	"indicator-styles":   indicatorStylesJS,
 	"indicator-data":     indicatorDataJS,
 	"indicator-tabs":     indicatorTabsJS,
+	"indicator-layout":   indicatorLayoutJS,
 	"persona-chip":       personaChipJS,
 	"indicator":          indicatorJS,
 	"snapshot-helper":    snapshotHelperJS,
