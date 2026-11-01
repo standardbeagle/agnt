@@ -395,7 +395,9 @@ func (r *InputRouter) passthrough(buf []byte) {
 		r.enterPanelBrowse()
 		return
 	}
-	if _, err := r.ptmx.Write(buf); err != nil {
+	// A failed write is reported by AgentTTY's error handler; the log
+	// line is for the debug trace.
+	if _, err := WriteTagged(r.ptmx, "keyboard", buf); err != nil {
 		debug.Log("input", "passthrough: %d typed bytes not delivered to the agent: %v", len(buf), err)
 	}
 }

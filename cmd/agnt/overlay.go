@@ -34,8 +34,11 @@ type PtyWriter interface {
 
 // Overlay receives events from devtool-mcp and injects them into the PTY.
 type Overlay struct {
-	socketPath      string
-	ptmx            PtyWriter
+	socketPath string
+	ptmx       PtyWriter
+	// ttyRecorder holds the last bytes to and from the agent's terminal,
+	// served on /tty; nil when the overlay is not in front of a PTY.
+	ttyRecorder     *overlay.TTYRecorder
 	server          *http.Server
 	listener        net.Listener
 	upgrader        websocket.Upgrader
@@ -292,6 +295,7 @@ func (o *Overlay) Start(ctx context.Context) error {
 	mux.HandleFunc("/key", o.handleKey)
 	mux.HandleFunc("/event", o.handleEvent)
 	mux.HandleFunc("/toast", o.handleToast)
+	mux.HandleFunc("/tty", o.handleTTY)
 
 	// Loopback (unix socket), routed through the shared constructor for
 	// uniformity — every listener inherits the caps, so none is uncapped by
@@ -440,6 +444,22 @@ func (o *Overlay) handleType(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+}
+
+// handleTTY dumps the recording of the agent's terminal, one write or read
+// per line, oldest first. `agnt debug tty` reads it; the socket is
+// uid-scoped, and the dump holds what the user typed.
+func (o *Overlay) handleTTY(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if o.ttyRecorder == nil {
+		http.Error(w, "no terminal recording in this session", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = io.WriteString(w, o.ttyRecorder.Dump())
 }
 
 // maxInjectBody caps a plain-text /inject message.
@@ -949,11 +969,11 @@ func (o *Overlay) handleMessage(msg OverlayMessage) {
 
 	case "clear":
 		// Send Ctrl+C to clear current input
-		o.writeTopty("\x03")
+		o.writeTopty("clear", "\x03")
 
 	case "escape":
 		// Send Escape key
-		o.writeTopty("\x1b")
+		o.writeTopty("escape", "\x1b")
 
 	default:
 		debug.Warn("overlay", "unknown message type: %s", msg.Type)
@@ -1002,11 +1022,6 @@ func isStrippableControl(r rune) bool {
 // in one go (see typeText).
 const maxTypedRunes = 500
 
-// ptyWriteTimeout bounds a single write to the agent's PTY, so an agent that
-// has stopped reading (Ctrl+Z, wedged) cannot hold o.mu, and with it all
-// injection, forever.
-const ptyWriteTimeout = 5 * time.Second
-
 func (o *Overlay) typeText(msg TypeMessage) {
 	// Single enforced sanitization point for injected content — see
 	// sanitizeInjectedText. Every injection path funnels through here.
@@ -1024,7 +1039,7 @@ func (o *Overlay) typeText(msg TypeMessage) {
 	if msg.Instant {
 		// Send full text as single write - large buffer triggers paste detection
 		// in terminal input handlers without needing bracketed paste escape sequences.
-		o.writeTopty(msg.Text)
+		o.writeTopty("type", msg.Text)
 
 		if msg.Enter {
 			// Progressive enter key timing to ensure agent accepts the message.
@@ -1036,7 +1051,7 @@ func (o *Overlay) typeText(msg TypeMessage) {
 		delay := 10 * time.Millisecond
 
 		for _, ch := range msg.Text {
-			o.writeTopty(string(ch))
+			o.writeTopty("type", string(ch))
 			o.sleep(delay)
 		}
 
@@ -1118,7 +1133,7 @@ func (o *Overlay) sendEntersUntilActivity(text string) {
 
 	// Send the first Enter — this must always happen regardless of any
 	// activity signals from the text echo.
-	o.writeTopty("\r")
+	o.writeTopty("enter-retry", "\r")
 
 	// Wait for the text + first Enter echo to settle through the PTY
 	// and ActivityMonitor before watching for real agent responses.
@@ -1164,7 +1179,7 @@ drained:
 				return
 			}
 			debug.Log("overlay", "enter: retry after %v", delay)
-			o.writeTopty("\r")
+			o.writeTopty("enter-retry", "\r")
 		}
 	}
 }
@@ -1172,14 +1187,14 @@ drained:
 func (o *Overlay) sendKey(msg KeyMessage) {
 	// If raw sequence is provided, use it directly
 	if msg.Sequence != "" {
-		o.writeTopty(msg.Sequence)
+		o.writeTopty("key", msg.Sequence)
 		return
 	}
 
 	// Build key sequence based on modifiers and key name
 	seq := o.buildKeySequence(msg)
 	if seq != "" {
-		o.writeTopty(seq)
+		o.writeTopty("key", seq)
 	}
 }
 
@@ -1243,23 +1258,17 @@ func (o *Overlay) buildKeySequence(msg KeyMessage) string {
 	return ""
 }
 
-func (o *Overlay) writeTopty(s string) {
+func (o *Overlay) writeTopty(source, s string) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	if o.ptmx == nil {
 		debug.Log("overlay", "writeTopty: ptmx is nil, dropping %d bytes", len(s))
 		return
 	}
-	if dl, ok := o.ptmx.(interface{ SetWriteDeadline(time.Time) error }); ok {
-		_ = dl.SetWriteDeadline(time.Now().Add(ptyWriteTimeout))
-	}
-	n, err := o.ptmx.Write([]byte(s))
-	if err != nil {
+	// The write is bounded and reported by AgentTTY; see its doc comment
+	// for the deadline that used to live here.
+	if n, err := overlay.WriteTagged(o.ptmx, source, []byte(s)); err != nil {
 		debug.Log("overlay", "writeTopty error: %v (wrote %d/%d bytes)", err, n, len(s))
-	}
-	// Sync if available (for *os.File)
-	if syncer, ok := o.ptmx.(interface{ Sync() error }); ok {
-		syncer.Sync()
 	}
 }
 

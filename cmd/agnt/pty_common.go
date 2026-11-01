@@ -1699,8 +1699,14 @@ func runOverlayPipeline(
 	// Per-session overlay socket path so concurrent sessions don't collide.
 	resolvedOverlayPath := overlaySessionSocketPath(sessionCode)
 
+	// Every writer below reaches the agent through this one gate.
+	agentTTY := overlay.NewAgentTTY(handle.Backend)
+	handle.Backend = agentTTY
+	agentTTY.SetWriteErrorHandler(reportAgentWriteError)
+
 	// Network overlay (browser → agent message channel).
-	rt.netOverlay = newOverlay(resolvedOverlayPath, handle.Backend)
+	rt.netOverlay = newOverlay(resolvedOverlayPath, agentTTY)
+	rt.netOverlay.ttyRecorder = agentTTY.Recorder()
 	if err := rt.netOverlay.Start(ctx); err != nil {
 		notifyUser(overlay.LevelWarn, "overlay socket failed to start: %v (proxy→agent messages will not work)", err)
 	}
@@ -1735,7 +1741,7 @@ func runOverlayPipeline(
 		rt.stdinModal = rt.inputRouter
 		rt.restoreNotifier = setUserNotifier(rt.termOverlay)
 	} else {
-		rawRelay = newRawStdinRelay(rt.stdin, handle.Backend)
+		rawRelay = newRawStdinRelay(rt.stdin, agentTTY.From("keyboard-raw"))
 		rt.stdinModal = rawRelay
 		rt.restoreNotifier = setUserNotifier(overlay.NewLineNotifier(os.Stderr, true))
 	}
@@ -1899,7 +1905,7 @@ func runOverlayPipeline(
 			rt.wg.Add(1)
 			go func() {
 				defer rt.wg.Done()
-				injectInitialStdin(ctx, handle.Backend, stdin, outputPulse, adapter.StdinDelay())
+				injectInitialStdin(ctx, agentTTY.From("initial-stdin"), stdin, outputPulse, adapter.StdinDelay())
 			}()
 		}
 	}

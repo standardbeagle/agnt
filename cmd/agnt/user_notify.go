@@ -6,6 +6,7 @@ import (
 	"sync/atomic"
 
 	"github.com/standardbeagle/agnt/internal/overlay"
+	"github.com/standardbeagle/agnt/internal/selflog"
 )
 
 // userNotifier is the single sink for user-facing messages in this binary.
@@ -38,4 +39,11 @@ func notifyUser(level overlay.Level, format string, args ...any) {
 // still visible bumps a counter instead of stacking.
 func notifyUserID(id string, level overlay.Level, format string, args ...any) {
 	userNotifier.Load().n.Notify(overlay.Notification{ID: id, Level: level, Text: fmt.Sprintf(format, args...)})
+}
+
+// reportAgentWriteError surfaces the first failed write to the agent's
+// terminal of a streak: what was typed or injected did not arrive.
+func reportAgentWriteError(source string, err error) {
+	selflog.Record("agent-tty", "%s write to the agent failed: %v", source, err)
+	notifyUserID("agent-tty-write", overlay.LevelError, "Input not delivered to the agent (%s): %v", source, err)
 }
