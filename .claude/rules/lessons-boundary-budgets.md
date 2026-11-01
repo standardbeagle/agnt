@@ -15,7 +15,7 @@ paths:
 
 Byte caps, lookaheads, timeouts and retry counts are fine. The defect is what the exhaustion branch does with a partial unit. Wrong answers: return what you have, or reset and hand the remainder to the next layer as fresh input. Right answers: discard to the end of the unit, or fail loud. Keep an outer cap on the discard path so an unterminated stream cannot wedge the reader.
 
-Instances, all fixed: the 8KB URL scan window in `internal/daemon/urltracker.go` (`scanStreamForURLs` finishes the straddling line within `maxScanLineOverrun`, else discards it); ESC lookahead and `csiMaxLen` in `internal/overlay/input.go` (OSC/DCS/CSI tails leaked into the child as keypresses); `win32PendingFlush` in the same file (split sequences released early); the 4096-byte line accumulator in `internal/overlay/activity.go` (line tails reached the alert tap as new lines).
+Instances, all fixed: the 8KB URL scan window in `internal/daemon/urltracker.go` (`scanStreamForURLs` finishes the straddling line within `maxScanLineOverrun`, else discards it); ESC lookahead and `csiMaxLen` in `internal/overlay/input.go` (OSC/DCS/CSI tails leaked into the child as keypresses); `win32PendingFlush` in `internal/overlay/input_win32.go` (split sequences released early; a stale fragment is now dropped with its tail, `dropStale`); the 4096-byte line accumulator in `internal/overlay/activity.go` (line tails reached the alert tap as new lines).
 
 Tests: the split is the test case. Feed input in chunks, across read boundaries, with gaps. A single write passes against broken code. Record honest limits as tests too (`TestIntroducerSeparatedFromItsSequenceDegradesToPassthrough`). Read HTTP responses to their end (`http.ReadResponse`, `io.ReadAll`), never judge them from one `Read`.
 

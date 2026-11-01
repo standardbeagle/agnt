@@ -5,8 +5,16 @@ package overlay
 // This turns those reports back into the bytes a POSIX child expects. Only
 // Windows runs it (InputRouter.decodeWin32); under Linux and WSL the terminal
 // already sends VT bytes.
+//
+// Everything that is not a key report passes through, one whole escape
+// sequence at a time: a read boundary inside a sequence holds it until the
+// rest arrives, so the child never gets a fragment in one write and the tail
+// in the next. Every hold is bounded twice, by length (win32CSIMaxLen,
+// stringMaxLen) and by time (holdBudget). A unit that blows a bound is dropped
+// to its end, never released as a fragment, and each drop is logged.
 
 import (
+	"bytes"
 	"io"
 	"iter"
 	"time"
@@ -16,163 +24,257 @@ import (
 	"github.com/standardbeagle/agnt/internal/debug"
 )
 
-// DebugWin32Input enables logging of win32-input-mode parsing
-var DebugWin32Input = false
+// win32CSIMaxLen bounds a held CSI, introducer included. The longest valid key
+// report is ESC [ + six fields + five ';' + '_': 6 fields of at most 10 digits
+// (Cs is a DWORD) is 67 bytes, rounded up.
+const win32CSIMaxLen = 72
 
-// win32ParseState holds state during win32 input parsing.
-type win32ParseState struct {
-	result     []byte
-	foundWin32 bool
-	dec        *win32Decoder
-}
+// win32RepeatMax caps Rc, the repeat count of one report. A held key repeats
+// by sending more reports; a huge Rc can only be corruption.
+const win32RepeatMax = 64
 
-// win32Decoder is the win32-input-mode state that outlives one read. A
-// character outside the BMP arrives as two key events, a UTF-16 high then low
-// surrogate, and a read boundary can fall between them.
+// x10MousePayload is the byte count after ESC [ M in an X10 mouse report.
+const x10MousePayload = 3
+
+// Discard modes: what the decoder is dropping across reads after a unit
+// overran a bound or went stale.
+const (
+	discardNone   = iota
+	discardCSI    // to the next CSI final byte
+	discardString // to the next BEL or ESC \
+)
+
+// win32Decoder is the decoder state that outlives one read.
 type win32Decoder struct {
-	highSurrogate rune // pending high half; 0 when none
+	// highSurrogate is a pending UTF-16 high half; 0 when none. A character
+	// outside the BMP arrives as two key reports and a read boundary can fall
+	// between them.
+	highSurrogate rune
+
+	// discard is the discardNone/CSI/String mode; discarded counts the bytes
+	// dropped in it, so an unterminated stream gives up at stringMaxLen.
+	discard   int
+	discarded int
+	// stringESC records an ESC seen in discardString mode whose '\' may come
+	// in the next read.
+	stringESC bool
 }
 
-// debugLog logs a message if DebugWin32Input is enabled.
-func debugLog(format string, args ...interface{}) {
-	if DebugWin32Input {
-		// Never os.Stderr here: this runs inside a live PTY session.
-		debug.Log("win32", format, args...)
-	}
-}
-
-// parseWin32InputModeInternal parses Windows Terminal win32-input-mode sequences.
-// Format: CSI Vk ; Sc ; Uc ; Kd ; Cs ; Rc _
-// Where Uc is the unicode character value we want.
-// Also filters out Focus In/Out sequences (CSI I and CSI O) that Windows Terminal sends.
-// Returns parsed bytes and any incomplete sequence at the end that should be
-// prepended to the next buffer read.
+// parseWin32InputModeInternal decodes one buffer with a fresh decoder.
+// It returns the decoded bytes and any incomplete sequence at the end, to be
+// prepended to the next read.
 func parseWin32InputModeInternal(data []byte) ([]byte, []byte) {
 	var d win32Decoder
 	return d.parse(data)
 }
 
-// parse is parseWin32InputModeInternal with decoder state carried between
-// calls, which is how the scanner uses it.
-func (d *win32Decoder) parse(data []byte) ([]byte, []byte) {
-	if DebugWin32Input && len(data) > 0 {
-		dump := data
-		if len(dump) > 80 {
-			dump = dump[:80]
-		}
-		debugLog("RAW INPUT (%d bytes): %q", len(data), dump)
-	}
-
-	state := &win32ParseState{dec: d}
+// parse decodes data with state carried between calls, which is how the
+// scanner uses it. The returned remainder is always a prefix of one escape
+// sequence, never longer than its bound.
+func (d *win32Decoder) parse(data []byte) (out, remainder []byte) {
 	i := 0
-
 	for i < len(data) {
-		if data[i] == 0x1b {
-			newIndex, remainder := state.handleEscByte(data, i)
-			if remainder != nil {
-				return state.result, remainder
-			}
-			if newIndex != i {
-				i = newIndex
-				continue
-			}
+		if d.discard != discardNone {
+			i = d.skipDiscarded(data, i)
+			continue
 		}
-
-		// Regular byte - pass through
-		debugLog("passthrough byte %d (0x%02x) '%c'", data[i], data[i], printableChar(data[i]))
-		state.result = append(state.result, data[i])
-		i++
+		if data[i] != 0x1b {
+			out = append(out, data[i])
+			i++
+			continue
+		}
+		n, emit, hold := d.sequenceAt(data, i)
+		if hold {
+			return out, data[i:]
+		}
+		out = append(out, emit...)
+		i += n
 	}
-
-	if DebugWin32Input && state.foundWin32 {
-		debugLog("input %d bytes -> output %d bytes", len(data), len(state.result))
-	}
-	return state.result, nil
+	return out, nil
 }
 
-// handleEscByte processes an ESC byte and returns the new index and any remainder.
-// If remainder is non-nil, parsing should stop and return it.
-// If newIndex != i, the caller should continue from newIndex.
-func (s *win32ParseState) handleEscByte(data []byte, i int) (newIndex int, remainder []byte) {
-	debugLogEscPosition(data, i)
+// skipDiscarded drops bytes from i in the current discard mode and returns
+// where decoding resumes.
+func (d *win32Decoder) skipDiscarded(data []byte, i int) int {
+	for ; i < len(data); i++ {
+		b := data[i]
+		d.discarded++
+		switch d.discard {
+		case discardCSI:
+			if b >= 0x40 && b <= 0x7e {
+				d.endDiscard()
+				return i + 1
+			}
+		case discardString:
+			if b == 0x07 || (d.stringESC && b == '\\') {
+				d.endDiscard()
+				return i + 1
+			}
+			d.stringESC = b == 0x1b
+		}
+		if d.discarded > stringMaxLen {
+			debug.Log("win32", "discard gave up after %d bytes with no terminator", d.discarded)
+			d.endDiscard()
+			return i + 1
+		}
+	}
+	return i
+}
 
-	// ESC at end of buffer - save as remainder
+func (d *win32Decoder) endDiscard() {
+	d.discard, d.discarded, d.stringESC = discardNone, 0, false
+}
+
+// startDiscard drops the unit in progress through its end.
+func (d *win32Decoder) startDiscard(mode int, why string, head []byte) {
+	debug.Log("win32", "dropping %s sequence %q: %s", discardName(mode), truncateForLog(head), why)
+	d.discard, d.discarded, d.stringESC = mode, len(head), false
+}
+
+func discardName(mode int) string {
+	if mode == discardString {
+		return "string"
+	}
+	return "CSI"
+}
+
+func truncateForLog(b []byte) []byte {
+	if len(b) > 40 {
+		return b[:40]
+	}
+	return b
+}
+
+// sequenceAt classifies the escape sequence at data[i] (an ESC). It returns
+// how many bytes it spans and what to emit for it, or hold when the sequence
+// is still incomplete at the end of data and must wait for the next read.
+func (d *win32Decoder) sequenceAt(data []byte, i int) (n int, emit []byte, hold bool) {
 	if i+1 >= len(data) {
-		if DebugWin32Input && s.foundWin32 {
-			debugLog("input %d bytes -> output %d bytes, remainder %d bytes", len(data), len(s.result), len(data)-i)
+		return 0, nil, true // ESC alone: the scanner's timer decides
+	}
+	switch next := data[i+1]; {
+	case next == '[':
+		return d.csiAt(data, i)
+	case next == 'O': // SS3: one more byte
+		if i+2 >= len(data) {
+			return 0, nil, true
 		}
-		return i, data[i:]
-	}
-
-	// Check for CSI sequence (ESC [)
-	if data[i+1] == '[' {
-		return s.handleCSISequence(data, i)
-	}
-
-	return i, nil
-}
-
-// debugLogEscPosition logs ESC byte position information.
-func debugLogEscPosition(data []byte, i int) {
-	if !DebugWin32Input {
-		return
-	}
-	if i+1 < len(data) {
-		debugLog("ESC at i=%d, next byte=%d (0x%02x '%c')", i, data[i+1], data[i+1], printableChar(data[i+1]))
-	} else {
-		debugLog("ESC at i=%d, no next byte (end of buffer) - saving as remainder", i)
+		if data[i+2] < 0x20 || data[i+2] == 0x7f {
+			// Not an SS3 final: ESC O was Alt+Shift+O, and the control
+			// byte after it starts something new.
+			return 1, data[i : i+1], false
+		}
+		return 3, data[i : i+3], false
+	case stringSequenceIntroducers[next]:
+		return d.stringAt(data, i)
+	default: // ESC + byte, e.g. Alt+key in VT form: the ESC alone
+		return 1, data[i : i+1], false
 	}
 }
 
-// handleCSISequence processes a CSI sequence starting at position i.
-func (s *win32ParseState) handleCSISequence(data []byte, i int) (newIndex int, remainder []byte) {
-	debugLog("CSI detected at i=%d", i)
-
-	// Check for Focus In/Out sequences - skip them
-	if i+2 < len(data) && (data[i+2] == 'I' || data[i+2] == 'O') {
-		debugLog("skipping focus %c sequence", data[i+2])
-		return i + 3, nil
+// csiAt handles ESC [ at data[i]. A CSI is parameter bytes 0x30-0x3f, then
+// intermediate bytes 0x20-0x2f, then one final byte 0x40-0x7e.
+func (d *win32Decoder) csiAt(data []byte, i int) (int, []byte, bool) {
+	j := i + 2
+	for j < len(data) && data[j] >= 0x30 && data[j] <= 0x3f {
+		j++
 	}
-
-	// Need at least one more byte after ESC[ to determine sequence type
-	if i+2 >= len(data) {
-		debugLog("ESC[ at end of buffer - saving as remainder")
-		return i, data[i:]
+	paramsEnd := j
+	for j < len(data) && data[j] >= 0x20 && data[j] <= 0x2f {
+		j++
 	}
-
-	// Look for win32-input-mode sequence ending with '_'
-	end, hitInvalidChar := findWin32SequenceEnd(data, i+2)
-
-	if end > 0 {
-		s.foundWin32 = true
-		s.parseWin32Sequence(data[i+2 : end])
-		return end + 1, nil
+	if j-i > win32CSIMaxLen {
+		d.startDiscard(discardCSI, "longer than win32CSIMaxLen", data[i:j])
+		return j - i, nil, false
 	}
-
-	// Incomplete sequence - save as remainder
-	if !hitInvalidChar {
-		debugLog("incomplete CSI sequence at end of buffer - saving as remainder")
-		return i, data[i:]
+	if j >= len(data) {
+		return 0, nil, true
 	}
+	final := data[j]
+	if final < 0x40 || final > 0x7e {
+		// A control byte or ESC inside the sequence aborts it. Pass the ESC
+		// through and decode what follows as fresh input.
+		debug.Log("win32", "malformed CSI %q aborted by 0x%02x", truncateForLog(data[i:j]), final)
+		return 1, data[i : i+1], false
+	}
+	end := j + 1
+	params := data[i+2 : paramsEnd]
+	plain := paramsEnd == j // no intermediates
 
-	// Not a win32-input-mode sequence - fall through to pass through
-	return i, nil
+	switch {
+	case final == 'M' && len(params) == 0 && plain:
+		// X10 mouse: three raw payload bytes follow.
+		if end+x10MousePayload > len(data) {
+			return 0, nil, true
+		}
+		end += x10MousePayload
+		return end - i, data[i:end], false
+	case (final == 'I' || final == 'O') && len(params) == 0 && plain:
+		// Focus in/out. Under ConPTY the console host consumes these; the
+		// child never asked for them through us.
+		return end - i, nil, false
+	case final == '_' && plain && isWin32Params(params):
+		return end - i, d.decodeKeyReport(params), false
+	default:
+		return end - i, data[i:end], false
+	}
 }
 
-// findWin32SequenceEnd looks for the ending '_' of a win32 input sequence.
-// Returns the index of '_' (or -1 if not found) and whether an invalid char was hit.
-func findWin32SequenceEnd(data []byte, start int) (end int, hitInvalidChar bool) {
-	for j := start; j < len(data); j++ {
-		if data[j] == '_' {
-			return j, false
-		}
-		// If we hit another ESC or non-sequence char, stop looking
-		if data[j] == 0x1b || (data[j] < '0' || data[j] > '9') && data[j] != ';' {
-			debugLog("search broke at j=%d byte=%d (0x%02x) - not a win32-input-mode sequence", j, data[j], data[j])
-			return -1, true
+// isWin32Params reports whether params is only digits and ';', the shape of a
+// key report. A private prefix such as '<' or '?' makes it something else.
+func isWin32Params(params []byte) bool {
+	for _, b := range params {
+		if (b < '0' || b > '9') && b != ';' {
+			return false
 		}
 	}
-	return -1, false
+	return true
+}
+
+// stringAt handles a string sequence (OSC, DCS, SOS, PM, APC) at data[i]. It
+// ends at BEL or ESC \.
+func (d *win32Decoder) stringAt(data []byte, i int) (int, []byte, bool) {
+	for j := i + 2; j < len(data); j++ {
+		if j-i > stringMaxLen {
+			d.startDiscard(discardString, "longer than stringMaxLen", data[i:j])
+			d.stringESC = data[j-1] == 0x1b
+			return j - i, nil, false
+		}
+		switch {
+		case data[j] == 0x07:
+			return j + 1 - i, data[i : j+1], false
+		case data[j] == 0x1b && j+1 < len(data) && data[j+1] == '\\':
+			return j + 2 - i, data[i : j+2], false
+		}
+	}
+	if len(data)-i > stringMaxLen {
+		d.startDiscard(discardString, "longer than stringMaxLen", data[i:])
+		d.stringESC = data[len(data)-1] == 0x1b
+		return len(data) - i, nil, false
+	}
+	return 0, nil, true
+}
+
+// dropStale is called by the scanner when a held sequence outlived its time
+// budget. A lone ESC is the Esc key and is released. Anything longer is the
+// head of a unit whose tail may still arrive, so the head is dropped and the
+// decoder drops the tail too, instead of typing both into the child.
+func (d *win32Decoder) dropStale(pending []byte) []byte {
+	if len(pending) <= 1 {
+		return pending
+	}
+	switch next := pending[1]; {
+	case next == '[':
+		d.startDiscard(discardCSI, "went stale", pending)
+	case stringSequenceIntroducers[next]:
+		d.startDiscard(discardString, "went stale", pending)
+		d.stringESC = pending[len(pending)-1] == 0x1b
+	default:
+		// ESC O with its last byte missing: Alt+Shift+O in VT form looks the
+		// same, so it is released.
+		return pending
+	}
+	return nil
 }
 
 // Win32 Virtual Key codes for non-character keys that need ANSI translation.
@@ -180,7 +282,11 @@ const (
 	vkBack   = 0x08
 	vkTab    = 0x09
 	vkReturn = 0x0D
+	vkMenu   = 0x12 // Alt
 	vkEscape = 0x1B
+	vkSpace  = 0x20
+	vkPrior  = 0x21 // PageUp
+	vkNext   = 0x22 // PageDown
 	vkEnd    = 0x23
 	vkHome   = 0x24
 	vkLeft   = 0x25
@@ -248,12 +354,8 @@ func vkToANSI(vk, cs int) []byte {
 		return []byte{0x1b, '[', suffix}
 	}
 
-	// Insert/Delete: ESC [ 2~ / ESC [ 3~ (with modifiers: ESC [ 2 ; mod ~)
-	if vk == vkInsert || vk == vkDelete {
-		code := byte('2')
-		if vk == vkDelete {
-			code = '3'
-		}
+	// Insert/Delete/PageUp/PageDown: ESC [ code ~ (with modifiers: ESC [ code ; mod ~)
+	if code, ok := tildeKeyCodes[vk]; ok {
 		if mod > 1 {
 			return []byte{0x1b, '[', code, ';', byte('0' + mod), '~'}
 		}
@@ -272,83 +374,136 @@ func vkToANSI(vk, cs int) []byte {
 	// F5-F12: ESC [ code ~ (with modifiers: ESC [ code ; mod ~)
 	if vk >= vkF5 && vk <= vkF12 {
 		codes := []string{"15", "17", "18", "19", "20", "21", "23", "24"}
-		code := codes[vk-vkF5]
-		if mod > 1 {
-			seq := []byte{0x1b, '['}
-			seq = append(seq, code...)
-			seq = append(seq, ';', byte('0'+mod), '~')
-			return seq
-		}
 		seq := []byte{0x1b, '['}
-		seq = append(seq, code...)
-		seq = append(seq, '~')
-		return seq
+		seq = append(seq, codes[vk-vkF5]...)
+		if mod > 1 {
+			seq = append(seq, ';', byte('0'+mod))
+		}
+		return append(seq, '~')
+	}
+
+	// Ctrl+Space carries no character; a VT terminal sends NUL.
+	if vk == vkSpace && cs&csCtrlMask != 0 {
+		return []byte{0}
 	}
 
 	return nil
 }
 
-// parseWin32Sequence parses the win32 input sequence content and appends result.
-func (s *win32ParseState) parseWin32Sequence(seqData []byte) {
-	seq := string(seqData)
-	parts := splitSemicolon(seq)
-	if len(parts) < 4 {
-		return
-	}
+// tildeKeyCodes are the keys a VT terminal sends as ESC [ code ~.
+var tildeKeyCodes = map[int]byte{vkInsert: '2', vkDelete: '3', vkPrior: '5', vkNext: '6'}
 
-	// Format: Vk ; Sc ; Uc ; Kd ; Cs ; Rc
-	vk := parseInt(parts[0])
-	uc := parseInt(parts[2])
-	kd := parseInt(parts[3])
-
-	// Only process key-down events (kd=1)
-	if kd != 1 {
-		debugLog("seq=%s -> skipped (kd=%d, key up)", seq, kd)
-		return
-	}
-
-	cs := 0
-	if len(parts) >= 5 {
-		cs = parseInt(parts[4])
-	}
-
-	// A unicode character is emitted as the character (see appendChar).
-	if uc > 0 {
-		s.appendChar(vk, cs, rune(uc))
-		debugLog("seq=%s -> char %d (0x%02x)", seq, uc, uc)
-		return
-	}
-
-	// No unicode char (uc=0) — check for virtual keys that need ANSI translation
-	if ansi := vkToANSI(vk, cs); ansi != nil {
-		s.result = append(s.result, ansi...)
-		debugLog("seq=%s -> vk=%d cs=%d ansi=%q", seq, vk, cs, ansi)
-		return
-	}
-
-	debugLog("seq=%s -> skipped (uc=0, vk=%d, no mapping)", seq, vk)
+// win32Report is one parsed key report.
+type win32Report struct {
+	vk, sc, uc, kd, cs, rc int
 }
 
-// appendChar appends the character a key-down event carries. Uc is a UTF-16
-// code unit, so it is encoded as UTF-8 for the child — truncating it to a
-// byte turned "é" into an invalid byte and "中" (0x4E2D) into "-" — and the
-// two halves of a surrogate pair are joined into one rune. Alt without Ctrl
-// sends ESC first, as xterm and conhost do; Ctrl together with Alt is AltGr,
-// whose character is sent as is.
-func (s *win32ParseState) appendChar(vk, cs int, r rune) {
+// Field bounds: Vk, Sc, Uc and Rc are WORDs, Kd a BOOL, Cs a DWORD.
+var win32FieldMax = [6]uint64{0xFFFF, 0xFFFF, 0xFFFF, 1, 0xFFFFFFFF, 0xFFFF}
+
+// parseWin32Report parses Vk;Sc;Uc;Kd;Cs;Rc. Missing trailing fields take the
+// spec's defaults (0, and Rc 1); empty fields are 0. A field out of range or
+// a seventh field makes the report malformed.
+func parseWin32Report(params []byte) (win32Report, bool) {
+	var f [6]uint64
+	f[5] = 1
+	field, digits := 0, 0
+	var v uint64
+	commit := func() bool {
+		if field >= len(f) || v > win32FieldMax[field] {
+			return false
+		}
+		if digits > 0 {
+			f[field] = v
+		}
+		return true
+	}
+	for _, b := range params {
+		if b == ';' {
+			if !commit() {
+				return win32Report{}, false
+			}
+			field, digits, v = field+1, 0, 0
+			continue
+		}
+		digits++
+		if digits > 10 {
+			return win32Report{}, false
+		}
+		v = v*10 + uint64(b-'0')
+	}
+	if !commit() {
+		return win32Report{}, false
+	}
+	return win32Report{int(f[0]), int(f[1]), int(f[2]), int(f[3]), int(f[4]), int(f[5])}, true
+}
+
+// decodeKeyReport turns one key report's parameters into the bytes to send.
+func (d *win32Decoder) decodeKeyReport(params []byte) []byte {
+	rep, ok := parseWin32Report(params)
+	if !ok {
+		debug.Log("win32", "dropping malformed key report %q", truncateForLog(params))
+		return nil
+	}
+	if rep.kd != 1 {
+		// Key-ups type nothing, except the Alt release that ends an
+		// Alt+numpad composition: it carries the composed character. Alt
+		// is not a modifier of that character.
+		if rep.vk == vkMenu && rep.uc > 0 {
+			return d.charBytes(nil, rep.vk, rep.cs&^csAltMask, rune(rep.uc))
+		}
+		return nil
+	}
+	n := max(rep.rc, 1)
+	if n > win32RepeatMax {
+		debug.Log("win32", "capping repeat count %d at %d", n, win32RepeatMax)
+		n = win32RepeatMax
+	}
+
+	var one []byte
+	switch {
+	case rep.uc > 0:
+		one = d.charBytes(nil, rep.vk, rep.cs, rune(rep.uc))
+	default:
+		one = vkToANSI(rep.vk, rep.cs)
+	}
+	if len(one) == 0 {
+		return nil
+	}
+	out := make([]byte, 0, len(one)*n)
+	for range n {
+		out = append(out, one...)
+	}
+	return out
+}
+
+// charBytes appends the character a key report carries. Uc is a UTF-16 code
+// unit, so it is encoded as UTF-8 for the child — truncating it to a byte
+// turned "é" into an invalid byte and "中" (0x4E2D) into "-" — and the two
+// halves of a surrogate pair are joined into one rune. Alt without Ctrl sends
+// ESC first, as xterm and conhost do; Ctrl together with Alt is AltGr, whose
+// character is sent as is.
+func (d *win32Decoder) charBytes(out []byte, vk, cs int, r rune) []byte {
 	switch {
 	case r >= 0xD800 && r <= 0xDBFF: // high surrogate: wait for the low half
-		s.dec.highSurrogate = r
-		return
+		if d.highSurrogate != 0 {
+			debug.Log("win32", "dropping unpaired high surrogate %U", d.highSurrogate)
+		}
+		d.highSurrogate = r
+		return out
 	case r >= 0xDC00 && r <= 0xDFFF: // low surrogate
-		hi := s.dec.highSurrogate
-		s.dec.highSurrogate = 0
+		hi := d.highSurrogate
+		d.highSurrogate = 0
 		if hi == 0 {
-			return // stray low half: nothing to pair it with
+			debug.Log("win32", "dropping unpaired low surrogate %U", r)
+			return out
 		}
 		r = utf16.DecodeRune(hi, r)
 	default:
-		s.dec.highSurrogate = 0 // an unpaired high half is dropped
+		if d.highSurrogate != 0 {
+			debug.Log("win32", "dropping unpaired high surrogate %U", d.highSurrogate)
+			d.highSurrogate = 0
+		}
 	}
 
 	// Windows Terminal sends \b for Backspace, but POSIX terminals and
@@ -359,52 +514,14 @@ func (s *win32ParseState) appendChar(vk, cs int, r rune) {
 	// Shift+Tab arrives as Uc=9 with the Shift flag; POSIX apps expect the
 	// back-tab sequence, not a plain Tab.
 	if vk == vkTab && r == '\t' && cs&csShift != 0 {
-		s.result = append(s.result, 0x1b, '[', 'Z')
-		return
+		return append(out, 0x1b, '[', 'Z')
 	}
 	if cs&csAltMask != 0 && cs&csCtrlMask == 0 {
-		s.result = append(s.result, 0x1b)
+		out = append(out, 0x1b)
 	}
-	s.result = utf8.AppendRune(s.result, r)
+	return utf8.AppendRune(out, r)
 }
 
-// printableChar returns the character if printable, otherwise '.'
-func printableChar(b byte) byte {
-	if b >= 32 && b < 127 {
-		return b
-	}
-	return '.'
-}
-
-// splitSemicolon splits a string by semicolons without allocating a slice.
-func splitSemicolon(s string) []string {
-	var parts []string
-	start := 0
-	for i := 0; i <= len(s); i++ {
-		if i == len(s) || s[i] == ';' {
-			parts = append(parts, s[start:i])
-			start = i + 1
-		}
-	}
-	return parts
-}
-
-// parseInt parses a string to int, returning 0 on error.
-func parseInt(s string) int {
-	var n int
-	for _, c := range s {
-		if c >= '0' && c <= '9' {
-			n = n*10 + int(c-'0')
-		}
-	}
-	return n
-}
-
-// ScanWin32Input returns an iterator that reads from r and yields parsed bytes.
-// It handles Windows Terminal win32-input-mode escape sequences, extracting the
-// unicode character values and yielding them as individual bytes.
-// Buffer boundaries are handled internally - incomplete sequences at the end of
-// a read are held and combined with the next read.
 // win32PendingFlush bounds how long a trailing ESC may sit in the scanner's
 // remainder buffer. The parser holds a trailing ESC because a multi-byte
 // sequence can straddle a read boundary — but a lone Esc keypress arrives as a
@@ -420,13 +537,11 @@ const win32PendingFlush = 25 * time.Millisecond
 // past its introducer. A bare ESC is held only briefly, because a lone Esc
 // keypress looks exactly like one and must reach the layer above quickly. A
 // remainder such as "\x1b[1;5" is different: it can only be the start of a
-// sequence, and releasing it early hands the layer above a fragment -- which
-// on the passthrough path means a bound key is typed into the child instead
-// of acted on. A sequence split by a slow link resumes well inside the wider
+// sequence, and a sequence split by a slow link resumes well inside the wider
 // budget; nothing resumes after it.
 const staleSequenceFactor = 20
 
-// holdBudget returns how long a remainder may be held before it is released.
+// holdBudget returns how long a remainder may be held before it goes stale.
 func holdBudget(pending []byte, flushAfter time.Duration) time.Duration {
 	if len(pending) <= 1 {
 		return flushAfter
@@ -434,6 +549,8 @@ func holdBudget(pending []byte, flushAfter time.Duration) time.Duration {
 	return staleSequenceFactor * flushAfter
 }
 
+// ScanWin32Input returns an iterator over the decoded bytes of r, with the
+// production hold budget.
 func ScanWin32Input(r io.Reader) iter.Seq[byte] {
 	return scanWin32Input(r, win32PendingFlush)
 }
@@ -451,10 +568,13 @@ func scanWin32Input(r io.Reader, flushAfter time.Duration) iter.Seq[byte] {
 	}
 }
 
-// scanWin32Chunks reads r and yields each parsed burst whole. A burst holds
+// scanWin32Chunks reads r and yields each decoded burst whole. A burst holds
 // only complete sequences — a sequence cut by a read boundary stays in the
 // remainder until it completes or its hold budget runs out — so a consumer
 // that writes chunk by chunk never splits a sequence across two writes.
+//
+// The budget runs from when the remainder began, not from the latest read:
+// reads that extend a sequence without finishing it do not hold it longer.
 func scanWin32Chunks(r io.Reader, flushAfter time.Duration) iter.Seq[[]byte] {
 	return func(yield func([]byte) bool) {
 		type readResult struct {
@@ -487,54 +607,53 @@ func scanWin32Chunks(r io.Reader, flushAfter time.Duration) iter.Seq[[]byte] {
 		}
 
 		var pending []byte
+		var pendingSince time.Time
 		var dec win32Decoder
-		var timer *time.Timer
-		defer func() {
-			if timer != nil {
-				timer.Stop()
-			}
-		}()
+		timer := time.NewTimer(time.Hour)
+		timer.Stop()
+		defer timer.Stop()
 
 		for {
 			var timerC <-chan time.Time
 			if len(pending) > 0 {
-				if timer == nil {
-					timer = time.NewTimer(holdBudget(pending, flushAfter))
-				}
+				timer.Reset(time.Until(pendingSince.Add(holdBudget(pending, flushAfter))))
 				timerC = timer.C
 			}
 
 			select {
 			case <-timerC:
-				// The rest of the sequence never came. Release the bytes so
-				// the layer above can decide what they mean.
-				timer = nil
-				out := pending
+				// The rest of the sequence never came.
+				out := dec.dropStale(pending)
 				pending = nil
 				if !emit(out) {
 					return
 				}
 
 			case rr := <-reads:
-				if timer != nil {
-					timer.Stop()
-					timer = nil
-				}
+				timer.Stop()
 				if len(rr.data) > 0 {
 					data := rr.data
 					if len(pending) > 0 {
 						data = append(append([]byte{}, pending...), rr.data...)
 					}
 					parsed, remainder := dec.parse(data)
+					// A remainder that extends the held one keeps its
+					// start time; any other remainder is a new sequence.
+					if len(remainder) > 0 && !bytes.HasPrefix(remainder, pending) || len(pending) == 0 {
+						pendingSince = time.Now()
+					}
 					pending = remainder
 					if !emit(parsed) {
 						return
 					}
 				}
 				if rr.err != nil {
-					if rr.err == io.EOF && len(pending) > 0 {
-						emit(pending)
+					// Any read error ends the stream; what was held still
+					// goes out rather than vanishing with it.
+					if rr.err != io.EOF {
+						debug.Log("win32", "input read ended: %v", rr.err)
 					}
+					emit(pending)
 					return
 				}
 			}
