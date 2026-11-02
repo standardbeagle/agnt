@@ -416,25 +416,47 @@ func sketchPrototypeInstructions(sketchPath string) string {
 func formatDesignStateText(event ProxyEvent) string {
 	var data struct {
 		Selector     string `json:"selector"`
-		XPath        string `json:"xpath"`
 		OriginalHTML string `json:"original_html"`
-		ContextHTML  string `json:"context_html"`
-		URL          string `json:"url"`
 		Metadata     struct {
 			Tag     string   `json:"tag"`
 			ID      string   `json:"id"`
 			Classes []string `json:"classes"`
 			Text    string   `json:"text"`
 		} `json:"metadata"`
-		Scheme *designScheme `json:"scheme"`
+		Scheme          *designScheme `json:"scheme"`
+		Slot            *designSlot   `json:"slot"`
+		Exemplars       []string      `json:"exemplars"`
+		InstantVariants []string      `json:"instant_variants"`
 	}
 	if err := json.Unmarshal(event.Data, &data); err != nil {
 		debug.Warn("overlay", "failed to parse design_state: %v", err)
 		return ""
 	}
 
-	return formatDesignStateMessage(data.Selector, data.Metadata.Tag, data.Metadata.ID,
-		data.Metadata.Classes, data.Metadata.Text, event.ProxyID, data.Scheme)
+	return formatDesignStateMessage(designStatePrompt{
+		Selector:        data.Selector,
+		Tag:             data.Metadata.Tag,
+		ID:              data.Metadata.ID,
+		Classes:         data.Metadata.Classes,
+		Text:            data.Metadata.Text,
+		OriginalHTML:    data.OriginalHTML,
+		ProxyID:         event.ProxyID,
+		Scheme:          data.Scheme,
+		Slot:            data.Slot,
+		Exemplars:       data.Exemplars,
+		InstantVariants: data.InstantVariants,
+	})
+}
+
+// designSlot mirrors proxy.DesignSlot: the parent box the alternative must fit.
+type designSlot struct {
+	ParentWidth   int    `json:"parent_width"`
+	ParentHeight  int    `json:"parent_height"`
+	Display       string `json:"display"`
+	GridColumns   string `json:"grid_columns"`
+	FlexDirection string `json:"flex_direction"`
+	FlexWrap      string `json:"flex_wrap"`
+	Gap           string `json:"gap"`
 }
 
 // designScheme mirrors proxy.DesignScheme for prompt rendering (snake_case as
@@ -490,84 +512,104 @@ func proxyExec(proxyID, code string) string {
 	return fmt.Sprintf("proxy {action: \"exec\", id: %q, code: %q}", proxyID, code)
 }
 
-// addAltExec renders the exec snippet that pushes one labeled alternative back
-// to the browser. Centralizes the addAlternative(html, {label, note}) contract
-// so the draft/variation labels stay in lockstep with design.js.
-func addAltExec(proxyID, label, note string) string {
-	code := fmt.Sprintf("__devtool_design.addAlternative('<html>', {label:'%s', note:'%s'})", label, note)
+// addAlternativesExec renders the exec snippet that pushes a set of
+// alternatives in one round trip. Centralizes the addAlternatives contract
+// ({html, style, label, note}) so it stays in lockstep with design.js.
+func addAlternativesExec(proxyID string) string {
+	code := "__devtool_design.addAlternatives([{html:'<inner markup>', style:'<optional CSS for the element itself>', label:'variation', note:'<direction>'}])"
 	return proxyExec(proxyID, code)
 }
 
-// designOnSchemeRules is the constraint block every generated variation must
-// satisfy. Shared by the initial and continuation prompts so the rules stay in
-// one place.
-const designOnSchemeRules = `Each variation: follow design.md; note its unique direction in the 'note' field.`
+// designOnSchemeRules is the contract every agent-authored alternative must
+// meet. design.js enforces the colour/font part (findSchemeClashes) and swaps
+// the result into the page, so the wording here must match that behaviour.
+const designOnSchemeRules = `**Rules for every alternative:**
+- 'html' is the element's INNER markup. The element keeps its own tag and classes and the
+  alternative is swapped into the live page in its place, so it is judged against its real neighbours.
+- Keep the content (text, links, labels). Vary layout, hierarchy, density and affordance, not the brand.
+- Reuse the page's own classes (see the exemplars) and its var(--…) tokens before writing inline CSS.
+- Colours and font families must come from the design scheme. The browser REJECTS an alternative with an
+  off-scheme colour or font and returns the clashes; fix exactly those and resend.
+- Note each alternative's direction in 'note'. If DESIGN.md exists it overrides the extracted scheme.`
 
-// formatDesignStateMessage formats the design state message for UX design sessions.
-func formatDesignStateMessage(selector, tag, id string, classes []string, textContent, proxyID string, scheme *designScheme) string {
-	text := fmt.Sprintf(`[🎨 Design Mode: Premium UX Design Session]
+// designStatePrompt is everything the first design-mode message needs about
+// the selected element.
+type designStatePrompt struct {
+	Selector, Tag, ID, Text, OriginalHTML, ProxyID string
+	Classes                                        []string
+	Scheme                                         *designScheme
+	Slot                                           *designSlot
+	Exemplars                                      []string
+	InstantVariants                                []string
+}
 
-**Element Selected for Redesign:**
-- Selector: %s`, selector)
-
-	if tag != "" {
-		text += fmt.Sprintf("\n- Element: <%s>", tag)
-		if id != "" {
-			text += fmt.Sprintf(` id="%s"`, id)
+// formatDesignStateMessage formats the first message of a design session. The
+// browser has already swapped in instant on-scheme options, so the agent's job
+// is a better second wave, sent in one call before any other work.
+func formatDesignStateMessage(p designStatePrompt) string {
+	var b strings.Builder
+	b.WriteString("[🎨 Design Mode: redesign the selected element]\n\n**Element:**\n- Selector: " + p.Selector)
+	if p.Tag != "" {
+		b.WriteString("\n- Element: <" + p.Tag)
+		if p.ID != "" {
+			b.WriteString(fmt.Sprintf(` id="%s"`, p.ID))
 		}
-		if len(classes) > 0 {
-			text += fmt.Sprintf(` class="%s"`, strings.Join(classes, " "))
+		if len(p.Classes) > 0 {
+			b.WriteString(fmt.Sprintf(` class="%s"`, strings.Join(p.Classes, " ")))
+		}
+		b.WriteString(">")
+	}
+	if p.Text != "" {
+		b.WriteString(fmt.Sprintf("\n- Content: %q", truncate(p.Text, 50)))
+	}
+	if p.Slot != nil && p.Slot.ParentWidth > 0 {
+		b.WriteString(fmt.Sprintf("\n- Slot: parent %dx%dpx, display %s", p.Slot.ParentWidth, p.Slot.ParentHeight, p.Slot.Display))
+		if p.Slot.GridColumns != "" {
+			b.WriteString(", grid columns " + p.Slot.GridColumns)
+		}
+		if p.Slot.FlexDirection != "" {
+			b.WriteString(", flex " + p.Slot.FlexDirection)
+		}
+		if p.Slot.Gap != "" {
+			b.WriteString(", gap " + p.Slot.Gap)
 		}
 	}
-	if textContent != "" {
-		textPreview := textContent
-		if len(textPreview) > 50 {
-			textPreview = textPreview[:50] + "..."
+	if p.OriginalHTML != "" {
+		b.WriteString("\n\n**Current inner markup:**\n" + truncate(p.OriginalHTML, 1200))
+	}
+	if len(p.Exemplars) > 0 {
+		b.WriteString("\n\n**Same-kind components elsewhere on the page (the house style):**")
+		for _, ex := range p.Exemplars {
+			b.WriteString("\n" + truncate(ex, 400))
 		}
-		text += fmt.Sprintf("\n- Content: %q", textPreview)
+	}
+	b.WriteString(formatSchemeBlock(p.Scheme))
+	if len(p.InstantVariants) > 0 {
+		b.WriteString("\n**Already on screen (instant options built from the page tokens) — go in different directions:**\n")
+		for _, v := range p.InstantVariants {
+			b.WriteString("- " + v + "\n")
+		}
 	}
 
-	text += formatSchemeBlock(scheme)
-
-	text += fmt.Sprintf(`
-
-**Your Mission:** Act as a world-class UX designer. Speed first: the user must see a first look within seconds.
-
-**STEP 1 — Fast draft. Your FIRST action: no preamble, no file reads, no screenshots, no subagent.**
-Write one quick restyle of the element yourself (standalone HTML, inline styles, under 15 lines,
-using the scheme above) and push it with a draft label:
+	b.WriteString(fmt.Sprintf(`
+**Your FIRST action — no preamble, no file reads, no screenshot, no subagents:** write 3 distinct
+alternatives yourself and push them in ONE call:
   %s
 
-**STEP 2 — On-scheme variations (only after the draft is sent; dispatch CONCURRENTLY in a single message — one subagent each):**
-Create 3-4 distinct, polished alternatives. Each subagent independently authors ONE variation and
-calls addAlternative as soon as it is done (they stream in as they finish):
-  %s
-Or push the whole set in one call (preferred — avoids racing a recompile):
-  proxy {action: "exec", id: %q, code: "__devtool_design.addAlternatives([{html:'<html>', label:'variation', note:'<direction>'}])"}
+%s
 
-Previews are NON-INVASIVE: they render in an isolated side-by-side / overlay panel, never written
-into the app's live DOM — so produce complete standalone HTML for the element's content.
-
-**STEP 3 — Housekeeping, while the variations are being written (never before the draft):**
-- Context if needed: screenshot %s, inspect %s, accessibility %s
-- Ensure DESIGN.md. Check the project root. If MISSING, create it in the google-labs-code format
+**Only after that call:**
+- Context if needed: screenshot %s, inspect %s
+- Ensure DESIGN.md in the project root. If MISSING, create it in the google-labs-code format
   (https://github.com/google-labs-code/design.md) — YAML frontmatter design tokens + ordered '##'
-  sections — derived from the App design scheme above (colors ← palette, typography ← fonts,
-  rounded ← radius, spacing ← spacing steps, components ← the selected element and its siblings),
-  then post one line: "Created DESIGN.md — captured the app's design system". If it ALREADY EXISTS,
-  read it and treat it as the AUTHORITATIVE design system (it overrides the extracted scheme); later
-  variations must conform to it.
+  sections — from the design scheme above, then post one line: "Created DESIGN.md — captured the
+  app's design system". If it EXISTS, read it; later alternatives must conform to it.`,
+		addAlternativesExec(p.ProxyID),
+		designOnSchemeRules,
+		proxyExec(p.ProxyID, "__devtool.screenshot('design-context')"),
+		proxyExec(p.ProxyID, "__devtool.inspect('"+p.Selector+"')")))
 
-%s`,
-		addAltExec(proxyID, "draft", "Fast draft"),
-		addAltExec(proxyID, "variation", "<direction>"),
-		proxyID,
-		proxyExec(proxyID, "__devtool.screenshot('design-context')"),
-		proxyExec(proxyID, "__devtool.inspect('"+selector+"')"),
-		proxyExec(proxyID, "__devtool.auditAccessibility()"),
-		designOnSchemeRules)
-
-	return text
+	return b.String()
 }
 
 // formatDesignRequestText formats a design_request event into text for the AI agent.
@@ -644,16 +686,15 @@ func formatDesignRequestMessage(selector string, altCount int, chatHistory []str
 
 	text += fmt.Sprintf(`
 
-**Continue as a world-class UX designer.** Dispatch 2-3 subagents CONCURRENTLY, each authoring ONE
-fresh alternative that is distinctly different from the %d existing options and considers the
-feedback above. Each calls addAlternative as soon as it finishes:
+**Write 2-3 fresh alternatives yourself (no subagents)**, distinctly different from the %d existing
+options and following the feedback above. Push them in ONE call:
   %s
 
 %s
 
 **Quick diagnostics if needed:** %s`,
 		altCount,
-		addAltExec(proxyID, "variation", "<direction>"),
+		addAlternativesExec(proxyID),
 		designOnSchemeRules,
 		proxyExec(proxyID, "__devtool.screenshot('design-iteration')"))
 
@@ -688,7 +729,7 @@ func formatDesignChatText(event ProxyEvent) string {
 **Current design:**
 %s
 %s
-**As a premium UX designer, refine the design based on this feedback.**
+**Refine the design based on this feedback.**
 
 If you need more context:
 - Screenshot current state: proxy {action: "exec", id: "%s", code: "__devtool.screenshot('refinement')"}
@@ -697,9 +738,12 @@ If you need more context:
 - Audit accessibility: proxy {action: "exec", id: "%s", code: "__devtool.auditAccessibility()"}
 
 **Apply the refined design:**
-proxy {action: "exec", id: "%s", code: "__devtool_design.addAlternative('<refined HTML>')"}`,
+%s
+
+%s`,
 		data.Message, data.Selector, currentHTML, screenshotBlock(data.ScreenshotPath),
-		event.ProxyID, event.ProxyID, event.ProxyID, event.ProxyID, event.ProxyID)
+		event.ProxyID, event.ProxyID, event.ProxyID, event.ProxyID,
+		addAlternativesExec(event.ProxyID), designOnSchemeRules)
 }
 
 // formatDesignEditText formats a design_edit event (a committed

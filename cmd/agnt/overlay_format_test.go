@@ -409,46 +409,55 @@ func TestFormatSketchText_InvalidJSON(t *testing.T) {
 // ── formatDesignStateMessage ─────────────────────────────────────────────────
 
 func TestFormatDesignStateMessage_Full(t *testing.T) {
-	result := formatDesignStateMessage(".hero-btn", "button", "hero", []string{"btn", "primary"}, "Click me", "proxy-abc", nil)
+	result := formatDesignStateMessage(designStatePrompt{
+		Selector: ".hero-btn", Tag: "button", ID: "hero", Classes: []string{"btn", "primary"},
+		Text: "Click me", OriginalHTML: "<span class=\"label\">Click me</span>", ProxyID: "proxy-abc",
+		Slot:            &designSlot{ParentWidth: 640, ParentHeight: 80, Display: "flex", FlexDirection: "row", Gap: "12px"},
+		Exemplars:       []string{`<button class="btn ghost">Cancel</button>`},
+		InstantVariants: []string{"Compact — 8px padding", "Elevated — the page's own shadow"},
+	})
 
 	assertContains(t, result, "Design Mode")
 	assertContains(t, result, "Selector: .hero-btn")
-	assertContains(t, result, "<button")
-	assertContains(t, result, `id="hero"`)
-	assertContains(t, result, `class="btn primary"`)
+	assertContains(t, result, `<button id="hero" class="btn primary">`)
 	assertContains(t, result, `"Click me"`)
-	// Verify proxy ID is embedded in tool call examples
+	// The agent gets the markup, slot and house style up front: no inspect round trip.
+	assertContains(t, result, `<span class="label">Click me</span>`)
+	assertContains(t, result, "parent 640x80px, display flex, flex row, gap 12px")
+	assertContains(t, result, `<button class="btn ghost">Cancel</button>`)
+	// The instant options already on screen are named so the agent diverges from them.
+	assertContains(t, result, "- Compact — 8px padding")
+	assertContains(t, result, "- Elevated — the page's own shadow")
 	assertContains(t, result, `proxy-abc`)
-	assertContains(t, result, `__devtool.screenshot`)
-	assertContains(t, result, `__devtool_design.addAlternative`)
-	// Fast-draft-first + concurrent-variation instructions are always present.
-	assertContains(t, result, "Fast draft")
-	assertContains(t, result, "label:'draft'")
-	assertContains(t, result, "CONCURRENTLY")
-	// STEP 0 ensures a per-project DESIGN.md in the google-labs-code format.
+	assertContains(t, result, `__devtool_design.addAlternatives(`)
+	assertContains(t, result, "style:'<optional CSS for the element itself>'")
+	assertContains(t, result, "swapped into the live page")
+	assertContains(t, result, "REJECTS an alternative with an")
 	assertContains(t, result, "DESIGN.md")
 	assertContains(t, result, "google-labs-code")
 }
 
-// The first look is latency-critical: the draft must be the agent's first action,
-// written by the agent itself (a subagent dispatch costs seconds), with DESIGN.md
-// authoring and context gathering only after it.
-func TestFormatDesignStateMessage_DraftComesBeforeAllOtherWork(t *testing.T) {
-	result := formatDesignStateMessage(".el", "div", "", nil, "", "p1", nil)
+// The second wave is latency-critical: one addAlternatives call, written by the
+// agent itself (a subagent dispatch costs seconds), before any context gathering
+// or DESIGN.md work.
+func TestFormatDesignStateMessage_AlternativesComeBeforeAllOtherWork(t *testing.T) {
+	result := formatDesignStateMessage(designStatePrompt{Selector: ".el", Tag: "div", ProxyID: "p1"})
 
-	draft := strings.Index(result, "label:'draft'")
-	for _, later := range []string{"DESIGN.md", "__devtool.screenshot", "__devtool.inspect", "CONCURRENTLY"} {
+	first := strings.Index(result, "__devtool_design.addAlternatives(")
+	for _, later := range []string{"DESIGN.md", "__devtool.screenshot", "__devtool.inspect"} {
 		i := strings.Index(result, later)
-		if i < 0 || draft < 0 || draft > i {
-			t.Errorf("draft (at %d) must precede %q (at %d)", draft, later, i)
+		if i < 0 || first < 0 || first > i {
+			t.Errorf("addAlternatives (at %d) must precede %q (at %d)", first, later, i)
 		}
 	}
-	assertContains(t, result, "no subagent")
-	assertNotContains(t, result, "Dispatch ONE low-effort subagent")
+	assertContains(t, result, "no subagents")
+	assertNotContains(t, result, "CONCURRENTLY")
+	assertNotContains(t, result, "Already on screen")
+	assertNotContains(t, result, "Current inner markup")
 }
 
 func TestFormatDesignStateMessage_NilSchemeOmitsSchemeBlock(t *testing.T) {
-	result := formatDesignStateMessage(".el", "div", "", nil, "", "p1", nil)
+	result := formatDesignStateMessage(designStatePrompt{Selector: ".el", Tag: "div", ProxyID: "p1"})
 	assertNotContains(t, result, "extracted live")
 }
 
@@ -461,7 +470,7 @@ func TestFormatDesignStateMessage_SchemeBlockRendered(t *testing.T) {
 		Radius:       []string{"6px"},
 		CSSVars:      map[string]string{"--accent": "#ff5a00"},
 	}
-	result := formatDesignStateMessage(".card", "div", "", nil, "", "p1", scheme)
+	result := formatDesignStateMessage(designStatePrompt{Selector: ".card", Tag: "div", ProxyID: "p1", Scheme: scheme})
 
 	assertContains(t, result, "App design scheme")
 	assertContains(t, result, "#0a0a0a")
@@ -469,6 +478,26 @@ func TestFormatDesignStateMessage_SchemeBlockRendered(t *testing.T) {
 	assertContains(t, result, "Inter, sans-serif")
 	assertContains(t, result, "--accent: #ff5a00")
 	assertContains(t, result, "label:'variation'")
+}
+
+// The design_state wire shape (snake_case, as marshaled by proxy.DesignState)
+// must reach the prompt intact, including the fields added for speed.
+func TestFormatDesignStateText_CarriesMarkupSlotAndInstantVariants(t *testing.T) {
+	event := makeEvent("design_state", "proxy-7", map[string]interface{}{
+		"selector":         ".card",
+		"original_html":    "<h3>Title</h3>",
+		"metadata":         map[string]interface{}{"tag": "div", "classes": []string{"card"}},
+		"slot":             map[string]interface{}{"parent_width": 300, "parent_height": 200, "display": "grid", "grid_columns": "1fr 1fr"},
+		"exemplars":        []string{`<div class="card">Other</div>`},
+		"instant_variants": []string{"Spacious — 24px padding"},
+	})
+	result := formatDesignStateText(event)
+
+	assertContains(t, result, "<h3>Title</h3>")
+	assertContains(t, result, "parent 300x200px, display grid, grid columns 1fr 1fr")
+	assertContains(t, result, `<div class="card">Other</div>`)
+	assertContains(t, result, "- Spacious — 24px padding")
+	assertContains(t, result, "proxy-7")
 }
 
 func TestFormatSchemeBlock_EmptySchemeReturnsBlank(t *testing.T) {
@@ -482,7 +511,7 @@ func TestFormatSchemeBlock_EmptySchemeReturnsBlank(t *testing.T) {
 
 func TestFormatDesignStateMessage_LongTextTruncated(t *testing.T) {
 	longText := strings.Repeat("x", 100)
-	result := formatDesignStateMessage(".el", "div", "", nil, longText, "p1", nil)
+	result := formatDesignStateMessage(designStatePrompt{Selector: ".el", Tag: "div", Text: longText, ProxyID: "p1"})
 
 	// Text should be truncated at 50 chars + "..."
 	assertContains(t, result, "...")
@@ -492,7 +521,7 @@ func TestFormatDesignStateMessage_LongTextTruncated(t *testing.T) {
 }
 
 func TestFormatDesignStateMessage_NoTextContent(t *testing.T) {
-	result := formatDesignStateMessage(".icon", "span", "", nil, "", "p1", nil)
+	result := formatDesignStateMessage(designStatePrompt{Selector: ".icon", Tag: "span", ProxyID: "p1"})
 
 	// No "Content:" line when text is empty
 	assertNotContains(t, result, "Content:")
@@ -539,7 +568,8 @@ func TestFormatDesignRequestMessage_SchemeAndConcurrency(t *testing.T) {
 
 	assertContains(t, result, "App design scheme")
 	assertContains(t, result, "#123456")
-	assertContains(t, result, "CONCURRENTLY")
+	assertContains(t, result, "no subagents")
+	assertContains(t, result, "__devtool_design.addAlternatives(")
 	assertContains(t, result, "label:'variation'")
 }
 
