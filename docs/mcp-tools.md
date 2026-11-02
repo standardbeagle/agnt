@@ -832,7 +832,7 @@ Returns shell command string for streaming daemon events via `agnt monitor` CLI.
   toasts) are added as they arrive; the panel stays open after Send. Kept per tab in
   `sessionStorage['__devtool_thread']`, newest 50 entries.
 - `sketch.open/close/toggle/save/toJSON/fromJSON()`
-- `design.start/stop/selectElement/next/previous/addAlternative/chat()`
+- `design.start/stop/selectElement/next/previous/addAlternative/addAlternatives/chat()` — alternatives swap into the page in place; off-scheme colours or fonts are refused with the clashes listed
 - `responsive.open/close/toggle/setWidth/getState()` — responsive mode (4th indicator mode)
 
 **Sessions & store** (Promise-based; each call is one request over the control

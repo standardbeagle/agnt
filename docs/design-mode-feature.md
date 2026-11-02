@@ -78,10 +78,11 @@ Two concrete pain points:
   variation) instead of one serial model call.
 - **G4** — Each alternative is **labeled** (draft vs on-scheme variation) so the
   user understands fidelity while navigating.
-- **G5** — Preview is **non-invasive**: never write generated HTML into the
-  framework-owned target subtree. Render in an isolated panel (side-by-side and
-  overlay-on-top), so React reconciliation / HMR cannot wipe it and component
-  state is never corrupted. Survive HMR recompiles without losing work.
+- **G5** — Never write generated HTML into the framework-owned target subtree,
+  so React reconciliation / HMR cannot wipe it and component state is never
+  corrupted. Survive HMR recompiles without losing work. Since 2026-11-01 the
+  default preview swaps the alternative into the page beside the hidden target
+  (§11); side-by-side and overlay remain as modes.
 
 ## 4. Non-Goals
 
@@ -231,8 +232,8 @@ gets its own at its root.
 ## 7. Alternatives Considered
 
 - **Client-side fast draft (no model).** Generate the draft purely in JS (e.g.
-  apply a token-swapped restyle). Rejected: too low-value/generic; a cheap
-  low-effort subagent yields a real draft for marginal latency.
+  apply a token-swapped restyle). First rejected as too generic; adopted on
+  2026-11-01 (§11) because the model floor (~6 s) cannot meet a 1 s first look.
 - **Daemon-side fan-out.** Have the daemon spawn the subagents. Rejected: the
   daemon has no model access; the agent already owns subagent dispatch and
   context. Keeps the daemon a formatter/transport.
@@ -240,7 +241,8 @@ gets its own at its root.
   Deferred: larger protocol change; fast-draft-first already covers first-paint.
 - **Invasive in-place preview (`innerHTML` into target).** The original design.
   Rejected after testing: React/HMR wipes it, stale selectors throw, work is
-  lost on recompile (§6.5).
+  lost on recompile (§6.5). §11 gets the in-page look without touching the
+  target: a sibling clone is shown and the target is hidden by attribute.
 - **Iframe snapshot for isolation.** Full style fidelity but heavier, snapshot
   goes stale, more plumbing. Rejected in favor of a Shadow-root panel — light,
   no reload, immune to reconciliation; acceptable that the app's CSS cascade
@@ -290,3 +292,43 @@ finished in 6.1-8.9 s on haiku (p50 7.8 s) and 5.2-8.6 s on sonnet (p50 6.2 s),
 faster (haiku p50 8.2 s with one 10.0 s run; sonnet p50 6.5 s), so the shipped
 template keeps its later steps. The browser round trip (proxy exec to panel
 render) was not timed.
+
+## 11. Instant options, in-place swap, clash guard (2026-11-01)
+
+Feedback: picking an element changed nothing on the page (every alternative
+lived in a floating panel), the first option took seconds, and alternatives
+could use colours the page never uses.
+
+- **Instant options, no model.** `buildInstantVariants` restyles the element's
+  own markup with values taken only from the extracted scheme: Compact /
+  Spacious (next spacing step below / above the current padding), Emphasis (the
+  first saturated palette colour, with the palette colour of highest contrast,
+  only when that contrast is at least 4.5), Elevated (the page's own shadow and
+  radius). Each is skipped when the page lacks its token. They are built
+  synchronously in `selectElement` and the first one is swapped in at once.
+- **Agent message leaves in the same tick.** `design_state` used to wait on an
+  html2canvas pass over the whole page (seconds on a large page) whose JPEG the
+  prompt never referenced. That capture and `DesignState.PageThumbPath` are
+  gone. The prompt now carries the inner markup, slot, exemplars, and the
+  instant options already shown, so the agent needs no inspect round trip; its
+  first action is one `addAlternatives` call written without subagents.
+- **In-place swap (default mode).** `swapInPlace` inserts a shallow clone of
+  the target (same tag, classes, attributes; no `id`, no oid) beside it, fills
+  it with the alternative, and hides the target with
+  `[data-devtool-design-hidden]{display:none!important}`. The target subtree is
+  never written. A `MutationObserver` on the parent puts the clone back if a
+  re-render drops it. Index 0 (the original) removes the swap. An alternative
+  may carry `style`, CSS applied to the element itself.
+- **Clash guard.** `addAlternative` / `addAlternatives` refuse markup whose
+  style attributes, `<style>` blocks or SVG paint attributes use a colour not
+  within RGB distance 24 of a colour the page renders (sampled elements, the
+  target subtree, `:root` variables), or a font family the page does not use.
+  `var(--…)`, keywords and generic families pass. The refusal returns the
+  clashes and a hint so the agent can resend, and the user sees a toast.
+
+Tests: `internal/proxy/scripts/jstest/design.test.js` (fails against the
+previous `design.js`), `cmd/agnt/overlay_format_test.go`.
+
+Not measured: time from click to first swap in a real browser. The work is
+`extractScheme` (about 500 `getComputedStyle` reads) plus one clone, so it is
+expected to land well under a second; that is an estimate.
