@@ -181,8 +181,8 @@ github.com/standardbeagle/go-cli-server v0.5.9 h1:wv/2shnVLjfA8z+rdUWtQQaTnCL/Vl
 github.com/standardbeagle/go-cli-server v0.5.9/go.mod h1:mUuszHCMACvUKw+sTKzap4hk63XFHIVJpzT477FdcdU=
 github.com/standardbeagle/go-sdk v1.5.0-agnt.2 h1:uXQn6JfbHYks28O0y2J9vHjvgYvHznTrbI87plTt2CI=
 github.com/standardbeagle/go-sdk v1.5.0-agnt.2/go.mod h1:4WdpmSt0FwWBC9y5Zhfvb2pCJQ0BXWYWmPnFZHSPWiM=
-github.com/standardbeagle/vt10x v0.1.0-agnt.4 h1:sxNpjIInGxkw3JpN3UNHMQiKdg530j97uiOYC9cGNdc=
-github.com/standardbeagle/vt10x v0.1.0-agnt.4/go.mod h1:Td3NgqNxTtHF2hik/7jAA8+tBO1cvivqWHmME//Cdb8=
+github.com/standardbeagle/vt10x v0.2.0 h1:oJb7RPBtHjS1UxYj/3IZj/zG8dRWfF30oJfHHb5kvjM=
+github.com/standardbeagle/vt10x v0.2.0/go.mod h1:Td3NgqNxTtHF2hik/7jAA8+tBO1cvivqWHmME//Cdb8=
 github.com/stretchr/objx v0.5.2 h1:xuMeJ0Sdp5ZMRXx/aWO6RZxdr3beISkG5/G/aIRr3pY=
 github.com/stretchr/objx v0.5.2/go.mod h1:FRsXN1f5AsAjCGJKqEizvkpNtU+EGNCLh3NxZ/8L+MA=
 github.com/stretchr/testify v1.11.1 h1:7s2iGBzp5EwR7/aIZr8ao5+dra3wiQyKjjFuvgVKu7U=

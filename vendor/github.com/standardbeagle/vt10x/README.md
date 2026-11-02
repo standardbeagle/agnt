@@ -34,8 +34,19 @@ top of upstream:
   the whole buffer consumed (it used to drop the leading bytes of a split
   character and return a short count).
 - **CUU/CUD/CNL/CPL honour the scroll region** the way xterm does.
+- **Faster repaint parsing** (`v0.2.0`). Erased rows are filled by doubling
+  copy; printable ASCII, whole two- and three-byte UTF-8 runes, and CSI
+  parameter bytes skip the per-rune dispatch (the parser state is an enum, so
+  `write` can see it). About 35% less time on an Ink-style repaint.
+- **RIS (`ESC c`) clears the whole screen** (`v0.2.0`). It cleared only the
+  first rows-many columns.
 - Smaller fixes: no pending wrap at the margin while autowrap is off, `ED 1` on
-  row 1, parser states no longer allocate a closure per escape sequence.
+  row 1, parser states no longer allocate a closure per escape sequence, tab
+  stops extend into new columns on a widening resize.
+
+Versions: fixes and features on top of upstream take a minor bump
+(`v0.2.0`, `v0.3.0`, ...); `v0.1.0-agnt.N` were the earlier pre-release tags.
+Upstream is `hinshun/vt10x`; merge its new commits when they land.
 
 ### Reading cells
 
