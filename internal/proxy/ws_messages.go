@@ -684,7 +684,9 @@ func (c *wsConnState) handleSecretSubmit(msg *wsMessage) {
 // handlePanelMessage handles a message from the floating indicator panel,
 // resolving attachment file paths from the session capture store.
 func (c *wsConnState) handlePanelMessage(msg *wsMessage) {
+	clientID := panelClientID(msg.Data)
 	if c.refuseAgentInput("panel_message") {
+		c.sendPanelAck(clientID, panelFailed, privilegedRefusalMessage)
 		return
 	}
 	panelMsg := parsePanelMessage(msg.Data, c.id, c.timestamp, msg.URL)
@@ -774,20 +776,55 @@ func (c *wsConnState) handlePanelMessage(msg *wsMessage) {
 
 	c.ps.logger.LogPanelMessage(panelMsg)
 
-	// Forward to overlay if configured
+	// Forward to the agent's terminal session if one is bound. Without one
+	// the message is only in the proxy log, where a channel-mode or watching
+	// agent reads it; the ack tells the sender which of the two happened.
 	if c.ps.overlayNotifier.IsEnabled() {
 		debug.Log("proxy", "forwarding panel_message to overlay (proxy_id=%s, endpoint=%s)", c.ps.ID, c.ps.overlayNotifier.GetEndpoint())
 		if err := c.ps.overlayNotifier.NotifyPanelMessage(c.ps.ID, &panelMsg); err != nil {
-			debug.Log("proxy", "Failed to notify overlay of panel message: %v", err)
+			debug.Error("proxy", "panel_message not delivered to overlay on proxy %s: %v", c.ps.ID, err)
+			c.sendPanelAck(clientID, panelFailed, "the agent session did not accept it")
+		} else {
+			c.sendPanelAck(clientID, panelDelivered, "")
 		}
 	} else {
-		debug.Log("proxy", "panel_message received but overlay notifier NOT enabled for proxy %s — message will not reach agent", c.ps.ID)
+		debug.Log("proxy", "panel_message logged only: no overlay bound to proxy %s", c.ps.ID)
+		c.sendPanelAck(clientID, panelLogged, "")
 	}
 
 	// Update audit folder summary after saving new files. Best-effort
 	// housekeeping: a stale SUMMARY.md index does not lose any data.
 	if err := UpdateAuditSummary(c.ps.Path); err != nil {
 		debug.Log("proxy", "failed to update audit summary: %v", err)
+	}
+}
+
+// Delivery outcomes of a panel_message, reported to the sending browser in a
+// "panel_ack" frame (indicator-thread.js shows them on the message).
+const (
+	panelDelivered = "delivered" // the overlay (agnt run session) accepted it
+	panelLogged    = "logged"    // no overlay bound; only the proxy log has it
+	panelFailed    = "failed"    // refused, or the overlay rejected it
+)
+
+// panelClientID is the browser's id for a panel_message, echoed in its ack.
+func panelClientID(data map[string]interface{}) string {
+	payload, _ := data["payload"].(map[string]interface{})
+	return getStringField(payload, "client_id")
+}
+
+// sendPanelAck tells the sending connection what became of its panel_message.
+// A message without a client id (an older panel) gets no ack.
+func (c *wsConnState) sendPanelAck(clientID, status, reason string) {
+	if clientID == "" {
+		return
+	}
+	ack := map[string]interface{}{"type": "panel_ack", "client_id": clientID, "status": status}
+	if reason != "" {
+		ack["error"] = reason
+	}
+	if err := c.asyncConn.WriteJSON(ack); err != nil {
+		debug.Log("proxy", "failed to send panel_ack for %q: %v", clientID, err)
 	}
 }
 

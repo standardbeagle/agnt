@@ -15,6 +15,7 @@ import (
 
 	"github.com/gorilla/websocket"
 	"github.com/standardbeagle/agnt/internal/protocol"
+	"github.com/standardbeagle/agnt/internal/testutil/sockdir"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -630,4 +631,79 @@ func TestAsyncWSWriter_CloseUnblocksStalledWrite(t *testing.T) {
 		t.Fatal("a pending control write was not released by Close")
 	}
 	assert.NoError(t, w.Close(), "Close stays safe to repeat")
+}
+
+// Every panel_message that carries a client_id gets exactly one panel_ack on
+// the sending connection, naming what happened to it: delivered to a bound
+// agent session, only logged (no session bound), or failed (refused caller,
+// or a session that did not accept it). A message without a client_id gets
+// no ack.
+func TestPanelMessage_AckReportsDelivery(t *testing.T) {
+	_, liveSock := startOverlayCapture(t)
+	deadSock := filepath.Join(sockdir.Short(t), "gone.sock")
+
+	cases := []struct {
+		name     string
+		trusted  bool
+		endpoint string
+		clientID string
+		status   string
+		reason   string
+	}{
+		{"delivered to a bound session", true, liveSock, "m-1", panelDelivered, ""},
+		{"logged without a session", true, "", "m-2", panelLogged, ""},
+		{"failed when the session is gone", true, deadSock, "m-3", panelFailed, "the agent session did not accept it"},
+		{"failed for an untrusted caller", false, liveSock, "m-4", panelFailed, privilegedRefusalMessage},
+		{"no ack without a client id", true, "", "", "", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ps := newGateProxy(t)
+			ps.overlayNotifier.SetEndpoint(tc.endpoint)
+			c, stub := newGateConn(t, ps, tc.trusted)
+
+			c.handlePanelMessage(&wsMessage{Type: "panel_message", Data: map[string]interface{}{
+				"payload": map[string]interface{}{"client_id": tc.clientID, "message": "hello agent"},
+			}})
+
+			acks := func() []map[string]interface{} {
+				var out []map[string]interface{}
+				for _, f := range stub.frames(t) {
+					if f["type"] == "panel_ack" {
+						out = append(out, f)
+					}
+				}
+				return out
+			}
+			logged := len(ps.Logger().Query(LogFilter{Types: []LogEntryType{LogTypePanelMessage}}))
+			if tc.clientID == "" {
+				assert.Equal(t, 1, logged)
+				// One writer drains in order: once a later message's ack has
+				// arrived, an ack for the first would have arrived before it.
+				c.handlePanelMessage(&wsMessage{Type: "panel_message", Data: map[string]interface{}{
+					"payload": map[string]interface{}{"client_id": "m-marker", "message": "second"},
+				}})
+				require.Eventually(t, func() bool { return len(acks()) > 0 }, 2*time.Second, 5*time.Millisecond)
+				got := acks()
+				require.Len(t, got, 1, "a message without a client id gets no ack")
+				assert.Equal(t, "m-marker", got[0]["client_id"])
+				return
+			}
+			require.Eventually(t, func() bool { return len(acks()) > 0 }, 2*time.Second, 5*time.Millisecond)
+			got := acks()
+			require.Len(t, got, 1, "exactly one ack per message")
+			assert.Equal(t, tc.clientID, got[0]["client_id"])
+			assert.Equal(t, tc.status, got[0]["status"])
+			if tc.reason == "" {
+				assert.NotContains(t, got[0], "error")
+			} else {
+				assert.Equal(t, tc.reason, got[0]["error"])
+			}
+			if tc.trusted {
+				assert.Equal(t, 1, logged, "a trusted message is logged whatever the delivery")
+			} else {
+				assert.Zero(t, logged, "a refused message is never logged for the agent")
+			}
+		})
+	}
 }
