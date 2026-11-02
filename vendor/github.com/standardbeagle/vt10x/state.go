@@ -120,7 +120,20 @@ type Cursor struct {
 	State uint8
 }
 
-type parseState func(c rune)
+// parseState names the parser's state; put dispatches on it. An enum rather
+// than a method value, so write can tell which state it is in and take the
+// plain-text and CSI-parameter fast paths.
+type parseState uint8
+
+const (
+	psText parseState = iota // the zero value: a fresh State prints text
+	psEsc
+	psCSI
+	psEscTest
+	psStr
+	psStrEnd
+	psAltCharset
+)
 
 // State represents the terminal emulation state. Use Lock/Unlock
 // methods to synchronize data access with VT.
@@ -139,16 +152,12 @@ type State struct {
 	top, bottom   int // scroll limits
 	mode          ModeFlag
 	state         parseState
-	// The parser states as method values, bound once. Assigning t.parseEsc
-	// afresh on every escape sequence allocated a closure each time.
-	stateText, stateEsc, stateCSI, stateEscTest parseState
-	stateStr, stateStrEnd, stateAltCharset      parseState
-	str                                         strEscape
-	csi                                         csiEscape
-	numlock                                     bool
-	tabs                                        []bool
-	title                                       string
-	colorOverride                               map[Color]Color
+	str           strEscape
+	csi           csiEscape
+	numlock       bool
+	tabs          []bool
+	title         string
+	colorOverride map[Color]Color
 
 	// Grapheme-cluster assembly. A cluster can arrive in pieces (a base
 	// character now, its combining mark or joiner in the next Write), so the
@@ -168,13 +177,6 @@ func newState(w io.Writer) *State {
 		w:             w,
 		colorOverride: make(map[Color]Color),
 	}
-	t.stateText = t.parse
-	t.stateEsc = t.parseEsc
-	t.stateCSI = t.parseEscCSI
-	t.stateEscTest = t.parseEscTest
-	t.stateStr = t.parseEscStr
-	t.stateStrEnd = t.parseEscStrEnd
-	t.stateAltCharset = t.parseEscAltCharset
 	return t
 }
 
@@ -311,7 +313,22 @@ func (t *State) put(c rune) {
 		t.joinOK = false
 		t.prepend = false
 	}
-	t.state(c)
+	switch t.state {
+	case psText:
+		t.parse(c)
+	case psEsc:
+		t.parseEsc(c)
+	case psCSI:
+		t.parseEscCSI(c)
+	case psEscTest:
+		t.parseEscTest(c)
+	case psStr:
+		t.parseEscStr(c)
+	case psStrEnd:
+		t.parseEscStrEnd(c)
+	case psAltCharset:
+		t.parseEscAltCharset(c)
+	}
 }
 
 // write feeds UTF-8 bytes to the parser. A sequence cut off by the end of p is
@@ -335,9 +352,31 @@ func (t *State) write(p []byte) {
 			continue
 		}
 		if b := p[0]; b < utf8.RuneSelf {
-			t.put(rune(b))
+			switch {
+			case t.DebugLogger != nil:
+				t.put(rune(b))
+			case t.state == psText && b >= 0x20 && b < 0x7F && !t.prepend:
+				// Printable ASCII: all that put -> parse -> printRune
+				// would do is put it in a one-column cell.
+				t.putCell(rune(b), "", 1)
+			case t.state == psCSI && b >= 0x20 && b < 0x40 && len(t.csi.buf) < csiMaxBuf-1:
+				// A parameter, intermediate or prefix byte: parseEscCSI
+				// would only collect it.
+				t.csi.buf = append(t.csi.buf, b)
+			default:
+				t.put(rune(b))
+			}
 			p = p[1:]
 			continue
+		}
+		if t.state == psText && t.DebugLogger == nil {
+			if r, size := decodeShortRune(p); size > 0 {
+				// A whole, valid two- or three-byte rune in text: put and
+				// parse would hand it straight to printRune.
+				t.printRune(r)
+				p = p[size:]
+				continue
+			}
 		}
 		if !utf8.FullRune(p) {
 			t.npend = copy(t.pend[:], p)
@@ -347,6 +386,39 @@ func (t *State) write(p []byte) {
 		p = p[sz:]
 		t.putDecoded(r, sz)
 	}
+}
+
+// decodeShortRune decodes a complete, valid two- or three-byte UTF-8 rune at
+// the start of p, the forms box drawing, Latin and CJK text use, and returns
+// size 0 for anything else (ASCII, four-byte, invalid, or cut off), which
+// utf8.DecodeRune then handles.
+func decodeShortRune(p []byte) (rune, int) {
+	if len(p) < 2 {
+		return 0, 0
+	}
+	b0, b1 := p[0], p[1]
+	switch {
+	case b0 >= 0xC2 && b0 <= 0xDF:
+		if b1&0xC0 != 0x80 {
+			return 0, 0
+		}
+		return rune(b0&0x1F)<<6 | rune(b1&0x3F), 2
+	case b0 >= 0xE0 && b0 <= 0xEF:
+		if len(p) < 3 || p[2]&0xC0 != 0x80 {
+			return 0, 0
+		}
+		lo, hi := byte(0x80), byte(0xBF)
+		if b0 == 0xE0 {
+			lo = 0xA0 // no overlong forms
+		} else if b0 == 0xED {
+			hi = 0x9F // no surrogates
+		}
+		if b1 < lo || b1 > hi {
+			return 0, 0
+		}
+		return rune(b0&0x0F)<<12 | rune(b1&0x3F)<<6 | rune(p[2]&0x3F), 3
+	}
+	return 0, 0
 }
 
 func (t *State) putDecoded(r rune, size int) {
@@ -415,15 +487,17 @@ func (t *State) setChar(c rune, attr *Glyph, x, y int) {
 	if t.lines[y][x].Mode&(attrWide|attrWideCont) != 0 {
 		t.blankWidePair(y, x)
 	}
-	t.lines[y][x] = *attr
-	t.lines[y][x].Char = c
-	//if t.options.BrightBold && attr.Mode&attrBold != 0 && attr.FG < 8 {
+	// Copy the pen, then patch fields in place. Building the cell in a local
+	// and storing it whole is slower: the wide copy reloads fields just
+	// written narrowly, which store forwarding cannot serve.
+	cell := &t.lines[y][x]
+	*cell = *attr
+	cell.Char = c
 	if attr.Mode&attrBold != 0 && attr.FG < 8 {
-		t.lines[y][x].FG = attr.FG + 8
+		cell.FG = attr.FG + 8
 	}
 	if attr.Mode&attrReverse != 0 {
-		t.lines[y][x].FG = attr.BG
-		t.lines[y][x].BG = attr.FG
+		cell.FG, cell.BG = attr.BG, attr.FG
 	}
 }
 
@@ -446,7 +520,7 @@ func (t *State) reset() {
 	t.top = 0
 	t.bottom = t.rows - 1
 	t.mode = ModeWrap
-	t.clear(0, 0, t.rows-1, t.cols-1)
+	t.clearAll()
 	t.moveTo(0, 0)
 }
 
@@ -531,6 +605,8 @@ func (t *State) clear(x0, y0, x1, y1 int) {
 	y0 = clamp(y0, 0, t.rows-1)
 	y1 = clamp(y1, 0, t.rows-1)
 	t.changed |= ChangedScreen
+	blank := t.cur.Attr
+	blank.Char = ' '
 	for y := y0; y <= y1; y++ {
 		t.dirty[y] = true
 		// A wide pair cut by the edge of the range loses its other half too.
@@ -541,10 +617,20 @@ func (t *State) clear(x0, y0, x1, y1 int) {
 		if line[x1].Mode&attrWide != 0 && x1+1 < t.cols {
 			t.blankCell(y, x1+1)
 		}
-		for x := x0; x <= x1; x++ {
-			t.lines[y][x] = t.cur.Attr
-			t.lines[y][x].Char = ' '
-		}
+		fillGlyphs(line[x0:x1+1], blank)
+	}
+}
+
+// fillGlyphs sets every cell of row to g. It stores one cell and doubles the
+// filled prefix with copy, so a row costs a few bulk moves rather than one
+// write-barriered struct store per cell.
+func fillGlyphs(row []Glyph, g Glyph) {
+	if len(row) == 0 {
+		return
+	}
+	row[0] = g
+	for n := 1; n < len(row); n *= 2 {
+		copy(row[n:], row[:n])
 	}
 }
 

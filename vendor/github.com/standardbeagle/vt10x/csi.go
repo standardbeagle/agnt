@@ -8,6 +8,10 @@ import (
 // corrupted stream cannot overflow the arithmetic done with it.
 const maxCSIParam = 65535
 
+// csiMaxBuf caps the bytes collected for one CSI sequence; a sequence that
+// reaches it without a final byte is abandoned.
+const csiMaxBuf = 256
+
 // CSI (Control Sequence Introducer)
 // ESC+[
 //
@@ -40,7 +44,7 @@ func (c *csiEscape) reset() {
 func (c *csiEscape) put(b byte) bool {
 	c.buf = append(c.buf, b)
 	final := b >= 0x40 && b <= 0x7E
-	if final || len(c.buf) >= 256 {
+	if final || len(c.buf) >= csiMaxBuf {
 		c.parse()
 		if !final {
 			// Ran out of room without a final byte: never dispatch on a
