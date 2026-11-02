@@ -187,8 +187,28 @@ func (pw *ProtectedWriter) Write(p []byte) (n int, err error) {
 
 	out := &pw.filtered
 	out.Reset()
-	for i := 0; i < len(p); i++ {
-		pw.processStateByte(out, p[i])
+	for i := 0; i < len(p); {
+		if pw.state != stateGround || pw.utf8Len > 0 || p[i] == 0x1b {
+			pw.processStateByte(out, p[i])
+			i++
+			continue
+		}
+		// Ground state, no rune pending: text up to the next ESC. If it is
+		// valid UTF-8, every byte of it would pass through the per-byte path
+		// unchanged, so copy it whole. Otherwise (a malformed byte, or a rune
+		// split across reads) take the per-byte path for this run.
+		end := len(p)
+		if j := bytes.IndexByte(p[i:], 0x1b); j >= 0 {
+			end = i + j
+		}
+		if utf8.Valid(p[i:end]) {
+			out.Write(p[i:end])
+			i = end
+			continue
+		}
+		for ; i < end; i++ {
+			pw.processStateByte(out, p[i])
+		}
 	}
 
 	if out.Len() > 0 {
