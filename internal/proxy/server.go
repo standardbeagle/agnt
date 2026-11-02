@@ -733,6 +733,9 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 // Start begins the proxy server.
 func (ps *ProxyServer) Start(ctx context.Context) error {
 	debug.Log("proxy", "Start: id=%s addr=%s", ps.ID, ps.ListenAddr)
+	// Build the injected-script bundles now, while the browser is still on
+	// its way, instead of on the first proxied page. Once per process.
+	go loadCachedScript()
 	ps.mu.Lock()
 	defer ps.mu.Unlock()
 

@@ -247,6 +247,16 @@ const (
 // combinedScripts caches one built bundle per Role.
 var combinedScripts sync.Map // Role -> string
 
+// wrappedModules holds each module with its IIFE stripped, built once and
+// shared by every role's bundle (the modules are the same bytes in each).
+var wrappedModules = sync.OnceValue(func() map[string]string {
+	w := make(map[string]string, len(moduleOrder))
+	for _, m := range moduleOrder {
+		w[m.name] = wrapModule(moduleScript[m.name])
+	}
+	return w
+})
+
 // Version is the agnt version to inject into scripts.
 // Set this before calling GetCombinedScript() for the first time.
 var Version = "dev"
@@ -624,7 +634,15 @@ func GetCombinedScriptForRole(role Role) string {
 // buildCombinedScript assembles the modules for role in the dependency order
 // defined by moduleOrder, skipping modules excluded from that role's bundle.
 func buildCombinedScript(role Role) string {
+	wrapped := wrappedModules()
+	size := 1024
+	for _, m := range moduleOrder {
+		if includeInRole(m.name, role) {
+			size += len(wrapped[m.name]) + len(m.name) + 16
+		}
+	}
 	var sb strings.Builder
+	sb.Grow(size)
 
 	// Main script block
 	sb.WriteString("<script>\n")
@@ -668,7 +686,7 @@ func buildCombinedScript(role Role) string {
 		sb.WriteString("  // ")
 		sb.WriteString(m.name)
 		sb.WriteString(" module\n")
-		sb.WriteString(wrapModule(moduleScript[m.name]))
+		sb.WriteString(wrapped[m.name])
 		sb.WriteString("\n\n")
 	}
 
@@ -691,7 +709,9 @@ func wrapModule(js string) string {
 		start := -1
 		end := -1
 
-		for i, c := range js {
+		// Braces are ASCII, so a byte scan finds them without decoding runes.
+		for i := 0; i < len(js); i++ {
+			c := js[i]
 			if c == '{' {
 				if start == -1 {
 					start = i + 1
