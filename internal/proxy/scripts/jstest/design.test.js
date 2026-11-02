@@ -75,7 +75,8 @@ describe('design mode', () => {
     expect(clone.classList.contains('card')).toBe(true);
     expect(clone.id).toBe('');
     expect(clone.previousElementSibling).toBe(target);
-    expect(target.hasAttribute('data-devtool-design-hidden')).toBe(true);
+    expect(target.style.getPropertyValue('display')).toBe('none');
+    expect(target.style.getPropertyPriority('display')).toBe('important');
     expect(clone.innerHTML).toBe(target.innerHTML);
 
     // Every instant option only uses values the page already has.
@@ -88,7 +89,7 @@ describe('design mode', () => {
     // Stepping back to the original removes the swap entirely.
     design.applyAlternative(0);
     expect(swapped(win)).toBeNull();
-    expect(target.hasAttribute('data-devtool-design-hidden')).toBe(false);
+    expect(target.style.getPropertyValue('display')).toBe('');
   });
 
   it('refuses agent alternatives with off-scheme colours or fonts and swaps in on-scheme ones', async () => {
@@ -127,9 +128,15 @@ describe('design mode', () => {
     const win = await boot();
     const design = win.__devtool_design;
     const target = win.document.getElementById('target');
+    target.style.setProperty('display', 'flex');
     design.start();
     design.selectElement(target);
     expect(swapped(win)).not.toBeNull();
+
+    // A re-render that rewrites the target's inline style is undone.
+    target.style.display = 'block';
+    await new Promise((r) => setTimeout(r, 0));
+    expect(target.style.getPropertyValue('display')).toBe('none');
 
     // A re-render that drops our foreign node.
     swapped(win).remove();
@@ -141,6 +148,7 @@ describe('design mode', () => {
 
     design.stop();
     expect(swapped(win)).toBeNull();
-    expect(target.hasAttribute('data-devtool-design-hidden')).toBe(false);
+    expect(target.style.getPropertyValue('display')).toBe('flex');
+    expect(target.style.getPropertyPriority('display')).toBe('');
   });
 });

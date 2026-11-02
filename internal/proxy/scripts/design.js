@@ -90,6 +90,15 @@
   };
   var designZ = window.__devtoolTokens ? window.__devtoolTokens.z : { overlay: 2147483642, panel: 2147483644, critical: 2147483647 };
 
+  // pageFont is the page's own resolved body font. Design-mode chrome uses it
+  // and plain-text glyphs (‹ › ×, not ◀ ▶ ✕) because Chrome resolves a new
+  // font family, or a glyph missing from the current font, with a system font
+  // search on first use: 20-120 ms each on Linux, landing on the click or the
+  // first hover frame.
+  function pageFont() {
+    return window.getComputedStyle(document.body).fontFamily;
+  }
+
   // Start design mode - enable element selection
   function start() {
     if (state.isActive) return;
@@ -143,7 +152,7 @@
       'padding: 4px 8px',
       'border-radius: 6px',
       'font-size: 11px',
-      'font-family: ui-monospace, monospace',
+      'font-family: ' + pageFont(),
       'white-space: nowrap',
       'pointer-events: none',
       'display: none'
@@ -352,7 +361,7 @@
     restorePersisted();
     renderPreview();
     notify(instant.length
-      ? instant.length + ' instant on-scheme options — ◀ ▶ to compare; the agent is designing more'
+      ? instant.length + ' instant on-scheme options — ‹ › to compare; the agent is designing more'
       : 'Scheme captured — the agent is designing on-scheme alternatives');
 
     // The agent message goes out immediately: it is the slow leg, so nothing
@@ -641,12 +650,12 @@
     var style = document.createElement('style');
     style.textContent = [
       ':host{all:initial}',
-      '.dock{position:fixed;right:16px;bottom:16px;width:min(720px,46vw);max-height:78vh;background:' + designTheme.surface + ';border:1px solid ' + designTheme.border + ';border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.18);display:flex;flex-direction:column;overflow:hidden;container-type:inline-size;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}',
+      '.dock{position:fixed;right:16px;bottom:16px;width:min(720px,46vw);max-height:78vh;background:' + designTheme.surface + ';border:1px solid ' + designTheme.border + ';border-radius:12px;box-shadow:0 10px 40px rgba(0,0,0,.18);display:flex;flex-direction:column;overflow:hidden;container-type:inline-size;font-family:' + pageFont() + '}',
       '.bar{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:10px 12px;border-bottom:1px solid ' + designTheme.border + '}',
       '.idx{font-size:12px;color:' + designTheme.textMuted + ';flex:0 1 auto;min-width:48px;max-width:150px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}',
       '.spacer{flex:1}',
       // Container-responsive: when the dock is narrow the chat input drops to
-      // its own full-width row so the nav buttons + close (✕) always stay
+      // its own full-width row so the nav buttons + close (×) always stay
       // visible instead of overflowing and being clipped by dock overflow.
       '@container (max-width:520px){.in{flex:1 1 100%;order:10}.spacer{display:none}}',
       '.btn{padding:6px 10px;background:' + designTheme.primary + ';color:' + designTheme.textInverse + ';border:none;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer}',
@@ -678,11 +687,11 @@
     chatIn.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' && chatIn.value.trim()) { chat(chatIn.value.trim()); chatIn.value = ''; }
     });
-    var prevB = mkBtn('◀', function () { previous(); });
+    var prevB = mkBtn('‹', function () { previous(); });
     prevB.setAttribute('aria-label', 'Previous alternative');
     bar.appendChild(prevB);
     bar.appendChild(idx);
-    var nextB = mkBtn('▶', function () { next(); });
+    var nextB = mkBtn('›', function () { next(); });
     nextB.setAttribute('aria-label', 'Next alternative');
     bar.appendChild(nextB);
     bar.appendChild(inBtn);
@@ -690,7 +699,7 @@
     bar.appendChild(overBtn);
     bar.appendChild(spacer);
     bar.appendChild(chatIn);
-    var closeB = mkBtn('✕', function () { stop(); }); closeB.className = 'btn ghost';
+    var closeB = mkBtn('×', function () { stop(); }); closeB.className = 'btn ghost';
     closeB.setAttribute('aria-label', 'Close design panel');
     bar.appendChild(closeB);
 
@@ -703,7 +712,7 @@
     olHost.style.cssText = 'all:initial';
     var olRoot = olHost.attachShadow ? olHost.attachShadow({ mode: 'open' }) : olHost;
     var olStyle = document.createElement('style');
-    olStyle.textContent = ':host{all:initial}.ol{position:fixed;z-index:' + designZ.panel + ';overflow:auto;background:' + designTheme.surface + ';border:2px solid ' + designTheme.primary + ';border-radius:8px;box-shadow:0 8px 30px rgba(0,0,0,.25)}.render{padding:8px;font-family:-apple-system,sans-serif}';
+    olStyle.textContent = ':host{all:initial}.ol{position:fixed;z-index:' + designZ.panel + ';overflow:auto;background:' + designTheme.surface + ';border:2px solid ' + designTheme.primary + ';border-radius:8px;box-shadow:0 8px 30px rgba(0,0,0,.25)}.render{padding:8px;font-family:' + pageFont() + '}';
     olRoot.appendChild(olStyle);
     var olBox = document.createElement('div'); olBox.className = 'ol'; olBox.style.display = 'none';
     olRoot.appendChild(olBox);
@@ -1280,18 +1289,16 @@
   // ── In-place swap ───────────────────────────────────────────────────────────
   // The alternative goes into the page where the element is: a shallow clone of
   // the target (same tag, classes and attributes, so the page's own selectors
-  // style it) is inserted beside it and the target is hidden by attribute.
+  // style it) is inserted beside it and the target is hidden by an inline
+  // display:none. Inline, not a stylesheet rule: inserting a <style> makes the
+  // browser restyle the whole document (tens of ms on a large page); an inline
+  // style invalidates the one element.
   // The framework-owned node is never rewritten, so React/HMR reconciliation
   // cannot wipe it; if a re-render drops the clone, the observer puts it back.
-  var HIDDEN_ATTR = 'data-devtool-design-hidden';
   var SWAP_ATTR = 'data-devtool-design-swap';
 
-  function ensureHideRule() {
-    if (document.getElementById('__devtool-design-hide')) return;
-    var st = document.createElement('style');
-    st.id = '__devtool-design-hide';
-    st.textContent = '[' + HIDDEN_ATTR + ']{display:none!important}';
-    (document.head || document.documentElement).appendChild(st);
+  function hideTarget(target) {
+    target.style.setProperty('display', 'none', 'important');
   }
 
   function swapInPlace(index) {
@@ -1299,7 +1306,6 @@
     if (index === 0) return; // the original is the page as it is
     var target = resolveTarget();
     if (!target || !target.parentNode) return;
-    ensureHideRule();
     var clone = target.cloneNode(false);
     clone.removeAttribute('id');
     var os = window.__devtool_override_store;
@@ -1310,15 +1316,21 @@
     clone.innerHTML = state.alternatives[index] || '';
     var parent = target.parentNode;
     parent.insertBefore(clone, target.nextSibling);
-    target.setAttribute(HIDDEN_ATTR, '');
+    var priorDisplay = {
+      value: target.style.getPropertyValue('display'),
+      priority: target.style.getPropertyPriority('display')
+    };
+    hideTarget(target);
+    // A re-render may drop the clone or rewrite the target's inline style;
+    // either way, put the swap back.
     var observer = new MutationObserver(function () {
-      if (clone.isConnected && target.isConnected) return;
-      if (state.swap && state.swap.clone === clone && state.previewMode === 'inplace') {
-        swapInPlace(state.currentIndex);
-      }
+      if (!state.swap || state.swap.clone !== clone || state.previewMode !== 'inplace') return;
+      if (!clone.isConnected || !target.isConnected) { swapInPlace(state.currentIndex); return; }
+      if (target.style.getPropertyValue('display') !== 'none') hideTarget(target);
     });
     observer.observe(parent, { childList: true });
-    state.swap = { target: target, clone: clone, observer: observer };
+    observer.observe(target, { attributes: true, attributeFilter: ['style'] });
+    state.swap = { target: target, clone: clone, observer: observer, priorDisplay: priorDisplay };
   }
 
   function removeSwap() {
@@ -1327,7 +1339,9 @@
     state.swap = null;
     sw.observer.disconnect();
     if (sw.clone.parentNode) sw.clone.parentNode.removeChild(sw.clone);
-    sw.target.removeAttribute(HIDDEN_ATTR);
+    var prior = sw.priorDisplay;
+    if (prior.value) sw.target.style.setProperty('display', prior.value, prior.priority);
+    else sw.target.style.removeProperty('display');
   }
 
   // visibleTarget is what the user currently sees in the element's slot: the
