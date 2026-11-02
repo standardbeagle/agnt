@@ -57,10 +57,10 @@ func crossCheck() {
 	fmt.Println("Cross-compile check passed")
 }
 
-// vendorCheck mirrors `make vendor-check`: vendor into a temp directory,
-// drop files the repo's .gitignore excludes (go mod vendor writes
-// vendor/cloud.google.com/go/go.work, which a clean checkout never has), and
-// compare against the committed vendor/. GOWORK=off because a go.work puts go
+// vendorCheck mirrors `make vendor-check`: vendor into a temp directory and
+// compare it with vendor/, leaving out on both sides files the repo's
+// .gitignore excludes (go mod vendor writes vendor/cloud.google.com/go/go.work,
+// which a clean checkout never has). GOWORK=off because a go.work puts go
 // in workspace mode, where `go mod vendor` refuses to run.
 func vendorCheck() {
 	tmp, err := os.MkdirTemp("", "vendor-check")
@@ -76,16 +76,10 @@ func vendorCheck() {
 		fail("go mod vendor failed: %v", err)
 	}
 
-	fresh := listFiles(filepath.Join(tmp, "vendor"))
-	ignore := exec.Command("git", "check-ignore", "--stdin")
-	ignore.Stdin = strings.NewReader(strings.Join(prefixed("vendor/", fresh), "\n") + "\n")
-	ignored, _ := ignore.Output() // exit 1 means nothing is ignored
-	for _, p := range strings.Fields(string(ignored)) {
-		os.Remove(filepath.Join(tmp, filepath.FromSlash(p)))
-	}
-
-	want := listFiles(filepath.Join(tmp, "vendor"))
-	have := listFiles("vendor")
+	// Both sides drop ignored files: make vendor writes the same go.work
+	// into the working tree, and it is no more committed there than here.
+	want := withoutIgnored(listFiles(filepath.Join(tmp, "vendor")))
+	have := withoutIgnored(listFiles("vendor"))
 	var diffs []string
 	wantSet := map[string]bool{}
 	for _, f := range want {
@@ -140,6 +134,30 @@ func listFiles(dir string) []string {
 	})
 	sort.Strings(out)
 	return out
+}
+
+// withoutIgnored drops the vendor-relative paths the repo's .gitignore
+// excludes.
+func withoutIgnored(files []string) []string {
+	ignore := exec.Command("git", "check-ignore", "--stdin")
+	ignore.Stdin = strings.NewReader(strings.Join(prefixed("vendor/", files), "\n") + "\n")
+	out, err := ignore.Output()
+	if err != nil {
+		if ee, ok := err.(*exec.ExitError); !ok || ee.ExitCode() != 1 { // 1: nothing ignored
+			fail("git check-ignore: %v", err)
+		}
+	}
+	ignored := map[string]bool{}
+	for _, p := range strings.Fields(string(out)) {
+		ignored[strings.TrimPrefix(p, "vendor/")] = true
+	}
+	kept := files[:0]
+	for _, f := range files {
+		if !ignored[f] {
+			kept = append(kept, f)
+		}
+	}
+	return kept
 }
 
 func prefixed(prefix string, in []string) []string {
