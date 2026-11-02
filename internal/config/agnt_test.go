@@ -1061,6 +1061,10 @@ func TestBuildSystemPrompt(t *testing.T) {
 		assert.Contains(t, prompt, "drill down only on failure")
 		assert.Contains(t, prompt, "raw JS only when no helper exists")
 		assert.Contains(t, prompt, "A `proxy_id required` response is an argument-validation error")
+		// A browser message gets an answer in the browser, with the tool that
+		// exists in either mode.
+		assert.Contains(t, prompt, "Answer them there: `channel_reply {proxy_id, content}`")
+		assert.Contains(t, prompt, "`proxy {action:\"toast\", id, toast_message}` when channel_reply is absent")
 		assert.Contains(t, prompt, "Common Patterns")
 		assert.Contains(t, prompt, "Process Management")
 	})

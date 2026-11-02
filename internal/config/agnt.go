@@ -1422,6 +1422,7 @@ Pattern: ` + "`proc run`" + ` to start, ` + "`proc output`" + ` to inspect, ` + 
 	sb.WriteString("`release_qa` only when the user explicitly asks for release QA — never routine debugging.\n")
 	sb.WriteString("`proxy exec` raw JavaScript is the last resort — raw JS only when no helper exists. Try `__devtool.*` helpers and `diagnose` first.\n")
 	sb.WriteString("\nBrowser messages include `proxy: <id>` as tool scope. Copy it into `proxy_id` (or `id` for proxy actions). A `proxy_id required` response is an argument-validation error and often lists a running proxy; it is not evidence that the dev server is down. Check `proc` status/output before claiming a process stopped.\n")
+	sb.WriteString("A `from agnt browser:` message is a person at the page. Answer them there: `channel_reply {proxy_id, content}`, or `proxy {action:\"toast\", id, toast_message}` when channel_reply is absent. Replies stay in their panel's conversation; ask there when you need them to choose or check something in the browser.\n")
 	sb.WriteString("\n## Common Patterns\n\n")
 	sb.WriteString("- page blank → get_incidents → proc output\n")
 	sb.WriteString("- API 500 → proxylog query endpoint\n")
