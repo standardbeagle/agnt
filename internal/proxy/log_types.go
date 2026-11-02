@@ -508,18 +508,18 @@ type DesignChatMessage struct {
 
 // DesignState represents the initial state when an element is selected for design iteration.
 type DesignState struct {
-	ID            string                `json:"id"`
-	Timestamp     time.Time             `json:"timestamp"`
-	Selector      string                `json:"selector"` // CSS selector
-	XPath         string                `json:"xpath"`    // XPath for robustness
-	OriginalHTML  string                `json:"original_html"`
-	ContextHTML   string                `json:"context_html"` // Parent element with siblings for context
-	Metadata      DesignElementMetadata `json:"metadata"`
-	Scheme        *DesignScheme         `json:"scheme,omitempty"`          // live-extracted design tokens of the proxied app
-	Slot          *DesignSlot           `json:"slot,omitempty"`            // parent container geometry the alternative must fit
-	Exemplars     []string              `json:"exemplars,omitempty"`       // same-signature components elsewhere on the page
-	PageThumbPath string                `json:"page_thumb_path,omitempty"` // saved JPEG of the whole page (dataURL stripped after save)
-	URL           string                `json:"url"`
+	ID              string                `json:"id"`
+	Timestamp       time.Time             `json:"timestamp"`
+	Selector        string                `json:"selector"` // CSS selector
+	XPath           string                `json:"xpath"`    // XPath for robustness
+	OriginalHTML    string                `json:"original_html"`
+	ContextHTML     string                `json:"context_html"` // Parent element with siblings for context
+	Metadata        DesignElementMetadata `json:"metadata"`
+	Scheme          *DesignScheme         `json:"scheme,omitempty"`           // live-extracted design tokens of the proxied app
+	Slot            *DesignSlot           `json:"slot,omitempty"`             // parent container geometry the alternative must fit
+	Exemplars       []string              `json:"exemplars,omitempty"`        // same-signature components elsewhere on the page
+	InstantVariants []string              `json:"instant_variants,omitempty"` // on-scheme options the browser already swapped in
+	URL             string                `json:"url"`
 }
 
 // DesignRequest represents a request for new design alternatives.

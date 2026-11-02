@@ -456,6 +456,7 @@ func parseDesignState(data map[string]interface{}, id string, timestamp time.Tim
 	state.Scheme = parseDesignScheme(data)
 	state.Slot = parseDesignSlot(data)
 	state.Exemplars = getStringSliceField(data, "exemplars")
+	state.InstantVariants = getStringSliceField(data, "instantVariants")
 
 	return state
 }

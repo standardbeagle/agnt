@@ -34,7 +34,8 @@
     chatHistory: [],       // Chat messages about this element
     slot: null,            // Parent container geometry the alternative must fit
     exemplars: null,       // Same-signature components elsewhere on the page
-    pageThumb: null,       // Whole-page thumbnail for global context
+    pageColors: null,      // Every distinct colour the page renders (clash check)
+    swap: null,            // In-place swap: {target, clone, observer}
     overlay: null,         // Selection overlay
     controls: null         // Navigation controls UI
   };
@@ -283,6 +284,7 @@
   // Select an element for design iteration
   function selectElement(element) {
     if (!element) return;
+    removeSwap();
 
     // Hide selection overlay
     hideSelectionOverlay();
@@ -317,7 +319,9 @@
 
     // Extract the proxied app's design tokens so generated alternatives stay
     // on-scheme. Best-effort: never throws, returns null when nothing usable.
-    state.scheme = extractScheme(element);
+    var extracted = extractScheme(element);
+    state.scheme = extracted.scheme;
+    state.pageColors = extracted.colors;
 
     // Slot geometry + same-signature exemplars elsewhere on the page: what the
     // alternative must fit, and the house grammar it should vary within.
@@ -331,21 +335,29 @@
       var os = window.__devtool_override_store;
       state.oid = (os && os.ensureOID) ? os.ensureOID(element) : null;
     } catch (e) { state.oid = null; }
-    if (!state.previewMode) state.previewMode = 'side';
+    if (!state.previewMode) state.previewMode = 'inplace';
 
-    // Open the non-invasive preview panel and re-hydrate any alternatives that
-    // survived an HMR recompile.
+    // Instant options: restyles built only from the page's own tokens, so the
+    // user sees on-scheme alternatives swapped in before the agent replies.
+    var instant = buildInstantVariants(element, state.scheme);
+    for (var v = 0; v < instant.length; v++) {
+      state.alternatives.push(instant[v].html);
+      state.altMeta.push({ label: 'instant', note: instant[v].note, style: instant[v].style });
+    }
+    if (instant.length) state.currentIndex = 1;
+
+    // Open the panel and re-hydrate any alternatives that survived an HMR
+    // recompile.
     ensurePanel();
     restorePersisted();
     renderPreview();
-    notify('Scheme captured — preparing DESIGN.md & on-scheme alternatives…');
+    notify(instant.length
+      ? instant.length + ' instant on-scheme options — ◀ ▶ to compare; the agent is designing more'
+      : 'Scheme captured — the agent is designing on-scheme alternatives');
 
-    // Send initial state to agent — after the whole-page thumbnail lands, so
-    // the state event carries page-level context too.
-    capturePageThumb(function (thumb) {
-      state.pageThumb = thumb;
-      sendDesignState();
-    });
+    // The agent message goes out immediately: it is the slow leg, so nothing
+    // (screenshots, rasterising) may sit in front of it.
+    sendDesignState(instant);
 
     // Design mode is chat-only iteration: the AI preview panel drives the
     // redesign. The inline quick-style palette (p/bg/op/disp bar) belongs to
@@ -384,34 +396,37 @@
     return path;
   }
 
-  // Capture parent context with siblings
+  // captureContext summarises the parent: its opening tag, the target in full
+  // (marked data-design-target), and up to CONTEXT_SIBLING_CAP siblings as
+  // tag/class/id stubs. Built as a string: deep-cloning the parent and
+  // rewriting each sibling cost seconds on long lists.
+  var CONTEXT_SIBLING_CAP = 30;
   function captureContext(element) {
     var parent = element.parentElement;
     if (!parent) return '';
-
-    // Clone parent and truncate sibling content for brevity
-    var clone = parent.cloneNode(true);
-    var children = clone.children;
-
-    for (var i = 0; i < children.length; i++) {
-      var child = children[i];
-      var originalChild = parent.children[i];
-
-      if (originalChild === element) {
-        // Mark the target element
-        child.setAttribute('data-design-target', 'true');
-      } else {
-        // Truncate siblings to just their tag
-        var summary = '<' + child.tagName.toLowerCase();
-        if (child.className) summary += ' class="' + child.className + '"';
-        if (child.id) summary += ' id="' + child.id + '"';
-        summary += '>...</' + child.tagName.toLowerCase() + '>';
-
-        child.outerHTML = summary;
+    var tag = parent.tagName.toLowerCase();
+    var shell = parent.cloneNode(false).outerHTML;
+    var parts = [shell.slice(0, shell.length - ('</' + tag + '>').length)];
+    var kids = parent.children, stubs = 0, skipped = 0;
+    for (var i = 0; i < kids.length; i++) {
+      var child = kids[i];
+      if (child === element) {
+        var marked = element.cloneNode(true);
+        marked.setAttribute('data-design-target', 'true');
+        parts.push(marked.outerHTML);
+        continue;
       }
+      if (stubs >= CONTEXT_SIBLING_CAP) { skipped++; continue; }
+      stubs++;
+      var ctag = child.tagName.toLowerCase();
+      var stub = '<' + ctag;
+      if (typeof child.className === 'string' && child.className) stub += ' class="' + child.className + '"';
+      if (child.id) stub += ' id="' + child.id + '"';
+      parts.push(stub + '>...</' + ctag + '>');
     }
-
-    return clone.outerHTML;
+    if (skipped) parts.push('<!-- ' + skipped + ' more siblings -->');
+    parts.push('</' + tag + '>');
+    return parts.join('');
   }
 
   // Capture relevant attributes
@@ -430,11 +445,10 @@
 
   // Show navigation controls
   // ── Non-invasive preview panel ──────────────────────────────────────────────
-  // Previews render inside a Shadow-DOM panel, NEVER into the framework-owned
-  // target subtree. Writing innerHTML into a React/HMR-managed node gets wiped by
-  // reconciliation and leaves a stale selector; the shadow root is untouchable by
-  // the app. Two modes: side-by-side (original | alternative) and overlay-on-top
-  // (alternative floated over the target's rect).
+  // Three modes. In place (default) swaps the alternative into the page beside
+  // the hidden target (see swapInPlace). Side-by-side and overlay render it in a
+  // frame carrying the page CSS. None of them writes into the framework-owned
+  // target subtree: React/HMR reconciliation would wipe it.
 
   function mkBtn(label, onClick) {
     var b = document.createElement('button');
@@ -463,7 +477,8 @@
     var meta = state.altMeta && state.altMeta[index];
     if (!meta || !meta.label) return n;
     var b = meta.label === 'draft' ? 'Fast draft'
-      : meta.label === 'original' ? 'Original' : 'On-scheme';
+      : meta.label === 'original' ? 'Original'
+      : meta.label === 'instant' ? 'Instant' : 'On-scheme';
     if (meta.note && meta.label !== 'original') b += ' · ' + meta.note;
     return n + '  [' + b + ']';
   }
@@ -518,7 +533,7 @@
   // PNG data URL via html2canvas, so the agent message can carry a screenshot of
   // exactly what the user is redesigning. Fully guarded; yields null on failure.
   function captureSegment(cb) {
-    var t = resolveTarget();
+    var t = visibleTarget();
     if (!t) { cb(null); return; }
     // html2canvas is loaded on demand; ensure it before rasterising.
     if (typeof window.html2canvas !== 'function') {
@@ -540,33 +555,6 @@
         try { cb(canvas.toDataURL('image/png')); } catch (e) { cb(null); }
       }).catch(function () { cb(null); });
     } catch (e) { cb(null); }
-  }
-
-  // capturePageThumb rasterises the whole page at thumbnail scale so the
-  // agent sees the global layout the redesigned element must live in — the
-  // segment shot alone gives no page-level continuity context. JPEG at low
-  // scale keeps it to a few KB. Fully guarded; yields null on failure.
-  function capturePageThumb(cb) {
-    var finish = function () {
-      try {
-        window.html2canvas(document.body, {
-          allowTaint: true, useCORS: true, logging: false,
-          backgroundColor: null,
-          scale: 0.25
-        }).then(function (canvas) {
-          try { cb(canvas.toDataURL('image/jpeg', 0.6)); } catch (e) { cb(null); }
-        }).catch(function () { cb(null); });
-      } catch (e) { cb(null); }
-    };
-    if (typeof window.html2canvas !== 'function') {
-      if (typeof window.__devtool_ensureHtml2canvas === 'function') {
-        window.__devtool_ensureHtml2canvas().then(finish, function () { cb(null); });
-      } else {
-        cb(null);
-      }
-      return;
-    }
-    finish();
   }
 
   // captureSlot records the geometry the alternative must fit: the parent
@@ -681,6 +669,7 @@
     dock.setAttribute('aria-label', 'Design iteration panel');
     var bar = document.createElement('div'); bar.className = 'bar';
     var idx = document.createElement('div'); idx.className = 'idx';
+    var inBtn = mkBtn('In place', function () { setMode('inplace'); }); inBtn.className = 'btn ghost';
     var sideBtn = mkBtn('Side-by-side', function () { setMode('side'); }); sideBtn.className = 'btn ghost';
     var overBtn = mkBtn('Overlay', function () { setMode('overlay'); }); overBtn.className = 'btn ghost';
     var spacer = document.createElement('div'); spacer.className = 'spacer';
@@ -696,6 +685,7 @@
     var nextB = mkBtn('▶', function () { next(); });
     nextB.setAttribute('aria-label', 'Next alternative');
     bar.appendChild(nextB);
+    bar.appendChild(inBtn);
     bar.appendChild(sideBtn);
     bar.appendChild(overBtn);
     bar.appendChild(spacer);
@@ -719,7 +709,7 @@
     olRoot.appendChild(olBox);
     hostMount.appendChild(olHost);
 
-    state.panel = { host: host, root: root, dock: dock, idx: idx, body: body, sideBtn: sideBtn, overBtn: overBtn, olHost: olHost, olBox: olBox };
+    state.panel = { host: host, root: root, dock: dock, idx: idx, body: body, inBtn: inBtn, sideBtn: sideBtn, overBtn: overBtn, olHost: olHost, olBox: olBox };
 
     // Overlay mode follows the target; side mode docks beside the target. Both
     // must track the target as the page scrolls/reflows.
@@ -745,9 +735,24 @@
     var i = state.currentIndex;
     p.idx.textContent = badgeFor(i);
     p.idx.title = badgeFor(i);
+    p.inBtn.className = 'btn ghost' + (state.previewMode === 'inplace' ? ' on' : '');
     p.sideBtn.className = 'btn ghost' + (state.previewMode === 'side' ? ' on' : '');
     p.overBtn.className = 'btn ghost' + (state.previewMode === 'overlay' ? ' on' : '');
     var altHTML = state.alternatives[i] != null ? state.alternatives[i] : '';
+    var altStyle = state.altMeta && state.altMeta[i] && state.altMeta[i].style;
+    var frameHTML = altStyle ? '<div style="' + altStyle.replace(/"/g, '&quot;') + '">' + altHTML + '</div>' : altHTML;
+
+    if (state.previewMode === 'inplace') {
+      // The alternative replaces the element in the page itself, so it is
+      // judged against the real neighbours, not in a detached frame.
+      p.olBox.style.display = 'none';
+      p.body.innerHTML = '';
+      p.body.style.padding = ''; p.body.style.overflow = 'hidden';
+      swapInPlace(i);
+      positionSide();
+      return;
+    }
+    removeSwap();
 
     if (state.previewMode === 'overlay') {
       // Restore the default docked corner — side mode moves the dock inline.
@@ -768,7 +773,7 @@
       var ot = resolveTarget();
       var oh = ot ? Math.max(80, Math.round(ot.getBoundingClientRect().height)) : 0;
       p.olBox.innerHTML = '';
-      p.olBox.appendChild(renderInFrame(altHTML, oh || null));
+      p.olBox.appendChild(renderInFrame(frameHTML, oh || null));
       p.olBox.style.display = 'block';
       positionOverlay();
     } else {
@@ -782,7 +787,7 @@
       p.body.style.overflow = 'hidden';
       var t = resolveTarget();
       var h = t ? Math.max(120, Math.round(t.getBoundingClientRect().height)) : 0;
-      p.body.appendChild(renderInFrame(altHTML, h || null));
+      p.body.appendChild(renderInFrame(frameHTML, h || null));
       positionSide();
     }
   }
@@ -794,7 +799,7 @@
     var p = state.panel;
     if (!p || !p.dock) return;
     var dock = p.dock;
-    var t = resolveTarget();
+    var t = visibleTarget();
     if (!t) {
       dock.style.left = ''; dock.style.top = '';
       dock.style.right = '16px'; dock.style.bottom = '16px';
@@ -843,10 +848,11 @@
       }));
     } catch (e) { /* storage disabled — in-memory still works */ }
   }
-  function persistMode() { try { sessionStorage.setItem('__devtool_design:mode', state.previewMode); } catch (e) {} }
+  var MODE_KEY = '__devtool_design:preview-mode';
+  function persistMode() { try { sessionStorage.setItem(MODE_KEY, state.previewMode); } catch (e) {} }
   function restorePersisted() {
     try {
-      var mode = sessionStorage.getItem('__devtool_design:mode');
+      var mode = sessionStorage.getItem(MODE_KEY);
       if (mode) state.previewMode = mode;
       var raw = sessionStorage.getItem(persistKey());
       if (!raw) return;
@@ -861,6 +867,7 @@
 
   // hideControls tears down the panel + its global listeners.
   function hideControls() {
+    removeSwap();
     if (state.reposition) {
       window.removeEventListener('scroll', state.reposition, true);
       window.removeEventListener('resize', state.reposition, true);
@@ -890,10 +897,9 @@
     }
   }
 
-  // Select an alternative for preview. NON-INVASIVE: never writes into the
-  // framework-owned target subtree (React reconciliation / HMR would wipe it and
-  // the stored selector would go stale, throwing "innerHTML … not an object").
-  // The preview renders in the isolated shadow-root panel instead.
+  // Select an alternative for preview. Never writes into the framework-owned
+  // target subtree (React reconciliation / HMR would wipe it and the stored
+  // selector would go stale); renderPreview swaps or frames it instead.
   function applyAlternative(index) {
     if (typeof index !== 'number' || isNaN(index) || index < 0 || index >= state.alternatives.length) return;
     state.currentIndex = index;
@@ -904,9 +910,13 @@
   // Add one alternative. Storing NEVER depends on a live target node — mid-HMR
   // the node may be briefly absent, and a store that touches the DOM would throw
   // and lose the alternative. We store + persist first, then best-effort render.
-  // meta = {label:'draft'|'variation', note:'<direction>'}.
+  // meta = {label:'variation', note:'<direction>', style?:'<wrapper css>'}.
+  // Off-scheme colours or fonts are refused with the clashes listed, so the
+  // agent can correct and resend.
   function addAlternative(html, meta) {
     if (typeof html !== 'string') return { error: 'html must be a string' };
+    var clashes = findSchemeClashes(html, meta && meta.style);
+    if (clashes.length) return rejectClash(clashes);
     state.alternatives.push(html);
     if (!state.altMeta) state.altMeta = [];
     state.altMeta[state.alternatives.length - 1] =
@@ -922,21 +932,28 @@
   // items = [{html, label?, note?}, ...].
   function addAlternatives(items) {
     if (!Array.isArray(items)) return { error: 'items must be an array' };
-    var added = 0;
+    var added = 0, rejected = [];
     for (var i = 0; i < items.length; i++) {
       var it = items[i] || {};
-      if (typeof it.html !== 'string') continue;
+      if (typeof it.html !== 'string') { rejected.push({ index: i, error: 'html must be a string' }); continue; }
+      var clashes = findSchemeClashes(it.html, it.style);
+      if (clashes.length) { rejected.push({ index: i, clashes: clashes }); continue; }
       state.alternatives.push(it.html);
       if (!state.altMeta) state.altMeta = [];
-      state.altMeta[state.alternatives.length - 1] = { label: it.label || 'variation', note: it.note || '' };
+      state.altMeta[state.alternatives.length - 1] = { label: it.label || 'variation', note: it.note || '', style: it.style || '' };
       added++;
+    }
+    if (rejected.length) {
+      notify(rejected.length + ' agent option(s) rejected — colours or fonts off the page scheme', 'warning');
     }
     if (added > 0) {
       state.currentIndex = state.alternatives.length - 1;
       persistAlternatives();
       if (state.panel) renderPreview();
     }
-    return { success: true, added: added, total: state.alternatives.length };
+    var res = { success: added > 0, added: added, total: state.alternatives.length };
+    if (rejected.length) { res.rejected = rejected; res.hint = CLASH_HINT; }
+    return res;
   }
 
   // Request new alternatives from agent. Captures a screenshot of the live
@@ -973,8 +990,9 @@
   }
 
   // Extract a compact design-token scheme from the live DOM so generated
-  // alternatives match the proxied app's look. Bounded element sample, fully
-  // guarded — any failure yields null rather than blocking design mode.
+  // alternatives match the proxied app's look, plus every distinct colour seen
+  // (the clash check's allow-list). Bounded element sample, fully guarded — any
+  // failure yields {scheme: null, colors: []} rather than blocking design mode.
   function extractScheme(element) {
     try {
       var rank = function (counts, limit) {
@@ -998,10 +1016,13 @@
       var nodes = [];
       var n = element;
       while (n && n.nodeType === 1 && nodes.length < 20) { nodes.push(n); n = n.parentElement; }
+      // The element's own subtree: its colours are on the page by definition.
+      var own = element.querySelectorAll('*');
+      for (var o = 0; o < own.length && o < 80; o++) nodes.push(own[o]);
       var all = document.querySelectorAll('*');
       var cap = Math.min(all.length, 400);
       var stride = Math.max(1, Math.floor(all.length / cap));
-      for (var i = 0; i < all.length && nodes.length < 420; i += stride) { nodes.push(all[i]); }
+      for (var i = 0; i < all.length && nodes.length < 500; i += stride) { nodes.push(all[i]); }
 
       for (var j = 0; j < nodes.length; j++) {
         var cs;
@@ -1031,6 +1052,10 @@
         cssVars: extractCSSVars()
       };
 
+      var colors = Object.keys(palette).map(parseColor);
+      Object.keys(scheme.cssVars).forEach(function (k) { colors.push(parseColor(scheme.cssVars[k])); });
+      colors = colors.filter(Boolean);
+
       // Drop empties; return null if nothing usable so the agent prompt omits
       // the scheme block entirely.
       var hasAny = false;
@@ -1040,9 +1065,9 @@
         else if (k === 'cssVars' && (!v || Object.keys(v).length === 0)) { delete scheme[k]; }
         else { hasAny = true; }
       });
-      return hasAny ? scheme : null;
+      return { scheme: hasAny ? scheme : null, colors: colors };
     } catch (e) {
-      return null;
+      return { scheme: null, colors: [] };
     }
   }
 
@@ -1072,8 +1097,247 @@
     return vars;
   }
 
+
+  // ── Colour maths ────────────────────────────────────────────────────────────
+  // parseColor reads hex, rgb()/rgba() and hsl()/hsla() (comma or space syntax)
+  // into {r,g,b,a}. Anything else — names, var(), color-mix() — yields null.
+  function parseColor(str) {
+    var s = String(str || '').trim().toLowerCase(), m;
+    if ((m = /^#([0-9a-f]{3,8})$/.exec(s))) {
+      var h = m[1];
+      if (h.length === 3 || h.length === 4) h = h.replace(/./g, '$&$&');
+      if (h.length !== 6 && h.length !== 8) return null;
+      return {
+        r: parseInt(h.slice(0, 2), 16), g: parseInt(h.slice(2, 4), 16), b: parseInt(h.slice(4, 6), 16),
+        a: h.length === 8 ? parseInt(h.slice(6, 8), 16) / 255 : 1
+      };
+    }
+    if (!(m = /^(rgba?|hsla?)\(([^()]*)\)$/.exec(s))) return null;
+    var parts = m[2].split(/[\s,\/]+/).filter(Boolean);
+    if (parts.length < 3) return null;
+    var frac = function (v, scale) { return v.slice(-1) === '%' ? parseFloat(v) / 100 * scale : parseFloat(v); };
+    var a = parts.length > 3 ? frac(parts[3], 1) : 1;
+    var c;
+    if (m[1].charAt(0) === 'r') {
+      c = { r: frac(parts[0], 255), g: frac(parts[1], 255), b: frac(parts[2], 255), a: a };
+    } else {
+      c = hslToRgb(parseFloat(parts[0]), parseFloat(parts[1]) / 100, parseFloat(parts[2]) / 100, a);
+    }
+    return (isNaN(c.r) || isNaN(c.g) || isNaN(c.b) || isNaN(c.a)) ? null : c;
+  }
+
+  function hslToRgb(h, s, l, a) {
+    h = ((h % 360) + 360) % 360 / 360;
+    var q = l < 0.5 ? l * (1 + s) : l + s - l * s, p = 2 * l - q;
+    var ch = function (t) {
+      if (t < 0) t += 1; if (t > 1) t -= 1;
+      if (t < 1 / 6) return p + (q - p) * 6 * t;
+      if (t < 1 / 2) return q;
+      if (t < 2 / 3) return p + (q - p) * (2 / 3 - t) * 6;
+      return p;
+    };
+    return { r: ch(h + 1 / 3) * 255, g: ch(h) * 255, b: ch(h - 1 / 3) * 255, a: a };
+  }
+
+  function colorDistance(x, y) {
+    var dr = x.r - y.r, dg = x.g - y.g, db = x.b - y.b;
+    return Math.sqrt(dr * dr + dg * dg + db * db);
+  }
+
+  function luminance(c) {
+    var lin = function (v) { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    return 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b);
+  }
+
+  function contrastRatio(x, y) {
+    var a = luminance(x), b = luminance(y);
+    return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+  }
+
+  function saturation(c) {
+    var max = Math.max(c.r, c.g, c.b), min = Math.min(c.r, c.g, c.b);
+    return max === 0 ? 0 : (max - min) / max;
+  }
+
+  // ── Scheme clash check ──────────────────────────────────────────────────────
+  // An alternative may only use colours the page already renders (within
+  // COLOR_TOLERANCE, so rounding and alpha variants pass) and font families the
+  // page already loads. Literals are read from style attributes, <style> blocks
+  // and SVG paint attributes; var(--…) and keywords always pass.
+  var COLOR_TOLERANCE = 24;
+  var GENERIC_FONTS = ['inherit', 'initial', 'unset', 'serif', 'sans-serif', 'monospace', 'system-ui',
+    'ui-sans-serif', 'ui-serif', 'ui-monospace', 'cursive', 'fantasy', '-apple-system'];
+  var CLASH_HINT = 'Use only the page palette, its CSS variables (var(--…)) and its font families; ' +
+    'prefer the classes the page already uses.';
+
+  function styleContexts(text) {
+    var out = [], m;
+    var attr = /\b(?:style|fill|stroke|color|bgcolor|stop-color)\s*=\s*(?:"([^"]*)"|'([^']*)')/gi;
+    while ((m = attr.exec(text))) out.push(m[1] != null ? m[1] : m[2]);
+    var block = /<style[^>]*>([\s\S]*?)<\/style>/gi;
+    while ((m = block.exec(text))) out.push(m[1]);
+    return out;
+  }
+
+  // findSchemeClashes returns a human-readable entry per off-scheme literal in
+  // the alternative's markup (plus its wrapper style). Empty when the page gave
+  // us nothing to judge against.
+  function findSchemeClashes(markup, wrapperStyle) {
+    var colors = state.pageColors || [];
+    if (!colors.length) return [];
+    var css = styleContexts(markup);
+    if (wrapperStyle) css.push(wrapperStyle);
+    css = css.join(';');
+    var clashes = [], seen = {}, m;
+    var lit = /#[0-9a-f]{3,8}\b|(?:rgba?|hsla?)\([^()]*\)/gi;
+    while ((m = lit.exec(css))) {
+      var c = parseColor(m[0]);
+      if (!c || c.a === 0 || seen[m[0]]) continue;
+      seen[m[0]] = true;
+      var near = colors.some(function (p) { return colorDistance(p, c) <= COLOR_TOLERANCE; });
+      if (!near) clashes.push('colour ' + m[0]);
+    }
+    var fams = ((state.scheme && state.scheme.fontFamilies) || []).join(',').toLowerCase();
+    if (fams) {
+      var ff = /font-family\s*:\s*([^;}"]+)/gi;
+      while ((m = ff.exec(css))) {
+        var first = m[1].split(',')[0].trim().replace(/^['"]|['"]$/g, '').toLowerCase();
+        if (!first || first.indexOf('var(') === 0 || GENERIC_FONTS.indexOf(first) !== -1) continue;
+        if (fams.indexOf(first) === -1 && !seen['f:' + first]) {
+          seen['f:' + first] = true;
+          clashes.push('font ' + first);
+        }
+      }
+    }
+    return clashes;
+  }
+
+  function rejectClash(clashes) {
+    notify('Agent option rejected — off the page scheme: ' + clashes.slice(0, 3).join(', '), 'warning');
+    return { error: 'off-scheme', clashes: clashes, hint: CLASH_HINT };
+  }
+
+  // ── Instant variants ────────────────────────────────────────────────────────
+  // buildInstantVariants restyles the element's own content with values taken
+  // only from the page's scheme, so they cannot clash and need no agent round
+  // trip. Each variant is skipped when the page lacks the token it needs.
+  // Returns [{html, style, note}].
+  function buildInstantVariants(element, scheme) {
+    if (!scheme) return [];
+    var out = [];
+    try {
+      var cs = window.getComputedStyle(element);
+      var inner = element.innerHTML;
+      var px = function (list) {
+        var seen = {}, vals = [];
+        (list || []).forEach(function (v) {
+          var n = parseFloat(v);
+          if (/px$/.test(v) && n > 0 && !seen[n]) { seen[n] = true; vals.push(n); }
+        });
+        return vals.sort(function (a, b) { return a - b; });
+      };
+      var steps = px(scheme.spacing);
+      var pad = parseFloat(cs.paddingTop) || 0;
+      var smaller = steps.filter(function (v) { return v < pad; }).pop();
+      var larger = steps.filter(function (v) { return v > pad; })[0];
+      if (smaller != null) {
+        out.push({ html: inner, style: 'padding:' + smaller + 'px', note: 'Compact — ' + smaller + 'px padding from the page spacing scale' });
+      }
+      if (larger != null) {
+        out.push({ html: inner, style: 'padding:' + larger + 'px', note: 'Spacious — ' + larger + 'px padding from the page spacing scale' });
+      }
+
+      var radius = (scheme.radius || []).filter(function (r) { return r !== cs.borderTopLeftRadius; })[0];
+      var palette = (scheme.palette || []).map(function (v) { return { css: v, c: parseColor(v) }; })
+        .filter(function (p) { return p.c && p.c.a >= 0.9; });
+      var accent = palette.filter(function (p) { return saturation(p.c) >= 0.3; })[0];
+      var bg = parseColor(cs.backgroundColor);
+      if (accent && !(bg && colorDistance(bg, accent.c) <= COLOR_TOLERANCE)) {
+        var ink = palette.slice().sort(function (a, b) {
+          return contrastRatio(b.c, accent.c) - contrastRatio(a.c, accent.c);
+        })[0];
+        if (ink && contrastRatio(ink.c, accent.c) >= 4.5) {
+          out.push({
+            html: inner,
+            style: 'background-color:' + accent.css + ';color:' + ink.css + (radius ? ';border-radius:' + radius : ''),
+            note: 'Emphasis — page accent ' + accent.css + ' with its highest-contrast page colour'
+          });
+        }
+      }
+
+      var shadow = (scheme.shadows || []).filter(function (v) { return v !== cs.boxShadow; })[0];
+      if (shadow) {
+        out.push({
+          html: inner,
+          style: 'box-shadow:' + shadow + (radius ? ';border-radius:' + radius : ''),
+          note: 'Elevated — the page’s own shadow' + (radius ? ' and ' + radius + ' radius' : '')
+        });
+      }
+    } catch (e) { /* computed style unavailable — no instant options */ }
+    return out;
+  }
+
+  // ── In-place swap ───────────────────────────────────────────────────────────
+  // The alternative goes into the page where the element is: a shallow clone of
+  // the target (same tag, classes and attributes, so the page's own selectors
+  // style it) is inserted beside it and the target is hidden by attribute.
+  // The framework-owned node is never rewritten, so React/HMR reconciliation
+  // cannot wipe it; if a re-render drops the clone, the observer puts it back.
+  var HIDDEN_ATTR = 'data-devtool-design-hidden';
+  var SWAP_ATTR = 'data-devtool-design-swap';
+
+  function ensureHideRule() {
+    if (document.getElementById('__devtool-design-hide')) return;
+    var st = document.createElement('style');
+    st.id = '__devtool-design-hide';
+    st.textContent = '[' + HIDDEN_ATTR + ']{display:none!important}';
+    (document.head || document.documentElement).appendChild(st);
+  }
+
+  function swapInPlace(index) {
+    removeSwap();
+    if (index === 0) return; // the original is the page as it is
+    var target = resolveTarget();
+    if (!target || !target.parentNode) return;
+    ensureHideRule();
+    var clone = target.cloneNode(false);
+    clone.removeAttribute('id');
+    var os = window.__devtool_override_store;
+    if (os && os.OID_ATTR) clone.removeAttribute(os.OID_ATTR);
+    clone.setAttribute(SWAP_ATTR, String(index));
+    var meta = state.altMeta && state.altMeta[index];
+    if (meta && meta.style) clone.setAttribute('style', (clone.getAttribute('style') || '') + ';' + meta.style);
+    clone.innerHTML = state.alternatives[index] || '';
+    var parent = target.parentNode;
+    parent.insertBefore(clone, target.nextSibling);
+    target.setAttribute(HIDDEN_ATTR, '');
+    var observer = new MutationObserver(function () {
+      if (clone.isConnected && target.isConnected) return;
+      if (state.swap && state.swap.clone === clone && state.previewMode === 'inplace') {
+        swapInPlace(state.currentIndex);
+      }
+    });
+    observer.observe(parent, { childList: true });
+    state.swap = { target: target, clone: clone, observer: observer };
+  }
+
+  function removeSwap() {
+    var sw = state.swap;
+    if (!sw) return;
+    state.swap = null;
+    sw.observer.disconnect();
+    if (sw.clone.parentNode) sw.clone.parentNode.removeChild(sw.clone);
+    sw.target.removeAttribute(HIDDEN_ATTR);
+  }
+
+  // visibleTarget is what the user currently sees in the element's slot: the
+  // swapped-in alternative while one is shown, else the element itself.
+  function visibleTarget() {
+    return (state.swap && state.swap.clone.isConnected) ? state.swap.clone : resolveTarget();
+  }
+
   // Send design state to agent
-  function sendDesignState() {
+  function sendDesignState(instant) {
     var core = getCore();
     if (!core || !core.send) {
       console.error('[Design] Core not available');
@@ -1091,7 +1355,7 @@
       scheme: state.scheme || undefined,
       slot: state.slot || undefined,
       exemplars: state.exemplars || undefined,
-      pageThumb: state.pageThumb || undefined,
+      instantVariants: (instant || []).map(function (v) { return v.note; }),
       url: window.location.href
     });
   }
@@ -1167,7 +1431,7 @@
     state.oid = null;
     state.slot = null;
     state.exemplars = null;
-    state.pageThumb = null;
+    state.pageColors = null;
   }
 
   // Export public API
