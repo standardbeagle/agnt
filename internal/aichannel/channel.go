@@ -449,8 +449,9 @@ func stripANSI(s string) string {
 // A sequence with no terminator is skipped to the end of s, so its tail is
 // never read as text. An ESC inside a sequence aborts it (as a terminal
 // does) and the returned index points at that ESC. Shared with the overlay's
-// line cleaner so both parse escapes the same way.
-func SkipEscape(s string, i int) int {
+// line cleaner so both parse escapes the same way. It takes a string or a
+// byte slice, so a caller holding bytes need not copy them to a string.
+func SkipEscape[T string | []byte](s T, i int) int {
 	i++ // the ESC
 	if i >= len(s) {
 		return i

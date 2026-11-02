@@ -8,6 +8,7 @@ import (
 	"sync/atomic"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/standardbeagle/vt10x"
 
@@ -67,8 +68,11 @@ type ActivityMonitor struct {
 	// wrapped screen grid. currentLine buffers the in-flight line; the CR/LF
 	// bookkeeping keeps spinner redraws from being emitted as committed lines.
 	currentLine bytes.Buffer // Current line being built
-	pendingCR   bool         // True after a \r whose role (CRLF terminator vs in-place redraw) is not yet known
-	isAnimating bool         // True if we've seen \r without \n (line is being updated in place)
+	// cleanScratch is reused by cleanText for each completed line; guarded
+	// by previewMu like currentLine.
+	cleanScratch []byte
+	pendingCR    bool // True after a \r whose role (CRLF terminator vs in-place redraw) is not yet known
+	isAnimating  bool // True if we've seen \r without \n (line is being updated in place)
 	// lineOverflowed marks a logical line that passed maxTappedLineBytes. The
 	// rest of that line is dropped rather than accumulated, because a buffer
 	// reset would deliver its tail to the tap as a line of its own.
@@ -258,31 +262,17 @@ func (am *ActivityMonitor) captureForPreview(p []byte) {
 	var completedLines []string
 
 	am.previewMu.Lock()
-	for _, b := range p {
-		switch b {
-		case '\r':
-			// A carriage return is ambiguous until the next byte arrives: it
-			// either terminates a CRLF line (ONLCR) or rewinds the cursor for
-			// an in-place redraw (a spinner). Defer the decision; the flag
-			// survives across Write calls because the PTY may split a chunk
-			// between the CR and the LF.
-			am.pendingCR = true
-
-		case '\n':
-			am.pendingCR = false
-			am.lineOverflowed = false
-			if am.currentLine.Len() > 0 || am.isAnimating {
-				cleanLine := am.cleanLine(am.currentLine.String())
-				if cleanLine != "" && am.onOutputLine != nil {
-					completedLines = append(completedLines, cleanLine)
-				}
-			}
-			am.currentLine.Reset()
-			am.isAnimating = false
-
-		default:
-			// Content after a CR and no LF: the CR was a redraw, so the pending
-			// line is overwritten rather than committed to the tap.
+	// Walk the chunk a run at a time: everything between CR/LF bytes is
+	// line content and is appended in one write, not byte by byte.
+	for rest := p; len(rest) > 0; {
+		end := bytes.IndexAny(rest, "\r\n")
+		run := rest
+		if end >= 0 {
+			run = rest[:end]
+		}
+		if len(run) > 0 {
+			// Content after a CR and no LF: the CR was a redraw, so the
+			// pending line is overwritten rather than committed to the tap.
 			if am.pendingCR {
 				am.pendingCR = false
 				am.currentLine.Reset()
@@ -295,14 +285,40 @@ func (am *ActivityMonitor) captureForPreview(p []byte) {
 			// line, where an error names itself, would never be matched, and
 			// an arbitrary middle would be matched on its own and raised as
 			// an alert the child never printed as a line.
-			if am.lineOverflowed {
-				continue
-			}
-			am.currentLine.WriteByte(b)
-			if am.currentLine.Len() > maxTappedLineBytes {
-				am.lineOverflowed = true
+			if !am.lineOverflowed {
+				room := maxTappedLineBytes + 1 - am.currentLine.Len()
+				if len(run) >= room {
+					run = run[:room]
+					am.lineOverflowed = true
+				}
+				am.currentLine.Write(run)
 			}
 		}
+		if end < 0 {
+			break
+		}
+		switch rest[end] {
+		case '\r':
+			// A carriage return is ambiguous until the next byte arrives: it
+			// either terminates a CRLF line (ONLCR) or rewinds the cursor for
+			// an in-place redraw (a spinner). Defer the decision; the flag
+			// survives across Write calls because the PTY may split a chunk
+			// between the CR and the LF.
+			am.pendingCR = true
+		case '\n':
+			am.pendingCR = false
+			am.lineOverflowed = false
+			if am.currentLine.Len() > 0 || am.isAnimating {
+				var cleaned string
+				cleaned, am.cleanScratch = cleanText(am.cleanScratch, am.currentLine.Bytes())
+				if cleaned != "" && am.onOutputLine != nil {
+					completedLines = append(completedLines, cleaned)
+				}
+			}
+			am.currentLine.Reset()
+			am.isAnimating = false
+		}
+		rest = rest[end+1:]
 	}
 	am.previewMu.Unlock()
 
@@ -332,35 +348,54 @@ func isNoiseLine(s string) bool {
 
 // cleanLine removes ANSI escape codes and cleans up a line for display.
 func (am *ActivityMonitor) cleanLine(line string) string {
+	cleaned, _ := cleanText(nil, line)
+	return cleaned
+}
+
+// cleanText is cleanLine over a string or bytes, building into scratch (which
+// it returns for reuse) so a line costs one allocation: its final string.
+func cleanText[T string | []byte](scratch []byte, line T) (string, []byte) {
 	// Remove trailing newline/carriage return
-	line = strings.TrimRight(line, "\r\n")
+	n := len(line)
+	for n > 0 && (line[n-1] == '\r' || line[n-1] == '\n') {
+		n--
+	}
 
 	// Remove escape sequences whole (an OSC title or hyperlink target is
 	// skipped up to its terminator, a CSI up to its final byte), then the
 	// remaining control characters.
-	result := make([]byte, 0, len(line))
-	for i := 0; i < len(line); {
+	b := scratch[:0]
+	for i := 0; i < n; {
 		if line[i] == '\x1b' {
-			i = aichannel.SkipEscape(line, i)
+			i = aichannel.SkipEscape(line[:n], i)
 			continue
 		}
 		if line[i] >= 32 || line[i] == '\t' {
-			result = append(result, line[i])
+			b = append(b, line[i])
 		}
 		i++
 	}
-
-	cleaned := strings.TrimSpace(string(result))
+	scratch = b
 
 	// Strip enclosing box-drawing borders (`│ text │`) so boxed CLI output
 	// reads as plain text in the preview.
-	cleaned = strings.TrimSpace(strings.Trim(cleaned, "│┃║"))
+	b = bytes.TrimSpace(bytes.Trim(bytes.TrimSpace(b), "│┃║"))
+	if len(b) == 0 {
+		return "", scratch
+	}
 
 	// Limit line length to 120 (117 + "...") rune-safe, so a multibyte glyph
 	// is never split at the cut.
-	cleaned = TruncateRunes(cleaned, 117, "...")
-
-	return cleaned
+	if utf8.RuneCount(b) > 117 {
+		cut, count := 0, 0
+		for count < 117 {
+			_, size := utf8.DecodeRune(b[cut:])
+			cut += size
+			count++
+		}
+		b = append(b[:cut], "..."...)
+	}
+	return string(b), scratch
 }
 
 // screenTail reads the virtual screen and returns the last previewMaxLines rows
