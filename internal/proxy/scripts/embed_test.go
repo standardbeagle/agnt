@@ -56,6 +56,7 @@ func TestModuleDependencyOrder(t *testing.T) {
 		"indicator-styles": indicatorStylesJS, "indicator-data": indicatorDataJS,
 		"indicator-tabs": indicatorTabsJS, "indicator-bridge": indicatorBridgeJS,
 		"indicator-layout":  indicatorLayoutJS,
+		"indicator-thread":  indicatorThreadJS,
 		"walkthrough-proxy": walkthroughProxyJS,
 		"snapshot-helper":   snapshotHelperJS, "diagnostics": diagnosticsJS,
 		"session": sessionJS, "store": storeJS,

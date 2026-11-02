@@ -59,6 +59,7 @@
   var HistoryTabComponent = I.HistoryTabComponent;
   var ChaosTabComponent = I.ChaosTabComponent;
   var panelLayout = I.panelLayout;
+  var thread = I.thread;
 
   // Initialize
   function init() {
@@ -893,7 +894,7 @@
       // Drop target shown while a dragged window is over a side edge.
       '.__devtool-snap-hint { position: fixed; top: 0; bottom: 0; display: none; pointer-events: none; z-index: ' + IND_Z.panel + ';',
       '  background: ' + tint + '; border: 2px dashed ' + c.primary + '; box-sizing: border-box; }'
-    ].join('\n');
+    ].concat(thread.cssRules()).join('\n');
     styleTarget().appendChild(style);
   }
 
@@ -1416,6 +1417,7 @@
     // This automatically updates when store.attachments changes
     van.add(card, AttachmentAreaComponent());
 
+    thread.mount(compose);
     compose.appendChild(card);
     container.appendChild(compose);
 
@@ -2834,9 +2836,11 @@
     // Send via panel_message. core.send returns false when the socket is not
     // open (e.g. reconnecting); the message did not go out, so keep the text,
     // the attachments and the panel for a retry instead of clearing them.
+    var clientId = thread.addUserMessage(userMessage || '(attachments only)', state.attachments.length);
     var sent = core.send('panel_message', {
       timestamp: Date.now(),
       payload: {
+        client_id: clientId,
         message: fullMessage,
         attachments: state.attachments.map(function(a) {
           // For screenshots, omit binary area data — already sent via screenshot_capture event.
@@ -2865,15 +2869,14 @@
     });
 
     if (!sent) {
-      showMicroToast('\u2718 Not sent \u2014 not connected, try again', TOKENS.colors.error);
+      thread.handleAck({ client_id: clientId, status: 'failed', error: 'not connected to the proxy, try again' });
       return;
     }
 
-    // Clear
+    // Clear the draft; the panel stays open so the reply lands in view.
     if (textarea) textarea.value = '';
     store.message.val = '';
     clearAttachments();
-    togglePanel(false);
   }
 
   // Capture screenshot area using html2canvas.
@@ -3697,6 +3700,7 @@
       var payload = message.payload || message;
       var active = payload.active === true;
       setActivityState(active);
+      thread.setAgentActive(active);
       if (active) {
         showMicroToast('\u26a1 Working...', TOKENS.colors.active);
         logHistoryEvent('system', 'Agent active', '');
@@ -3704,6 +3708,13 @@
         showMicroToast('\u2713 Idle', TOKENS.colors.success);
         logHistoryEvent('system', 'Agent idle', '');
       }
+    } else if (message.type === 'panel_ack') {
+      thread.handleAck(message);
+    } else if (message.type === 'toast') {
+      // Agent replies (channel_reply, proxy toast) are toasts; toast.js shows
+      // the notification, the thread keeps it.
+      thread.addAgentMessage(message.payload || message);
+      logHistoryEvent('message', 'Agent replied', ((message.payload || message).message || '').substring(0, 80));
     } else if (message.type === 'output_preview') {
       var payload = message.payload || message;
       var previewLines = Array.isArray(payload.lines) ? payload.lines : [];
@@ -3858,6 +3869,8 @@
     // Panel position: 'left' | 'right' (docked drawer) | 'float' (detached).
     setPanelLayout: panelLayout.setMode,
     panelLayout: panelLayout.current,
+    // Message-tab conversation with the agent, oldest first.
+    conversation: thread.entries,
     setMessage: actions.setMessage,
     setActivityState: setActivityState,
     addAttachment: addAttachment,

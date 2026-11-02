@@ -4,8 +4,10 @@
 // indicator.js panel send: a message the socket did not take stays put.
 //
 // core.send returns false while the socket is not open (reconnecting). The
-// panel must then keep the text, the attachments and itself open, and say the
-// message was not sent — not clear everything as if it went out.
+// panel must then keep the text and the attachments, and the conversation
+// thread must mark the message not sent — not clear everything as if it went
+// out. A message that went out clears the draft and leaves the panel open so
+// the reply lands in view (indicator-thread.test.js covers the thread).
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { loadIndicator } from './load-bundle.js';
@@ -36,10 +38,12 @@ describe('panel send', { timeout: 30_000 }, () => {
     expect(textarea.value).toBe('please fix the header');
     expect(ind.state.attachments).toHaveLength(1);
     expect(ind.state.isExpanded).toBe(true);
-    expect(ind.state.microToast.textContent).toMatch(/not sent/i);
+    const row = root.querySelector('.__devtool-thread-msg');
+    expect(row.getAttribute('data-status')).toBe('failed');
+    expect(row.textContent).toMatch(/not delivered.*not connected/i);
   });
 
-  it('clears and closes after a send the socket accepted', async () => {
+  it('clears the draft and stays open after a send the socket accepted', async () => {
     rt = await loadIndicator();
     const { ind, root } = rt;
     rt.sockets[0].open();
@@ -49,6 +53,6 @@ describe('panel send', { timeout: 30_000 }, () => {
     expect(rt.sockets[0].sent.filter((m) => m.type === 'panel_message')).toHaveLength(1);
     expect(textarea.value).toBe('');
     expect(ind.state.attachments).toHaveLength(0);
-    expect(ind.state.isExpanded).toBe(false);
+    expect(ind.state.isExpanded).toBe(true);
   });
 });

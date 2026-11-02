@@ -223,6 +223,7 @@
       togglePanel: indicator.togglePanel,
       setPanelLayout: indicator.setPanelLayout,
       panelLayout: indicator.panelLayout,
+      conversation: indicator.conversation,
       destroy: indicator.destroy
     } : {
       show: indicatorNotLoaded,
@@ -231,6 +232,7 @@
       togglePanel: indicatorNotLoaded,
       setPanelLayout: indicatorNotLoaded,
       panelLayout: indicatorNotLoaded,
+      conversation: indicatorNotLoaded,
       destroy: indicatorNotLoaded
     },
 

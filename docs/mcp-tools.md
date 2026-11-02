@@ -823,6 +823,14 @@ Returns shell command string for streaming daemon events via `agnt monitor` CLI.
   when less than 320px of app would remain), docks right, or floats detached. Dragging the panel
   header detaches it; dropping it on a side edge re-docks; the inner edge (docked) or corner
   (float) resizes. Persisted per origin in `localStorage['__devtool_panel_layout']`.
+- `indicator.conversation()` — the Message tab's conversation with the agent, oldest first:
+  `{id, role:'user'|'agent', text, ts, status?, detail?, title?, severity?, attachments?, secretName?}`.
+  A sent message keeps its delivery status from the proxy's `panel_ack` frame: `delivered` (the
+  `agnt run` session accepted it), `logged` (no session attached; only the proxy log has it, where
+  a channel-mode or watching agent reads it), `failed` (refused, disconnected, or the session did
+  not accept it), or `unconfirmed` (no ack within 10s). Agent replies (`channel_reply`, proxy
+  toasts) are added as they arrive; the panel stays open after Send. Kept per tab in
+  `sessionStorage['__devtool_thread']`, newest 50 entries.
 - `sketch.open/close/toggle/save/toJSON/fromJSON()`
 - `design.start/stop/selectElement/next/previous/addAlternative/chat()`
 - `responsive.open/close/toggle/setWidth/getState()` — responsive mode (4th indicator mode)

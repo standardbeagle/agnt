@@ -75,6 +75,8 @@ When `reply-tool` enabled (default), `channel_reply` MCP tool registered for sen
 
 Returns `{ "delivered": N, "message": "..." }` with count of proxies that received toast.
 
+The reply shows as a toast and is kept in the developer panel's Message-tab conversation next to the message it answers, so the developer can read it after the toast fades and reply in place.
+
 ```json
 channel_reply {content: "Build succeeded, opening preview..."}
 channel_reply {content: "Which layout?", title: "Choose", severity: "warning", proxy_id: "dev"}
