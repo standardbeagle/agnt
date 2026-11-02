@@ -59,6 +59,22 @@
     }
 
     // Generate unique CSS selector for element
+    // nthOfTypeIndex returns the element's 1-based position among same-tag
+    // siblings, or 0 when it has none (no :nth-of-type needed). Counts the
+    // preceding siblings, and only for the first of its tag looks ahead, to the
+    // first match.
+    function nthOfTypeIndex(element) {
+      var name = element.nodeName, index = 1, sib = element.previousElementSibling;
+      for (; sib; sib = sib.previousElementSibling) {
+        if (sib.nodeName === name) index++;
+      }
+      if (index > 1) return index;
+      for (sib = element.nextElementSibling; sib; sib = sib.nextElementSibling) {
+        if (sib.nodeName === name) return 1;
+      }
+      return 0;
+    }
+
     function generateSelector(element) {
       if (!element || !(element instanceof HTMLElement)) return '';
 
@@ -91,36 +107,12 @@
               selector = 'unknown';
             }
 
-            // Add nth-of-type if needed
+            // Add nth-of-type if a same-tag sibling exists. Walks siblings
+            // in place: copying every sibling into an array per ancestor cost
+            // ~1 ms per call on long lists, on every hover frame.
             try {
-              if (current.parentNode && current.parentNode.children) {
-                var siblings = [];
-
-                // Safe children iteration
-                try {
-                  for (var i = 0; i < current.parentNode.children.length; i++) {
-                    var child = current.parentNode.children[i];
-                    if (child && child.nodeName === current.nodeName) {
-                      siblings.push(child);
-                    }
-                  }
-                } catch (e) {
-                  // Sibling iteration failed
-                }
-
-                if (siblings.length > 1) {
-                  var index = -1;
-                  for (var j = 0; j < siblings.length; j++) {
-                    if (siblings[j] === current) {
-                      index = j + 1;
-                      break;
-                    }
-                  }
-                  if (index > 0) {
-                    selector += ':nth-of-type(' + index + ')';
-                  }
-                }
-              }
+              var nth = nthOfTypeIndex(current);
+              if (nth > 0) selector += ':nth-of-type(' + nth + ')';
             } catch (e) {
               // nth-of-type calculation failed - use selector without it
             }
