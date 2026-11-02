@@ -785,6 +785,7 @@ func (o *Overlay) hideMenu() {
 	}
 
 	o.repaintedFromModel.Store(false)
+	childMustRedraw := false
 	if o.usingAltScreen {
 		// Exit alt screen — terminal restores the previous main screen content.
 		o.renderer.ExitAltScreen()
@@ -801,12 +802,20 @@ func (o *Overlay) hideMenu() {
 		// No model available: fall back to clearing and letting the child's
 		// own repaint fill the screen.
 		o.renderer.ClearVisible()
+		childMustRedraw = true
 	}
 
-	// Start a transition spinner on the status bar before unfreezing.
-	// This gives visual feedback while the child process redraws.
+	// The screen is already back when the terminal restored it or the model
+	// repainted it, so the status bar is drawn at once. Only a cleared screen
+	// waiting on the child's repaint shows the transition spinner; started
+	// on every close, it read "loading..." for up to a status poll (2s)
+	// over a screen that had nothing left to load.
 	if o.showBar.Load() {
-		o.startTransitionSpinner()
+		if childMustRedraw {
+			o.startTransitionSpinner()
+		} else {
+			o.draw()
+		}
 	}
 
 	// Unfreeze PTY output so it resumes flowing.

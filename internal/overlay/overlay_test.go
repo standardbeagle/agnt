@@ -3,6 +3,7 @@ package overlay
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -474,12 +475,15 @@ func TestTransitionSpinnerStartsOnHideMenu(t *testing.T) {
 	o := New(nil, 80, 24, cfg)
 	gate := NewOutputGate(&buf)
 	o.SetGate(gate)
+	// A fullscreen child with no screen model: the close clears the screen
+	// and waits on the child's repaint, the one case the spinner covers.
+	o.SetAltScreenChecker(func() bool { return true })
 
 	// Open the overlay to enter menu state
 	o.showPanelDirect()
 	assert.Equal(t, StateMenu, o.State())
 
-	// Close the overlay (triggers transition spinner)
+	// Close the overlay (the child must repaint: spinner)
 	o.hideMenu()
 	assert.Equal(t, StateIndicator, o.State())
 
@@ -499,6 +503,9 @@ func TestTransitionSpinnerStopsOnUpdateStatus(t *testing.T) {
 	o := New(nil, 80, 24, cfg)
 	gate := NewOutputGate(&buf)
 	o.SetGate(gate)
+	// A fullscreen child with no screen model: the close clears the screen
+	// and waits on the child's repaint, the one case the spinner covers.
+	o.SetAltScreenChecker(func() bool { return true })
 
 	// Open and close to start the spinner
 	o.showPanelDirect()
@@ -523,6 +530,9 @@ func TestTransitionSpinnerStopsOnShowMenu(t *testing.T) {
 	o := New(nil, 80, 24, cfg)
 	gate := NewOutputGate(&buf)
 	o.SetGate(gate)
+	// A fullscreen child with no screen model: the close clears the screen
+	// and waits on the child's repaint, the one case the spinner covers.
+	o.SetAltScreenChecker(func() bool { return true })
 
 	// Start spinner
 	o.showPanelDirect()
@@ -595,6 +605,43 @@ func TestBuildPanelItems_LabelTruncationKeepsValidUTF8(t *testing.T) {
 // Closing the panel over a fullscreen child repaints from the model and says
 // so, so the run pipeline skips asking the child to redraw (the winsize
 // jiggle). On the main screen, or with no model, it says it did not.
+// Closing the panel shows the loading spinner only when the screen was cleared
+// and waits on the child's repaint. A restored main screen or a model repaint
+// is already complete, so the status bar is drawn at once.
+func TestHideMenuSpinsOnlyWhileChildMustRedraw(t *testing.T) {
+	cases := []struct {
+		name        string
+		childAlt    bool
+		frame       []byte
+		wantSpinner bool
+	}{
+		{"fullscreen child with model", true, []byte("MODEL-FRAME"), false},
+		{"fullscreen child, empty model", true, nil, true},
+		{"main-screen child", false, nil, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			o := New(nil, 80, 24, DefaultConfig())
+			o.SetGate(NewOutputGate(io.Discard))
+			alt := tc.childAlt
+			o.SetAltScreenChecker(func() bool { return alt })
+			frame := tc.frame
+			o.SetChildScreenSource(func(int) []byte { return frame })
+
+			o.mu.Lock()
+			o.showPanelDirect()
+			o.hideMenu()
+			spinning := o.transitionStop != nil
+			o.stopTransitionSpinnerLocked()
+			o.mu.Unlock()
+
+			assert.Equal(t, tc.wantSpinner, spinning)
+			assert.Equal(t, StateIndicator, o.State())
+			assert.False(t, o.gate.IsFrozen(), "close must unfreeze child output")
+		})
+	}
+}
+
 func TestHideMenuReportsModelRepaint(t *testing.T) {
 	cases := []struct {
 		name       string
