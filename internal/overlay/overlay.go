@@ -321,6 +321,10 @@ type Overlay struct {
 	// by the run pipeline from the virtual screen the output monitor keeps.
 	childScreen func(maxRows int) []byte
 
+	// repaintedFromModel says the last panel close restored the child's
+	// screen from childScreen, so the child need not be asked to redraw.
+	repaintedFromModel atomic.Bool
+
 	// Whether alt screen is currently used for menu/viewer (per open/close cycle)
 	usingAltScreen bool
 
@@ -780,6 +784,7 @@ func (o *Overlay) hideMenu() {
 		o.state.Store(int32(StateHidden))
 	}
 
+	o.repaintedFromModel.Store(false)
 	if o.usingAltScreen {
 		// Exit alt screen — terminal restores the previous main screen content.
 		o.renderer.ExitAltScreen()
@@ -791,6 +796,7 @@ func (o *Overlay) hideMenu() {
 		// screen until the next keystroke.
 		o.renderer.ClearVisible()
 		o.renderer.WriteFrame(frame)
+		o.repaintedFromModel.Store(true)
 	} else {
 		// No model available: fall back to clearing and letting the child's
 		// own repaint fill the screen.
@@ -809,6 +815,13 @@ func (o *Overlay) hideMenu() {
 		o.gate.Unfreeze()
 	}
 }
+
+// RepaintedFromModel reports whether the last panel close restored the
+// child's screen from the virtual-screen model. The gate-unfreeze callback
+// reads it: a model repaint is complete, so asking the child to redraw as
+// well (the winsize jiggle) only sleeps under the overlay lock and paints the
+// same screen a second time.
+func (o *Overlay) RepaintedFromModel() bool { return o.repaintedFromModel.Load() }
 
 // renderChildScreenLocked renders the child's screen, or nil when no source is
 // registered. Must be called with mu held.

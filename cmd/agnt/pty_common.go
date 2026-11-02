@@ -2142,9 +2142,14 @@ func setupTerminalOverlay(ctx context.Context, handle *ptyHandle, rt *pipelineRu
 		// renderers ignore a same-size SIGWINCH (PreRedraw), so force the
 		// repaint with a winsize jiggle. On the main screen, ExitAltScreen
 		// already restored the child's content, so a plain SIGWINCH suffices.
-		if rt.outputFilter != nil && rt.outputFilter.InAltScreen() && handle.ForceRepaint != nil {
+		// When the overlay repainted from its model the screen is already
+		// right: the child is not asked at all.
+		inAlt := rt.outputFilter != nil && rt.outputFilter.InAltScreen()
+		switch {
+		case inAlt && rt.termOverlay != nil && rt.termOverlay.RepaintedFromModel():
+		case inAlt && handle.ForceRepaint != nil:
 			handle.ForceRepaint()
-		} else if handle.PreRedraw != nil {
+		case handle.PreRedraw != nil:
 			handle.PreRedraw()
 		}
 		if rt.outputFilter != nil {

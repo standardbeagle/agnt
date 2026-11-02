@@ -591,3 +591,44 @@ func TestBuildPanelItems_LabelTruncationKeepsValidUTF8(t *testing.T) {
 		t.Fatalf("label %q is not valid UTF-8", label)
 	}
 }
+
+// Closing the panel over a fullscreen child repaints from the model and says
+// so, so the run pipeline skips asking the child to redraw (the winsize
+// jiggle). On the main screen, or with no model, it says it did not.
+func TestHideMenuReportsModelRepaint(t *testing.T) {
+	cases := []struct {
+		name       string
+		childAlt   bool
+		frame      []byte
+		wantModel  bool
+		wantInDraw string
+	}{
+		{"fullscreen child with model", true, []byte("MODEL-FRAME"), true, "MODEL-FRAME"},
+		{"fullscreen child, empty model", true, nil, false, ""},
+		{"main-screen child", false, []byte("MODEL-FRAME"), false, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			cfg := DefaultConfig()
+			cfg.ShowIndicator = false // no transition spinner writing into buf
+			o := New(nil, 80, 24, cfg)
+			o.SetGate(NewOutputGate(&buf))
+			alt := tc.childAlt
+			o.SetAltScreenChecker(func() bool { return alt })
+			frame := tc.frame
+			o.SetChildScreenSource(func(int) []byte { return frame })
+
+			o.showPanelDirect()
+			buf.Reset()
+			o.hideMenu()
+
+			assert.Equal(t, tc.wantModel, o.RepaintedFromModel())
+			if tc.wantInDraw != "" {
+				assert.Contains(t, buf.String(), tc.wantInDraw)
+			} else {
+				assert.NotContains(t, buf.String(), "MODEL-FRAME")
+			}
+		})
+	}
+}
