@@ -22,7 +22,7 @@ import (
 // pollablePTY opens a PTY pair whose master the Go runtime polls, as
 // startPollablePTY in cmd/agnt does for the real agent. Only a polled file
 // honours write deadlines, which is how the stuck-deadline bug got live.
-func pollablePTY(t *testing.T) (master, slave *os.File) {
+func pollablePTY(t testing.TB) (master, slave *os.File) {
 	t.Helper()
 	m, s, err := pty.Open()
 	require.NoError(t, err)
