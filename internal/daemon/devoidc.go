@@ -11,24 +11,18 @@ import (
 	"github.com/standardbeagle/agnt/internal/scope"
 )
 
-// applyDevOIDC installs the project's dev OIDC issuer on a new proxy. It is
-// called from the proxy-creation chokepoint (wireProxyLogger), so every
-// creation path gets it.
-func (d *Daemon) applyDevOIDC(server *proxy.ProxyServer) {
-	if server == nil || server.Path == "" {
-		return
-	}
-	cfg, err := config.LoadAgntConfig(server.Path)
-	if err != nil {
-		// applyDevOIDC is an independent config reload run on every proxy
-		// creation (hub_helpers.go wireProxyLogger), not only the autostart
-		// path — a parse error here would otherwise silently drop dev-oidc
-		// with no signal tied to this proxy at all.
+// applyDevOIDC installs the project's dev OIDC issuer on a new proxy from
+// the config applyProjectProxySettings loaded (loadErr is that load's error).
+func (d *Daemon) applyDevOIDC(server *proxy.ProxyServer, cfg *config.AgntConfig, loadErr error) {
+	if loadErr != nil {
+		// This load runs on every proxy creation, not only the autostart
+		// path, so a parse error here would otherwise silently drop dev-oidc
+		// (and auth-breakout) with no signal tied to this proxy at all.
 		server.SetDevOIDC(nil)
 		server.Logger().LogDiagnostic(proxy.ProxyDiagnostic{
 			Timestamp: time.Now(), Level: proxy.DiagnosticWarning, Category: "dev-oidc",
 			Event:   "dev_oidc_config_load_failed",
-			Message: fmt.Sprintf("could not load .agnt.kdl for %s, dev-oidc not configured: %v", server.Path, err),
+			Message: fmt.Sprintf("could not load .agnt.kdl for %s, dev-oidc and auth-breakout not configured: %v", server.Path, loadErr),
 			Data:    map[string]any{"proxy_id": server.ID},
 		})
 		return

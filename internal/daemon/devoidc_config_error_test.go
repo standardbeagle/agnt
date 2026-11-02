@@ -11,7 +11,7 @@ import (
 )
 
 // TestApplyDevOIDC_ConfigLoadFailureIsVisible pins that a malformed
-// .agnt.kdl reaching applyDevOIDC (the dev-oidc install chokepoint every
+// .agnt.kdl reaching applyProjectProxySettings (the install chokepoint every
 // proxy-creation path funnels through, hub_helpers.go's wireProxyLogger)
 // produces a visible diagnostic on the proxy's own log, not just
 // server.SetDevOIDC(nil). Before this fix the failure was swallowed with a
@@ -35,7 +35,7 @@ func TestApplyDevOIDC_ConfigLoadFailureIsVisible(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { _ = d.proxym.Stop(context.Background(), "devoidc-broken-config") })
 
-	d.applyDevOIDC(server)
+	d.applyProjectProxySettings(server)
 
 	entries := server.Logger().Query(proxy.LogFilter{Types: []proxy.LogEntryType{proxy.LogTypeDiagnostic}})
 	found := false

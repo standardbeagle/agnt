@@ -411,8 +411,7 @@ func (d *Daemon) wireProxyLogger(server *proxy.ProxyServer) {
 	// outside the per-proxy block (currently: auth-breakout, dev-oidc,
 	// secret sink), and the project-bound backend of the browser
 	// session/store API.
-	d.applyAuthBreakout(server)
-	d.applyDevOIDC(server)
+	d.applyProjectProxySettings(server)
 	d.wireSecretSink(server)
 	d.wireSessionClient(server)
 	if d.eventHub == nil {
@@ -510,16 +509,24 @@ func (d *Daemon) stampIncidentOwner(ev *incident.IncidentEvent, owners *sync.Map
 	return true
 }
 
-// applyAuthBreakout installs the project's auth-breakout rules (top-level
-// .agnt.kdl block) on a freshly created proxy. A load/parse failure is
-// non-fatal here — the autostart path already surfaces config parse errors
-// loudly — so the proxy just runs without breakout.
-func (d *Daemon) applyAuthBreakout(server *proxy.ProxyServer) {
+// applyProjectProxySettings loads the project's .agnt.kdl once and installs
+// its top-level proxy settings (auth-breakout, dev-oidc) on a new proxy. A
+// load failure is reported on the proxy's log by applyDevOIDC.
+func (d *Daemon) applyProjectProxySettings(server *proxy.ProxyServer) {
 	if server == nil || server.Path == "" {
 		return
 	}
 	cfg, err := config.LoadAgntConfig(server.Path)
-	if err != nil || cfg == nil {
+	d.applyDevOIDC(server, cfg, err)
+	if err == nil {
+		d.applyAuthBreakout(server, cfg)
+	}
+}
+
+// applyAuthBreakout installs the project's auth-breakout rules (top-level
+// .agnt.kdl block) on a freshly created proxy.
+func (d *Daemon) applyAuthBreakout(server *proxy.ProxyServer, cfg *config.AgntConfig) {
+	if cfg == nil {
 		return
 	}
 	ab := cfg.AuthBreakout
