@@ -156,10 +156,17 @@ type TTYRecorder struct {
 	out    ttyRing
 }
 
+// ttyRing drops its oldest events by advancing start and compacts only when
+// the dropped prefix outgrows the live part, so each event is copied O(1)
+// times. Shifting the slice on every drop copied all ~65k live one-byte
+// events per keystroke once the budget filled.
 type ttyRing struct {
-	events []TTYEvent
+	events []TTYEvent // live events are events[start:]
+	start  int
 	bytes  int
 }
+
+func (ring *ttyRing) live() []TTYEvent { return ring.events[ring.start:] }
 
 // NewTTYRecorder keeps up to budget bytes per direction.
 func NewTTYRecorder(budget int) *TTYRecorder { return &TTYRecorder{budget: budget} }
@@ -180,13 +187,16 @@ func (r *TTYRecorder) Record(dir TTYDirection, source string, data []byte) {
 	}
 	ring.events = append(ring.events, ev)
 	ring.bytes += len(ev.Data)
-	drop := 0
 	for ring.bytes > r.budget {
-		ring.bytes -= len(ring.events[drop].Data)
-		drop++
+		ring.bytes -= len(ring.events[ring.start].Data)
+		ring.events[ring.start] = TTYEvent{} // release Data now
+		ring.start++
 	}
-	if drop > 0 {
-		ring.events = append(ring.events[:0], ring.events[drop:]...)
+	if ring.start > len(ring.events)-ring.start {
+		n := copy(ring.events, ring.events[ring.start:])
+		clear(ring.events[n:])
+		ring.events = ring.events[:n]
+		ring.start = 0
 	}
 	r.mu.Unlock()
 }
@@ -194,8 +204,8 @@ func (r *TTYRecorder) Record(dir TTYDirection, source string, data []byte) {
 // Events returns both directions merged in time order.
 func (r *TTYRecorder) Events() []TTYEvent {
 	r.mu.Lock()
-	in := append([]TTYEvent(nil), r.in.events...)
-	out := append([]TTYEvent(nil), r.out.events...)
+	in := append([]TTYEvent(nil), r.in.live()...)
+	out := append([]TTYEvent(nil), r.out.live()...)
 	r.mu.Unlock()
 	merged := make([]TTYEvent, 0, len(in)+len(out))
 	i, j := 0, 0
