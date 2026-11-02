@@ -3401,6 +3401,7 @@
       state.panelHideTimeout = null;
       panelLayout.apply();
       state.panel.style.display = 'flex';
+      state.panel.style.pointerEvents = '';
       // Promote the panel to a compositor layer just for the duration of the
       // 0.2s opacity+transform transition. Cleared below after the transition
       // completes so we don't pin GPU memory for an idle panel.
@@ -3432,6 +3433,9 @@
       }
       state.prevFocus = null;
       state.panel.style.willChange = 'transform, opacity';
+      // A closing panel stops taking clicks now, not when its fade ends: a
+      // tool button closes it and the user's next click is meant for the page.
+      state.panel.style.pointerEvents = 'none';
       state.panel.style.opacity = '0';
       state.panel.style.transform = panelLayout.closedTransform();
       // Release the app's inset now so it reflows while the drawer fades.
