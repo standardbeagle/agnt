@@ -561,10 +561,15 @@ func (pw *ProtectedWriter) ChildMouseRestore() string {
 // DECSC/DECRC: xterm backs DECSC and CSI s with the same single save slot, and
 // the child TUI uses it for its own repaints — clobbering it makes the child
 // restore to the wrong origin (see cursorpark.go).
+//
+// The cursor is clamped to the child's rows. A shrink leaves the host
+// terminal's cursor on its new last row, which is the protected one; put back
+// there, the child's next line printed over the status bar, while the child
+// itself believed it was on its own last row.
 func (pw *ProtectedWriter) enforceScrollRegion() {
 	bottom := max(pw.height-pw.config.ProtectBottomRows, 1)
 	c := pw.hostModel.Cursor()
-	_ = pw.sendToHost(fmt.Appendf(nil, "\x1b[1;%dr\x1b[%d;%dH", bottom, c.Y+1, c.X+1))
+	_ = pw.sendToHost(fmt.Appendf(nil, "\x1b[1;%dr\x1b[%d;%dH", bottom, min(c.Y+1, bottom), c.X+1))
 }
 
 // EnforceScrollRegion can be called externally to re-apply scroll region protection.

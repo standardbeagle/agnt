@@ -2,10 +2,13 @@ package overlay
 
 import (
 	"bytes"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/standardbeagle/vt10x"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // The overlay restores the child's cursor after every status-bar, toast, or
@@ -271,5 +274,39 @@ func TestResizeKeepsTheModelOnTheHost(t *testing.T) {
 	}
 	if row != 7 {
 		t.Errorf("cursor row %d, want 7: line feeds stop at the protected region's bottom", row)
+	}
+}
+
+// A shrink leaves the host terminal's cursor on its new last row: the
+// protected status row. Re-applying the scroll region must put the cursor
+// back on the child's last row, or the child's next line prints over the
+// status bar while the child believes it is on its own last row.
+func TestShrinkKeepsChildCursorOffStatusRow(t *testing.T) {
+	for _, alt := range []bool{false, true} {
+		var host bytes.Buffer
+		pw := NewProtectedWriter(&host, 80, 48, FilterConfig{ProtectBottomRows: 1})
+		pw.EnforceScrollRegion()
+		if alt {
+			_, _ = pw.Write([]byte("\x1b[?1049h"))
+		}
+		for i := 0; i < 60; i++ { // park the child on its last row
+			_, _ = fmt.Fprintf(pw, "line %d\r\n", i)
+		}
+		row, _, _ := pw.ChildCursor()
+		require.Equal(t, 47, row, "child cursor starts on its own last row")
+
+		pw.SetSize(80, 30)
+		row, col, _ := pw.ChildCursor()
+		assert.Equal(t, 29, row, "alt=%v: cursor on the child's last row after shrink", alt)
+		assert.Equal(t, 1, col)
+
+		_, _ = pw.Write([]byte("after\r\n"))
+		row, _, _ = pw.ChildCursor()
+		assert.Equal(t, 29, row, "alt=%v: output scrolls the child region, never reaches the status row", alt)
+		pw.hostModel.Lock()
+		status := pw.hostModel.Cell(0, 29).Char
+		pw.hostModel.Unlock()
+		assert.NotEqual(t, 'a', status, "alt=%v: status row untouched", alt)
+		pw.Stop()
 	}
 }
