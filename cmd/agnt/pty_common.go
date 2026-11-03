@@ -1854,9 +1854,14 @@ func runOverlayPipeline(
 		}
 
 		activityCfg := overlay.DefaultActivityMonitorConfig()
-		// Size the preview's virtual screen to the child PTY so the emulated
-		// snapshot wraps and repaints exactly as the child renders. Resize keeps
-		// it current on SIGWINCH (see the resize watcher).
+		// With the indicator the filter already models the screen from every
+		// byte; the monitor reads that model instead of parsing a second copy.
+		if rt.outputFilter != nil {
+			activityCfg.SharedScreen = rt.outputFilter
+		}
+		// Otherwise the monitor keeps its own model, sized to the child PTY so
+		// the emulated snapshot wraps and repaints exactly as the child
+		// renders. Resize keeps it current on SIGWINCH (see the resize watcher).
 		activityCfg.InitialCols = handle.Width
 		// Child rows, not host rows: the indicator owns the bottom line, and
 		// the resize watcher already sizes the screen this way on SIGWINCH.
@@ -2123,12 +2128,12 @@ func setupTerminalOverlay(ctx context.Context, handle *ptyHandle, rt *pipelineRu
 	// over a fullscreen TUI. Loaded lazily: the monitor is created by the
 	// PTY-output goroutine, which may not have run yet.
 	if rt.termOverlay != nil {
-		rt.termOverlay.SetChildScreenSource(func(maxRows int) []byte {
+		rt.termOverlay.SetChildScreenSource(func() []byte {
 			am := rt.activityMon.Load()
 			if am == nil {
 				return nil
 			}
-			return am.RenderScreen(maxRows)
+			return am.RenderScreen()
 		})
 	}
 

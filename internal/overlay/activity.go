@@ -48,9 +48,18 @@ type ActivityMonitor struct {
 	// repaints a multi-line region no longer streams a fresh copy of the block
 	// on every keystroke — the earlier line-list heuristic stripped the cursor
 	// escapes and committed each repaint as new scrolling lines.
-	previewMu       sync.Mutex
-	screen          vt10x.Terminal // Virtual screen; source of truth for the preview snapshot
-	previewMaxLines int            // Max screen-tail rows to send
+	previewMu sync.Mutex
+	// screen is the model of the child's screen the preview, the input-box
+	// check and the panel-close repaint read; its bottom protectedRows rows
+	// are not the child's. It is the output filter's host model when the
+	// config shares one (SharedScreen), else ownScreen.
+	screen        vt10x.View
+	protectedRows int
+	// ownScreen is fed by Write; nil when the screen is shared, because the
+	// filter already parses every byte into its model and a second parse of
+	// the same bytes was a third of the output path's cost.
+	ownScreen       vt10x.Terminal
+	previewMaxLines int // Max screen-tail rows to send
 	previewDebounce time.Duration
 	previewLastSent time.Time
 	previewPending  atomic.Bool // Whether a debounced send is pending
@@ -140,11 +149,24 @@ type ActivityMonitorConfig struct {
 	// Zero means use the default (500ms).
 	IdleCheckInterval time.Duration
 
-	// InitialCols/InitialRows size the virtual screen the preview snapshot is
-	// read from. They should match the child PTY's dimensions; Resize keeps
-	// them current on SIGWINCH. Zero falls back to 80x24.
+	// SharedScreen is a screen model another stage already feeds with the
+	// child's output: the ProtectedWriter's host model. The monitor reads it
+	// instead of parsing the output a second time. Nil gives the monitor its
+	// own model, sized by InitialCols/InitialRows.
+	SharedScreen SharedScreen
+
+	// InitialCols/InitialRows size the monitor's own screen model. They
+	// should match the child PTY's dimensions; Resize keeps them current on
+	// SIGWINCH. Zero falls back to 80x24. Unused with SharedScreen.
 	InitialCols int
 	InitialRows int
+}
+
+// SharedScreen is a screen model fed by another stage of the output path.
+type SharedScreen interface {
+	// ChildScreen returns the model and how many of its bottom rows are not
+	// the child's. The model is read under its own Lock.
+	ChildScreen() (screen vt10x.View, protectedRows int)
 }
 
 // DefaultActivityMonitorConfig returns the default configuration.
@@ -197,7 +219,6 @@ func NewActivityMonitor(w io.Writer, cfg ActivityMonitorConfig) *ActivityMonitor
 		onStateChange:     cfg.OnStateChange,
 		onOutputPreview:   cfg.OnOutputPreview,
 		minActiveBytes:    cfg.MinActiveBytes,
-		screen:            vt10x.New(vt10x.WithSize(cols, rows)),
 		previewMaxLines:   cfg.PreviewMaxLines,
 		previewDebounce:   cfg.PreviewDebounce,
 		showDoneMessage:   cfg.ShowDoneMessage,
@@ -205,6 +226,13 @@ func NewActivityMonitor(w io.Writer, cfg ActivityMonitorConfig) *ActivityMonitor
 		onOutputLine:      cfg.OnOutputLine,
 		onFirstActivity:   cfg.OnFirstActivity,
 		stopCh:            make(chan struct{}),
+	}
+
+	if cfg.SharedScreen != nil {
+		am.screen, am.protectedRows = cfg.SharedScreen.ChildScreen()
+	} else {
+		am.ownScreen = vt10x.New(vt10x.WithSize(cols, rows))
+		am.screen = am.ownScreen
 	}
 
 	// Start the idle check goroutine
@@ -251,8 +279,10 @@ func (am *ActivityMonitor) captureForPreview(p []byte) {
 	// Feed the virtual terminal first. It parses every escape sequence —
 	// cursor moves, erases, wrapping — so the preview reflects the child's
 	// actual on-screen layout rather than a naive line list. Write locks the
-	// screen's own mutex internally.
-	_, _ = am.screen.Write(p)
+	// screen's own mutex internally. A shared screen was fed by the filter.
+	if am.ownScreen != nil {
+		_, _ = am.ownScreen.Write(p)
+	}
 
 	// The per-line alert tap (onOutputLine) wants logical, LF-terminated lines,
 	// not the wrapped screen grid, so it keeps its own line assembly. Complete
@@ -404,8 +434,7 @@ func cleanText[T string | []byte](scratch []byte, line T) (string, []byte) {
 // already resolved every escape sequence into placed glyphs, so a repaint shows
 // as an in-place change rather than a new copy of the block.
 func (am *ActivityMonitor) screenTail() []string {
-	am.screen.Lock()
-	cols, rows := am.screen.Size()
+	cols, rows := am.lockChildRegion()
 	raw := make([]string, 0, rows)
 	for y := 0; y < rows; y++ {
 		var sb strings.Builder
@@ -442,12 +471,12 @@ func (am *ActivityMonitor) screenTail() []string {
 // letters and digits to compare matches too much.
 func (am *ActivityMonitor) CursorRowsContain(tail string) (found, ok bool) {
 	want := AlnumOnly(tail)
-	if len([]rune(want)) < minCursorMatchRunes || (am.onOutputPreview == nil && am.onOutputLine == nil) {
+	if len([]rune(want)) < minCursorMatchRunes || (am.ownScreen != nil && am.onOutputPreview == nil && am.onOutputLine == nil) {
 		return false, false
 	}
-	am.screen.Lock()
-	cols, rows := am.screen.Size()
+	cols, rows := am.lockChildRegion()
 	cur := am.screen.Cursor()
+	cur.Y = min(cur.Y, rows-1)
 	rowText := func(y int) string {
 		var sb strings.Builder
 		for x := 0; x < cols; x++ {
@@ -507,21 +536,30 @@ func AlnumOnly(s string) string {
 	}, s)
 }
 
+// lockChildRegion locks the screen model and returns the size of the region
+// the child owns. The caller unlocks am.screen.
+func (am *ActivityMonitor) lockChildRegion() (cols, rows int) {
+	am.screen.Lock()
+	cols, rows = am.screen.Size()
+	return cols, max(rows-am.protectedRows, 0)
+}
+
 // RenderScreen returns the child's screen as an absolute ANSI repaint. The
 // virtual screen is fed every byte the child writes — including while the
 // overlay has the gate frozen and those bytes are reaching no terminal — so it
 // can restore the child's display without asking the child to redraw.
-func (am *ActivityMonitor) RenderScreen(maxRows int) []byte {
-	return RenderScreenANSI(am.screen, maxRows)
+func (am *ActivityMonitor) RenderScreen() []byte {
+	return RenderScreenANSI(am.screen, am.protectedRows)
 }
 
-// Resize updates the virtual screen dimensions. Call it whenever the child PTY
-// is resized (SIGWINCH) so wrapping and the visible region stay correct.
+// Resize updates the monitor's own screen model. Call it whenever the child
+// PTY is resized (SIGWINCH) so wrapping and the visible region stay correct.
+// A shared screen is resized by the stage that owns it.
 func (am *ActivityMonitor) Resize(cols, rows int) {
-	if cols <= 0 || rows <= 0 {
+	if cols <= 0 || rows <= 0 || am.ownScreen == nil {
 		return
 	}
-	am.screen.Resize(cols, rows)
+	am.ownScreen.Resize(cols, rows)
 }
 
 // scheduleBroadcast schedules a debounced broadcast of preview lines.

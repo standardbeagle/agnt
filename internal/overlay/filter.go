@@ -621,6 +621,15 @@ func (pw *ProtectedWriter) HoldChildCursor(fn func(row, col int, visible bool)) 
 	_, _ = pw.hostModel.Write(fmt.Appendf(nil, CursorToFormat, row, col))
 }
 
+// ChildScreen shares the host model with the activity monitor (SharedScreen).
+// Every row above the protected ones is the child's: the scroll region keeps
+// the child's output there, and the overlay's own draws are never fed to the
+// model. Gate freezes do not starve it, because the gate sits after the
+// filter.
+func (pw *ProtectedWriter) ChildScreen() (vt10x.View, int) {
+	return pw.hostModel, pw.config.ProtectBottomRows
+}
+
 // InAltScreen returns whether the child process is currently in the alternate screen buffer.
 func (pw *ProtectedWriter) InAltScreen() bool {
 	return pw.inAltScreen.Load()

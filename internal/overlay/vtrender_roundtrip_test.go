@@ -70,7 +70,7 @@ func TestActivityMonitorScreenMatchesABareEmulator(t *testing.T) {
 	if _, err := am.Write(data); err != nil {
 		t.Fatalf("write: %v", err)
 	}
-	frame := am.RenderScreen(0)
+	frame := am.RenderScreen()
 
 	ref := vt10x.New(vt10x.WithSize(100, 29))
 	ref.Write(data)

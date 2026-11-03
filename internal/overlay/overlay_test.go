@@ -626,7 +626,7 @@ func TestHideMenuSpinsOnlyWhileChildMustRedraw(t *testing.T) {
 			alt := tc.childAlt
 			o.SetAltScreenChecker(func() bool { return alt })
 			frame := tc.frame
-			o.SetChildScreenSource(func(int) []byte { return frame })
+			o.SetChildScreenSource(func() []byte { return frame })
 
 			o.mu.Lock()
 			o.showPanelDirect()
@@ -664,7 +664,7 @@ func TestHideMenuReportsModelRepaint(t *testing.T) {
 			alt := tc.childAlt
 			o.SetAltScreenChecker(func() bool { return alt })
 			frame := tc.frame
-			o.SetChildScreenSource(func(int) []byte { return frame })
+			o.SetChildScreenSource(func() []byte { return frame })
 
 			o.showPanelDirect()
 			buf.Reset()

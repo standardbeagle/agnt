@@ -140,18 +140,16 @@ func isBlank(g vt10x.Glyph) bool {
 	return g.BG == vt10x.DefaultBG
 }
 
-// RenderScreenANSI renders the whole virtual screen as an absolute repaint.
-// rows beyond maxRows are skipped so the caller can reserve the status bar.
-func RenderScreenANSI(v vt10x.View, maxRows int) []byte {
+// RenderScreenANSI renders the virtual screen as an absolute repaint, leaving
+// out its bottom reserveRows rows (the status bar's).
+func RenderScreenANSI(v vt10x.View, reserveRows int) []byte {
 	v.Lock()
 	defer v.Unlock()
 
 	cols, rows := v.Size()
+	rows -= reserveRows
 	if cols <= 0 || rows <= 0 {
 		return nil
-	}
-	if maxRows > 0 && rows > maxRows {
-		rows = maxRows
 	}
 
 	var buf bytes.Buffer

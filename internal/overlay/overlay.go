@@ -319,7 +319,7 @@ type Overlay struct {
 
 	// childScreen renders the child's current screen as an ANSI repaint. Set
 	// by the run pipeline from the virtual screen the output monitor keeps.
-	childScreen func(maxRows int) []byte
+	childScreen func() []byte
 
 	// repaintedFromModel says the last panel close restored the child's
 	// screen from childScreen, so the child need not be asked to redraw.
@@ -408,7 +408,7 @@ func (w gateDirectWriter) Write(p []byte) (int, error) {
 // SetChildScreenSource registers a renderer for the child's current screen.
 // With it, closing a panel over a fullscreen TUI repaints from our own model
 // of that screen instead of clearing and waiting for the child to redraw.
-func (o *Overlay) SetChildScreenSource(fn func(maxRows int) []byte) {
+func (o *Overlay) SetChildScreenSource(fn func() []byte) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.childScreen = fn
@@ -838,7 +838,7 @@ func (o *Overlay) renderChildScreenLocked() []byte {
 	if o.childScreen == nil {
 		return nil
 	}
-	return o.childScreen(0)
+	return o.childScreen()
 }
 
 // spinnerFrames are ASCII spinner characters compatible with all terminals.

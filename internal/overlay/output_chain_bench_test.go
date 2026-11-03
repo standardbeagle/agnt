@@ -6,8 +6,9 @@ import (
 )
 
 // The agent-output path in `agnt run`, as pty_common wires it: each PTY read
-// is recorded, then passes ActivityMonitor (screen model, line tap, preview)
-// -> ProtectedWriter (filter + host model) -> OutputGate -> the terminal.
+// is recorded, then passes ActivityMonitor (line tap, preview) ->
+// ProtectedWriter (filter + the one screen model, shared with the monitor) ->
+// OutputGate -> the terminal.
 // The floor is one parse of the bytes into a screen model, which the overlay
 // needs: BenchmarkOutputFloor_* parses the same chunks into one vt10x screen.
 
@@ -38,8 +39,7 @@ func benchOutputChain(b *testing.B, chunks [][]byte) {
 	pw := NewProtectedWriter(gate, chainCols, chainRows, FilterConfig{ProtectBottomRows: 1})
 	pw.EnforceScrollRegion()
 	am := NewActivityMonitor(pw, ActivityMonitorConfig{
-		InitialCols:     chainCols,
-		InitialRows:     chainRows - 1,
+		SharedScreen:    pw,
 		OnOutputLine:    func(string) {},
 		OnOutputPreview: func([]string, string) {},
 	})
