@@ -2,11 +2,13 @@ package overlay
 
 import (
 	"bytes"
+	"fmt"
 	"math/rand"
 	"strings"
 	"testing"
 
 	"github.com/standardbeagle/agnt/internal/aichannel"
+	"github.com/stretchr/testify/require"
 )
 
 // refLineTap is the byte-at-a-time line assembler and cleaner the run-based
@@ -137,6 +139,21 @@ func TestCleanTextMatchesReference(t *testing.T) {
 		}
 		if s, _ := cleanText(nil, string(line)); s != want {
 			t.Fatalf("iter %d: string form differs", iter)
+		}
+	}
+}
+
+// The length cut decides "more than 117 runes" in the same walk that finds
+// the cut point; sweep the boundary with every rune width and invalid bytes.
+func TestCleanTextCutBoundaryMatchesReference(t *testing.T) {
+	for _, unit := range []string{"a", "é", "日", "👩", "\xff", "a\x1b[31mé"} {
+		for n := 100; n <= 130; n++ {
+			for _, wrap := range []string{"%s", "│ %s │", "  %s\t", "%s\r\n"} {
+				line := fmt.Sprintf(wrap, strings.Repeat(unit, n))
+				want := refCleanLine(line)
+				got, _ := cleanText(nil, []byte(line))
+				require.Equal(t, want, got, "unit %q n=%d wrap %q", unit, n, wrap)
+			}
 		}
 	}
 }

@@ -400,10 +400,16 @@ func cleanText[T string | []byte](scratch []byte, line T) (string, []byte) {
 			i = aichannel.SkipEscape(line[:n], i)
 			continue
 		}
-		if line[i] >= 32 || line[i] == '\t' {
-			b = append(b, line[i])
+		// Copy the run of printable bytes up to the next control byte whole.
+		j := i
+		for j < n && (line[j] >= 32 || line[j] == '\t') {
+			j++
 		}
-		i++
+		b = append(b, line[i:j]...)
+		if j == i { // a control byte other than ESC: dropped
+			j++
+		}
+		i = j
 	}
 	scratch = b
 
@@ -415,15 +421,22 @@ func cleanText[T string | []byte](scratch []byte, line T) (string, []byte) {
 	}
 
 	// Limit line length to 120 (117 + "...") rune-safe, so a multibyte glyph
-	// is never split at the cut.
-	if utf8.RuneCount(b) > 117 {
-		cut, count := 0, 0
-		for count < 117 {
+	// is never split at the cut. One walk finds the 117th rune's end; bytes
+	// left after it mean the line had more. Fewer than 118 bytes cannot hold
+	// 118 runes, so short lines skip the walk.
+	if len(b) > 117 {
+		cut := 0
+		for count := 0; count < 117 && cut < len(b); count++ {
+			if b[cut] < utf8.RuneSelf {
+				cut++
+				continue
+			}
 			_, size := utf8.DecodeRune(b[cut:])
 			cut += size
-			count++
 		}
-		b = append(b[:cut], "..."...)
+		if cut < len(b) {
+			b = append(b[:cut], "..."...)
+		}
 	}
 	return string(b), scratch
 }
