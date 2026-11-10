@@ -195,3 +195,33 @@ func TestDaemonTools_ResetConcurrentWithHandlers(t *testing.T) {
 	_, _, err := dt.handleProcList(ProcInput{Global: &global})
 	require.NoError(t, err)
 }
+
+// A foreground run goes over a dedicated connection so its long wait never
+// blocks the shared one. That connection was never attached, so the daemon
+// derived no launch owner from it and the process's errors and crash never
+// reached the session's incident inbox. The dedicated connection carries the
+// same session binding as the shared one.
+func TestDaemonTools_DedicatedClientCarriesTheSession(t *testing.T) {
+	dt, _ := attachTestDaemon(t)
+	require.NoError(t, dt.ensureConnected())
+	require.Equal(t, "attach-test", dt.SessionCode())
+
+	c, err := dt.dialDedicatedClient()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+	assert.True(t, connectionIsBound(c), "the dedicated run connection must be bound to the caller's session")
+	assert.Equal(t, "attach-test", dt.SessionCode(), "dialing must not change the wrapper's own binding")
+}
+
+// An unattached wrapper (global use) gets an unattached dedicated connection.
+func TestDaemonTools_DedicatedClientUnboundWhenWrapperIs(t *testing.T) {
+	dt, _ := attachTestDaemon(t)
+	dt.SetNoAutoAttach(true)
+	require.NoError(t, dt.ensureConnected())
+	require.Empty(t, dt.SessionCode())
+
+	c, err := dt.dialDedicatedClient()
+	require.NoError(t, err)
+	t.Cleanup(func() { _ = c.Close() })
+	assert.False(t, connectionIsBound(c))
+}

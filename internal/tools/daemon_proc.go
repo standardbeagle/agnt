@@ -167,12 +167,8 @@ func (dt *DaemonTools) makeRunHandler() func(context.Context, *mcp.CallToolReque
 			// connection instead, and close it on ctx cancel to interrupt the
 			// blocked read immediately. The buffered channel lets the goroutine
 			// finish its send after we've returned.
-			socketPath := dt.config.SocketPath
-			if socketPath == "" {
-				socketPath = daemonclient.DefaultSocketPath()
-			}
-			runClient := daemonclient.NewClientWithPath(socketPath)
-			if err := runClient.Connect(); err != nil {
+			runClient, err := dt.dialDedicatedClient()
+			if err != nil {
 				return formatDaemonError(err, "run"), RunOutput{}, nil
 			}
 

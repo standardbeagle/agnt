@@ -137,6 +137,51 @@ func (dt *DaemonTools) attach(sessionAttach func(directory string) (map[string]i
 	return true
 }
 
+// dialDedicatedClient opens a connection of its own to the daemon, bound to
+// the same session as the shared one (none when the wrapper is unattached).
+// The daemon binds a session to a connection, and derives a launch's incident
+// owner from it, so an unbound dedicated connection would start processes no
+// session owns. A connection the attach binds to a different session than the
+// wrapper's is replaced by an unbound one rather than misattribute the work.
+// The wrapper's own binding is left as it is.
+func (dt *DaemonTools) dialDedicatedClient() (*daemonclient.Client, error) {
+	socketPath := dt.config.SocketPath
+	if socketPath == "" {
+		socketPath = daemonclient.DefaultSocketPath()
+	}
+	dial := func() (*daemonclient.Client, error) {
+		c := daemonclient.NewClientWithPath(socketPath)
+		if err := c.Connect(); err != nil {
+			return nil, err
+		}
+		return c, nil
+	}
+	c, err := dial()
+	if err != nil {
+		return nil, err
+	}
+	code := dt.SessionCode()
+	if code == "" {
+		return c, nil
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		debug.Log("daemon-tools", "dedicated connection left unbound: getwd failed: %v", err)
+		return c, nil
+	}
+	result, err := c.SessionAttach(cwd)
+	if err != nil {
+		debug.Log("daemon-tools", "dedicated connection left unbound: attach to %s failed: %v", code, err)
+		return c, nil
+	}
+	if got, _ := result["session_code"].(string); got != code {
+		debug.Log("daemon-tools", "dedicated connection attached to %q, not the wrapper's %q: using an unbound one", got, code)
+		_ = c.Close()
+		return dial()
+	}
+	return c, nil
+}
+
 // forgetAttachment drops the recorded session binding because the daemon
 // connection it was made on is gone. The next ensureConnected attaches the
 // new connection; until then the wrapper must not report itself attached.
