@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/standardbeagle/agnt/internal/config"
+	"github.com/standardbeagle/agnt/internal/daemon/health"
 )
 
 // These tests hold the contested port with a listener inside the test process.
@@ -189,4 +190,41 @@ func TestStartScript_EADDRINUSERetryKeepsOutputCallback(t *testing.T) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	t.Fatalf("output of the retried process never reached script history; got %q", entry.OutputLines())
+}
+
+// TestStartScript_EADDRINUSERetryKeepsIncidentOwner: recovery retired the
+// first attempt's incident owner and started the retry with the same output
+// callback, which captured that owner's pointer at creation. stampIncidentOwner
+// accepts an event only while the registry holds that same pointer, so every
+// error and crash of the recovered process was dropped from the owning
+// session's inbox. The retry must run under the same owner binding.
+func TestStartScript_EADDRINUSERetryKeepsIncidentOwner(t *testing.T) {
+	// No t.Parallel(): starts real processes.
+	d, _, tmpDir := newHubProcTestDaemon(t)
+	marker := filepath.Join(tmpDir, "first-attempt-done")
+	var cfg config.ScriptConfig
+	if os.PathSeparator == '\\' {
+		cfg.Run = fmt.Sprintf(`if exist %s (echo retry-output-line & ping -n %d 127.0.0.1 >nul) else (echo.>%s & echo Error: listen EADDRINUSE: address already in use :::1 1>&2 & exit 1)`,
+			marker, stayAliveSeconds+1, marker)
+	} else {
+		cfg.Run = fmt.Sprintf(`if [ -e '%s' ]; then echo retry-output-line; sleep %d; else : > '%s'; echo 'Error: listen EADDRINUSE: address already in use :::1' >&2; exit 1; fi`,
+			marker, stayAliveSeconds, marker)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	projectPath := normalizePath(tmpDir)
+	if err := d.StartScriptExplicit(withAutostartOwner(ctx, "owner-sess"), "web", &cfg, projectPath, nil); err != nil {
+		t.Fatalf("StartScriptExplicit: %v", err)
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("the first attempt never ran, so no retry happened: %v", err)
+	}
+	owner, ok := d.incidentProcessOwner.Load(makeProcessID(projectPath, "web"))
+	if !ok {
+		t.Fatal("the recovered process has no incident owner: its incidents never reach the session")
+	}
+	if code := owner.(*health.ResourceOwner).SessionCode; code != "owner-sess" {
+		t.Fatalf("owner session = %q, want owner-sess", code)
+	}
 }

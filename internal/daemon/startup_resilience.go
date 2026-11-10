@@ -529,6 +529,11 @@ func (d *Daemon) startScriptWithRetry(
 	if err := d.hub.ProcessManager().StopProcess(ctx, proc); err != nil {
 		debug.Log("startup-resilience", "stop of EADDRINUSE process %s failed during recovery: %v", processID, err)
 	}
+	// The retry reuses outputCB, which captured this owner's pointer, and
+	// stampIncidentOwner accepts an event only while the registry holds that
+	// same pointer. Keep it to reinstate for the retry; retired here, so the
+	// failed attempt's exit is not stamped as the retry's.
+	owner, hadOwner := d.incidentProcessOwner.Load(proc.ID)
 	d.retireIncidentProcessOwner(proc.ID)
 	d.hub.ProcessManager().RemoveByPath(processID, projectPath)
 
@@ -564,6 +569,9 @@ func (d *Daemon) startScriptWithRetry(
 	// first attempt — without it the recovered process is cut off from script
 	// history, output streaming, and alert classification.
 	d.clearURLStateForLaunch(processID, projectPath)
+	if hadOwner {
+		d.incidentProcessOwner.Store(processID, owner)
+	}
 	result, err = d.hub.ProcessManager().StartOrReuse(ctx, process.ProcessConfig{
 		ID:             processID,
 		ProjectPath:    projectPath,
@@ -577,6 +585,7 @@ func (d *Daemon) startScriptWithRetry(
 		EnableStdin: d.runStdinEnabled(processID),
 	})
 	if err != nil {
+		d.retireIncidentProcessOwner(processID)
 		return nil, &StartupError{
 			ProcessID: processID,
 			Port:      portToClean,
