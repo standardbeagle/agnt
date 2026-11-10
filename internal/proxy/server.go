@@ -55,6 +55,11 @@ type ProxyServer struct {
 	// httpServer is replaced by the runServer auto-restart loop, so it is
 	// published atomically; readers (Stop, Serve) must Load() it.
 	httpServer atomic.Pointer[http.Server]
+	// listener is the socket the current httpServer serves, guarded by mu.
+	// teardownLocked closes it itself: Shutdown only closes listeners Serve has
+	// already tracked, so a Stop that lands before the runServer goroutine
+	// reaches Serve would otherwise leave the port bound after Stop returned.
+	listener net.Listener
 	// publicURL holds the optional public URL for tunnel services. Tunnels
 	// resolve their URL after the proxy is already serving, so SetPublicURL
 	// races request-path readers (checkWSOrigin, URL rewriting, Stats) —
@@ -790,6 +795,7 @@ func (ps *ProxyServer) Start(ctx context.Context) error {
 	// ListenAddr; the runServer goroutine never touches it again (see boundAddr).
 	ps.ListenAddr = listener.Addr().String()
 	ps.setBoundAddr(ps.ListenAddr)
+	ps.listener = listener
 
 	// Potentially-public (a tunnel can expose this proxy), so it is hardened to
 	// public standard: header/idle/connection bounds via the shared constructor.
@@ -1060,6 +1066,7 @@ func (ps *ProxyServer) runServer(ctx context.Context, listener net.Listener) {
 				return
 			}
 			listener = ps.wrapTLS(restartCaps.LimitListener(newListener))
+			ps.listener = newListener
 			ps.setBoundAddr(newAddr)
 			ps.httpServer.Store(restartCaps.Apply(&http.Server{
 				Addr:    newAddr,

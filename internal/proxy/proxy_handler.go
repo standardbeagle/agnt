@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -65,6 +66,17 @@ func (ps *ProxyServer) teardownLocked(ctx context.Context) (wasRunning bool, err
 
 	if srv := ps.httpServer.Load(); srv != nil {
 		err = srv.Shutdown(ctx)
+	}
+	// Shutdown closes only the listeners Serve already tracks; close ours too
+	// so the port is free when Stop returns even if runServer has not reached
+	// Serve yet (a same-port Replace would otherwise hit "address in use").
+	// Serve on the closed listener then returns at once and runServer exits on
+	// the cancelled context. A second close only reports net.ErrClosed.
+	if ps.listener != nil {
+		if cerr := ps.listener.Close(); cerr != nil && !errors.Is(cerr, net.ErrClosed) {
+			debug.Log("proxy", "error closing listener of proxy %s: %v", ps.ID, cerr)
+		}
+		ps.listener = nil
 	}
 	ps.running.Store(false)
 
