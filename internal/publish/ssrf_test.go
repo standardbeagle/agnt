@@ -46,6 +46,8 @@ func TestCheckUpstreamOrigin_DeniesResolvedAddress(t *testing.T) {
 		{"alibaba metadata", "100.100.100.200"},
 		{"gcp metadata via fd00:ec2", "fd00:ec2::254"},
 		{"link-local v6", "fe80::1"},
+		{"site-local v6 (deprecated, RFC 3879)", "fec0::1"},
+		{"site-local v6 high", "feff:ffff::1"},
 		{"unique-local v6", "fc00::1"},
 		{"unique-local v6 fd", "fd12:3456::1"},
 		{"unspecified v4", "0.0.0.0"},
@@ -337,7 +339,6 @@ func TestDeniedReason_IPv6PropertySweep(t *testing.T) {
 		{"64:ff9b::ffff:ffff", "64:ff9b:0:0:0:1:0:0"},
 		{"64:ff9b:1:ffff:ffff:ffff:ffff:ffff", "64:ff9b:2::"},
 		{"fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", "fe00::"},
-		{"febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff", "fec0::"},
 		{"2002:ffff:ffff:ffff:ffff:ffff:ffff:ffff", "2003::"},
 		{"2001:0:ffff:ffff:ffff:ffff:ffff:ffff", "2001:1::"},
 	}

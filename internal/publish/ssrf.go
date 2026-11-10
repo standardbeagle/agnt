@@ -63,6 +63,10 @@ var deniedPrefixes = []struct {
 	{netip.MustParsePrefix("::/96"), "unspecified/loopback/IPv4-compatible"},
 	{netip.MustParsePrefix("fc00::/7"), "unique-local (incl. fd00:ec2::254 cloud metadata)"},
 	{netip.MustParsePrefix("fe80::/10"), "link-local"},
+	// Deprecated by RFC 3879, which still lets existing deployments use it and
+	// says to block it by default: a network that kept FEC0 routes it
+	// internally, exactly like unique-local.
+	{netip.MustParsePrefix("fec0::/10"), "site-local (deprecated, RFC 3879)"},
 	{netip.MustParsePrefix("2001:db8::/32"), "documentation"},
 	{netip.MustParsePrefix("ff00::/8"), "multicast"},
 	// 6to4 and Teredo embed an arbitrary IPv4 address, so they are a direct

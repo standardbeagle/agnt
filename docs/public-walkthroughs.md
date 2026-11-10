@@ -631,7 +631,8 @@ anything else.
 `172.16/12`, `192.168/16`), carrier-grade NAT (`100.64/10`), link-local
 (`169.254/16` — including `169.254.169.254`), multicast, reserved/broadcast,
 `0.0.0.0/8`; IPv6 unspecified/loopback, unique-local `fc00::/7` (including
-`fd00:ec2::254`), `fe80::/10`, multicast; the IPv4-embedding prefixes 6to4,
+`fd00:ec2::254`), link-local `fe80::/10`, the deprecated site-local
+`fec0::/10`, multicast; the IPv4-embedding prefixes 6to4,
 Teredo, and both NAT64 prefixes; and `100.100.100.200` (Alibaba metadata).
 
 Three properties that make it hold rather than merely look right:
