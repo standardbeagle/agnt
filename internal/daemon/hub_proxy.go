@@ -571,8 +571,6 @@ func (d *Daemon) restartProxy(ctx context.Context, p *proxy.ProxyServer, callerS
 	targetURL := p.TargetURL.String()
 	maxLogSize := int(p.Logger().Stats().MaxSize)
 	projectPath := p.Path
-	bindAddress := p.BindAddress
-	allowExternal := p.AllowExternal
 	publicURL := p.GetPublicURL()
 	statusURL := p.GetStatusURL()
 	skipTLSVerify := p.SkipTLSVerify
@@ -635,21 +633,23 @@ func (d *Daemon) restartProxy(ctx context.Context, p *proxy.ProxyServer, callerS
 	// user declared (`listen-port`) stays strict: it means "this port or
 	// nothing", so the restart fails loud rather than drift, and the new
 	// server's own crash auto-restart keeps refusing to drift too.
-	newProxy, err := d.proxym.Replace(ctx, p, proxy.ProxyConfig{
+	rebuilt := proxy.ProxyConfig{
 		ID:               proxyID,
 		TargetURL:        targetURL,
 		ListenPort:       boundPort,
 		StrictListenPort: strictListenPort,
 		MaxLogSize:       maxLogSize,
 		Path:             projectPath,
-		BindAddress:      bindAddress,
-		AllowExternal:    allowExternal,
 		PublicURL:        publicURL,
 		StatusURL:        statusURL,
 		SkipTLSVerify:    skipTLSVerify,
 		AutoRestart:      autoRestart,
 		NamedTunnel:      namedTunnel,
-	}, stopped)
+	}
+	// The bind as configured, not the resolved p.BindAddress: a "tailscale"
+	// bind resolved to 100.x would come back as an external IP and be refused.
+	p.CopyBindConfigTo(&rebuilt)
+	newProxy, err := d.proxym.Replace(ctx, p, rebuilt, stopped)
 	if err != nil {
 		// The old server is gone and nothing replaced it. The caller gets the
 		// error; the agent and session log get a record that the proxy is down.

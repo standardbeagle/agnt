@@ -55,6 +55,9 @@ type ProxyServer struct {
 	// httpServer is replaced by the runServer auto-restart loop, so it is
 	// published atomically; readers (Stop, Serve) must Load() it.
 	httpServer atomic.Pointer[http.Server]
+	// bindConfig is the bind as configured, before NewProxyServer resolved it
+	// (see CopyBindConfigTo). Immutable after construction.
+	bindConfig bindConfig
 	// listener is the socket the current httpServer serves, guarded by mu.
 	// teardownLocked closes it itself: Shutdown only closes listeners Serve has
 	// already tracked, so a Stop that lands before the runServer goroutine
@@ -305,6 +308,28 @@ func (ps *ProxyServer) AuthBreakoutRules() *AuthBreakout {
 	return ps.authBreakout.Load()
 }
 
+// bindConfig is the bind a proxy was configured with: the address as written
+// (BindTailscale, not the 100.x address it resolved to) and the tailnet
+// lookups that resolved it.
+type bindConfig struct {
+	address    string
+	tailnetIP  func(context.Context) string
+	certDomain func(context.Context) string
+	cert       func(context.Context, string) (*tls.Certificate, error)
+}
+
+// CopyBindConfigTo sets cfg's bind fields to the ones this proxy was built
+// from, for a caller rebuilding it (PROXY RESTART). The exported BindAddress
+// field is the resolved IP; copying that instead turns a tailnet bind into a
+// plain external one, which needs allow_external and loses tailnet HTTPS.
+func (ps *ProxyServer) CopyBindConfigTo(cfg *ProxyConfig) {
+	cfg.BindAddress = ps.bindConfig.address
+	cfg.AllowExternal = ps.AllowExternal
+	cfg.TailnetIP = ps.bindConfig.tailnetIP
+	cfg.TailnetCertDomain = ps.bindConfig.certDomain
+	cfg.TailnetCert = ps.bindConfig.cert
+}
+
 // BindTailscale is the symbolic bind address that resolves to this node's
 // tailnet IPv4 at proxy construction. It is written into .agnt.kdl instead of
 // a literal address because that file is shared across machines and every
@@ -491,6 +516,12 @@ func NewProxyServer(config ProxyConfig) (*ProxyServer, error) {
 	ps.authBreakout.Store(config.AuthBreakout)
 
 	ps.namedTunnelSetup = namedSetup
+	ps.bindConfig = bindConfig{
+		address:    strings.TrimSpace(config.BindAddress),
+		tailnetIP:  config.TailnetIP,
+		certDomain: config.TailnetCertDomain,
+		cert:       config.TailnetCert,
+	}
 	ps.tailnetTLS = tailnetTLSState
 	ps.tailnetHTTPSReason = tailnetHTTPSReason
 	if tailnetTLSState != nil {
