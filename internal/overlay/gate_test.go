@@ -220,11 +220,57 @@ func TestOutputGate_BufferOverflow(t *testing.T) {
 	gate.Write([]byte("12345678")) // fills buffer exactly
 	gate.Write([]byte("AB"))       // overwrites oldest 2 bytes
 
-	// Should have "345678AB" (dropped "12")
+	// The ring keeps the newest bytes ("12" dropped).
 	assert.Equal(t, []byte("345678AB"), gate.ReadBuffered())
 
+	// With no line boundary in what survived, none of it is a safe place to
+	// resume from, so nothing is replayed.
 	gate.Unfreeze()
-	assert.Equal(t, "345678AB", buf.String())
+	assert.Empty(t, buf.String())
+}
+
+// TestOutputGate_OverflowReplaysFromALineBoundary pins lesson 1 of
+// lessons-boundary-budgets.md for the frozen ring: a replay that started at
+// the oldest surviving byte began mid-sequence (an SGR tail like "38;5;208m"
+// or half a UTF-8 rune) and printed it as text. After an overflow the replay
+// starts after the first newline that survived.
+func TestOutputGate_OverflowReplaysFromALineBoundary(t *testing.T) {
+	var buf bytes.Buffer
+	gate := NewOutputGateWithSize(&buf, 16)
+
+	gate.Freeze()
+	gate.Write([]byte("old line\x1b[38;5;208mXX\n")) // 24 bytes: overflows
+	gate.Write([]byte("é ok\n"))
+
+	gate.Unfreeze()
+	assert.Equal(t, "é ok\n", buf.String())
+
+	// A freeze that does not overflow replays verbatim, partial line included.
+	buf.Reset()
+	gate.Freeze()
+	gate.Write([]byte("\x1b[1mbold"))
+	gate.Unfreeze()
+	assert.Equal(t, "\x1b[1mbold", buf.String())
+}
+
+// TestOutputGate_UnfreezeDiscardingDropsTheBuffer: a caller that already
+// repainted the screen from a model holding these bytes resumes without
+// replaying them a second time.
+func TestOutputGate_UnfreezeDiscardingDropsTheBuffer(t *testing.T) {
+	var buf bytes.Buffer
+	gate := NewOutputGate(&buf)
+	called := false
+	gate.SetCallbacks(nil, func() { called = true })
+
+	gate.Freeze()
+	gate.Write([]byte("painted already"))
+	gate.UnfreezeDiscarding()
+
+	assert.Empty(t, buf.String())
+	assert.True(t, called, "the unfreeze callback still runs")
+	assert.False(t, gate.IsFrozen())
+	gate.Write([]byte("live"))
+	assert.Equal(t, "live", buf.String())
 }
 
 func TestOutputGate_BufferOverflowLargerThanCap(t *testing.T) {

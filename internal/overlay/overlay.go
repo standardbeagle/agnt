@@ -820,8 +820,15 @@ func (o *Overlay) hideMenu() {
 
 	// Unfreeze PTY output so it resumes flowing.
 	// The gate's onUnfreeze callback sends SIGWINCH and re-enforces scroll region.
+	// A model repaint already shows what the child wrote while frozen (the
+	// model parses upstream of the gate), so that buffer is dropped, not
+	// replayed over the frame a second time.
 	if o.gate != nil {
-		o.gate.Unfreeze()
+		if o.repaintedFromModel.Load() {
+			o.gate.UnfreezeDiscarding()
+		} else {
+			o.gate.Unfreeze()
+		}
 	}
 }
 

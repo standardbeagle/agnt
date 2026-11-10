@@ -1,6 +1,7 @@
 package overlay
 
 import (
+	"bytes"
 	"io"
 	"sync"
 )
@@ -11,6 +12,13 @@ const defaultFrozenBufSize = 64 * 1024 // 64KB
 // When frozen, writes are buffered in a ring buffer. On unfreeze,
 // the buffered content is flushed to the underlying writer.
 // This is used to prevent PTY output from corrupting the overlay menu.
+//
+// The ring keeps the newest bytes. When it overflowed, the oldest surviving
+// byte can sit inside an escape sequence or a UTF-8 rune, so the replay starts
+// after the first surviving newline instead (nothing, if none survived), per
+// lessons-boundary-budgets.md §1. Mode changes in the dropped part are lost
+// with it; a caller that can repaint from a screen model should, and resume
+// with UnfreezeDiscarding.
 type OutputGate struct {
 	out        io.Writer
 	mu         sync.Mutex
@@ -24,6 +32,9 @@ type OutputGate struct {
 	head int // read position
 	tail int // write position
 	full bool
+	// overflowed records that bytes were dropped since the last drain, so the
+	// surviving data does not start at a boundary the writer chose.
+	overflowed bool
 }
 
 // NewOutputGate creates a new OutputGate with the default 64KB frozen buffer.
@@ -98,12 +109,33 @@ func (og *OutputGate) Unfreeze() {
 		return
 	}
 	og.frozen = false
-	data := og.bufDrain()
+	data := og.bufDrainForReplay()
 	// Flush while still holding the lock so no concurrent Write() can
 	// slip through to og.out before the buffered content is written.
 	if len(data) > 0 {
 		og.out.Write(data)
 	}
+	cb := og.onUnfreeze
+	og.mu.Unlock()
+
+	if cb != nil {
+		cb()
+	}
+}
+
+// UnfreezeDiscarding resumes writing like Unfreeze but drops the buffered
+// output instead of flushing it. For a caller that has already repainted the
+// screen from a model that parsed those bytes: replaying them would apply them
+// a second time, from the repainted cursor rather than the one they were
+// written against.
+func (og *OutputGate) UnfreezeDiscarding() {
+	og.mu.Lock()
+	if !og.frozen {
+		og.mu.Unlock()
+		return
+	}
+	og.frozen = false
+	og.bufReset()
 	cb := og.onUnfreeze
 	og.mu.Unlock()
 
@@ -165,6 +197,9 @@ func (og *OutputGate) bufWrite(p []byte) {
 
 	// If p is larger than the buffer, only keep the last cap bytes.
 	if len(p) >= cap {
+		if len(p) > cap || og.bufLen() > 0 {
+			og.overflowed = true
+		}
 		copy(og.buf, p[len(p)-cap:])
 		og.head = 0
 		og.tail = 0
@@ -177,6 +212,7 @@ func (og *OutputGate) bufWrite(p []byte) {
 		og.tail = (og.tail + 1) % cap
 		if og.full {
 			og.head = og.tail // drop oldest
+			og.overflowed = true
 		}
 		if og.tail == og.head {
 			og.full = true
@@ -184,18 +220,29 @@ func (og *OutputGate) bufWrite(p []byte) {
 	}
 }
 
-// bufDrain returns all buffered data and resets the buffer.
-func (og *OutputGate) bufDrain() []byte {
-	n := og.bufLen()
-	if n == 0 {
+// bufDrainForReplay returns the buffered data that is safe to write to the
+// terminal and resets the buffer. After an overflow that is the part after
+// the first newline; otherwise all of it.
+func (og *OutputGate) bufDrainForReplay() []byte {
+	data := og.bufPeek()
+	overflowed := og.overflowed
+	og.bufReset()
+	if !overflowed {
+		return data
+	}
+	i := bytes.IndexByte(data, '\n')
+	if i < 0 {
 		return nil
 	}
-	out := make([]byte, n)
-	og.bufReadInto(out)
+	return data[i+1:]
+}
+
+// bufReset empties the buffer.
+func (og *OutputGate) bufReset() {
 	og.head = 0
 	og.tail = 0
 	og.full = false
-	return out
+	og.overflowed = false
 }
 
 // bufPeek returns a copy of buffered data without draining.

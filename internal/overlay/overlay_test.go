@@ -679,3 +679,43 @@ func TestHideMenuReportsModelRepaint(t *testing.T) {
 		})
 	}
 }
+
+// TestHideMenuDoesNotReplayOutputTheModelAlreadyPainted: while a panel is
+// open the child's output is parsed into the screen model (upstream of the
+// gate) and also buffered by the gate. A close that repaints from the model
+// shows those bytes already; replaying the buffer on top applied them twice,
+// from the model's cursor rather than the one they were written against.
+// Paths that do not repaint from the model still replay it.
+func TestHideMenuDoesNotReplayOutputTheModelAlreadyPainted(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		childAlt   bool
+		wantReplay bool
+	}{
+		{"fullscreen child repainted from the model", true, false},
+		{"main-screen child", false, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			cfg := DefaultConfig()
+			cfg.ShowIndicator = false
+			o := New(nil, 80, 24, cfg)
+			gate := NewOutputGate(&buf)
+			o.SetGate(gate)
+			alt := tc.childAlt
+			o.SetAltScreenChecker(func() bool { return alt })
+			o.SetChildScreenSource(func() []byte { return []byte("MODEL-FRAME") })
+
+			o.showPanelDirect()
+			_, _ = gate.Write([]byte("CHILD-WHILE-FROZEN"))
+			buf.Reset()
+			o.hideMenu()
+
+			if tc.wantReplay {
+				assert.Contains(t, buf.String(), "CHILD-WHILE-FROZEN")
+			} else {
+				assert.NotContains(t, buf.String(), "CHILD-WHILE-FROZEN")
+			}
+		})
+	}
+}

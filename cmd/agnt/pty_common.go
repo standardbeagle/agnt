@@ -2093,7 +2093,7 @@ func newOverlayCore(backend overlay.PtyReadWriter, width, height int, showIndica
 // outer flow stays readable.
 func setupTerminalOverlay(ctx context.Context, handle *ptyHandle, rt *pipelineRuntime) {
 	// Gate is the final stage before stdout — when the menu is open it
-	// freezes (discards) output to prevent corruption.
+	// freezes output (buffering it for the close) to prevent corruption.
 	core := newOverlayCore(handle.Backend, handle.Width, handle.Height, showIndicator, overlay.NewOutputGate(os.Stdout))
 	rt.outputGate = core.gate
 	rt.termOverlay = core.term
