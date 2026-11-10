@@ -91,7 +91,10 @@ type ProxyServer struct {
 	stopAnnounced bool
 	// largeResults are the exec-result files this proxy wrote to the temp
 	// dir (saveLargeResult); capped there, removed at teardown.
-	largeResults largeResultFiles
+	largeResults writtenFiles
+	// captureFiles are the capture files this proxy wrote under the project's
+	// audit dir; capped by maxCaptureFiles/maxCaptureBytes, kept at teardown.
+	captureFiles writtenFiles
 	// wsConns is the registry of live control WebSocket connections
 	// (connID → *asyncWSWriter). Readers: broadcastTrusted (toasts, chaos
 	// state, activity state, agent output — trusted connections only), exec

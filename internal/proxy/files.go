@@ -85,6 +85,7 @@ func (ps *ProxyServer) saveScreenshot(name string, dataURL string) (string, erro
 	if err != nil {
 		return "", fmt.Errorf("failed to write file: %w", err)
 	}
+	ps.keepCapture(filePath, len(imageData))
 
 	return filePath, nil
 }
@@ -176,6 +177,7 @@ func (ps *ProxyServer) savePNGBytes(name string, data []byte) (string, error) {
 	if err := os.WriteFile(filePath, data, 0644); err != nil {
 		return "", fmt.Errorf("failed to write screenshot: %w", err)
 	}
+	ps.keepCapture(filePath, len(data))
 	return filePath, nil
 }
 
@@ -197,7 +199,7 @@ func (ps *ProxyServer) saveLargeResult(execID string, result string) (string, er
 	if err != nil {
 		return "", fmt.Errorf("failed to write large result: %w", err)
 	}
-	for _, old := range ps.largeResults.add(filePath) {
+	for _, old := range ps.largeResults.add(filePath, int64(len(result)), maxLargeResultFiles, 0) {
 		removeLargeResult(old)
 	}
 
@@ -211,39 +213,77 @@ func (ps *ProxyServer) saveLargeResult(execID string, result string) (string, er
 // after the exec that produced it.
 const maxLargeResultFiles = 32
 
-// largeResultFiles is the set of large-result files a proxy has written,
-// oldest first. Its reader is the proxy itself: saveLargeResult retires the
-// oldest past maxLargeResultFiles, and teardown removes the rest.
-type largeResultFiles struct {
+// maxCaptureFiles and maxCaptureBytes bound the capture files one proxy keeps
+// (saveScreenshot, savePNGBytes). Every capture frame wrote a new file under
+// the project's .agnt/audit and nothing bounded them, so a page looping
+// captures filled the disk up to 16 MiB (the frame limit) at a time. The
+// newest are kept; captures outlive the proxy, so teardown keeps them.
+const (
+	maxCaptureFiles = 200
+	maxCaptureBytes = 256 << 20
+)
+
+// writtenFiles is the set of files a proxy wrote, oldest first. Its reader is
+// the proxy itself: add returns what fell past the caller's quota for it to
+// remove.
+type writtenFiles struct {
 	mu    sync.Mutex
-	paths []string
+	files []writtenFile
+	bytes int64
 }
 
-// add records path and returns the paths that fell past the cap.
-func (f *largeResultFiles) add(path string) []string {
+type writtenFile struct {
+	path string
+	size int64
+}
+
+// add records path (replacing an earlier entry for it) and returns the paths
+// that fell past maxFiles or maxBytes (0: no byte cap). The newest file is
+// never evicted.
+func (f *writtenFiles) add(path string, size int64, maxFiles int, maxBytes int64) []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	for _, p := range f.paths {
-		if p == path {
-			return nil
+	for i, w := range f.files {
+		if w.path == path {
+			f.bytes -= w.size
+			f.files = append(f.files[:i:i], f.files[i+1:]...)
+			break
 		}
 	}
-	f.paths = append(f.paths, path)
-	if over := len(f.paths) - maxLargeResultFiles; over > 0 {
-		evicted := append([]string(nil), f.paths[:over]...)
-		f.paths = append([]string(nil), f.paths[over:]...)
-		return evicted
+	f.files = append(f.files, writtenFile{path: path, size: size})
+	f.bytes += size
+	var evicted []string
+	for len(f.files) > 1 && (len(f.files) > maxFiles || (maxBytes > 0 && f.bytes > maxBytes)) {
+		evicted = append(evicted, f.files[0].path)
+		f.bytes -= f.files[0].size
+		f.files = f.files[1:]
 	}
-	return nil
+	if evicted != nil {
+		f.files = append([]writtenFile(nil), f.files...)
+	}
+	return evicted
 }
 
 // takeAll empties the set and returns what it held.
-func (f *largeResultFiles) takeAll() []string {
+func (f *writtenFiles) takeAll() []string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	paths := f.paths
-	f.paths = nil
+	paths := make([]string, len(f.files))
+	for i, w := range f.files {
+		paths[i] = w.path
+	}
+	f.files, f.bytes = nil, 0
 	return paths
+}
+
+// keepCapture records a capture file under the capture quota and removes the
+// oldest captures past it.
+func (ps *ProxyServer) keepCapture(path string, size int) {
+	for _, old := range ps.captureFiles.add(path, int64(size), maxCaptureFiles, maxCaptureBytes) {
+		if err := os.Remove(old); err != nil && !os.IsNotExist(err) {
+			debug.Log("proxy", "failed to remove capture %s past the quota: %v", old, err)
+		}
+	}
 }
 
 // removeLargeResults deletes every large-result file this proxy wrote.
