@@ -9,11 +9,13 @@ name: SSH Reconnect
 #
 # --- Platform scope (task 10d acceptance criterion 2) ---
 # Linux ONLY, by design. This is not an omission:
-#   * `agnt ssh` / the reconnect client is unsupported on Windows in v1 (a
-#     loud, documented gap — cmd/agnt/ssh_windows.go returns an explicit
-#     error; see .claude/rules/daemon-architecture.md § Cross-Platform
-#     Mandate). WSL is the documented Windows workaround, and WSL is GOOS=linux
-#     so it is already covered by this Linux job.
+#   * The reconnect state machine and the session host are platform-neutral
+#     Go, so one OS covers their logic. `agnt ssh` does run on native Windows
+#     (cmd/agnt/ssh_terminal_windows.go: console raw mode, polled resize); that
+#     terminal layer is outside this job and built by the cross-compile check.
+#     A native-Windows daemon cannot host session-host PTYs (see
+#     .claude/rules/daemon-architecture.md § Cross-Platform Mandate), so the
+#     Windows client attaches to a remote daemon, which is what this job tests.
 #   * The freeze harness (SSHDFreezeHarness) drives a real sshd via POSIX
 #     SIGSTOP/SIGCONT and a /proc descendant walk — inherently Unix-shaped.
 #     macOS would exercise a different orphan-scan/proc source (sysctl, see
