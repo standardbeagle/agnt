@@ -570,11 +570,18 @@ func (d *Daemon) hubHandleRun(ctx context.Context, conn *hubpkg.Connection, cmd 
 	pm := d.hub.ProcessManager()
 
 	// Reuse: a live process under this id is the answer. Nothing is started,
-	// so nothing is watched twice.
+	// so nothing is watched twice. A foreground caller still gets the wait it
+	// asked for: it may be sequencing work behind this process.
 	prev, _ := pm.GetByPath(processID, projectPath)
 	if prev != nil {
 		if state := prev.State(); state == goprocess.StateRunning || state == goprocess.StateStarting {
-			data, _ := json.Marshal(runReply(prev, name, true, false))
+			resp := runReply(prev, name, true, false)
+			if isForegroundRunMode(cfg.Mode) {
+				if err := awaitForegroundRun(ctx, prev, cfg.Mode, resp); err != nil {
+					return conn.WriteErr(hubproto.ErrInternal, err.Error())
+				}
+			}
+			data, _ := json.Marshal(resp)
 			return conn.WriteJSON(data)
 		}
 	}
