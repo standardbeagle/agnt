@@ -517,6 +517,11 @@ type Daemon struct {
 // A daemon on the default socket keeps the historical path, so an upgrade still
 // finds the orphans a previous run left behind. Any other socket gets its own
 // file beside it.
+// PIDTrackerPath is where the daemon on socketPath records its own PID and
+// managed processes; "" means the library default (the default socket). Doctor
+// reads the same file when the daemon does not answer.
+func PIDTrackerPath(socketPath string) string { return pidTrackerPathFor(socketPath) }
+
 func pidTrackerPathFor(socketPath string) string {
 	if socketPath == "" || socketPath == protocol.DefaultSocketPath() {
 		return "" // library default: XDG state dir, AppName-derived

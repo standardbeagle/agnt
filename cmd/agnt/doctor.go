@@ -53,21 +53,21 @@ func runDoctor(cmd *cobra.Command, args []string) error {
 	client := daemonclient.NewClient(daemonclient.WithSocketPath(socketPath))
 	if err := client.Connect(); err != nil {
 		// Daemon not available — run standalone OS-level checks.
-		return runDoctorStandalone(projectPath)
+		return runDoctorStandalone(socketPath, projectPath)
 	}
-	return runDoctorViaDaemon(client, projectPath)
+	return runDoctorViaDaemon(client, socketPath, projectPath)
 }
 
 // runDoctorViaDaemon runs the daemon-side checks via an already-connected
 // client and prints the report. The caller owns the client and must provide
 // one that is already Connect()'d.
-func runDoctorViaDaemon(client *daemonclient.Client, projectPath string) error {
+func runDoctorViaDaemon(client *daemonclient.Client, socketPath, projectPath string) error {
 	defer client.Close()
 
 	result, err := client.Doctor(projectPath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Daemon doctor failed, falling back to standalone: %v\n", err)
-		return runDoctorStandalone(projectPath)
+		return runDoctorStandalone(socketPath, projectPath)
 	}
 
 	// Parse the daemon report
@@ -85,15 +85,16 @@ func runDoctorViaDaemon(client *daemonclient.Client, projectPath string) error {
 	return exitForStatus(report.Status)
 }
 
-// runDoctorStandalone performs OS-level checks without a daemon.
-func runDoctorStandalone(projectPath string) error {
+// runDoctorStandalone performs OS-level checks without a daemon, reading the
+// PID tracker of the daemon on socketPath.
+func runDoctorStandalone(socketPath, projectPath string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
 	var checks []daemon.CheckResult
 
-	checks = append(checks, checkDaemonStandalone())
-	checks = append(checks, checkOrphansStandalone(ctx))
+	checks = append(checks, checkDaemonStandalone(socketPath))
+	checks = append(checks, checkOrphansStandalone(ctx, socketPath))
 	checks = append(checks, checkConfigStandalone(ctx, projectPath))
 
 	overall := daemon.StatusOK
@@ -110,10 +111,12 @@ func runDoctorStandalone(projectPath string) error {
 	return exitForStatus(report.Status)
 }
 
-// checkDaemonStandalone checks if the daemon process is alive via the PID tracker.
-func checkDaemonStandalone() daemon.CheckResult {
+// checkDaemonStandalone checks if the daemon on socketPath is alive via the PID
+// tracker that daemon writes (daemon.PIDTrackerPath), not the default one.
+func checkDaemonStandalone(socketPath string) daemon.CheckResult {
 	tracker := goprocess.NewFilePIDTracker(goprocess.FilePIDTrackerConfig{
 		AppName: "devtool-mcp",
+		Path:    daemon.PIDTrackerPath(socketPath),
 	})
 	tracking := tracker.Load()
 
@@ -143,9 +146,10 @@ func checkDaemonStandalone() daemon.CheckResult {
 }
 
 // checkOrphansStandalone reads the PID tracker and checks for orphaned processes.
-func checkOrphansStandalone(ctx context.Context) daemon.CheckResult {
+func checkOrphansStandalone(ctx context.Context, socketPath string) daemon.CheckResult {
 	tracker := goprocess.NewFilePIDTracker(goprocess.FilePIDTrackerConfig{
 		AppName: "devtool-mcp",
+		Path:    daemon.PIDTrackerPath(socketPath),
 	})
 	tracked := tracker.ListTracked()
 
