@@ -6,7 +6,6 @@ import (
 	"net/http"
 
 	"github.com/standardbeagle/agnt/internal/config"
-	"github.com/standardbeagle/agnt/internal/debug"
 	"github.com/standardbeagle/agnt/internal/httpcaps"
 	"github.com/standardbeagle/agnt/internal/proxy"
 	"github.com/standardbeagle/agnt/internal/publish"
@@ -213,7 +212,8 @@ func (d *Daemon) startPublicListener() {
 	caps := httpcaps.Default()
 	ln = caps.LimitListener(ln)
 	addr := ln.Addr().String()
-	d.publicAddr.Store(&addr)
+	bound := &addr
+	d.publicAddr.Store(bound)
 	// Loud exposure advisory: setting AGNT_PUBLIC_ADDR is the opt-in, but a bare
 	// ":port" (or 0.0.0.0 / ::) binds ALL interfaces, making the plane
 	// LAN-reachable without a tunnel. Per the operator posture (AGNT.md § Exposure
@@ -230,8 +230,13 @@ func (d *Daemon) startPublicListener() {
 	srv := caps.NewServer(d.publicHandler)
 	d.publicServer = srv
 	d.goTracked(func() {
-		if serveErr := srv.Serve(ln); serveErr != nil && serveErr != http.ErrServerClosed {
-			debug.Warn("daemon", "public plane server exited: %v", serveErr)
+		serveErr := srv.Serve(ln)
+		// The plane is no longer listening, however Serve ended: stop
+		// reporting this address (CAS, so a later listener's is kept).
+		d.publicAddr.CompareAndSwap(bound, nil)
+		if serveErr != nil && serveErr != http.ErrServerClosed {
+			d.daemonStartupLog("error", "public_listener_failed",
+				fmt.Sprintf("public plane listener on %s stopped serving: %v", addr, serveErr))
 		}
 	})
 	d.daemonStartupLog("info", "public_listener_started",
