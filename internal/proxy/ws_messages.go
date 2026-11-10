@@ -3,6 +3,7 @@ package proxy
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -811,17 +812,15 @@ func (c *wsConnState) handlePanelMessage(msg *wsMessage) {
 	// Forward to the agent's terminal session if one is bound. Without one
 	// the message is only in the proxy log, where a channel-mode or watching
 	// agent reads it; the ack tells the sender which of the two happened.
-	if c.ps.overlayNotifier.IsEnabled() {
-		debug.Log("proxy", "forwarding panel_message to overlay (proxy_id=%s, endpoint=%s)", c.ps.ID, c.ps.overlayNotifier.GetEndpoint())
-		if err := c.ps.overlayNotifier.NotifyPanelMessage(c.ps.ID, &panelMsg); err != nil {
-			debug.Error("proxy", "panel_message not delivered to overlay on proxy %s: %v", c.ps.ID, err)
-			c.sendPanelAck(clientID, panelFailed, "the agent session did not accept it")
-		} else {
-			c.sendPanelAck(clientID, panelDelivered, "")
-		}
-	} else {
+	switch err := c.ps.overlayNotifier.NotifyPanelMessage(c.ps.ID, &panelMsg); {
+	case errors.Is(err, ErrOverlayUnbound):
 		debug.Log("proxy", "panel_message logged only: no overlay bound to proxy %s", c.ps.ID)
 		c.sendPanelAck(clientID, panelLogged, "")
+	case err != nil:
+		debug.Error("proxy", "panel_message not delivered to overlay on proxy %s: %v", c.ps.ID, err)
+		c.sendPanelAck(clientID, panelFailed, "the agent session did not accept it")
+	default:
+		c.sendPanelAck(clientID, panelDelivered, "")
 	}
 
 	// Update audit folder summary after saving new files. Best-effort

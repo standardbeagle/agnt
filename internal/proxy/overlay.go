@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -109,14 +110,22 @@ func (n *OverlayNotifier) IsEnabled() bool {
 	return n.enabled
 }
 
-// NotifyPanelMessage sends a panel message to the overlay.
+// ErrOverlayUnbound reports that no overlay endpoint was bound when an event
+// that must be delivered was sent.
+var ErrOverlayUnbound = errors.New("no overlay bound")
+
+// NotifyPanelMessage sends a panel message to the overlay. Unlike the other
+// notifications it reports an unbound notifier as ErrOverlayUnbound, checked
+// under the same lock as the send, because its caller acks the sender with
+// what happened: a separate IsEnabled check raced an unbind and acked a
+// message "delivered" that went nowhere.
 func (n *OverlayNotifier) NotifyPanelMessage(proxyID string, msg *PanelMessage) error {
-	return n.send(OverlayEvent{
+	return n.sendTo(OverlayEvent{
 		Type:      "panel_message",
 		ProxyID:   proxyID,
 		Timestamp: time.Now(),
 		Data:      msg,
-	})
+	}, true)
 }
 
 // NotifySketch sends a sketch to the overlay.
@@ -299,11 +308,20 @@ func (n *OverlayNotifier) startSender() {
 }
 
 func (n *OverlayNotifier) send(event OverlayEvent) error {
+	return n.sendTo(event, false)
+}
+
+// sendTo posts event to the bound overlay. With no overlay bound it returns
+// ErrOverlayUnbound when requireBound is set, nil otherwise.
+func (n *OverlayNotifier) sendTo(event OverlayEvent, requireBound bool) error {
 	n.mu.RLock()
 	if !n.enabled || n.client == nil {
 		n.mu.RUnlock()
 		debug.Log("overlay-notifier", "event %s dropped: notifier not enabled (enabled=%v, client=%v, socketPath=%q)",
 			event.Type, n.enabled, n.client != nil, n.socketPath)
+		if requireBound {
+			return ErrOverlayUnbound
+		}
 		return nil
 	}
 	client := n.client
