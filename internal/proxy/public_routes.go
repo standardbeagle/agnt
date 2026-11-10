@@ -393,19 +393,26 @@ func (h *PublicHandler) refuseUpstreamBusy(w http.ResponseWriter) {
 	http.Error(w, "upstream unavailable", http.StatusServiceUnavailable)
 }
 
-// revisionOf names the share's current revision for the subresource MAC. A
-// verifier that persists the digest answers from it; otherwise the revision is
-// digested here. "" means no revision can be named, and the caller then neither
-// signs nor verifies anything (fail closed).
+// revisionOf names rev's revision for the subresource MAC: rev's own content
+// digest, and only while it is still the share's current one. A verifier that
+// persists the digest is asked for the current one; a request whose resolved
+// revision was re-published since (above all, during its upstream fetch) gets
+// "". The current digest alone is not enough: read after a fetch of revision
+// A's upstream, it would sign A's references with B's revision (§16). ""
+// means no revision can be named, and the caller then neither signs nor
+// verifies anything (fail closed).
 func (h *PublicHandler) revisionOf(rev *publish.PublishedWalkthrough, shareID string) string {
+	own := string(revisionDigest(rev))
+	if own == "" {
+		return ""
+	}
 	if d, ok := h.verifier.(shareDigester); ok {
-		digest, live := d.ShareDigest(shareID)
-		if !live {
+		current, live := d.ShareDigest(shareID)
+		if !live || current != own {
 			return ""
 		}
-		return digest
 	}
-	return string(revisionDigest(rev))
+	return own
 }
 
 // WithRateLimits overrides the artifact and outbound rate limiters. It is the
@@ -674,9 +681,11 @@ func (h *PublicHandler) serveProxiedArtifact(w http.ResponseWriter, r *http.Requ
 	// /app/theme.css; resolving against the published URL would mint a signed
 	// reference to /theme.css instead.
 	//
-	// Each reference is also bound to the share's CURRENT revision, so a
-	// reference minted before the publisher edited the share (above all, before
-	// they pointed it at a different upstream) stops verifying (§16).
+	// Each reference is also bound to the revision that was fetched, while it
+	// is still the share's current one, so a reference minted before the
+	// publisher edited the share (above all, before they pointed it at a
+	// different upstream) stops verifying, and an edit landing mid-fetch leaves
+	// the document unsigned rather than signed under the new revision (§16).
 	body = rewriteUpstreamDocumentRefs(body, finalURL, token, shareID, h.revisionOf(rev, shareID), h.signer)
 
 	// First in the head, with any upstream meta CSP removed — see
