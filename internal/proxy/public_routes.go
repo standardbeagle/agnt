@@ -1460,11 +1460,11 @@ func resolveRedirectTarget(from, location string) (string, error) {
 // third-party origin, whereas on the dev plane the operator owns both ends. A
 // refusal is loud (502), never a silently un-spliced document.
 func checkUpstreamEncoding(resp *http.Response) error {
-	enc := strings.TrimSpace(strings.ToLower(resp.Header.Get("Content-Encoding")))
-	if enc == "" || enc == "identity" {
+	codings := contentCodings(resp.Header)
+	if len(codings) == 0 {
 		return nil
 	}
-	return fmt.Errorf("upstream: unsolicited Content-Encoding %q", enc)
+	return fmt.Errorf("upstream: unsolicited Content-Encoding %q", strings.Join(codings, ", "))
 }
 
 // readUpstreamDocument validates and reads one non-redirect upstream response.

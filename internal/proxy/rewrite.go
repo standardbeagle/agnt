@@ -83,11 +83,11 @@ func (ps *ProxyServer) modifyResponse(resp *http.Response) error {
 	}
 
 	// Check if response is compressed
-	encoding := strings.ToLower(resp.Header.Get("Content-Encoding"))
-	compressed := encoding != "" && encoding != "identity"
-	if compressed && !knownContentEncoding(encoding) {
-		// Unsupported encoding - pass through without modification
-		debug.Log("proxy", "Unsupported Content-Encoding: %s - passing through without injection", encoding)
+	encoding, decodable := decodableContentCoding(resp.Header)
+	compressed := encoding != ""
+	if !decodable {
+		// An unknown or stacked coding: pass through without modification.
+		debug.Log("proxy", "Undecodable Content-Encoding %q - passing through without injection", resp.Header.Values("Content-Encoding"))
 		return nil
 	}
 
@@ -825,36 +825,72 @@ func (ps *ProxyServer) rewriteURLsInBodyFor(req *http.Request, body []byte) []by
 	return result
 }
 
-// knownContentEncoding reports whether newDecoder can decode encoding.
-func knownContentEncoding(encoding string) bool {
-	return strings.Contains(encoding, "gzip") || strings.Contains(encoding, "deflate") ||
-		strings.Contains(encoding, "br") || strings.Contains(encoding, "zstd")
+// contentCodings returns every non-identity coding in h's Content-Encoding,
+// across comma-separated values and repeated header lines, lowercased.
+// Header.Get would see only the first line.
+func contentCodings(h http.Header) []string {
+	var codings []string
+	for _, line := range h.Values("Content-Encoding") {
+		for _, tok := range strings.Split(line, ",") {
+			tok = strings.ToLower(strings.TrimSpace(tok))
+			if tok != "" && tok != "identity" {
+				codings = append(codings, tok)
+			}
+		}
+	}
+	return codings
+}
+
+// decodableContentCoding returns the single coding newDecoder can remove
+// from a body with header h ("" for an identity body) and whether the body
+// can be decoded at all. Content-Encoding lists every coding applied, in
+// order, across comma-separated values and repeated header lines (RFC 9110
+// §8.4). The proxy removes one layer, so a stacked coding is undecodable:
+// decoding one layer and dropping the header would hand the browser bytes
+// still carrying the other. Codings are compared as exact tokens.
+func decodableContentCoding(h http.Header) (string, bool) {
+	codings := contentCodings(h)
+	switch {
+	case len(codings) == 0:
+		return "", true
+	case len(codings) > 1:
+		return "", false
+	}
+	switch codings[0] {
+	case "gzip", "x-gzip":
+		return "gzip", true
+	case "deflate", "br", "zstd":
+		return codings[0], true
+	}
+	return "", false
 }
 
 // newDecoder opens the decompressor for encoding over r. closer releases it
 // (zstd's owns goroutines).
 func newDecoder(encoding string, r io.Reader) (io.Reader, func(), error) {
-	switch {
-	case strings.Contains(encoding, "gzip"):
+	switch encoding {
+	case "gzip":
 		gz, err := gzip.NewReader(r)
 		if err != nil {
 			return nil, nil, err
 		}
 		return gz, func() { gz.Close() }, nil
-	case strings.Contains(encoding, "deflate"):
+	case "deflate":
 		df, err := newDeflateReader(r)
 		if err != nil {
 			return nil, nil, err
 		}
 		return df, func() { df.Close() }, nil
-	case strings.Contains(encoding, "br"):
+	case "br":
 		return brotli.NewReader(r), func() {}, nil
-	default:
+	case "zstd":
 		zr, err := zstd.NewReader(r)
 		if err != nil {
 			return nil, nil, err
 		}
 		return zr, zr.Close, nil
+	default:
+		return nil, nil, fmt.Errorf("no decoder for content coding %q", encoding)
 	}
 }
 

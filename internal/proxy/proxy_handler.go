@@ -887,8 +887,8 @@ func (rr *responseRecorder) WriteHeader(statusCode int) {
 // payload), or "" when it should be captured. An absent Content-Type is
 // captured: the type is unknown and the body may well be text.
 func uncapturableBodyType(h http.Header) string {
-	if enc := strings.ToLower(strings.TrimSpace(h.Get("Content-Encoding"))); enc != "" && enc != "identity" {
-		return "content-encoded " + enc
+	if codings := contentCodings(h); len(codings) > 0 {
+		return "content-encoded " + strings.Join(codings, ", ")
 	}
 	ct := strings.ToLower(strings.TrimSpace(h.Get("Content-Type")))
 	if ct == "" {
