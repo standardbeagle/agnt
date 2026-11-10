@@ -1,4 +1,4 @@
-// Copyright 2024 Google LLC
+// Copyright 2026 Google LLC
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,7 +21,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
+	"log/slog"
 	"math"
 	"net/http"
 	"net/url"
@@ -31,7 +31,6 @@ import (
 	iampb "cloud.google.com/go/iam/apiv1/iampb"
 	longrunningpb "cloud.google.com/go/longrunning/autogen/longrunningpb"
 	gax "github.com/googleapis/gax-go/v2"
-	"google.golang.org/api/googleapi"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 	"google.golang.org/api/option/internaloption"
@@ -64,6 +63,7 @@ type PredictionCallOptions struct {
 	GenerateContent        []gax.CallOption
 	StreamGenerateContent  []gax.CallOption
 	ChatCompletions        []gax.CallOption
+	EmbedContent           []gax.CallOption
 	GetLocation            []gax.CallOption
 	ListLocations          []gax.CallOption
 	GetIamPolicy           []gax.CallOption
@@ -112,6 +112,7 @@ func defaultPredictionCallOptions() *PredictionCallOptions {
 		GenerateContent:       []gax.CallOption{},
 		StreamGenerateContent: []gax.CallOption{},
 		ChatCompletions:       []gax.CallOption{},
+		EmbedContent:          []gax.CallOption{},
 		GetLocation:           []gax.CallOption{},
 		ListLocations:         []gax.CallOption{},
 		GetIamPolicy:          []gax.CallOption{},
@@ -146,6 +147,7 @@ func defaultPredictionRESTCallOptions() *PredictionCallOptions {
 		GenerateContent:       []gax.CallOption{},
 		StreamGenerateContent: []gax.CallOption{},
 		ChatCompletions:       []gax.CallOption{},
+		EmbedContent:          []gax.CallOption{},
 		GetLocation:           []gax.CallOption{},
 		ListLocations:         []gax.CallOption{},
 		GetIamPolicy:          []gax.CallOption{},
@@ -179,6 +181,7 @@ type internalPredictionClient interface {
 	GenerateContent(context.Context, *aiplatformpb.GenerateContentRequest, ...gax.CallOption) (*aiplatformpb.GenerateContentResponse, error)
 	StreamGenerateContent(context.Context, *aiplatformpb.GenerateContentRequest, ...gax.CallOption) (aiplatformpb.PredictionService_StreamGenerateContentClient, error)
 	ChatCompletions(context.Context, *aiplatformpb.ChatCompletionsRequest, ...gax.CallOption) (aiplatformpb.PredictionService_ChatCompletionsClient, error)
+	EmbedContent(context.Context, *aiplatformpb.EmbedContentRequest, ...gax.CallOption) (*aiplatformpb.EmbedContentResponse, error)
 	GetLocation(context.Context, *locationpb.GetLocationRequest, ...gax.CallOption) (*locationpb.Location, error)
 	ListLocations(context.Context, *locationpb.ListLocationsRequest, ...gax.CallOption) *LocationIterator
 	GetIamPolicy(context.Context, *iampb.GetIamPolicyRequest, ...gax.CallOption) (*iampb.Policy, error)
@@ -335,6 +338,11 @@ func (c *PredictionClient) ChatCompletions(ctx context.Context, req *aiplatformp
 	return c.internalClient.ChatCompletions(ctx, req, opts...)
 }
 
+// EmbedContent embed content with multimodal inputs.
+func (c *PredictionClient) EmbedContent(ctx context.Context, req *aiplatformpb.EmbedContentRequest, opts ...gax.CallOption) (*aiplatformpb.EmbedContentResponse, error) {
+	return c.internalClient.EmbedContent(ctx, req, opts...)
+}
+
 // GetLocation gets information about a location.
 func (c *PredictionClient) GetLocation(ctx context.Context, req *locationpb.GetLocationRequest, opts ...gax.CallOption) (*locationpb.Location, error) {
 	return c.internalClient.GetLocation(ctx, req, opts...)
@@ -417,6 +425,8 @@ type predictionGRPCClient struct {
 
 	// The x-goog-* metadata to be sent with each request.
 	xGoogHeaders []string
+
+	logger *slog.Logger
 }
 
 // NewPredictionClient creates a new prediction service client based on gRPC.
@@ -443,6 +453,7 @@ func NewPredictionClient(ctx context.Context, opts ...option.ClientOption) (*Pre
 		connPool:         connPool,
 		predictionClient: aiplatformpb.NewPredictionServiceClient(connPool),
 		CallOptions:      &client.CallOptions,
+		logger:           internaloption.GetLogger(opts),
 		operationsClient: longrunningpb.NewOperationsClient(connPool),
 		iamPolicyClient:  iampb.NewIAMPolicyClient(connPool),
 		locationsClient:  locationpb.NewLocationsClient(connPool),
@@ -467,7 +478,7 @@ func (c *predictionGRPCClient) Connection() *grpc.ClientConn {
 // use by Google-written clients.
 func (c *predictionGRPCClient) setGoogleClientInfo(keyval ...string) {
 	kv := append([]string{"gl-go", gax.GoVersion}, keyval...)
-	kv = append(kv, "gapic", getVersionClient(), "gax", gax.Version, "grpc", grpc.Version)
+	kv = append(kv, "gapic", getVersionClient(), "gax", gax.Version, "grpc", grpc.Version, "pb", protoVersion)
 	c.xGoogHeaders = []string{
 		"x-goog-api-client", gax.XGoogHeader(kv...),
 	}
@@ -492,6 +503,8 @@ type predictionRESTClient struct {
 
 	// Points back to the CallOptions field of the containing PredictionClient
 	CallOptions **PredictionCallOptions
+
+	logger *slog.Logger
 }
 
 // NewPredictionRESTClient creates a new prediction service rest client.
@@ -509,6 +522,7 @@ func NewPredictionRESTClient(ctx context.Context, opts ...option.ClientOption) (
 		endpoint:    endpoint,
 		httpClient:  httpClient,
 		CallOptions: &callOpts,
+		logger:      internaloption.GetLogger(opts),
 	}
 	c.setGoogleClientInfo()
 
@@ -532,7 +546,7 @@ func defaultPredictionRESTClientOptions() []option.ClientOption {
 // use by Google-written clients.
 func (c *predictionRESTClient) setGoogleClientInfo(keyval ...string) {
 	kv := append([]string{"gl-go", gax.GoVersion}, keyval...)
-	kv = append(kv, "gapic", getVersionClient(), "gax", gax.Version, "rest", "UNKNOWN")
+	kv = append(kv, "gapic", getVersionClient(), "gax", gax.Version, "rest", "UNKNOWN", "pb", protoVersion)
 	c.xGoogHeaders = []string{
 		"x-goog-api-client", gax.XGoogHeader(kv...),
 	}
@@ -561,7 +575,7 @@ func (c *predictionGRPCClient) Predict(ctx context.Context, req *aiplatformpb.Pr
 	var resp *aiplatformpb.PredictResponse
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
-		resp, err = c.predictionClient.Predict(ctx, req, settings.GRPC...)
+		resp, err = executeRPC(ctx, c.predictionClient.Predict, req, settings.GRPC, c.logger, "Predict")
 		return err
 	}, opts...)
 	if err != nil {
@@ -579,7 +593,7 @@ func (c *predictionGRPCClient) RawPredict(ctx context.Context, req *aiplatformpb
 	var resp *httpbodypb.HttpBody
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
-		resp, err = c.predictionClient.RawPredict(ctx, req, settings.GRPC...)
+		resp, err = executeRPC(ctx, c.predictionClient.RawPredict, req, settings.GRPC, c.logger, "RawPredict")
 		return err
 	}, opts...)
 	if err != nil {
@@ -597,7 +611,9 @@ func (c *predictionGRPCClient) StreamRawPredict(ctx context.Context, req *aiplat
 	var resp aiplatformpb.PredictionService_StreamRawPredictClient
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
+		c.logger.DebugContext(ctx, "api streaming client request", "serviceName", serviceName, "rpcName", "StreamRawPredict")
 		resp, err = c.predictionClient.StreamRawPredict(ctx, req, settings.GRPC...)
+		c.logger.DebugContext(ctx, "api streaming client response", "serviceName", serviceName, "rpcName", "StreamRawPredict")
 		return err
 	}, opts...)
 	if err != nil {
@@ -615,7 +631,7 @@ func (c *predictionGRPCClient) DirectPredict(ctx context.Context, req *aiplatfor
 	var resp *aiplatformpb.DirectPredictResponse
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
-		resp, err = c.predictionClient.DirectPredict(ctx, req, settings.GRPC...)
+		resp, err = executeRPC(ctx, c.predictionClient.DirectPredict, req, settings.GRPC, c.logger, "DirectPredict")
 		return err
 	}, opts...)
 	if err != nil {
@@ -633,7 +649,7 @@ func (c *predictionGRPCClient) DirectRawPredict(ctx context.Context, req *aiplat
 	var resp *aiplatformpb.DirectRawPredictResponse
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
-		resp, err = c.predictionClient.DirectRawPredict(ctx, req, settings.GRPC...)
+		resp, err = executeRPC(ctx, c.predictionClient.DirectRawPredict, req, settings.GRPC, c.logger, "DirectRawPredict")
 		return err
 	}, opts...)
 	if err != nil {
@@ -648,7 +664,9 @@ func (c *predictionGRPCClient) StreamDirectPredict(ctx context.Context, opts ...
 	opts = append((*c.CallOptions).StreamDirectPredict[0:len((*c.CallOptions).StreamDirectPredict):len((*c.CallOptions).StreamDirectPredict)], opts...)
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
+		c.logger.DebugContext(ctx, "api streaming client request", "serviceName", serviceName, "rpcName", "StreamDirectPredict")
 		resp, err = c.predictionClient.StreamDirectPredict(ctx, settings.GRPC...)
+		c.logger.DebugContext(ctx, "api streaming client response", "serviceName", serviceName, "rpcName", "StreamDirectPredict")
 		return err
 	}, opts...)
 	if err != nil {
@@ -663,7 +681,9 @@ func (c *predictionGRPCClient) StreamDirectRawPredict(ctx context.Context, opts 
 	opts = append((*c.CallOptions).StreamDirectRawPredict[0:len((*c.CallOptions).StreamDirectRawPredict):len((*c.CallOptions).StreamDirectRawPredict)], opts...)
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
+		c.logger.DebugContext(ctx, "api streaming client request", "serviceName", serviceName, "rpcName", "StreamDirectRawPredict")
 		resp, err = c.predictionClient.StreamDirectRawPredict(ctx, settings.GRPC...)
+		c.logger.DebugContext(ctx, "api streaming client response", "serviceName", serviceName, "rpcName", "StreamDirectRawPredict")
 		return err
 	}, opts...)
 	if err != nil {
@@ -678,7 +698,9 @@ func (c *predictionGRPCClient) StreamingPredict(ctx context.Context, opts ...gax
 	opts = append((*c.CallOptions).StreamingPredict[0:len((*c.CallOptions).StreamingPredict):len((*c.CallOptions).StreamingPredict)], opts...)
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
+		c.logger.DebugContext(ctx, "api streaming client request", "serviceName", serviceName, "rpcName", "StreamingPredict")
 		resp, err = c.predictionClient.StreamingPredict(ctx, settings.GRPC...)
+		c.logger.DebugContext(ctx, "api streaming client response", "serviceName", serviceName, "rpcName", "StreamingPredict")
 		return err
 	}, opts...)
 	if err != nil {
@@ -696,7 +718,9 @@ func (c *predictionGRPCClient) ServerStreamingPredict(ctx context.Context, req *
 	var resp aiplatformpb.PredictionService_ServerStreamingPredictClient
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
+		c.logger.DebugContext(ctx, "api streaming client request", "serviceName", serviceName, "rpcName", "ServerStreamingPredict")
 		resp, err = c.predictionClient.ServerStreamingPredict(ctx, req, settings.GRPC...)
+		c.logger.DebugContext(ctx, "api streaming client response", "serviceName", serviceName, "rpcName", "ServerStreamingPredict")
 		return err
 	}, opts...)
 	if err != nil {
@@ -711,7 +735,9 @@ func (c *predictionGRPCClient) StreamingRawPredict(ctx context.Context, opts ...
 	opts = append((*c.CallOptions).StreamingRawPredict[0:len((*c.CallOptions).StreamingRawPredict):len((*c.CallOptions).StreamingRawPredict)], opts...)
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
+		c.logger.DebugContext(ctx, "api streaming client request", "serviceName", serviceName, "rpcName", "StreamingRawPredict")
 		resp, err = c.predictionClient.StreamingRawPredict(ctx, settings.GRPC...)
+		c.logger.DebugContext(ctx, "api streaming client response", "serviceName", serviceName, "rpcName", "StreamingRawPredict")
 		return err
 	}, opts...)
 	if err != nil {
@@ -729,7 +755,7 @@ func (c *predictionGRPCClient) Explain(ctx context.Context, req *aiplatformpb.Ex
 	var resp *aiplatformpb.ExplainResponse
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
-		resp, err = c.predictionClient.Explain(ctx, req, settings.GRPC...)
+		resp, err = executeRPC(ctx, c.predictionClient.Explain, req, settings.GRPC, c.logger, "Explain")
 		return err
 	}, opts...)
 	if err != nil {
@@ -747,7 +773,7 @@ func (c *predictionGRPCClient) CountTokens(ctx context.Context, req *aiplatformp
 	var resp *aiplatformpb.CountTokensResponse
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
-		resp, err = c.predictionClient.CountTokens(ctx, req, settings.GRPC...)
+		resp, err = executeRPC(ctx, c.predictionClient.CountTokens, req, settings.GRPC, c.logger, "CountTokens")
 		return err
 	}, opts...)
 	if err != nil {
@@ -765,7 +791,7 @@ func (c *predictionGRPCClient) GenerateContent(ctx context.Context, req *aiplatf
 	var resp *aiplatformpb.GenerateContentResponse
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
-		resp, err = c.predictionClient.GenerateContent(ctx, req, settings.GRPC...)
+		resp, err = executeRPC(ctx, c.predictionClient.GenerateContent, req, settings.GRPC, c.logger, "GenerateContent")
 		return err
 	}, opts...)
 	if err != nil {
@@ -783,7 +809,9 @@ func (c *predictionGRPCClient) StreamGenerateContent(ctx context.Context, req *a
 	var resp aiplatformpb.PredictionService_StreamGenerateContentClient
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
+		c.logger.DebugContext(ctx, "api streaming client request", "serviceName", serviceName, "rpcName", "StreamGenerateContent")
 		resp, err = c.predictionClient.StreamGenerateContent(ctx, req, settings.GRPC...)
+		c.logger.DebugContext(ctx, "api streaming client response", "serviceName", serviceName, "rpcName", "StreamGenerateContent")
 		return err
 	}, opts...)
 	if err != nil {
@@ -801,7 +829,27 @@ func (c *predictionGRPCClient) ChatCompletions(ctx context.Context, req *aiplatf
 	var resp aiplatformpb.PredictionService_ChatCompletionsClient
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
+		c.logger.DebugContext(ctx, "api streaming client request", "serviceName", serviceName, "rpcName", "ChatCompletions")
 		resp, err = c.predictionClient.ChatCompletions(ctx, req, settings.GRPC...)
+		c.logger.DebugContext(ctx, "api streaming client response", "serviceName", serviceName, "rpcName", "ChatCompletions")
+		return err
+	}, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *predictionGRPCClient) EmbedContent(ctx context.Context, req *aiplatformpb.EmbedContentRequest, opts ...gax.CallOption) (*aiplatformpb.EmbedContentResponse, error) {
+	hds := []string{"x-goog-request-params", fmt.Sprintf("%s=%v", "model", url.QueryEscape(req.GetModel()))}
+
+	hds = append(c.xGoogHeaders, hds...)
+	ctx = gax.InsertMetadataIntoOutgoingContext(ctx, hds...)
+	opts = append((*c.CallOptions).EmbedContent[0:len((*c.CallOptions).EmbedContent):len((*c.CallOptions).EmbedContent)], opts...)
+	var resp *aiplatformpb.EmbedContentResponse
+	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
+		var err error
+		resp, err = executeRPC(ctx, c.predictionClient.EmbedContent, req, settings.GRPC, c.logger, "EmbedContent")
 		return err
 	}, opts...)
 	if err != nil {
@@ -819,7 +867,7 @@ func (c *predictionGRPCClient) GetLocation(ctx context.Context, req *locationpb.
 	var resp *locationpb.Location
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
-		resp, err = c.locationsClient.GetLocation(ctx, req, settings.GRPC...)
+		resp, err = executeRPC(ctx, c.locationsClient.GetLocation, req, settings.GRPC, c.logger, "GetLocation")
 		return err
 	}, opts...)
 	if err != nil {
@@ -848,7 +896,7 @@ func (c *predictionGRPCClient) ListLocations(ctx context.Context, req *locationp
 		}
 		err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 			var err error
-			resp, err = c.locationsClient.ListLocations(ctx, req, settings.GRPC...)
+			resp, err = executeRPC(ctx, c.locationsClient.ListLocations, req, settings.GRPC, c.logger, "ListLocations")
 			return err
 		}, opts...)
 		if err != nil {
@@ -883,7 +931,7 @@ func (c *predictionGRPCClient) GetIamPolicy(ctx context.Context, req *iampb.GetI
 	var resp *iampb.Policy
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
-		resp, err = c.iamPolicyClient.GetIamPolicy(ctx, req, settings.GRPC...)
+		resp, err = executeRPC(ctx, c.iamPolicyClient.GetIamPolicy, req, settings.GRPC, c.logger, "GetIamPolicy")
 		return err
 	}, opts...)
 	if err != nil {
@@ -901,7 +949,7 @@ func (c *predictionGRPCClient) SetIamPolicy(ctx context.Context, req *iampb.SetI
 	var resp *iampb.Policy
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
-		resp, err = c.iamPolicyClient.SetIamPolicy(ctx, req, settings.GRPC...)
+		resp, err = executeRPC(ctx, c.iamPolicyClient.SetIamPolicy, req, settings.GRPC, c.logger, "SetIamPolicy")
 		return err
 	}, opts...)
 	if err != nil {
@@ -919,7 +967,7 @@ func (c *predictionGRPCClient) TestIamPermissions(ctx context.Context, req *iamp
 	var resp *iampb.TestIamPermissionsResponse
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
-		resp, err = c.iamPolicyClient.TestIamPermissions(ctx, req, settings.GRPC...)
+		resp, err = executeRPC(ctx, c.iamPolicyClient.TestIamPermissions, req, settings.GRPC, c.logger, "TestIamPermissions")
 		return err
 	}, opts...)
 	if err != nil {
@@ -936,7 +984,7 @@ func (c *predictionGRPCClient) CancelOperation(ctx context.Context, req *longrun
 	opts = append((*c.CallOptions).CancelOperation[0:len((*c.CallOptions).CancelOperation):len((*c.CallOptions).CancelOperation)], opts...)
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
-		_, err = c.operationsClient.CancelOperation(ctx, req, settings.GRPC...)
+		_, err = executeRPC(ctx, c.operationsClient.CancelOperation, req, settings.GRPC, c.logger, "CancelOperation")
 		return err
 	}, opts...)
 	return err
@@ -950,7 +998,7 @@ func (c *predictionGRPCClient) DeleteOperation(ctx context.Context, req *longrun
 	opts = append((*c.CallOptions).DeleteOperation[0:len((*c.CallOptions).DeleteOperation):len((*c.CallOptions).DeleteOperation)], opts...)
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
-		_, err = c.operationsClient.DeleteOperation(ctx, req, settings.GRPC...)
+		_, err = executeRPC(ctx, c.operationsClient.DeleteOperation, req, settings.GRPC, c.logger, "DeleteOperation")
 		return err
 	}, opts...)
 	return err
@@ -965,7 +1013,7 @@ func (c *predictionGRPCClient) GetOperation(ctx context.Context, req *longrunnin
 	var resp *longrunningpb.Operation
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
-		resp, err = c.operationsClient.GetOperation(ctx, req, settings.GRPC...)
+		resp, err = executeRPC(ctx, c.operationsClient.GetOperation, req, settings.GRPC, c.logger, "GetOperation")
 		return err
 	}, opts...)
 	if err != nil {
@@ -994,7 +1042,7 @@ func (c *predictionGRPCClient) ListOperations(ctx context.Context, req *longrunn
 		}
 		err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 			var err error
-			resp, err = c.operationsClient.ListOperations(ctx, req, settings.GRPC...)
+			resp, err = executeRPC(ctx, c.operationsClient.ListOperations, req, settings.GRPC, c.logger, "ListOperations")
 			return err
 		}, opts...)
 		if err != nil {
@@ -1029,7 +1077,7 @@ func (c *predictionGRPCClient) WaitOperation(ctx context.Context, req *longrunni
 	var resp *longrunningpb.Operation
 	err := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		var err error
-		resp, err = c.operationsClient.WaitOperation(ctx, req, settings.GRPC...)
+		resp, err = executeRPC(ctx, c.operationsClient.WaitOperation, req, settings.GRPC, c.logger, "WaitOperation")
 		return err
 	}, opts...)
 	if err != nil {
@@ -1077,17 +1125,7 @@ func (c *predictionRESTClient) Predict(ctx context.Context, req *aiplatformpb.Pr
 		httpReq = httpReq.WithContext(ctx)
 		httpReq.Header = headers
 
-		httpRsp, err := c.httpClient.Do(httpReq)
-		if err != nil {
-			return err
-		}
-		defer httpRsp.Body.Close()
-
-		if err = googleapi.CheckResponse(httpRsp); err != nil {
-			return err
-		}
-
-		buf, err := io.ReadAll(httpRsp.Body)
+		buf, err := executeHTTPRequest(ctx, c.httpClient, httpReq, c.logger, jsonReq, "Predict")
 		if err != nil {
 			return err
 		}
@@ -1152,17 +1190,7 @@ func (c *predictionRESTClient) RawPredict(ctx context.Context, req *aiplatformpb
 		httpReq = httpReq.WithContext(ctx)
 		httpReq.Header = headers
 
-		httpRsp, err := c.httpClient.Do(httpReq)
-		if err != nil {
-			return err
-		}
-		defer httpRsp.Body.Close()
-
-		if err = googleapi.CheckResponse(httpRsp); err != nil {
-			return err
-		}
-
-		buf, err := io.ReadAll(httpRsp.Body)
+		buf, httpRsp, err := executeHTTPRequestWithResponse(ctx, c.httpClient, httpReq, c.logger, jsonReq, "RawPredict")
 		if err != nil {
 			return err
 		}
@@ -1205,7 +1233,7 @@ func (c *predictionRESTClient) StreamRawPredict(ctx context.Context, req *aiplat
 	hds = append(c.xGoogHeaders, hds...)
 	hds = append(hds, "Content-Type", "application/json")
 	headers := gax.BuildHeaders(ctx, hds...)
-	var streamClient *streamRawPredictRESTClient
+	var streamClient *streamRawPredictRESTStreamClient
 	e := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		if settings.Path != "" {
 			baseUrl.Path = settings.Path
@@ -1217,16 +1245,12 @@ func (c *predictionRESTClient) StreamRawPredict(ctx context.Context, req *aiplat
 		httpReq = httpReq.WithContext(ctx)
 		httpReq.Header = headers
 
-		httpRsp, err := c.httpClient.Do(httpReq)
+		httpRsp, err := executeStreamingHTTPRequest(ctx, c.httpClient, httpReq, c.logger, jsonReq, "StreamRawPredict")
 		if err != nil {
 			return err
 		}
 
-		if err = googleapi.CheckResponse(httpRsp); err != nil {
-			return err
-		}
-
-		streamClient = &streamRawPredictRESTClient{
+		streamClient = &streamRawPredictRESTStreamClient{
 			ctx:    ctx,
 			md:     metadata.MD(httpRsp.Header),
 			stream: gax.NewProtoJSONStreamReader(httpRsp.Body, (&httpbodypb.HttpBody{}).ProtoReflect().Type()),
@@ -1237,15 +1261,15 @@ func (c *predictionRESTClient) StreamRawPredict(ctx context.Context, req *aiplat
 	return streamClient, e
 }
 
-// streamRawPredictRESTClient is the stream client used to consume the server stream created by
+// streamRawPredictRESTStreamClient is the stream client used to consume the server stream created by
 // the REST implementation of StreamRawPredict.
-type streamRawPredictRESTClient struct {
+type streamRawPredictRESTStreamClient struct {
 	ctx    context.Context
 	md     metadata.MD
 	stream *gax.ProtoJSONStream
 }
 
-func (c *streamRawPredictRESTClient) Recv() (*httpbodypb.HttpBody, error) {
+func (c *streamRawPredictRESTStreamClient) Recv() (*httpbodypb.HttpBody, error) {
 	if err := c.ctx.Err(); err != nil {
 		defer c.stream.Close()
 		return nil, err
@@ -1259,29 +1283,29 @@ func (c *streamRawPredictRESTClient) Recv() (*httpbodypb.HttpBody, error) {
 	return res, nil
 }
 
-func (c *streamRawPredictRESTClient) Header() (metadata.MD, error) {
+func (c *streamRawPredictRESTStreamClient) Header() (metadata.MD, error) {
 	return c.md, nil
 }
 
-func (c *streamRawPredictRESTClient) Trailer() metadata.MD {
+func (c *streamRawPredictRESTStreamClient) Trailer() metadata.MD {
 	return c.md
 }
 
-func (c *streamRawPredictRESTClient) CloseSend() error {
+func (c *streamRawPredictRESTStreamClient) CloseSend() error {
 	// This is a no-op to fulfill the interface.
 	return errors.New("this method is not implemented for a server-stream")
 }
 
-func (c *streamRawPredictRESTClient) Context() context.Context {
+func (c *streamRawPredictRESTStreamClient) Context() context.Context {
 	return c.ctx
 }
 
-func (c *streamRawPredictRESTClient) SendMsg(m interface{}) error {
+func (c *streamRawPredictRESTStreamClient) SendMsg(m interface{}) error {
 	// This is a no-op to fulfill the interface.
 	return errors.New("this method is not implemented for a server-stream")
 }
 
-func (c *streamRawPredictRESTClient) RecvMsg(m interface{}) error {
+func (c *streamRawPredictRESTStreamClient) RecvMsg(m interface{}) error {
 	// This is a no-op to fulfill the interface.
 	return errors.New("this method is not implemented, use Recv")
 }
@@ -1326,17 +1350,7 @@ func (c *predictionRESTClient) DirectPredict(ctx context.Context, req *aiplatfor
 		httpReq = httpReq.WithContext(ctx)
 		httpReq.Header = headers
 
-		httpRsp, err := c.httpClient.Do(httpReq)
-		if err != nil {
-			return err
-		}
-		defer httpRsp.Body.Close()
-
-		if err = googleapi.CheckResponse(httpRsp); err != nil {
-			return err
-		}
-
-		buf, err := io.ReadAll(httpRsp.Body)
+		buf, err := executeHTTPRequest(ctx, c.httpClient, httpReq, c.logger, jsonReq, "DirectPredict")
 		if err != nil {
 			return err
 		}
@@ -1393,17 +1407,7 @@ func (c *predictionRESTClient) DirectRawPredict(ctx context.Context, req *aiplat
 		httpReq = httpReq.WithContext(ctx)
 		httpReq.Header = headers
 
-		httpRsp, err := c.httpClient.Do(httpReq)
-		if err != nil {
-			return err
-		}
-		defer httpRsp.Body.Close()
-
-		if err = googleapi.CheckResponse(httpRsp); err != nil {
-			return err
-		}
-
-		buf, err := io.ReadAll(httpRsp.Body)
+		buf, err := executeHTTPRequest(ctx, c.httpClient, httpReq, c.logger, jsonReq, "DirectRawPredict")
 		if err != nil {
 			return err
 		}
@@ -1470,7 +1474,7 @@ func (c *predictionRESTClient) ServerStreamingPredict(ctx context.Context, req *
 	hds = append(c.xGoogHeaders, hds...)
 	hds = append(hds, "Content-Type", "application/json")
 	headers := gax.BuildHeaders(ctx, hds...)
-	var streamClient *serverStreamingPredictRESTClient
+	var streamClient *serverStreamingPredictRESTStreamClient
 	e := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		if settings.Path != "" {
 			baseUrl.Path = settings.Path
@@ -1482,16 +1486,12 @@ func (c *predictionRESTClient) ServerStreamingPredict(ctx context.Context, req *
 		httpReq = httpReq.WithContext(ctx)
 		httpReq.Header = headers
 
-		httpRsp, err := c.httpClient.Do(httpReq)
+		httpRsp, err := executeStreamingHTTPRequest(ctx, c.httpClient, httpReq, c.logger, jsonReq, "ServerStreamingPredict")
 		if err != nil {
 			return err
 		}
 
-		if err = googleapi.CheckResponse(httpRsp); err != nil {
-			return err
-		}
-
-		streamClient = &serverStreamingPredictRESTClient{
+		streamClient = &serverStreamingPredictRESTStreamClient{
 			ctx:    ctx,
 			md:     metadata.MD(httpRsp.Header),
 			stream: gax.NewProtoJSONStreamReader(httpRsp.Body, (&aiplatformpb.StreamingPredictResponse{}).ProtoReflect().Type()),
@@ -1502,15 +1502,15 @@ func (c *predictionRESTClient) ServerStreamingPredict(ctx context.Context, req *
 	return streamClient, e
 }
 
-// serverStreamingPredictRESTClient is the stream client used to consume the server stream created by
+// serverStreamingPredictRESTStreamClient is the stream client used to consume the server stream created by
 // the REST implementation of ServerStreamingPredict.
-type serverStreamingPredictRESTClient struct {
+type serverStreamingPredictRESTStreamClient struct {
 	ctx    context.Context
 	md     metadata.MD
 	stream *gax.ProtoJSONStream
 }
 
-func (c *serverStreamingPredictRESTClient) Recv() (*aiplatformpb.StreamingPredictResponse, error) {
+func (c *serverStreamingPredictRESTStreamClient) Recv() (*aiplatformpb.StreamingPredictResponse, error) {
 	if err := c.ctx.Err(); err != nil {
 		defer c.stream.Close()
 		return nil, err
@@ -1524,29 +1524,29 @@ func (c *serverStreamingPredictRESTClient) Recv() (*aiplatformpb.StreamingPredic
 	return res, nil
 }
 
-func (c *serverStreamingPredictRESTClient) Header() (metadata.MD, error) {
+func (c *serverStreamingPredictRESTStreamClient) Header() (metadata.MD, error) {
 	return c.md, nil
 }
 
-func (c *serverStreamingPredictRESTClient) Trailer() metadata.MD {
+func (c *serverStreamingPredictRESTStreamClient) Trailer() metadata.MD {
 	return c.md
 }
 
-func (c *serverStreamingPredictRESTClient) CloseSend() error {
+func (c *serverStreamingPredictRESTStreamClient) CloseSend() error {
 	// This is a no-op to fulfill the interface.
 	return errors.New("this method is not implemented for a server-stream")
 }
 
-func (c *serverStreamingPredictRESTClient) Context() context.Context {
+func (c *serverStreamingPredictRESTStreamClient) Context() context.Context {
 	return c.ctx
 }
 
-func (c *serverStreamingPredictRESTClient) SendMsg(m interface{}) error {
+func (c *serverStreamingPredictRESTStreamClient) SendMsg(m interface{}) error {
 	// This is a no-op to fulfill the interface.
 	return errors.New("this method is not implemented for a server-stream")
 }
 
-func (c *serverStreamingPredictRESTClient) RecvMsg(m interface{}) error {
+func (c *serverStreamingPredictRESTStreamClient) RecvMsg(m interface{}) error {
 	// This is a no-op to fulfill the interface.
 	return errors.New("this method is not implemented, use Recv")
 }
@@ -1607,17 +1607,7 @@ func (c *predictionRESTClient) Explain(ctx context.Context, req *aiplatformpb.Ex
 		httpReq = httpReq.WithContext(ctx)
 		httpReq.Header = headers
 
-		httpRsp, err := c.httpClient.Do(httpReq)
-		if err != nil {
-			return err
-		}
-		defer httpRsp.Body.Close()
-
-		if err = googleapi.CheckResponse(httpRsp); err != nil {
-			return err
-		}
-
-		buf, err := io.ReadAll(httpRsp.Body)
+		buf, err := executeHTTPRequest(ctx, c.httpClient, httpReq, c.logger, jsonReq, "Explain")
 		if err != nil {
 			return err
 		}
@@ -1673,17 +1663,7 @@ func (c *predictionRESTClient) CountTokens(ctx context.Context, req *aiplatformp
 		httpReq = httpReq.WithContext(ctx)
 		httpReq.Header = headers
 
-		httpRsp, err := c.httpClient.Do(httpReq)
-		if err != nil {
-			return err
-		}
-		defer httpRsp.Body.Close()
-
-		if err = googleapi.CheckResponse(httpRsp); err != nil {
-			return err
-		}
-
-		buf, err := io.ReadAll(httpRsp.Body)
+		buf, err := executeHTTPRequest(ctx, c.httpClient, httpReq, c.logger, jsonReq, "CountTokens")
 		if err != nil {
 			return err
 		}
@@ -1739,17 +1719,7 @@ func (c *predictionRESTClient) GenerateContent(ctx context.Context, req *aiplatf
 		httpReq = httpReq.WithContext(ctx)
 		httpReq.Header = headers
 
-		httpRsp, err := c.httpClient.Do(httpReq)
-		if err != nil {
-			return err
-		}
-		defer httpRsp.Body.Close()
-
-		if err = googleapi.CheckResponse(httpRsp); err != nil {
-			return err
-		}
-
-		buf, err := io.ReadAll(httpRsp.Body)
+		buf, err := executeHTTPRequest(ctx, c.httpClient, httpReq, c.logger, jsonReq, "GenerateContent")
 		if err != nil {
 			return err
 		}
@@ -1791,7 +1761,7 @@ func (c *predictionRESTClient) StreamGenerateContent(ctx context.Context, req *a
 	hds = append(c.xGoogHeaders, hds...)
 	hds = append(hds, "Content-Type", "application/json")
 	headers := gax.BuildHeaders(ctx, hds...)
-	var streamClient *streamGenerateContentRESTClient
+	var streamClient *streamGenerateContentRESTStreamClient
 	e := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		if settings.Path != "" {
 			baseUrl.Path = settings.Path
@@ -1803,16 +1773,12 @@ func (c *predictionRESTClient) StreamGenerateContent(ctx context.Context, req *a
 		httpReq = httpReq.WithContext(ctx)
 		httpReq.Header = headers
 
-		httpRsp, err := c.httpClient.Do(httpReq)
+		httpRsp, err := executeStreamingHTTPRequest(ctx, c.httpClient, httpReq, c.logger, jsonReq, "StreamGenerateContent")
 		if err != nil {
 			return err
 		}
 
-		if err = googleapi.CheckResponse(httpRsp); err != nil {
-			return err
-		}
-
-		streamClient = &streamGenerateContentRESTClient{
+		streamClient = &streamGenerateContentRESTStreamClient{
 			ctx:    ctx,
 			md:     metadata.MD(httpRsp.Header),
 			stream: gax.NewProtoJSONStreamReader(httpRsp.Body, (&aiplatformpb.GenerateContentResponse{}).ProtoReflect().Type()),
@@ -1823,15 +1789,15 @@ func (c *predictionRESTClient) StreamGenerateContent(ctx context.Context, req *a
 	return streamClient, e
 }
 
-// streamGenerateContentRESTClient is the stream client used to consume the server stream created by
+// streamGenerateContentRESTStreamClient is the stream client used to consume the server stream created by
 // the REST implementation of StreamGenerateContent.
-type streamGenerateContentRESTClient struct {
+type streamGenerateContentRESTStreamClient struct {
 	ctx    context.Context
 	md     metadata.MD
 	stream *gax.ProtoJSONStream
 }
 
-func (c *streamGenerateContentRESTClient) Recv() (*aiplatformpb.GenerateContentResponse, error) {
+func (c *streamGenerateContentRESTStreamClient) Recv() (*aiplatformpb.GenerateContentResponse, error) {
 	if err := c.ctx.Err(); err != nil {
 		defer c.stream.Close()
 		return nil, err
@@ -1845,29 +1811,29 @@ func (c *streamGenerateContentRESTClient) Recv() (*aiplatformpb.GenerateContentR
 	return res, nil
 }
 
-func (c *streamGenerateContentRESTClient) Header() (metadata.MD, error) {
+func (c *streamGenerateContentRESTStreamClient) Header() (metadata.MD, error) {
 	return c.md, nil
 }
 
-func (c *streamGenerateContentRESTClient) Trailer() metadata.MD {
+func (c *streamGenerateContentRESTStreamClient) Trailer() metadata.MD {
 	return c.md
 }
 
-func (c *streamGenerateContentRESTClient) CloseSend() error {
+func (c *streamGenerateContentRESTStreamClient) CloseSend() error {
 	// This is a no-op to fulfill the interface.
 	return errors.New("this method is not implemented for a server-stream")
 }
 
-func (c *streamGenerateContentRESTClient) Context() context.Context {
+func (c *streamGenerateContentRESTStreamClient) Context() context.Context {
 	return c.ctx
 }
 
-func (c *streamGenerateContentRESTClient) SendMsg(m interface{}) error {
+func (c *streamGenerateContentRESTStreamClient) SendMsg(m interface{}) error {
 	// This is a no-op to fulfill the interface.
 	return errors.New("this method is not implemented for a server-stream")
 }
 
-func (c *streamGenerateContentRESTClient) RecvMsg(m interface{}) error {
+func (c *streamGenerateContentRESTStreamClient) RecvMsg(m interface{}) error {
 	// This is a no-op to fulfill the interface.
 	return errors.New("this method is not implemented, use Recv")
 }
@@ -1898,7 +1864,7 @@ func (c *predictionRESTClient) ChatCompletions(ctx context.Context, req *aiplatf
 	hds = append(c.xGoogHeaders, hds...)
 	hds = append(hds, "Content-Type", "application/json")
 	headers := gax.BuildHeaders(ctx, hds...)
-	var streamClient *chatCompletionsRESTClient
+	var streamClient *chatCompletionsRESTStreamClient
 	e := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
 		if settings.Path != "" {
 			baseUrl.Path = settings.Path
@@ -1910,16 +1876,12 @@ func (c *predictionRESTClient) ChatCompletions(ctx context.Context, req *aiplatf
 		httpReq = httpReq.WithContext(ctx)
 		httpReq.Header = headers
 
-		httpRsp, err := c.httpClient.Do(httpReq)
+		httpRsp, err := executeStreamingHTTPRequest(ctx, c.httpClient, httpReq, c.logger, jsonReq, "ChatCompletions")
 		if err != nil {
 			return err
 		}
 
-		if err = googleapi.CheckResponse(httpRsp); err != nil {
-			return err
-		}
-
-		streamClient = &chatCompletionsRESTClient{
+		streamClient = &chatCompletionsRESTStreamClient{
 			ctx:    ctx,
 			md:     metadata.MD(httpRsp.Header),
 			stream: gax.NewProtoJSONStreamReader(httpRsp.Body, (&httpbodypb.HttpBody{}).ProtoReflect().Type()),
@@ -1930,15 +1892,15 @@ func (c *predictionRESTClient) ChatCompletions(ctx context.Context, req *aiplatf
 	return streamClient, e
 }
 
-// chatCompletionsRESTClient is the stream client used to consume the server stream created by
+// chatCompletionsRESTStreamClient is the stream client used to consume the server stream created by
 // the REST implementation of ChatCompletions.
-type chatCompletionsRESTClient struct {
+type chatCompletionsRESTStreamClient struct {
 	ctx    context.Context
 	md     metadata.MD
 	stream *gax.ProtoJSONStream
 }
 
-func (c *chatCompletionsRESTClient) Recv() (*httpbodypb.HttpBody, error) {
+func (c *chatCompletionsRESTStreamClient) Recv() (*httpbodypb.HttpBody, error) {
 	if err := c.ctx.Err(); err != nil {
 		defer c.stream.Close()
 		return nil, err
@@ -1952,31 +1914,87 @@ func (c *chatCompletionsRESTClient) Recv() (*httpbodypb.HttpBody, error) {
 	return res, nil
 }
 
-func (c *chatCompletionsRESTClient) Header() (metadata.MD, error) {
+func (c *chatCompletionsRESTStreamClient) Header() (metadata.MD, error) {
 	return c.md, nil
 }
 
-func (c *chatCompletionsRESTClient) Trailer() metadata.MD {
+func (c *chatCompletionsRESTStreamClient) Trailer() metadata.MD {
 	return c.md
 }
 
-func (c *chatCompletionsRESTClient) CloseSend() error {
+func (c *chatCompletionsRESTStreamClient) CloseSend() error {
 	// This is a no-op to fulfill the interface.
 	return errors.New("this method is not implemented for a server-stream")
 }
 
-func (c *chatCompletionsRESTClient) Context() context.Context {
+func (c *chatCompletionsRESTStreamClient) Context() context.Context {
 	return c.ctx
 }
 
-func (c *chatCompletionsRESTClient) SendMsg(m interface{}) error {
+func (c *chatCompletionsRESTStreamClient) SendMsg(m interface{}) error {
 	// This is a no-op to fulfill the interface.
 	return errors.New("this method is not implemented for a server-stream")
 }
 
-func (c *chatCompletionsRESTClient) RecvMsg(m interface{}) error {
+func (c *chatCompletionsRESTStreamClient) RecvMsg(m interface{}) error {
 	// This is a no-op to fulfill the interface.
 	return errors.New("this method is not implemented, use Recv")
+}
+
+// EmbedContent embed content with multimodal inputs.
+func (c *predictionRESTClient) EmbedContent(ctx context.Context, req *aiplatformpb.EmbedContentRequest, opts ...gax.CallOption) (*aiplatformpb.EmbedContentResponse, error) {
+	m := protojson.MarshalOptions{AllowPartial: true, UseEnumNumbers: true}
+	jsonReq, err := m.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+
+	baseUrl, err := url.Parse(c.endpoint)
+	if err != nil {
+		return nil, err
+	}
+	baseUrl.Path += fmt.Sprintf("/v1beta1/%v:embedContent", req.GetModel())
+
+	params := url.Values{}
+	params.Add("$alt", "json;enum-encoding=int")
+
+	baseUrl.RawQuery = params.Encode()
+
+	// Build HTTP headers from client and context metadata.
+	hds := []string{"x-goog-request-params", fmt.Sprintf("%s=%v", "model", url.QueryEscape(req.GetModel()))}
+
+	hds = append(c.xGoogHeaders, hds...)
+	hds = append(hds, "Content-Type", "application/json")
+	headers := gax.BuildHeaders(ctx, hds...)
+	opts = append((*c.CallOptions).EmbedContent[0:len((*c.CallOptions).EmbedContent):len((*c.CallOptions).EmbedContent)], opts...)
+	unm := protojson.UnmarshalOptions{AllowPartial: true, DiscardUnknown: true}
+	resp := &aiplatformpb.EmbedContentResponse{}
+	e := gax.Invoke(ctx, func(ctx context.Context, settings gax.CallSettings) error {
+		if settings.Path != "" {
+			baseUrl.Path = settings.Path
+		}
+		httpReq, err := http.NewRequest("POST", baseUrl.String(), bytes.NewReader(jsonReq))
+		if err != nil {
+			return err
+		}
+		httpReq = httpReq.WithContext(ctx)
+		httpReq.Header = headers
+
+		buf, err := executeHTTPRequest(ctx, c.httpClient, httpReq, c.logger, jsonReq, "EmbedContent")
+		if err != nil {
+			return err
+		}
+
+		if err := unm.Unmarshal(buf, resp); err != nil {
+			return err
+		}
+
+		return nil
+	}, opts...)
+	if e != nil {
+		return nil, e
+	}
+	return resp, nil
 }
 
 // GetLocation gets information about a location.
@@ -2012,17 +2030,7 @@ func (c *predictionRESTClient) GetLocation(ctx context.Context, req *locationpb.
 		httpReq = httpReq.WithContext(ctx)
 		httpReq.Header = headers
 
-		httpRsp, err := c.httpClient.Do(httpReq)
-		if err != nil {
-			return err
-		}
-		defer httpRsp.Body.Close()
-
-		if err = googleapi.CheckResponse(httpRsp); err != nil {
-			return err
-		}
-
-		buf, err := io.ReadAll(httpRsp.Body)
+		buf, err := executeHTTPRequest(ctx, c.httpClient, httpReq, c.logger, nil, "GetLocation")
 		if err != nil {
 			return err
 		}
@@ -2087,21 +2095,10 @@ func (c *predictionRESTClient) ListLocations(ctx context.Context, req *locationp
 			}
 			httpReq.Header = headers
 
-			httpRsp, err := c.httpClient.Do(httpReq)
+			buf, err := executeHTTPRequest(ctx, c.httpClient, httpReq, c.logger, nil, "ListLocations")
 			if err != nil {
 				return err
 			}
-			defer httpRsp.Body.Close()
-
-			if err = googleapi.CheckResponse(httpRsp); err != nil {
-				return err
-			}
-
-			buf, err := io.ReadAll(httpRsp.Body)
-			if err != nil {
-				return err
-			}
-
 			if err := unm.Unmarshal(buf, resp); err != nil {
 				return err
 			}
@@ -2171,17 +2168,7 @@ func (c *predictionRESTClient) GetIamPolicy(ctx context.Context, req *iampb.GetI
 		httpReq = httpReq.WithContext(ctx)
 		httpReq.Header = headers
 
-		httpRsp, err := c.httpClient.Do(httpReq)
-		if err != nil {
-			return err
-		}
-		defer httpRsp.Body.Close()
-
-		if err = googleapi.CheckResponse(httpRsp); err != nil {
-			return err
-		}
-
-		buf, err := io.ReadAll(httpRsp.Body)
+		buf, err := executeHTTPRequest(ctx, c.httpClient, httpReq, c.logger, jsonReq, "GetIamPolicy")
 		if err != nil {
 			return err
 		}
@@ -2241,17 +2228,7 @@ func (c *predictionRESTClient) SetIamPolicy(ctx context.Context, req *iampb.SetI
 		httpReq = httpReq.WithContext(ctx)
 		httpReq.Header = headers
 
-		httpRsp, err := c.httpClient.Do(httpReq)
-		if err != nil {
-			return err
-		}
-		defer httpRsp.Body.Close()
-
-		if err = googleapi.CheckResponse(httpRsp); err != nil {
-			return err
-		}
-
-		buf, err := io.ReadAll(httpRsp.Body)
+		buf, err := executeHTTPRequest(ctx, c.httpClient, httpReq, c.logger, jsonReq, "SetIamPolicy")
 		if err != nil {
 			return err
 		}
@@ -2313,17 +2290,7 @@ func (c *predictionRESTClient) TestIamPermissions(ctx context.Context, req *iamp
 		httpReq = httpReq.WithContext(ctx)
 		httpReq.Header = headers
 
-		httpRsp, err := c.httpClient.Do(httpReq)
-		if err != nil {
-			return err
-		}
-		defer httpRsp.Body.Close()
-
-		if err = googleapi.CheckResponse(httpRsp); err != nil {
-			return err
-		}
-
-		buf, err := io.ReadAll(httpRsp.Body)
+		buf, err := executeHTTPRequest(ctx, c.httpClient, httpReq, c.logger, jsonReq, "TestIamPermissions")
 		if err != nil {
 			return err
 		}
@@ -2370,15 +2337,8 @@ func (c *predictionRESTClient) CancelOperation(ctx context.Context, req *longrun
 		httpReq = httpReq.WithContext(ctx)
 		httpReq.Header = headers
 
-		httpRsp, err := c.httpClient.Do(httpReq)
-		if err != nil {
-			return err
-		}
-		defer httpRsp.Body.Close()
-
-		// Returns nil if there is no error, otherwise wraps
-		// the response code and body into a non-nil error
-		return googleapi.CheckResponse(httpRsp)
+		_, err = executeHTTPRequest(ctx, c.httpClient, httpReq, c.logger, nil, "CancelOperation")
+		return err
 	}, opts...)
 }
 
@@ -2412,15 +2372,8 @@ func (c *predictionRESTClient) DeleteOperation(ctx context.Context, req *longrun
 		httpReq = httpReq.WithContext(ctx)
 		httpReq.Header = headers
 
-		httpRsp, err := c.httpClient.Do(httpReq)
-		if err != nil {
-			return err
-		}
-		defer httpRsp.Body.Close()
-
-		// Returns nil if there is no error, otherwise wraps
-		// the response code and body into a non-nil error
-		return googleapi.CheckResponse(httpRsp)
+		_, err = executeHTTPRequest(ctx, c.httpClient, httpReq, c.logger, nil, "DeleteOperation")
+		return err
 	}, opts...)
 }
 
@@ -2457,17 +2410,7 @@ func (c *predictionRESTClient) GetOperation(ctx context.Context, req *longrunnin
 		httpReq = httpReq.WithContext(ctx)
 		httpReq.Header = headers
 
-		httpRsp, err := c.httpClient.Do(httpReq)
-		if err != nil {
-			return err
-		}
-		defer httpRsp.Body.Close()
-
-		if err = googleapi.CheckResponse(httpRsp); err != nil {
-			return err
-		}
-
-		buf, err := io.ReadAll(httpRsp.Body)
+		buf, err := executeHTTPRequest(ctx, c.httpClient, httpReq, c.logger, nil, "GetOperation")
 		if err != nil {
 			return err
 		}
@@ -2516,6 +2459,9 @@ func (c *predictionRESTClient) ListOperations(ctx context.Context, req *longrunn
 		if req.GetPageToken() != "" {
 			params.Add("pageToken", fmt.Sprintf("%v", req.GetPageToken()))
 		}
+		if req.GetReturnPartialSuccess() {
+			params.Add("returnPartialSuccess", fmt.Sprintf("%v", req.GetReturnPartialSuccess()))
+		}
 
 		baseUrl.RawQuery = params.Encode()
 
@@ -2532,21 +2478,10 @@ func (c *predictionRESTClient) ListOperations(ctx context.Context, req *longrunn
 			}
 			httpReq.Header = headers
 
-			httpRsp, err := c.httpClient.Do(httpReq)
+			buf, err := executeHTTPRequest(ctx, c.httpClient, httpReq, c.logger, nil, "ListOperations")
 			if err != nil {
 				return err
 			}
-			defer httpRsp.Body.Close()
-
-			if err = googleapi.CheckResponse(httpRsp); err != nil {
-				return err
-			}
-
-			buf, err := io.ReadAll(httpRsp.Body)
-			if err != nil {
-				return err
-			}
-
 			if err := unm.Unmarshal(buf, resp); err != nil {
 				return err
 			}
@@ -2616,17 +2551,7 @@ func (c *predictionRESTClient) WaitOperation(ctx context.Context, req *longrunni
 		httpReq = httpReq.WithContext(ctx)
 		httpReq.Header = headers
 
-		httpRsp, err := c.httpClient.Do(httpReq)
-		if err != nil {
-			return err
-		}
-		defer httpRsp.Body.Close()
-
-		if err = googleapi.CheckResponse(httpRsp); err != nil {
-			return err
-		}
-
-		buf, err := io.ReadAll(httpRsp.Body)
+		buf, err := executeHTTPRequest(ctx, c.httpClient, httpReq, c.logger, nil, "WaitOperation")
 		if err != nil {
 			return err
 		}
