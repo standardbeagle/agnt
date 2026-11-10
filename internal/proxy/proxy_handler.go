@@ -615,9 +615,11 @@ func (ps *ProxyServer) handleProxy(w http.ResponseWriter, r *http.Request) {
 		// No body to capture (or a genuinely empty one) — leave reqBody empty.
 	case r.ContentLength < 0:
 		reqBody = "[request body not captured: chunked or unknown length]"
+		r.Body = newIdleDeadlineBody(r.Body, w, requestBodyIdleTimeout)
 	case r.ContentLength >= maxRecordedBody:
 		reqBody = fmt.Sprintf("[request body not captured: %d bytes exceeds %dKB cap]",
 			r.ContentLength, maxRecordedBody/1024)
+		r.Body = newIdleDeadlineBody(r.Body, w, requestBodyIdleTimeout)
 	default:
 		// This listener has no whole-request read deadline (it streams — see
 		// httpcaps.Streaming), so bound this one buffered read: a client that
