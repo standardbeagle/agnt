@@ -369,7 +369,31 @@ const (
 	maxFrameDataBytes = 16 * 1024 // re-encoded size of a kept Data/Custom map
 	maxPerfResources  = 200       // resource timings kept per performance frame
 	maxEventsPerFrame = 500       // interactions/mutations handled per frame
+
+	maxEnvelopeIDBytes = 256      // session_id, frame_id
+	maxEventFieldBytes = 1024     // event type, tag, id, key, class and attribute names, node fields
+	maxEventTextBytes  = 4 * 1024 // selector, text, value, attribute values, page title, resource name
+	maxEventNodeHTML   = 2 * 1024 // html of one added/removed node
+	maxEventListItems  = 16       // classes, attributes, added and removed nodes kept per event
 )
+
+// decodeWSMessage parses one JSON frame and cuts its envelope strings, which
+// every handler copies into the entries it records.
+func decodeWSMessage(raw []byte) (wsMessage, error) {
+	var msg wsMessage
+	if err := json.Unmarshal(raw, &msg); err != nil {
+		return msg, err
+	}
+	msg.URL = truncateUTF8(msg.URL, maxFrontendErrorFieldBytes)
+	msg.SessionID = truncateUTF8(msg.SessionID, maxEnvelopeIDBytes)
+	msg.FrameID = truncateUTF8(msg.FrameID, maxEnvelopeIDBytes)
+	return msg, nil
+}
+
+// cappedString is getStringField cut to max bytes.
+func cappedString(data map[string]interface{}, key string, max int) string {
+	return truncateUTF8(getStringField(data, key), max)
+}
 
 // capData returns data unchanged when its JSON encoding fits maxFrameDataBytes,
 // otherwise a small marker map saying how large it was.
@@ -442,7 +466,7 @@ func (c *wsConnState) handlePerformance(msg *wsMessage) {
 		DOMContentLoaded:     getInt64Field(msg.Data, "dom_content_loaded"),
 		FirstPaint:           getInt64Field(msg.Data, "first_paint"),
 		FirstContentfulPaint: getInt64Field(msg.Data, "first_contentful_paint"),
-		PageTitle:            getStringField(msg.Data, "page_title"),
+		PageTitle:            cappedString(msg.Data, "page_title", maxEventTextBytes),
 		PageWidth:            int(getInt64Field(msg.Data, "page_width")),
 		PageHeight:           int(getInt64Field(msg.Data, "page_height")),
 		ViewportWidth:        int(getInt64Field(msg.Data, "viewport_width")),
@@ -458,7 +482,7 @@ func (c *wsConnState) handlePerformance(msg *wsMessage) {
 		for _, r := range resourcesData {
 			if rm, ok := r.(map[string]interface{}); ok {
 				metric.Resources = append(metric.Resources, ResourceTiming{
-					Name:     getStringField(rm, "name"),
+					Name:     cappedString(rm, "name", maxEventTextBytes),
 					Duration: getInt64Field(rm, "duration"),
 					Size:     getInt64Field(rm, "size"),
 				})

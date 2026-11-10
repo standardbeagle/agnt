@@ -110,24 +110,27 @@ func parseInteractionEvent(data map[string]interface{}, id string, timestamp tim
 	event := InteractionEvent{
 		ID:        id,
 		Timestamp: timestamp,
-		EventType: getStringField(data, "event_type"),
+		EventType: cappedString(data, "event_type", maxEventFieldBytes),
 		URL:       url,
 	}
 
 	// Parse target info
 	if targetData, ok := data["target"].(map[string]interface{}); ok {
 		event.Target = InteractionTarget{
-			Selector: getStringField(targetData, "selector"),
-			Tag:      getStringField(targetData, "tag"),
-			ID:       getStringField(targetData, "id"),
-			Text:     getStringField(targetData, "text"),
+			Selector: cappedString(targetData, "selector", maxEventTextBytes),
+			Tag:      cappedString(targetData, "tag", maxEventFieldBytes),
+			ID:       cappedString(targetData, "id", maxEventFieldBytes),
+			Text:     cappedString(targetData, "text", maxEventTextBytes),
 		}
 
 		// Parse classes
 		if classes, ok := targetData["classes"].([]interface{}); ok {
 			for _, c := range classes {
+				if len(event.Target.Classes) == maxEventListItems {
+					break
+				}
 				if s, ok := c.(string); ok {
-					event.Target.Classes = append(event.Target.Classes, s)
+					event.Target.Classes = append(event.Target.Classes, truncateUTF8(s, maxEventFieldBytes))
 				}
 			}
 		}
@@ -136,8 +139,11 @@ func parseInteractionEvent(data map[string]interface{}, id string, timestamp tim
 		if attrs, ok := targetData["attributes"].(map[string]interface{}); ok {
 			event.Target.Attributes = make(map[string]string)
 			for k, v := range attrs {
+				if len(event.Target.Attributes) == maxEventListItems {
+					break
+				}
 				if s, ok := v.(string); ok {
-					event.Target.Attributes[k] = s
+					event.Target.Attributes[truncateUTF8(k, maxEventFieldBytes)] = truncateUTF8(s, maxEventFieldBytes)
 				}
 			}
 		}
@@ -156,8 +162,8 @@ func parseInteractionEvent(data map[string]interface{}, id string, timestamp tim
 	// Parse keyboard info
 	if keyData, ok := data["key"].(map[string]interface{}); ok {
 		event.Key = &KeyboardInfo{
-			Key:   getStringField(keyData, "key"),
-			Code:  getStringField(keyData, "code"),
+			Key:   cappedString(keyData, "key", maxEventFieldBytes),
+			Code:  cappedString(keyData, "code", maxEventFieldBytes),
 			Ctrl:  getBoolField(keyData, "ctrl"),
 			Alt:   getBoolField(keyData, "alt"),
 			Shift: getBoolField(keyData, "shift"),
@@ -166,11 +172,11 @@ func parseInteractionEvent(data map[string]interface{}, id string, timestamp tim
 	}
 
 	// Parse value (for input events)
-	event.Value = getStringField(data, "value")
+	event.Value = cappedString(data, "value", maxEventTextBytes)
 
 	// Parse extra data
 	if extraData, ok := data["data"].(map[string]interface{}); ok {
-		event.Data = extraData
+		event.Data = capData(extraData)
 	}
 
 	return event
@@ -181,67 +187,69 @@ func parseMutationEvent(data map[string]interface{}, id string, timestamp time.T
 	event := MutationEvent{
 		ID:           id,
 		Timestamp:    timestamp,
-		MutationType: getStringField(data, "mutation_type"),
+		MutationType: cappedString(data, "mutation_type", maxEventFieldBytes),
 		URL:          url,
 	}
 
 	// Parse target info
 	if targetData, ok := data["target"].(map[string]interface{}); ok {
 		event.Target = MutationTarget{
-			Selector: getStringField(targetData, "selector"),
-			Tag:      getStringField(targetData, "tag"),
-			ID:       getStringField(targetData, "id"),
+			Selector: cappedString(targetData, "selector", maxEventTextBytes),
+			Tag:      cappedString(targetData, "tag", maxEventFieldBytes),
+			ID:       cappedString(targetData, "id", maxEventFieldBytes),
 		}
 	}
 
 	// Parse added nodes
 	if added, ok := data["added"].([]interface{}); ok {
-		for _, nodeData := range added {
-			if nm, ok := nodeData.(map[string]interface{}); ok {
-				event.Added = append(event.Added, MutationNode{
-					Selector: getStringField(nm, "selector"),
-					Tag:      getStringField(nm, "tag"),
-					ID:       getStringField(nm, "id"),
-					HTML:     getStringField(nm, "html"),
-				})
-			}
-		}
+		event.Added = parseMutationNodes(added)
 	}
 
 	// Parse removed nodes
 	if removed, ok := data["removed"].([]interface{}); ok {
-		for _, nodeData := range removed {
-			if nm, ok := nodeData.(map[string]interface{}); ok {
-				event.Removed = append(event.Removed, MutationNode{
-					Selector: getStringField(nm, "selector"),
-					Tag:      getStringField(nm, "tag"),
-					ID:       getStringField(nm, "id"),
-					HTML:     getStringField(nm, "html"),
-				})
-			}
-		}
+		event.Removed = parseMutationNodes(removed)
 	}
 
 	// Parse attribute change
 	if attrData, ok := data["attribute"].(map[string]interface{}); ok {
 		event.Attribute = &AttributeChange{
-			Name:     getStringField(attrData, "name"),
-			OldValue: getStringField(attrData, "old_value"),
-			NewValue: getStringField(attrData, "new_value"),
+			Name:     cappedString(attrData, "name", maxEventFieldBytes),
+			OldValue: cappedString(attrData, "old_value", maxEventTextBytes),
+			NewValue: cappedString(attrData, "new_value", maxEventTextBytes),
 		}
 	}
 
 	// Parse the correlated triggering interaction, if the browser found one.
 	if tb, ok := data["triggered_by"].(map[string]interface{}); ok {
 		event.TriggeredBy = &MutationTrigger{
-			Type:      getStringField(tb, "type"),
+			Type:      cappedString(tb, "type", maxEventFieldBytes),
 			Timestamp: getInt64Field(tb, "timestamp"),
 			Latency:   getInt64Field(tb, "latency"),
-			Target:    getStringField(tb, "target"),
+			Target:    cappedString(tb, "target", maxEventTextBytes),
 		}
 	}
 
 	return event
+}
+
+// parseMutationNodes keeps at most maxEventListItems added or removed nodes,
+// each field cut, so one mutation's retained size is bounded.
+func parseMutationNodes(nodes []interface{}) []MutationNode {
+	var out []MutationNode
+	for _, nodeData := range nodes {
+		if len(out) == maxEventListItems {
+			break
+		}
+		if nm, ok := nodeData.(map[string]interface{}); ok {
+			out = append(out, MutationNode{
+				Selector: cappedString(nm, "selector", maxEventFieldBytes),
+				Tag:      cappedString(nm, "tag", maxEventFieldBytes),
+				ID:       cappedString(nm, "id", maxEventFieldBytes),
+				HTML:     cappedString(nm, "html", maxEventNodeHTML),
+			})
+		}
+	}
+	return out
 }
 
 // parsePanelMessage parses a panel message from JSON data.

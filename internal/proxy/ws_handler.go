@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -557,8 +556,8 @@ func (ps *ProxyServer) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Parse JSON message
-		var msg wsMessage
-		if err := json.Unmarshal(rawMessage, &msg); err != nil {
+		msg, err := decodeWSMessage(rawMessage)
+		if err != nil {
 			// Best-effort: malformed browser telemetry frame, skip it. The data
 			// is untrusted browser input so a parse failure is not actionable
 			// beyond a diagnostic trace.
