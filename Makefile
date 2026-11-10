@@ -53,8 +53,12 @@ vendor:
 # GOWORK=off (here and in `vendor`): a go.work in this directory or any parent
 # puts go in workspace mode, where `go mod vendor` refuses to run. The vendor
 # tree is defined by go.mod alone, which is also what `go install` builds.
+#
+# GOOS= GOARCH=: the checker runs on this host. The release build calls this
+# target with the matrix GOOS/GOARCH exported, and `go run` would build the
+# checker for that target and fail to exec it ("exec format error").
 vendor-check:
-	@go run ./scripts/check.go vendor
+	@GOOS= GOARCH= go run ./scripts/check.go vendor
 
 # Build both binaries (agnt is the source, devtool-mcp is a copy for MCP compatibility)
 # Version is defined in cmd/agnt/main.go and managed by scripts/release.sh
@@ -378,7 +382,7 @@ cross-compile:
 # Check-only variant for CI: same as cross-compile but without producing
 # named binaries. Faster — `go build` with no -o discards output.
 cross-compile-check:
-	@go run ./scripts/check.go cross
+	@GOOS= GOARCH= go run ./scripts/check.go cross
 
 # Run the server (for development)
 run: build
