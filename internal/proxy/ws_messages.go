@@ -60,10 +60,11 @@ type wsConnState struct {
 	// count, so a dial that a stop overtook is closed instead of installed).
 	// It is the one piece of connection state shared between the read loop
 	// and a handler goroutine.
-	voiceMu      sync.Mutex
-	voicePending int
-	voiceBacklog [][]byte
-	voiceStops   uint64
+	voiceMu           sync.Mutex
+	voicePending      int
+	voiceBacklog      [][]byte
+	voiceBacklogBytes int // total length of voiceBacklog
+	voiceStops        uint64
 
 	// unknownTypeCounts caps how many times each unrecognized message type
 	// gets logged per connection, so a malformed or out-of-date client
@@ -133,6 +134,11 @@ func (c *wsConnState) logUnknownMessageType(msgType string) {
 // flight. The browser sends 4096-sample frames at 16 kHz (about a quarter of
 // a second each), so this covers the whole handshake timeout.
 const voiceBacklogMaxFrames = 64
+
+// voiceBacklogMaxBytes bounds the same backlog in bytes. A real frame is 8 KiB
+// (4096 linear16 samples), so 64 of them fit with room to spare; without it a
+// frame could be up to the 16 MiB WebSocket limit and 64 of them pin 1 GiB.
+const voiceBacklogMaxBytes = 1 << 20
 
 // refusePrivileged reports whether this connection must be refused a frame
 // that writes a secret or spends an operator API key, and records the refusal
@@ -286,8 +292,10 @@ func (c *wsConnState) handleBinaryFrame(rawMessage []byte) {
 		// Audio for a session whose Deepgram dial is still in flight. Past
 		// the cap the frame is dropped: a whole frame, so the stream stays
 		// aligned, and the gap is only in audio the dial was too slow for.
-		if len(c.voiceBacklog) < voiceBacklogMaxFrames {
+		if len(c.voiceBacklog) < voiceBacklogMaxFrames &&
+			c.voiceBacklogBytes+len(rawMessage) <= voiceBacklogMaxBytes {
 			c.voiceBacklog = append(c.voiceBacklog, rawMessage)
+			c.voiceBacklogBytes += len(rawMessage)
 		}
 		c.voiceMu.Unlock()
 		return
@@ -1178,6 +1186,7 @@ func (c *wsConnState) handleVoiceStart(msg *wsMessage) {
 		backlog := c.voiceBacklog
 		if c.voicePending == 0 {
 			c.voiceBacklog = nil
+			c.voiceBacklogBytes = 0
 		}
 		// A voice_stop that arrived while this dial was in flight stopped it:
 		// the session is closed, never installed.
@@ -1246,6 +1255,7 @@ func (c *wsConnState) handleVoiceStop(msg *wsMessage) {
 	c.voiceStops++
 	dialing := c.voicePending > 0
 	c.voiceBacklog = nil
+	c.voiceBacklogBytes = 0
 	c.voiceMu.Unlock()
 
 	session, ok := c.ps.voiceSessions.LoadAndDelete(c.connID)
