@@ -76,6 +76,11 @@ func renderScopeCandidates(candidates []protocol.SessionCandidate, hint string) 
 // it (start a session) rather than dead-ending.
 const noSessionsMessage = "no session attached and no active sessions to scope to — start one with `agnt run <cmd>` (or pass global:true to span all projects)"
 
+// noIncidentSessionsMessage is noSessionsMessage for INCIDENTS QUERY. Incident
+// inboxes are per-session with no cross-project read (numbered contract 1), so
+// get_incidents takes no global flag and its fix is only to start a session.
+const noIncidentSessionsMessage = "no session attached and no active sessions to read incidents from — start one with `agnt run <cmd>`; incident inboxes are per-session, so there is no global read"
+
 // writeScopeErr is the progressive-disclosure replacement for the uniform
 //
 //	return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())

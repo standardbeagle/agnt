@@ -99,6 +99,12 @@ func TestIncidentsQuery_NoSessions_Errors(t *testing.T) {
 	_, err := c.IncidentQuery(protocol.IncidentQueryFilter{})
 	require.Error(t, err, "with zero sessions there is no candidate to offer, so an error is correct")
 	assert.Contains(t, err.Error(), "no active sessions")
+	// get_incidents has no global flag (per-session inboxes, numbered contract
+	// 1), so the fix it names must not be one: an agent that follows a
+	// "pass global:true" hint gets a schema error, not its incidents.
+	assert.NotContains(t, err.Error(), "global:true",
+		"the incidents error must not advise a flag get_incidents does not accept")
+	assert.Contains(t, err.Error(), "agnt run", "it must still say how to get a session")
 }
 
 // publishTestIncident publishes one incident into a session inbox and waits for

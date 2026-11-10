@@ -180,7 +180,7 @@ func (d *Daemon) hubHandleIncidentsQuery(conn *hubpkg.Connection, cmd *hubproto.
 		// where there is genuinely no session at all.
 		candidates := d.sessionCandidates()
 		if len(candidates) == 0 {
-			return conn.WriteErr(hubproto.ErrInvalidArgs, noSessionsMessage)
+			return conn.WriteErr(hubproto.ErrInvalidArgs, noIncidentSessionsMessage)
 		}
 		result := protocol.IncidentQueryResult{
 			ScopeCandidates: candidates,
