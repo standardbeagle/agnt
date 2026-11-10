@@ -315,6 +315,7 @@ func (pw *ProtectedWriter) handleStateEscape(out *bytes.Buffer, b byte) {
 		pw.state = stateAPC
 	case 'c': // RIS - full reset: the host drops our scroll region
 		out.Write(pw.escBuf)
+		pw.reprotectAfterReset(out)
 		pw.redrawNeeded.Store(true)
 		pw.state = stateGround
 	default:
@@ -518,6 +519,13 @@ func (pw *ProtectedWriter) handleCSI(out *bytes.Buffer, final byte) {
 		}
 		// Pass through
 
+	case 'p': // DECSTR (CSI ! p) - soft reset: the host drops our scroll region
+		if len(pw.intermed) == 1 && pw.intermed[0] == '!' {
+			out.Write(pw.escBuf)
+			pw.reprotectAfterReset(out)
+			return
+		}
+
 	case 'c': // DA - Device Attributes response
 		if isPrivate {
 			// Suppress DA1 responses (CSI ? Ps c) — these are terminal-to-app
@@ -570,6 +578,23 @@ func (pw *ProtectedWriter) enforceScrollRegion() {
 	bottom := max(pw.height-pw.config.ProtectBottomRows, 1)
 	c := pw.hostModel.Cursor()
 	_ = pw.sendToHost(fmt.Appendf(nil, "\x1b[1;%dr\x1b[%d;%dH", bottom, min(c.Y+1, bottom), c.X+1))
+}
+
+// reprotectAfterReset re-applies the protected scroll region right after a
+// reset (RIS or DECSTR) the child sent, which cleared the host's region; left
+// alone, the child's output scrolled over the protected rows until a resize
+// or panel toggle. The bytes so far are sent first, so the host model has seen
+// the reset and enforceScrollRegion restores the cursor from where it left
+// it. Caller holds mu.
+func (pw *ProtectedWriter) reprotectAfterReset(out *bytes.Buffer) {
+	if pw.config.ProtectBottomRows <= 0 {
+		return
+	}
+	if out.Len() > 0 {
+		_ = pw.sendToHost(out.Bytes()) // a host write error resurfaces on the next write
+		out.Reset()
+	}
+	pw.enforceScrollRegion()
 }
 
 // EnforceScrollRegion can be called externally to re-apply scroll region protection.

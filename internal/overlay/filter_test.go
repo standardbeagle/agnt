@@ -3,6 +3,7 @@ package overlay
 import (
 	"bytes"
 	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -464,12 +465,13 @@ func TestProtectedWriter_DA1ResponseSuppressed(t *testing.T) {
 		t.Errorf("DA query should pass through, expected %q got %q", csiC, buf.String())
 	}
 
-	// ESC c (RIS - reset) should still pass through (it's not a CSI sequence)
+	// ESC c (RIS - reset) should still pass through (it's not a CSI
+	// sequence), followed by the re-applied scroll region.
 	buf.Reset()
 	ris := "\x1b" + "c"
 	pw.Write([]byte(ris))
-	if buf.String() != ris {
-		t.Errorf("RIS should pass through, expected %q got %q", ris, buf.String())
+	if !strings.HasPrefix(buf.String(), ris) {
+		t.Errorf("RIS should pass through, expected prefix %q got %q", ris, buf.String())
 	}
 }
 
@@ -478,14 +480,47 @@ func TestProtectedWriter_ResetSequence(t *testing.T) {
 	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
 	defer pw.Stop()
 
-	// RIS (Reset to Initial State) - should pass through and trigger redraw
+	// RIS (Reset to Initial State) passes through and triggers a redraw. It
+	// also clears the host's scroll region, and nothing else re-applies the
+	// protected one until a resize or panel toggle, so the child's output
+	// scrolled over the status bar. The region follows the reset at once,
+	// with the cursor put back where the reset left it (home).
 	input := "\x1b" + "c"
 	pw.Write([]byte(input))
 
-	if buf.String() != input {
-		t.Errorf("expected reset to pass through, got %q", buf.String())
+	if want := input + "\x1b[1;23r\x1b[1;1H"; buf.String() != want {
+		t.Errorf("RIS: got %q, want %q", buf.String(), want)
 	}
 	if !pw.redrawNeeded.Load() {
 		t.Error("expected redrawNeeded to be true after reset")
+	}
+}
+
+// DECSTR (soft reset, CSI ! p) resets the scroll region too, but not the
+// cursor. The protected region is re-applied and the cursor restored to
+// where the child had it, in the same write, before any later output.
+func TestProtectedWriter_SoftResetReappliesScrollRegion(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 1})
+	defer pw.Stop()
+
+	pw.Write([]byte("\x1b[5;10H\x1b[!pafter"))
+	if want := "\x1b[5;10H\x1b[!p\x1b[1;23r\x1b[5;10Hafter"; buf.String() != want {
+		t.Errorf("DECSTR: got %q, want %q", buf.String(), want)
+	}
+	if row, col, _ := pw.ChildCursor(); row != 5 || col != 15 {
+		t.Errorf("child cursor = %d,%d, want 5,15", row, col)
+	}
+}
+
+// With nothing protected there is no region to re-apply.
+func TestProtectedWriter_ResetWithoutProtectionPassesThrough(t *testing.T) {
+	var buf bytes.Buffer
+	pw := NewProtectedWriter(&buf, 80, 24, FilterConfig{ProtectBottomRows: 0})
+	defer pw.Stop()
+
+	pw.Write([]byte("\x1bc\x1b[!p"))
+	if want := "\x1bc\x1b[!p"; buf.String() != want {
+		t.Errorf("got %q, want %q", buf.String(), want)
 	}
 }
