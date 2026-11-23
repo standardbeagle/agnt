@@ -8,8 +8,18 @@
 //
 // `max-cpu` is normalised across all cores, so the scaffolded 95 meant "kill anything that
 // saturates this machine" — which is what a healthy parallel build or threaded test run does.
+//
+// `max-mem` covers the whole tree. It is the cap fleet-run's bare `tman run` gets and the one
+// tman's PATH shim gives a nested `go test`, so it has to fit a cold compile of every package and
+// its tests, not just a warm `go build`. The go tool compiles GOMAXPROCS packages at once, so the
+// peak follows the host's core count. Measured with the shims bypassed and an empty GOCACHE,
+// tman 0.7.15, 2026-11-23:
+//   `go build ./... && go test -run '^$' ./...`: build3 (32 cores) 3205, 3585 MB; runs culled at
+//     2048 had reached 3452-3957 MB. beagle-ab (12 cores) 2693, 2713 MB.
+//   `go build ./...` 1141 / 1100 MB; `go test -p 1 ./...` 862 MB cold, 951 MB warm on build3.
+// 5120 is the highest peak plus 30%. A host with more cores needs a new measurement.
 defaults {
-    max-mem 2048
+    max-mem 5120
     max-parallel 2
 }
 
