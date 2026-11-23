@@ -28,9 +28,13 @@ alias "test-pkg" {
     args "test" "-p" "1" "-count=1"
 }
 
+// A benchmark's ns/op is only comparable when nothing else is using the host's cores. exclusive
+// waits for the other runs admitted to the machine queue to finish, then holds the queue
+// until the benchmarks end.
 alias "bench" {
     command "go"
     args "test" "-p" "1" "-run" "^$" "-bench" "." "-benchmem" "./..."
+    exclusive true
 }
 
 
