@@ -34,8 +34,42 @@ type PortConflict struct {
 
 	// WindowsPIDs are sourced from netstat.exe via WSL interop. They live
 	// in the Windows kernel namespace and are unreachable from syscall.Kill;
-	// they require platform.KillWindowsPID (taskkill.exe).
+	// they require platform.KillWindowsPID (taskkill.exe). On native Windows
+	// every holder is reported here and they are our own PIDs.
 	WindowsPIDs []int `json:"windows_pids,omitempty"`
+
+	// Identities are the process identities of the local holders (every PID
+	// this host can open itself), captured right after the scan that found
+	// them. A conflict can wait on the user for minutes before the kill; the
+	// kill goes by these, so a holder that exited in the meantime and left
+	// its PID to another process is refused, not killed.
+	Identities []platform.ProcessIdentity `json:"identities,omitempty"`
+}
+
+// identityOf returns the identity recorded for pid when the conflict was found.
+func (c PortConflict) identityOf(pid int) (platform.ProcessIdentity, bool) {
+	for _, id := range c.Identities {
+		if id.PID == pid {
+			return id, true
+		}
+	}
+	return platform.ProcessIdentity{}, false
+}
+
+// identifyPortHolder captures a holder's identity. A variable so conflict
+// detection is testable with invented PIDs.
+var identifyPortHolder = platform.IdentifyProcess
+
+// identifyPortHolders identifies each PID, dropping the ones that have
+// already exited or cannot be read: those cannot be killed by identity.
+func identifyPortHolders(pids []int) []platform.ProcessIdentity {
+	var ids []platform.ProcessIdentity
+	for _, pid := range pids {
+		if id, ok := identifyPortHolder(pid); ok {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 // portProbe resolves which PIDs hold a given port, tagged by OS side. It is
@@ -78,6 +112,7 @@ func detectPortConflicts(ctx context.Context, scripts map[string]*config.ScriptC
 			if len(unmanagedLinux) == 0 && len(windowsPIDs) == 0 {
 				continue
 			}
+			ids := identifyPortHolders(localPortHolders(unmanagedLinux, windowsPIDs))
 			all := make([]int, 0, len(unmanagedLinux)+len(windowsPIDs))
 			all = append(all, unmanagedLinux...)
 			all = append(all, windowsPIDs...)
@@ -89,6 +124,7 @@ func detectPortConflicts(ctx context.Context, scripts map[string]*config.ScriptC
 				ProcessName: procName,
 				LinuxPIDs:   unmanagedLinux,
 				WindowsPIDs: windowsPIDs,
+				Identities:  ids,
 			})
 		}
 	}
@@ -125,18 +161,23 @@ func filterUnmanaged(pids []int, managedPIDs map[int]bool) []int {
 // A variable so the native-Windows classification is testable on any host.
 var windowsPIDsAreLocal = runtime.GOOS == "windows"
 
+// localPortHolders returns the probe's PIDs that live in this process's own
+// namespace: the Linux side always, the Windows side only on native Windows.
+func localPortHolders(linuxPIDs, windowsPIDs []int) []int {
+	if !windowsPIDsAreLocal || len(windowsPIDs) == 0 {
+		return linuxPIDs
+	}
+	return append(append([]int(nil), linuxPIDs...), windowsPIDs...)
+}
+
 // protectedPortHolders returns the port holders a kill must never reach: this
 // process and anything the ProcessManager owns. It reads both sides of the
 // probe result, because which side carries our own PIDs depends on the host
 // (see windowsPIDsAreLocal) — checking only the Linux side left the guard
 // inert on native Windows.
 func protectedPortHolders(linuxPIDs, windowsPIDs []int, self int, isManaged func(pid int) bool) []int {
-	candidates := linuxPIDs
-	if windowsPIDsAreLocal {
-		candidates = append(append([]int(nil), linuxPIDs...), windowsPIDs...)
-	}
 	var protected []int
-	for _, pid := range candidates {
+	for _, pid := range localPortHolders(linuxPIDs, windowsPIDs) {
 		if pid == self || isManaged(pid) {
 			protected = append(protected, pid)
 		}
