@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/standardbeagle/agnt/internal/pathutil"
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/standardbeagle/agnt/internal/browserexit"
+	"github.com/standardbeagle/agnt/internal/pathutil"
 )
 
 var (
@@ -25,11 +27,33 @@ type Manager struct {
 	active       atomic.Int32
 	totalStarted atomic.Int64
 	shuttingDown atomic.Bool
+
+	// ended holds browsers that exited without a requested stop, keyed by id,
+	// for browserexit.DefaultTombstoneTTL (at most DefaultTombstoneMax). Read
+	// by Get/GetWithPathFilter, List and ListByPath, so BROWSER STATUS and
+	// LIST — user-visible — report "crashed: …" instead of "not found".
+	// Retired by Stop (dismissal), a new Start under the same id, the
+	// project's teardown (StopByProjectPath) and StopAll.
+	ended *browserexit.Tombstones[*Browser]
+
+	// onUnexpectedExit is called once for every browser that exits without a
+	// requested stop, after its entry has moved to ended.
+	onUnexpectedExit atomic.Pointer[func(*Browser)]
 }
 
 // NewManager creates a new browser manager.
 func NewManager() *Manager {
-	return &Manager{}
+	return &Manager{
+		ended: browserexit.NewTombstones[*Browser](browserexit.DefaultTombstoneTTL, browserexit.DefaultTombstoneMax),
+	}
+}
+
+// OnUnexpectedExit registers fn to be called for each browser that exits
+// without a requested stop (a crash, or the process quitting on its own).
+// b.Exit() describes how it ended. fn runs on the browser's reaper goroutine
+// and must not block.
+func (m *Manager) OnUnexpectedExit(fn func(b *Browser)) {
+	m.onUnexpectedExit.Store(&fn)
 }
 
 // Start starts a browser with the given configuration.
@@ -63,26 +87,55 @@ func (m *Manager) Start(ctx context.Context, id string, config Config) (*Browser
 	}
 
 	m.totalStarted.Add(1)
+	// A new browser under this id replaces the record of an earlier one.
+	m.ended.Delete(id)
 
-	// Clean up when browser exits. Retire this browser's own entry only.
+	// Clean up when browser exits. Retire this browser's own entry only. One
+	// that ended on its own is recorded in ended first, so there is no moment
+	// at which STATUS finds nothing.
 	go func() {
 		<-browser.Done()
+		unexpected := browser.Exit() != nil
+		if unexpected {
+			m.ended.Put(id, browser)
+		}
 		m.browsers.CompareAndDelete(id, browser)
 		m.active.Add(-1)
+		if unexpected {
+			if fn := m.onUnexpectedExit.Load(); fn != nil {
+				(*fn)(browser)
+			}
+		}
 	}()
 
 	return browser, nil
 }
 
-// Stop stops a browser by ID.
+// Stop stops a browser by ID. Stopping a browser that already ended on its
+// own dismisses its exit record.
 func (m *Manager) Stop(ctx context.Context, id string) error {
 	value, ok := m.browsers.Load(id)
 	if !ok {
+		if b, ok := m.ended.Get(id); ok {
+			m.ended.CompareAndDelete(id, b)
+			return nil
+		}
 		return ErrBrowserNotFound
 	}
 
 	browser := value.(*Browser)
 	return browser.Stop(ctx)
+}
+
+// all returns the running browsers and the ended ones still on record. A
+// running browser hides an ended record under the same id.
+func (m *Manager) all() map[string]*Browser {
+	out := m.ended.Snapshot()
+	m.browsers.Range(func(key, value any) bool {
+		out[key.(string)] = value.(*Browser)
+		return true
+	})
+	return out
 }
 
 // Get returns a browser by ID with fuzzy matching support.
@@ -100,6 +153,9 @@ func (m *Manager) GetWithPathFilter(id, pathFilter string) (*Browser, error) {
 	if val, ok := m.browsers.Load(id); ok {
 		return val.(*Browser), nil
 	}
+	if b, ok := m.ended.Get(id); ok {
+		return b, nil
+	}
 
 	// Normalize path filter for comparison
 	normalizedFilter := pathutil.NormalizeTrailingSlash(pathFilter)
@@ -107,15 +163,12 @@ func (m *Manager) GetWithPathFilter(id, pathFilter string) (*Browser, error) {
 	// Fuzzy match: look for browser where the ID contains the search string as a component
 	// Compound ID format: {project-hash}:{browser-name}
 	var matches []*Browser
-	m.browsers.Range(func(key, value any) bool {
-		browserID := key.(string)
-		browser := value.(*Browser)
-
+	for browserID, browser := range m.all() {
 		// If path filter is specified, only consider browsers in that path
 		if normalizedFilter != "" && normalizedFilter != "." {
 			browserPath := pathutil.NormalizeTrailingSlash(browser.Path())
 			if browserPath != normalizedFilter {
-				return true // Skip this browser, continue iteration
+				continue
 			}
 		}
 
@@ -128,8 +181,7 @@ func (m *Manager) GetWithPathFilter(id, pathFilter string) (*Browser, error) {
 				break
 			}
 		}
-		return true
-	})
+	}
 
 	if len(matches) == 0 {
 		return nil, ErrBrowserNotFound
@@ -140,14 +192,13 @@ func (m *Manager) GetWithPathFilter(id, pathFilter string) (*Browser, error) {
 	return matches[0], nil
 }
 
-// List returns information about all browsers.
+// List returns information about all browsers, including those that ended on
+// their own and are still on record.
 func (m *Manager) List() []Info {
 	var infos []Info
-	m.browsers.Range(func(key, value interface{}) bool {
-		browser := value.(*Browser)
+	for _, browser := range m.all() {
 		infos = append(infos, browser.Info())
-		return true
-	})
+	}
 	return infos
 }
 
@@ -160,13 +211,11 @@ func (m *Manager) ListByPath(pathFilter string) []Info {
 
 	normalizedFilter := pathutil.NormalizeTrailingSlash(pathFilter)
 	var infos []Info
-	m.browsers.Range(func(key, value interface{}) bool {
-		browser := value.(*Browser)
+	for _, browser := range m.all() {
 		if pathutil.NormalizeTrailingSlash(browser.Path()) == normalizedFilter {
 			infos = append(infos, browser.Info())
 		}
-		return true
-	})
+	}
 	return infos
 }
 
@@ -175,6 +224,10 @@ func (m *Manager) ListByPath(pathFilter string) []Info {
 // Returns the list of stopped browser IDs.
 func (m *Manager) StopByProjectPath(ctx context.Context, projectPath string) ([]string, error) {
 	normalizedPath := pathutil.NormalizeTrailingSlash(projectPath)
+	// The project is being torn down: its exit records go with it.
+	m.ended.DeleteFunc(func(_ string, b *Browser) bool {
+		return pathutil.NormalizeTrailingSlash(b.Path()) == normalizedPath
+	})
 	var toStop []*Browser
 	m.browsers.Range(func(key, value any) bool {
 		browser := value.(*Browser)
@@ -247,6 +300,7 @@ func (m *Manager) TotalStarted() int64 {
 // Unlike Shutdown, this does NOT set shuttingDown flag, allowing new browsers
 // to be started afterward. This is used for cleanup when the last client disconnects.
 func (m *Manager) StopAll(ctx context.Context) ([]string, error) {
+	m.ended.DeleteFunc(func(string, *Browser) bool { return true })
 	var wg sync.WaitGroup
 	var firstErr error
 	var errMu sync.Mutex

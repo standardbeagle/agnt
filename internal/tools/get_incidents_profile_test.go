@@ -108,12 +108,13 @@ func TestGetIncidentsProfileFullMatchesLegacyOutput(t *testing.T) {
 // have to invent (selector, <...>).
 func TestFormatIncidentsCompact_EveryRowHasIDAndNext(t *testing.T) {
 	t.Parallel()
-	views := make([]incidentView, 0, 13)
+	views := make([]incidentView, 0, 15)
 	for i, src := range []incident.Source{
 		incident.SourceBrowserJS, incident.SourceBrowserJSUntrusted,
 		incident.SourceHTTP5xx, incident.SourceHTTP5xxUntrusted, incident.SourceHTTP4xx,
 		incident.SourceTransportErr, incident.SourceProxyDiag, incident.SourceProcessAlert,
-		incident.SourceProcessOutput, incident.SourceProcessCrash, incident.SourceBuildFail,
+		incident.SourceProcessOutput, incident.SourceProcessCrash, incident.SourceBrowserCrash,
+		incident.SourceAutomationCrash, incident.SourceBuildFail,
 		incident.SourceChaosSwallow, incident.SourceExternal,
 	} {
 		ev := incident.NewIncidentEvent(src, incident.SeverityError, "cat", "msg",

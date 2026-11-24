@@ -625,6 +625,7 @@ func New(config DaemonConfig) *Daemon {
 	// connected browser overlays as toast notifications.
 	d.eventHub.SetProxyBroadcaster(newProxyManagerBroadcaster(d.proxym))
 	d.eventHub.AddAgentNoticeSink(sessionHostAgentNoticeSink{registry: d.sessionHosts})
+	d.wireBrowserExitReports()
 
 	// A scheduled task whose state file cannot be written is alive in memory
 	// but will not survive a restart; say so in the project's startup log.

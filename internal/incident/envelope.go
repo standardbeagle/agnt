@@ -37,8 +37,14 @@ const (
 	SourceProcessAlert     Source = "process_alert"
 	SourceProcessOutput    Source = "process_output"
 	SourceProcessCrash     Source = "process_crash"
-	SourceBuildFail        Source = "build_fail"
-	SourceChaosSwallow     Source = "chaos_swallowed_error"
+	// SourceBrowserCrash is a Chrome started by BROWSER START that ended
+	// without a requested stop (adapter_browser_exit.go).
+	SourceBrowserCrash Source = "browser_crash"
+	// SourceAutomationCrash is an automation session whose Chrome went away
+	// without a requested stop (adapter_browser_exit.go).
+	SourceAutomationCrash Source = "automation_crash"
+	SourceBuildFail       Source = "build_fail"
+	SourceChaosSwallow    Source = "chaos_swallowed_error"
 	// SourceExternal is a failure reported from outside agnt's own monitors
 	// (CI, deploy logs, a hosted service) through the error_queue tool.
 	SourceExternal Source = "external"

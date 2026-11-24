@@ -22,21 +22,24 @@ type BrowserInput struct {
 
 // BrowserOutput represents output from the browser tool.
 type BrowserOutput struct {
-	ID           string         `json:"id,omitempty"`
-	State        string         `json:"state,omitempty"`
-	PID          int            `json:"pid,omitempty"`
-	URL          string         `json:"url,omitempty"`
-	Headless     bool           `json:"headless,omitempty"`
-	ProxyStarted bool           `json:"proxy_started,omitempty"` // True if proxy was auto-started
-	ProxyURL     string         `json:"proxy_url,omitempty"`
-	BinaryPath   string         `json:"binary_path,omitempty"`
-	Path         string         `json:"path,omitempty"`
-	StartedAt    string         `json:"started_at,omitempty"`
-	Error        string         `json:"error,omitempty"`
-	Success      bool           `json:"success,omitempty"`
-	Message      string         `json:"message,omitempty"`
-	Count        int            `json:"count"`
-	Browsers     []BrowserEntry `json:"browsers,omitempty"`
+	ID           string `json:"id,omitempty"`
+	State        string `json:"state,omitempty"`
+	PID          int    `json:"pid,omitempty"`
+	URL          string `json:"url,omitempty"`
+	Headless     bool   `json:"headless,omitempty"`
+	ProxyStarted bool   `json:"proxy_started,omitempty"` // True if proxy was auto-started
+	ProxyURL     string `json:"proxy_url,omitempty"`
+	BinaryPath   string `json:"binary_path,omitempty"`
+	Path         string `json:"path,omitempty"`
+	StartedAt    string `json:"started_at,omitempty"`
+	Error        string `json:"error,omitempty"`
+	// Set for a browser that ended without a requested stop.
+	ExitStatus string         `json:"exit_status,omitempty"`
+	StderrTail string         `json:"stderr_tail,omitempty"`
+	Success    bool           `json:"success,omitempty"`
+	Message    string         `json:"message,omitempty"`
+	Count      int            `json:"count"`
+	Browsers   []BrowserEntry `json:"browsers,omitempty"`
 }
 
 // BrowserEntry represents a browser in a list response.
@@ -76,6 +79,11 @@ Examples:
   browser {action: "status", id: "browser-1234"}
   browser {action: "list"}
   browser {action: "stop", id: "browser-1234"}
+
+A browser that crashes or quits on its own is reported as an incident (source
+browser_crash) and stays on record for 15 minutes: status and list show state
+"crashed" (or "exited"), the exit status and the end of its stderr. stop on
+such a browser dismisses the record.
 
 Proxy Auto-Start:
   When proxy_id is specified but the proxy doesn't exist, the browser tool
@@ -194,6 +202,8 @@ func (dt *DaemonTools) handleBrowserStatus(input BrowserInput) (*mcp.CallToolRes
 		Path:       getString(result, "path"),
 		StartedAt:  getString(result, "started_at"),
 		Error:      getString(result, "error"),
+		ExitStatus: getString(result, "exit_status"),
+		StderrTail: getString(result, "stderr_tail"),
 		Browsers:   []BrowserEntry{},
 	}
 

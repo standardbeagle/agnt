@@ -26,6 +26,7 @@ func fakeStart(ctx context.Context, s *AutomationSession) error {
 	if !s.compareAndSwapState(StateIdle, StateStarting) {
 		return fmt.Errorf("session already started")
 	}
+	s.parentCtx = ctx
 	s.allocCtx, s.allocCancel = context.WithCancel(ctx)
 	s.taskCtx, s.taskCancel = context.WithCancel(s.allocCtx)
 
@@ -39,12 +40,15 @@ func fakeStart(ctx context.Context, s *AutomationSession) error {
 	now := time.Now()
 	s.startedAt.Store(&now)
 
-	go func() {
-		defer close(s.done)
-		<-s.taskCtx.Done()
-		if s.State() == StateRunning {
-			s.setState(StateStopped)
-		}
-	}()
+	go s.monitor()
 	return nil
+}
+
+// CrashForTest ends a running session the way a Chrome crash does: its task
+// context is cancelled without Stop having been asked (chromedp cancels it when
+// the connection to Chrome drops). A session started by fakeStart has no
+// process, so its exit status is reported as unknown.
+func CrashForTest(t *testing.T, s *AutomationSession) {
+	t.Helper()
+	s.taskCancel()
 }

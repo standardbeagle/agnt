@@ -9,6 +9,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/standardbeagle/agnt/internal/browserexit"
 )
 
 // State represents the browser state.
@@ -52,6 +54,11 @@ type Config struct {
 	Path       string // Project path for session scoping
 	WindowSize string // Window size (default: "1920,1080")
 
+	// Owner identifies who started the browser (the daemon puts the agnt
+	// session code here). Opaque to this package; carried so an unexpected
+	// exit can be reported to the owner.
+	Owner string
+
 	// UserDataDir is the Chrome profile directory. Empty (the default) gives
 	// every launch its own fresh temporary profile, removed when the browser
 	// exits. A caller that sets it owns the directory: it is used as given
@@ -82,6 +89,15 @@ type Browser struct {
 	afterSpawn func()
 
 	startedAt atomic.Pointer[time.Time]
+
+	// stopRequested is set by Stop before it ends the process, so the reaper
+	// can tell a requested stop from the browser dying on its own.
+	stopRequested atomic.Bool
+	// exit is how the process ended when nobody asked it to; nil while it
+	// runs and after a requested stop.
+	exit atomic.Pointer[browserexit.Record]
+	// stderr keeps the end of the browser's stderr for the exit record.
+	stderr *browserexit.Tail
 }
 
 // Info contains information about a browser instance.
@@ -96,6 +112,8 @@ type Info struct {
 	Path       string `json:"path,omitempty"`
 	StartedAt  string `json:"started_at,omitempty"`
 	Error      string `json:"error,omitempty"`
+	// Exit is set when the browser ended without a requested stop.
+	Exit *browserexit.Record `json:"exit,omitempty"`
 }
 
 // New creates a new browser instance with the given configuration.
@@ -148,6 +166,12 @@ func (b *Browser) Start(ctx context.Context) error {
 	b.cancel = cancel
 
 	b.cmd = exec.CommandContext(ctx, binaryPath, args...)
+	// Keep the end of stderr for the exit record. Chrome's helper processes
+	// inherit stderr and can hold the pipe past the browser's own exit;
+	// WaitDelay keeps that from holding up the reaper.
+	b.stderr = browserexit.NewTail(browserexit.DefaultTailBytes)
+	b.cmd.Stderr = b.stderr
+	b.cmd.WaitDelay = stderrWaitDelay
 
 	if err := b.cmd.Start(); err != nil {
 		cancel()
@@ -184,21 +208,38 @@ func (b *Browser) Start(ctx context.Context) error {
 		return fmt.Errorf("browser stopped during startup")
 	}
 
-	// Monitor process in goroutine
-	go func() {
-		defer close(b.done)
-		err := b.cmd.Wait()
-		b.removeProfileDir()
-		if err != nil && ctx.Err() == nil {
-			// Process exited with error (not cancelled)
-			b.setError(fmt.Errorf("chrome exited: %w", err))
-			b.setState(StateFailed)
-		} else {
-			b.setState(StateStopped)
-		}
-	}()
+	go b.reap(ctx)
 
 	return nil
+}
+
+// stderrWaitDelay bounds how long the reaper waits for the stderr pipe once
+// the browser process has exited or been killed.
+const stderrWaitDelay = 2 * time.Second
+
+// reap waits for the process and records how it ended. A requested stop
+// (Stop, or the context Start was given ending, as on daemon shutdown) ends
+// in Stopped with no exit record. Anything else is the browser dying on its
+// own: the exit code or signal and the stderr tail are kept in an exit
+// record, and a crash leaves the browser Failed.
+func (b *Browser) reap(ctx context.Context) {
+	defer close(b.done)
+	err := b.cmd.Wait()
+	requested := b.stopRequested.Load() || ctx.Err() != nil
+	if !requested {
+		rec := browserexit.FromProcessState(b.cmd.ProcessState, err, time.Now(), b.stderr.String())
+		b.exit.Store(&rec)
+		b.setError(fmt.Errorf("chrome %s", rec.Describe()))
+	}
+	b.removeProfileDir()
+	switch {
+	case requested:
+		b.setState(StateStopped)
+	case b.exit.Load().Crashed:
+		b.setState(StateFailed)
+	default:
+		b.setState(StateStopped)
+	}
 }
 
 // prepareProfileDir creates the temporary profile for this launch unless the
@@ -302,6 +343,9 @@ func (b *Browser) Stop(ctx context.Context) error {
 		return nil // Already stopped
 	}
 
+	// Recorded before the process is ended, so the reaper reads it as a
+	// requested stop.
+	b.stopRequested.Store(true)
 	if b.compareAndSwapState(StateRunning, StateStopping) {
 		// The Running CAS pairs with Start's Starting→Running CAS, so cancel
 		// and cmd are guaranteed visible (and non-nil) here.
@@ -351,6 +395,21 @@ func (b *Browser) Path() string {
 	return b.config.Path
 }
 
+// Owner returns Config.Owner.
+func (b *Browser) Owner() string {
+	return b.config.Owner
+}
+
+// URL returns the URL the browser was opened at.
+func (b *Browser) URL() string {
+	return b.config.URL
+}
+
+// Exit returns how the browser ended when nobody asked it to, or nil.
+func (b *Browser) Exit() *browserexit.Record {
+	return b.exit.Load()
+}
+
 // Error returns the last error if any.
 func (b *Browser) Error() error {
 	b.errMu.RLock()
@@ -385,6 +444,11 @@ func (b *Browser) Info() Info {
 		info.Error = b.err.Error()
 	}
 	b.errMu.RUnlock()
+
+	if rec := b.exit.Load(); rec != nil {
+		info.State = rec.StateName()
+		info.Exit = rec
+	}
 
 	return info
 }

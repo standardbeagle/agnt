@@ -3,12 +3,15 @@ package chromedp
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"runtime"
 	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/chromedp/chromedp"
+
+	"github.com/standardbeagle/agnt/internal/browserexit"
 )
 
 // State represents the automation session state.
@@ -51,6 +54,11 @@ type SessionConfig struct {
 	Path       string        // Project path for session scoping
 	WindowSize string        // Window size as "width,height" (default: "1920,1080")
 	Timeout    time.Duration // Default action timeout (default: 30s)
+
+	// Owner identifies who started the session (the daemon puts the agnt
+	// session code here). Opaque to this package; carried so an unexpected
+	// end can be reported to the owner.
+	Owner string
 }
 
 // SessionInfo contains information about an automation session.
@@ -63,6 +71,9 @@ type SessionInfo struct {
 	Path      string `json:"path,omitempty"`
 	StartedAt string `json:"started_at,omitempty"`
 	Error     string `json:"error,omitempty"`
+	// Exit is set when the session's Chrome went away without a requested
+	// stop.
+	Exit *browserexit.Record `json:"exit,omitempty"`
 }
 
 // AutomationSession represents a chromedp-controlled browser session.
@@ -100,6 +111,21 @@ type AutomationSession struct {
 	// without spawning Chrome.
 	launch   func(ctx context.Context) error
 	navigate func(ctx context.Context, url string) error
+
+	// parentCtx is the context Start was given. Its end (daemon shutdown)
+	// ends the session as a requested stop, not a crash.
+	parentCtx context.Context
+	// stopRequested is set by Stop before it tears the browser down, so the
+	// monitor can tell a requested stop from Chrome going away on its own.
+	stopRequested atomic.Bool
+	// proc is the Chrome process chromedp launched (captured through
+	// ModifyCmdFunc); its ProcessState is read only after the allocator has
+	// reaped it.
+	proc atomic.Pointer[exec.Cmd]
+	// output keeps the end of Chrome's stdout and stderr.
+	output *browserexit.Tail
+	// exit is how the session ended when nobody asked it to; nil otherwise.
+	exit atomic.Pointer[browserexit.Record]
 }
 
 // NewSession creates a new automation session with the given configuration.
@@ -115,6 +141,7 @@ func NewSession(config SessionConfig) *AutomationSession {
 	return &AutomationSession{
 		config: config,
 		done:   make(chan struct{}),
+		output: browserexit.NewTail(browserexit.DefaultTailBytes),
 		launch: func(ctx context.Context) error {
 			return chromedp.Run(ctx)
 		},
@@ -130,6 +157,7 @@ func (s *AutomationSession) Start(ctx context.Context) error {
 	if !s.compareAndSwapState(StateIdle, StateStarting) {
 		return fmt.Errorf("session already started")
 	}
+	s.parentCtx = ctx
 
 	// Parse window size
 	width, height := 1920, 1080
@@ -217,17 +245,57 @@ func (s *AutomationSession) Start(ctx context.Context) error {
 	now := time.Now()
 	s.startedAt.Store(&now)
 
-	// Monitor for context cancellation
-	go func() {
-		defer close(s.done)
-		<-s.taskCtx.Done()
-		if s.State() == StateRunning {
-			// Context was cancelled externally
-			s.setState(StateStopped)
-		}
-	}()
+	go s.monitor()
 
 	return nil
+}
+
+// monitor waits for the session's task context to end and records why.
+// chromedp cancels that context itself when its connection to Chrome drops,
+// so a Chrome that crashes or quits ends it exactly as Stop does. The two are
+// told apart by stopRequested (and the parent context, which ends on daemon
+// shutdown): anything else is Chrome going away on its own, recorded with its
+// exit status and output tail, and the session is left Failed.
+func (s *AutomationSession) monitor() {
+	defer close(s.done)
+	<-s.taskCtx.Done()
+	if s.stopRequested.Load() || (s.parentCtx != nil && s.parentCtx.Err() != nil) {
+		if s.State() == StateRunning {
+			s.setState(StateStopped)
+		}
+		return
+	}
+	// Ends the process if it is somehow still alive, and waits for the
+	// allocator to reap it, after which its exit status is readable.
+	s.cleanup()
+	rec := s.exitRecord()
+	s.exit.Store(&rec)
+	s.setError(fmt.Errorf("chrome %s", rec.Describe()))
+	if rec.Crashed {
+		s.setState(StateFailed)
+	} else {
+		s.setState(StateStopped)
+	}
+}
+
+// exitRecord describes how the session's Chrome ended. Called after the
+// allocator has reaped the process.
+func (s *AutomationSession) exitRecord() browserexit.Record {
+	tail := s.output.String()
+	cmd := s.proc.Load()
+	if cmd == nil {
+		return browserexit.Record{At: time.Now(), ExitCode: -1, Crashed: true,
+			Status: "connection to Chrome lost (process status unknown)", StderrTail: tail}
+	}
+	return browserexit.FromProcessState(cmd.ProcessState, nil, time.Now(), tail)
+}
+
+// adoptProcess is the ModifyCmdFunc chromedp calls with the Chrome command
+// before starting it. Setting a ModifyCmdFunc replaces chromedp's own
+// platform options, so they are applied here (childProcessOptions).
+func (s *AutomationSession) adoptProcess(cmd *exec.Cmd) {
+	childProcessOptions(cmd)
+	s.proc.Store(cmd)
 }
 
 // Stop gracefully stops the automation session.
@@ -237,6 +305,9 @@ func (s *AutomationSession) Stop(ctx context.Context) error {
 		return nil // Already stopped
 	}
 
+	// Recorded before the browser is torn down, so the monitor reads its
+	// end as a requested stop.
+	s.stopRequested.Store(true)
 	if s.compareAndSwapState(StateRunning, StateStopping) {
 		// The Running CAS pairs with Start's Starting→Running CAS, so the
 		// cancel fields are guaranteed visible here.
@@ -324,6 +395,16 @@ func (s *AutomationSession) Path() string {
 	return s.config.Path
 }
 
+// Owner returns SessionConfig.Owner.
+func (s *AutomationSession) Owner() string {
+	return s.config.Owner
+}
+
+// Exit returns how the session's Chrome ended when nobody asked it to, or nil.
+func (s *AutomationSession) Exit() *browserexit.Record {
+	return s.exit.Load()
+}
+
 // Error returns the last error if any.
 func (s *AutomationSession) Error() error {
 	s.errMu.RLock()
@@ -357,6 +438,11 @@ func (s *AutomationSession) Info() SessionInfo {
 	}
 	s.errMu.RUnlock()
 
+	if rec := s.exit.Load(); rec != nil {
+		info.State = rec.StateName()
+		info.Exit = rec
+	}
+
 	return info
 }
 
@@ -383,6 +469,11 @@ func (s *AutomationSession) buildAllocatorOpts(width, height int) []chromedp.Exe
 
 		// Prevent OS credential/keyring popups that freeze headless sessions
 		chromedp.Flag("password-store", "basic"),
+
+		// Capture the process and the end of its output, so a Chrome that
+		// dies on its own is reported with its exit status (monitor).
+		chromedp.ModifyCmdFunc(s.adoptProcess),
+		chromedp.CombinedOutput(s.output),
 	}
 
 	if runtime.GOOS == "darwin" {

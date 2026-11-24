@@ -32,18 +32,21 @@ type AutomationInput struct {
 
 // AutomationOutput represents output from the automation tool.
 type AutomationOutput struct {
-	ID        string            `json:"id,omitempty"`
-	State     string            `json:"state,omitempty"`
-	URL       string            `json:"url,omitempty"`
-	Headless  bool              `json:"headless,omitempty"`
-	ProxyURL  string            `json:"proxy_url,omitempty"`
-	Path      string            `json:"path,omitempty"`
-	StartedAt string            `json:"started_at,omitempty"`
-	Error     string            `json:"error,omitempty"`
-	Success   bool              `json:"success,omitempty"`
-	Message   string            `json:"message,omitempty"`
-	Count     int               `json:"count"`
-	Sessions  []AutomationEntry `json:"sessions,omitempty"`
+	ID        string `json:"id,omitempty"`
+	State     string `json:"state,omitempty"`
+	URL       string `json:"url,omitempty"`
+	Headless  bool   `json:"headless,omitempty"`
+	ProxyURL  string `json:"proxy_url,omitempty"`
+	Path      string `json:"path,omitempty"`
+	StartedAt string `json:"started_at,omitempty"`
+	Error     string `json:"error,omitempty"`
+	// Set for a session whose Chrome went away without a requested stop.
+	ExitStatus string            `json:"exit_status,omitempty"`
+	StderrTail string            `json:"stderr_tail,omitempty"`
+	Success    bool              `json:"success,omitempty"`
+	Message    string            `json:"message,omitempty"`
+	Count      int               `json:"count"`
+	Sessions   []AutomationEntry `json:"sessions,omitempty"`
 	// Screenshot fields
 	ScreenshotPath string `json:"screenshot_path,omitempty"`
 	Filename       string `json:"filename,omitempty"`
@@ -101,6 +104,11 @@ Examples:
   automation {action: "evaluate", session_id: "auto-1234", script: "!!document.getElementById('__wt_panel')", frame: "top"}
   automation {action: "list"}
   automation {action: "stop", id: "auto-1234"}
+
+A session whose Chrome crashes or quits on its own is reported as an incident
+(source automation_crash) and stays on record for 15 minutes: status and list
+show state "crashed" (or "exited"), the exit status and the end of Chrome's
+output. stop on such a session dismisses the record.
 
 Screenshot Types:
   viewport: Capture visible viewport only
@@ -219,15 +227,17 @@ func (dt *DaemonTools) handleAutomationStatus(input AutomationInput) (*mcp.CallT
 	}
 
 	output := AutomationOutput{
-		ID:        getString(result, "id"),
-		State:     getString(result, "state"),
-		Headless:  getBool(result, "headless"),
-		URL:       getString(result, "url"),
-		ProxyURL:  getString(result, "proxy_url"),
-		Path:      getString(result, "path"),
-		StartedAt: getString(result, "started_at"),
-		Error:     getString(result, "error"),
-		Sessions:  []AutomationEntry{},
+		ID:         getString(result, "id"),
+		State:      getString(result, "state"),
+		Headless:   getBool(result, "headless"),
+		URL:        getString(result, "url"),
+		ProxyURL:   getString(result, "proxy_url"),
+		Path:       getString(result, "path"),
+		StartedAt:  getString(result, "started_at"),
+		Error:      getString(result, "error"),
+		ExitStatus: getString(result, "exit_status"),
+		StderrTail: getString(result, "stderr_tail"),
+		Sessions:   []AutomationEntry{},
 	}
 
 	return nil, output, nil

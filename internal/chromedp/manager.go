@@ -4,10 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"github.com/standardbeagle/agnt/internal/pathutil"
 	"strings"
 	"sync"
 	"sync/atomic"
+
+	"github.com/standardbeagle/agnt/internal/browserexit"
+	"github.com/standardbeagle/agnt/internal/pathutil"
 )
 
 var (
@@ -64,6 +66,19 @@ type SessionManager struct {
 	// writer has just given a quota. Admission reads stay lock-free.
 	quotaMu sync.Mutex
 
+	// ended holds sessions whose Chrome went away without a requested stop,
+	// keyed by id, for browserexit.DefaultTombstoneTTL (at most
+	// DefaultTombstoneMax). Read by Get/GetWithPathFilter, List and
+	// ListByPath, so AUTOMATION STATUS and LIST — user-visible — report
+	// "crashed: …" instead of "not found". Retired by Stop (dismissal), a new
+	// Start under the same id, the project's teardown (StopByProjectPath) and
+	// StopAll.
+	ended *browserexit.Tombstones[*AutomationSession]
+
+	// onUnexpectedExit is called once for every session whose Chrome went
+	// away without a requested stop, after its entry has moved to ended.
+	onUnexpectedExit atomic.Pointer[func(*AutomationSession)]
+
 	// startSession launches the browser for an already-reserved session.
 	// Overridable in tests so the concurrency cap can be exercised without
 	// spawning real Chrome processes. Defaults to (*AutomationSession).Start.
@@ -83,9 +98,17 @@ func NewSessionManagerWithMax(max int) *SessionManager {
 		startSession: func(ctx context.Context, s *AutomationSession) error {
 			return s.Start(ctx)
 		},
+		ended: browserexit.NewTombstones[*AutomationSession](browserexit.DefaultTombstoneTTL, browserexit.DefaultTombstoneMax),
 	}
 	m.SetMaxSessions(max)
 	return m
+}
+
+// OnUnexpectedExit registers fn to be called for each session whose Chrome
+// went away without a requested stop. s.Exit() describes how it ended. fn runs
+// on the session's exit goroutine and must not block.
+func (m *SessionManager) OnUnexpectedExit(fn func(s *AutomationSession)) {
+	m.onUnexpectedExit.Store(&fn)
 }
 
 // projectQuota is one project's ceiling and its live session count. A max of
@@ -311,27 +334,56 @@ func (m *SessionManager) Start(ctx context.Context, id string, config SessionCon
 	}
 
 	m.totalStarted.Add(1)
+	// A new session under this id replaces the record of an earlier one.
+	m.ended.Delete(id)
 
-	// Clean up when session exits
+	// Clean up when session exits. One whose Chrome went away on its own is
+	// recorded in ended first, so there is no moment at which STATUS finds
+	// nothing.
 	go func() {
 		<-session.Done()
+		unexpected := session.Exit() != nil
+		if unexpected {
+			m.ended.Put(id, session)
+		}
 		m.sessions.CompareAndDelete(id, session)
 		m.active.Add(-1)
 		releaseProject()
+		if unexpected {
+			if fn := m.onUnexpectedExit.Load(); fn != nil {
+				(*fn)(session)
+			}
+		}
 	}()
 
 	return session, nil
 }
 
-// Stop stops a session by ID.
+// Stop stops a session by ID. Stopping a session whose Chrome already went
+// away dismisses its exit record.
 func (m *SessionManager) Stop(ctx context.Context, id string) error {
 	value, ok := m.sessions.Load(id)
 	if !ok {
+		if s, ok := m.ended.Get(id); ok {
+			m.ended.CompareAndDelete(id, s)
+			return nil
+		}
 		return ErrSessionNotFound
 	}
 
 	session := value.(*AutomationSession)
 	return session.Stop(ctx)
+}
+
+// all returns the running sessions and the ended ones still on record. A
+// running session hides an ended record under the same id.
+func (m *SessionManager) all() map[string]*AutomationSession {
+	out := m.ended.Snapshot()
+	m.sessions.Range(func(key, value any) bool {
+		out[key.(string)] = value.(*AutomationSession)
+		return true
+	})
+	return out
 }
 
 // Get returns a session by ID with fuzzy matching support.
@@ -349,6 +401,9 @@ func (m *SessionManager) GetWithPathFilter(id, pathFilter string) (*AutomationSe
 	if val, ok := m.sessions.Load(id); ok {
 		return val.(*AutomationSession), nil
 	}
+	if s, ok := m.ended.Get(id); ok {
+		return s, nil
+	}
 
 	// Normalize path filter for comparison
 	normalizedFilter := pathutil.NormalizeTrailingSlash(pathFilter)
@@ -356,15 +411,12 @@ func (m *SessionManager) GetWithPathFilter(id, pathFilter string) (*AutomationSe
 	// Fuzzy match: look for session where the ID contains the search string as a component
 	// Compound ID format: {project-hash}:{session-name}
 	var matches []*AutomationSession
-	m.sessions.Range(func(key, value any) bool {
-		sessionID := key.(string)
-		session := value.(*AutomationSession)
-
+	for sessionID, session := range m.all() {
 		// If path filter is specified, only consider sessions in that path
 		if normalizedFilter != "" && normalizedFilter != "." {
 			sessionPath := pathutil.NormalizeTrailingSlash(session.Path())
 			if sessionPath != normalizedFilter {
-				return true // Skip this session, continue iteration
+				continue
 			}
 		}
 
@@ -377,8 +429,7 @@ func (m *SessionManager) GetWithPathFilter(id, pathFilter string) (*AutomationSe
 				break
 			}
 		}
-		return true
-	})
+	}
 
 	if len(matches) == 0 {
 		return nil, ErrSessionNotFound
@@ -389,14 +440,13 @@ func (m *SessionManager) GetWithPathFilter(id, pathFilter string) (*AutomationSe
 	return matches[0], nil
 }
 
-// List returns information about all sessions.
+// List returns information about all sessions, including those whose Chrome
+// went away on its own and that are still on record.
 func (m *SessionManager) List() []SessionInfo {
 	var infos []SessionInfo
-	m.sessions.Range(func(key, value interface{}) bool {
-		session := value.(*AutomationSession)
+	for _, session := range m.all() {
 		infos = append(infos, session.Info())
-		return true
-	})
+	}
 	return infos
 }
 
@@ -409,13 +459,11 @@ func (m *SessionManager) ListByPath(pathFilter string) []SessionInfo {
 
 	normalizedFilter := pathutil.NormalizeTrailingSlash(pathFilter)
 	var infos []SessionInfo
-	m.sessions.Range(func(key, value interface{}) bool {
-		session := value.(*AutomationSession)
+	for _, session := range m.all() {
 		if pathutil.NormalizeTrailingSlash(session.Path()) == normalizedFilter {
 			infos = append(infos, session.Info())
 		}
-		return true
-	})
+	}
 	return infos
 }
 
@@ -424,6 +472,10 @@ func (m *SessionManager) ListByPath(pathFilter string) []SessionInfo {
 // Returns the list of stopped session IDs.
 func (m *SessionManager) StopByProjectPath(ctx context.Context, projectPath string) ([]string, error) {
 	normalizedPath := pathutil.NormalizeTrailingSlash(projectPath)
+	// The project is being torn down: its exit records go with it.
+	m.ended.DeleteFunc(func(_ string, s *AutomationSession) bool {
+		return pathutil.NormalizeTrailingSlash(s.Path()) == normalizedPath
+	})
 	var toStop []*AutomationSession
 	m.sessions.Range(func(key, value any) bool {
 		session := value.(*AutomationSession)
@@ -506,6 +558,7 @@ func (m *SessionManager) IsShuttingDown() bool {
 // Unlike Shutdown, this does NOT set shuttingDown flag, allowing new sessions
 // to be started afterward. This is used for cleanup when the last client disconnects.
 func (m *SessionManager) StopAll(ctx context.Context) ([]string, error) {
+	m.ended.DeleteFunc(func(string, *AutomationSession) bool { return true })
 	var wg sync.WaitGroup
 	var firstErr error
 	var errMu sync.Mutex

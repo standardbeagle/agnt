@@ -141,6 +141,16 @@ var routes = map[Source]route{
 		skill:    "agnt-process-proxy",
 		context:  []string{"process_id"},
 	},
+	SourceBrowserCrash: {
+		// The browser is gone; its record (exit status, output tail) stays on
+		// the list for a while. Start a new one once the cause is known.
+		primary: toolCall{"browser", map[string]any{"action": "list"}},
+		skill:   "agnt:browser-debug",
+	},
+	SourceAutomationCrash: {
+		primary: toolCall{"automation", map[string]any{"action": "list"}},
+		skill:   "agnt:browser-debug",
+	},
 	SourceBuildFail: {
 		primary:  toolCall{"proc", map[string]any{"action": "output", "tail": 500}},
 		fallback: toolCall{"proc", map[string]any{"action": "script_output"}},

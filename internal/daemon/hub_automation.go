@@ -88,6 +88,7 @@ func (d *Daemon) hubHandleAutomationStart(ctx context.Context, conn *hubpkg.Conn
 		Headless: headless,
 		ProxyURL: proxyURL,
 		Path:     projectPath,
+		Owner:    d.startOwnerSession(conn, config.StartScope, projectPath),
 	}
 
 	// Start the session
@@ -167,6 +168,7 @@ func (d *Daemon) hubHandleAutomationStatus(conn *hubpkg.Connection, cmd *hubprot
 	if info.Error != "" {
 		resp["error"] = info.Error
 	}
+	addExitRecord(resp, info.Exit)
 
 	data, _ := json.Marshal(resp)
 	return conn.WriteJSON(data)
@@ -212,6 +214,7 @@ func (d *Daemon) hubHandleAutomationList(conn *hubpkg.Connection, cmd *hubproto.
 		if info.Error != "" {
 			entry["error"] = info.Error
 		}
+		addExitRecord(entry, info.Exit)
 		entries[i] = entry
 	}
 

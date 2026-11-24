@@ -85,6 +85,9 @@ func (d *Daemon) hubHandleBrowserStart(ctx context.Context, conn *hubpkg.Connect
 		return conn.WriteErr(hubproto.ErrInvalidArgs, err.Error())
 	}
 
+	// The session an unexpected exit of this browser is reported to.
+	owner := d.startOwnerSession(conn, config.StartScope, projectPath)
+
 	// Determine URL to open
 	url := config.URL
 	proxyStarted := false
@@ -99,15 +102,6 @@ func (d *Daemon) hubHandleBrowserStart(ctx context.Context, conn *hubpkg.Connect
 				return conn.WriteErr(hubproto.ErrInvalidArgs, "proxy_id specified but proxy not found and no URL provided to auto-start")
 			}
 
-			owner := conn.SessionCode()
-			if owner == "" {
-				owner = config.SessionCode
-			}
-			if owner == "" && projectPath != "" {
-				if s, ok := d.sessionRegistry.FindByDirectory(projectPath); ok {
-					owner = s.Code
-				}
-			}
 			proxyServer, err = d.autoStartBrowserProxy(ctx, config.ProxyID, url, projectPath, owner)
 			if err != nil {
 				return conn.WriteErr(hubproto.ErrInternal, fmt.Sprintf("failed to auto-start proxy: %v", err))
@@ -137,6 +131,7 @@ func (d *Daemon) hubHandleBrowserStart(ctx context.Context, conn *hubpkg.Connect
 		BinaryPath: config.BinaryPath,
 		ProxyURL:   proxyURL,
 		Path:       projectPath,
+		Owner:      owner,
 	}
 
 	b, err := d.browserm.Start(ctx, config.ID, browserConfig)
@@ -226,6 +221,7 @@ func (d *Daemon) hubHandleBrowserStatus(conn *hubpkg.Connection, cmd *hubproto.C
 	if info.Error != "" {
 		resp["error"] = info.Error
 	}
+	addExitRecord(resp, info.Exit)
 
 	data, _ := json.Marshal(resp)
 	return conn.WriteJSON(data)
@@ -271,6 +267,7 @@ func (d *Daemon) hubHandleBrowserList(conn *hubpkg.Connection, cmd *hubproto.Com
 		if info.Error != "" {
 			entry["error"] = info.Error
 		}
+		addExitRecord(entry, info.Exit)
 		entries[i] = entry
 	}
 

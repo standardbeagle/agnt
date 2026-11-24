@@ -26,11 +26,13 @@ func TestBuildAllocatorOptsPasswordStore(t *testing.T) {
 	//  7: disable-sync
 	//  8: disable-dev-shm-usage
 	//  9: password-store        ← must be present
-	// 10: use-mock-keychain     (darwin only)
-	// 10/11: Headless
-	expectedBase := 11 // headless=true, non-darwin
+	// 10: ModifyCmdFunc         (captures the Chrome process)
+	// 11: CombinedOutput        (keeps the end of its output)
+	// 12: use-mock-keychain     (darwin only)
+	// 12/13: Headless
+	expectedBase := 13 // headless=true, non-darwin
 	if runtime.GOOS == "darwin" {
-		expectedBase = 12 // +use-mock-keychain
+		expectedBase = 14 // +use-mock-keychain
 	}
 	if len(opts) != expectedBase {
 		t.Errorf("buildAllocatorOpts(headless=true) count = %d, want %d", len(opts), expectedBase)
@@ -43,9 +45,9 @@ func TestBuildAllocatorOptsNoHeadless(t *testing.T) {
 	opts := session.buildAllocatorOpts(1920, 1080)
 
 	// Same layout minus Headless opt.
-	expectedBase := 10
+	expectedBase := 12
 	if runtime.GOOS == "darwin" {
-		expectedBase = 11
+		expectedBase = 13
 	}
 	if len(opts) != expectedBase {
 		t.Errorf("buildAllocatorOpts(headless=false) count = %d, want %d", len(opts), expectedBase)
@@ -71,15 +73,15 @@ func TestBuildAllocatorOptsDarwinMockKeychain(t *testing.T) {
 	session := NewSession(SessionConfig{ID: "test", Headless: false})
 	opts := session.buildAllocatorOpts(1920, 1080)
 
-	// Non-darwin base (headless=false): 10 opts.
-	// Darwin base (headless=false): 11 opts (includes use-mock-keychain).
+	// Non-darwin base (headless=false): 12 opts.
+	// Darwin base (headless=false): 13 opts (includes use-mock-keychain).
 	if runtime.GOOS == "darwin" {
-		if len(opts) != 11 {
-			t.Errorf("darwin: opts count = %d, want 11 (includes use-mock-keychain)", len(opts))
+		if len(opts) != 13 {
+			t.Errorf("darwin: opts count = %d, want 13 (includes use-mock-keychain)", len(opts))
 		}
 	} else {
-		if len(opts) != 10 {
-			t.Errorf("non-darwin: opts count = %d, want 10 (no use-mock-keychain)", len(opts))
+		if len(opts) != 12 {
+			t.Errorf("non-darwin: opts count = %d, want 12 (no use-mock-keychain)", len(opts))
 		}
 	}
 }

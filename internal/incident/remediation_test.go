@@ -77,6 +77,8 @@ var allSources = []Source{
 	SourceProcessAlert,
 	SourceProcessOutput,
 	SourceProcessCrash,
+	SourceBrowserCrash,
+	SourceAutomationCrash,
 	SourceBuildFail,
 	SourceChaosSwallow,
 	SourceExternal,
