@@ -1,6 +1,6 @@
 // Package sessionhost implements daemon-owned, detachable PTY sessions
 // (the "session-host" flavor described in
-// docs/superpowers/specs/2026-07-03-remote-ssh-design.md §1-2). Unlike a
+// docs/design/2026-07-03-remote-ssh-design.md §1-2). Unlike a
 // classic `agnt run` session, the PTY child here is spawned and owned by
 // the daemon process itself, so it survives the attaching client
 // disconnecting (SSH drop, terminal close, laptop sleep).

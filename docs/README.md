@@ -1,7 +1,7 @@
 # agnt Documentation
 
-Engineering documentation for the `agnt` repository. User-facing docs are
-published from `docs-site/` (Docusaurus). High-level project overview and the
+Engineering documentation for the `agnt` repository. The user-facing website is
+`site/` (Docusaurus, deployed to dev.standardbeagle.com/agnt). High-level project overview and the
 canonical architecture invariants live in [`../CLAUDE.md`](../CLAUDE.md) and
 [`../.claude/rules/`](../.claude/rules/).
 
@@ -27,6 +27,14 @@ Current, maintained references for specific subsystems:
 | [javascript-error-handling-standards.md](javascript-error-handling-standards.md) | Injected JS error-capture conventions |
 | [visual-regression-usage.md](visual-regression-usage.md) | Snapshot tool usage guide |
 | [visual-regression-spec.md](visual-regression-spec.md) | Snapshot tool technical spec |
+| [responsive-canonical-target.md](responsive-canonical-target.md) | Responsive frame as the canonical interaction target (shipped model) |
+| [replaytest.md](replaytest.md) | Record, worker-mock and replay front-end tests |
+| [licensing.md](licensing.md) | Pro licence keys and capability gating |
+| [error-formats/](error-formats/) | Real error-message formats per toolchain, the classifier's pattern bank reference |
+| [walkthroughs/](walkthroughs/) | Task-oriented developer walkthroughs |
+| [agent-efficiency-benchmark.md](agent-efficiency-benchmark.md) | `internal/agentbench` metrics and the pinned baseline |
+| [testing-flake-registry.md](testing-flake-registry.md) | Known flaky tests and their triage |
+| [vendor-patches.md](vendor-patches.md) | Patches carried on vendored modules |
 
 ## Project
 
@@ -35,12 +43,17 @@ Current, maintained references for specific subsystems:
 | [roadmap.md](roadmap.md) | Forward-looking feature roadmap |
 | [release.md](release.md) | Version management and release process |
 
-## Archives
+## Design records
 
-Historical design docs and specs, kept for context. These describe work as it
-was planned; the code is the source of truth for current behavior.
+Shipped designs that code cites as its contract (section numbers included), in [`design/`](design/):
+remote SSH sessions, public walkthrough publish security (normative) and its subresource-proxying
+follow-up, dev OIDC issuer, self-hosted licensing, walkthrough mode, and the opencode plugin.
+[`design-mode-feature.md`](design-mode-feature.md) is the design-mode engineering doc.
+[`articles/`](articles/) holds technical write-ups; [`fleet/prompts/`](fleet/prompts/) is read by
+`.worktrack/templates.json`; [`solutions/`](solutions/) is the compound-engineering learnings store.
 
-- [`plans/`](plans/) — dated implementation/design plans (per feature)
-- [`superpowers/plans/`](superpowers/plans/) and [`superpowers/specs/`](superpowers/specs/) — superpowers-workflow plans and specs
-- [`spikes/`](spikes/) — exploratory spikes (e.g. go-pty evaluation)
-- [`articles/`](articles/) — deep-dive technical write-ups (e.g. win32 ConPTY input mode)
+## Plans and in-flight work
+
+Plans, specs and in-flight work are tracked in worktrack workspace `agnt`. A plan that an open task
+cites is committed under `docs/plans/` while the task is open, and removed once it lands. Landed
+plans are in git history (`git log --diff-filter=D -- docs/plans docs/superpowers`).

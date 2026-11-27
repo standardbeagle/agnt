@@ -2,7 +2,7 @@
 // validators for the public walkthrough-publish artifacts (P2 of the
 // walkthrough-publish epic). It encodes the numbers, grammar, and allowlists of
 // the P1 security spec
-// (docs/superpowers/specs/2026-07-13-public-walkthrough-publish-security.md) as
+// (docs/design/2026-07-13-public-walkthrough-publish-security.md) as
 // the single source of truth: a Variant/VariantSet/PublishedWalkthrough with
 // stable ids, strict deny-by-default validators, a closed declarative op
 // vocabulary (no arbitrary HTML/JS representable in the type), and a

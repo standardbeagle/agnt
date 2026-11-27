@@ -16,13 +16,13 @@ import (
 
 // DemoInput is the input for the `demo` tool — the narrated demo-video
 // authoring surface. It shells to the in-repo engine
-// (docs-site/screenshots/engine/demo.mjs) as a daemon-managed process so
+// (site/screenshots/engine/demo.mjs) as a daemon-managed process so
 // long recordings survive and report like any managed script.
 type DemoInput struct {
-	Action string `json:"action" jsonschema:"Action to run: list (enumerate demos with segment/narration summary), record (start a recording, optionally scoped with only), assemble (re-mux from existing segment captures), inspect (render cut-point contact sheets from the recorded takes), publish (promote the rendered demo into docs-site/static)"`
-	Name   string `json:"name,omitempty" jsonschema:"Demo directory name under docs-site/screenshots/demos (required for record/assemble/inspect/publish)"`
+	Action string `json:"action" jsonschema:"Action to run: list (enumerate demos with segment/narration summary), record (start a recording, optionally scoped with only), assemble (re-mux from existing segment captures), inspect (render cut-point contact sheets from the recorded takes), publish (promote the rendered demo into site/static)"`
+	Name   string `json:"name,omitempty" jsonschema:"Demo directory name under site/screenshots/demos (required for record/assemble/inspect/publish)"`
 	Only   string `json:"only,omitempty" jsonschema:"For record: comma-separated segment ids to record instead of the whole demo (engine --only). For inspect: a single segment id to render instead of every take (engine --inspect=<id>). Rejected for list, assemble and publish, which have no use for it"`
-	Path   string `json:"path,omitempty" jsonschema:"Project directory whose docs-site/screenshots engine to use (defaults to the session project)"`
+	Path   string `json:"path,omitempty" jsonschema:"Project directory whose site/screenshots engine to use (defaults to the session project)"`
 }
 
 // DemoSegmentSummary is one segment in a demo's summary.
@@ -65,24 +65,24 @@ type DemoOutput struct {
 
 // demoEngine holds the resolved engine paths for a project.
 type demoEngine struct {
-	Entry       string // docs-site/screenshots/engine/demo.mjs
-	Screenshots string // docs-site/screenshots
-	DemosDir    string // docs-site/screenshots/demos
+	Entry       string // site/screenshots/engine/demo.mjs
+	Screenshots string // site/screenshots
+	DemosDir    string // site/screenshots/demos
 }
 
 // resolveDemoEngine locates the in-repo demo engine for a project and fails
 // loud (naming the requirement) when the project has no engine checkout. This
 // is a repo-checkout capability — the engine ships in the agnt repository's
-// docs-site/screenshots tree, not inside the installed agnt binary — so the
+// site/screenshots tree, not inside the installed agnt binary — so the
 // error must say so rather than looking like a transient failure.
 func resolveDemoEngine(projectPath string) (demoEngine, error) {
-	screenshots := filepath.Join(projectPath, "docs-site", "screenshots")
+	screenshots := filepath.Join(projectPath, "site", "screenshots")
 	entry := filepath.Join(screenshots, "engine", "demo.mjs")
 	if _, err := os.Stat(entry); err != nil {
 		return demoEngine{}, fmt.Errorf(
 			"demo requires the in-repo demo engine at %s, which is not present in this project (%s). "+
-				"This is a repo-checkout capability (the agnt docs-site/screenshots demo engine), not part of the installed agnt binary. "+
-				"Run demo from a checkout of the agnt repository (or a project that vendors docs-site/screenshots/engine).",
+				"This is a repo-checkout capability (the agnt site/screenshots demo engine), not part of the installed agnt binary. "+
+				"Run demo from a checkout of the agnt repository (or a project that vendors site/screenshots/engine).",
 			entry, projectPath)
 	}
 	return demoEngine{
@@ -155,7 +155,7 @@ func listDemos(demosDir string) ([]DemoSummary, error) {
 
 // demoNameRe is the shape of a demo directory name. The name is joined into
 // the engine argv (demos/<name>) and, for publish, into file names under
-// docs-site/static, so anything that is not a plain name is refused before it
+// site/static, so anything that is not a plain name is refused before it
 // reaches the engine. Mirrors DEMO_NAME_RE in engine/lib/publish.mjs.
 var demoNameRe = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 

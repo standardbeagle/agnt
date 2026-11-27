@@ -684,7 +684,7 @@ project's `.agnt.kdl` (where it is a parse error; see *The two config files*).
 The `feedback` block bounds the public-plane anonymous feedback sink used by
 published walkthroughs — the rate limit, per-post size cap, and retention ring.
 The values encode the security spec §5
-(`docs/superpowers/specs/2026-07-13-public-walkthrough-publish-security.md`).
+(`docs/design/2026-07-13-public-walkthrough-publish-security.md`).
 See the operator guide: **[public-walkthroughs.md](public-walkthroughs.md)**.
 
 ```kdl

@@ -20,7 +20,7 @@
 // navigation, so a multi-step demo survives page changes for free. Targets are
 // resolved in the active content frame (same-origin direct reach via the shell's
 // frame registry). See docs/responsive-canonical-target.md §5 and
-// docs/superpowers/specs/2026-06-20-walkthrough-design.md.
+// docs/design/2026-06-20-walkthrough-design.md.
 //
 // Transport: the agent drives this via `proxy exec`, which lands in the active
 // content frame. On a non-host frame the companion walkthrough-proxy.js module

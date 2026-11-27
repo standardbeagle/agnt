@@ -14,7 +14,7 @@ import (
 )
 
 // This file implements the reconnect state machine (task 09c, spec
-// docs/superpowers/specs/2026-07-03-remote-ssh-design.md §3.6):
+// docs/design/2026-07-03-remote-ssh-design.md §3.6):
 //
 //	CONNECTED --(Dead() fires / dial or attach error)--> RECONNECTING
 //	RECONNECTING --(backoff)--> dial+attach attempt --(ok)--> CONNECTED

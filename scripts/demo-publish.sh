@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 #
-# demo-publish.sh — publish a rendered demo into the docs-site as committed assets.
+# demo-publish.sh — publish a rendered demo into the site as committed assets.
 #
 #   make demo-publish NAME=<x>
 #   scripts/demo-publish.sh <x>
 #
-# Reads the assembled demo at docs-site/screenshots/demos/<x>/out/<x>.webm (the
+# Reads the assembled demo at site/screenshots/demos/<x>/out/<x>.webm (the
 # output of `make demo NAME=<x>`, which is gitignored) and produces three assets
-# at fixed docs-site paths that ARE committed and referenced by <ModeVideo/>:
+# at fixed site paths that ARE committed and referenced by <ModeVideo/>:
 #
-#   docs-site/static/video/<x>.webm        — the clip itself
-#   docs-site/static/video/<x>.vtt         — captions, only when a sidecar exists
-#   docs-site/static/img/<x>-poster.webp   — 960-wide still from t=2s (the poster)
-#   docs-site/static/img/<x>-demo.webp     — 8fps 720-wide looping animation (README/GitHub)
+#   site/static/video/<x>.webm        — the clip itself
+#   site/static/video/<x>.vtt         — captions, only when a sidecar exists
+#   site/static/img/<x>-poster.webp   — 960-wide still from t=2s (the poster)
+#   site/static/img/<x>-demo.webp     — 8fps 720-wide looping animation (README/GitHub)
 #
 # The work is done by the demo engine's --publish path
-# (docs-site/screenshots/engine/lib/publish.mjs) so this target, the engine CLI
+# (site/screenshots/engine/lib/publish.mjs) so this target, the engine CLI
 # and the MCP `demo {action:"publish"}` tool share one implementation: a missing
 # source or a missing ffmpeg exits nonzero having written nothing, and every
 # artifact is staged in a temp dir and moved into place only after all renders
@@ -30,9 +30,9 @@ fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-if [[ ! -f "$ROOT/docs-site/screenshots/demos/$NAME/demo.json" ]]; then
-  echo "demo-publish: no demo named '$NAME' under $ROOT/docs-site/screenshots/demos" >&2
+if [[ ! -f "$ROOT/site/screenshots/demos/$NAME/demo.json" ]]; then
+  echo "demo-publish: no demo named '$NAME' under $ROOT/site/screenshots/demos" >&2
   exit 1
 fi
 
-exec node "$ROOT/docs-site/screenshots/engine/demo.mjs" "demos/$NAME" --publish
+exec node "$ROOT/site/screenshots/engine/demo.mjs" "demos/$NAME" --publish

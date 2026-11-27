@@ -10,7 +10,7 @@ import (
 
 // embeddedPubKeyB32 is the base32-encoded ECDSA public key shipped in the
 // binary. The matching private key is the signing key and never ships — see
-// docs/superpowers/specs/2026-06-08-self-hosted-licensing-design.md.
+// docs/design/2026-06-08-self-hosted-licensing-design.md.
 //
 //go:embed pubkey.b32
 var embeddedPubKeyB32 string

@@ -10,7 +10,7 @@ import (
 )
 
 // This file implements INV-13 of
-// docs/superpowers/specs/2026-07-13-public-walkthrough-publish-security.md §4a.
+// docs/design/2026-07-13-public-walkthrough-publish-security.md §4a.
 //
 // WHAT THIS IS: open-relay hygiene. Proxying a publisher-named live origin
 // makes the daemon fetch an arbitrary URL and hand back the bytes. Unconstrained

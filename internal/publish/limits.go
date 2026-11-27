@@ -1,7 +1,7 @@
 package publish
 
 // Concrete limits from the P1 security spec
-// (docs/superpowers/specs/2026-07-13-public-walkthrough-publish-security.md §5).
+// (docs/design/2026-07-13-public-walkthrough-publish-security.md §5).
 // P2's validators encode these verbatim; anything exceeding a limit is rejected
 // (never silently truncated).
 const (

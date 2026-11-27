@@ -13,7 +13,7 @@ import (
 // DevOIDCConfig declares the dev-only OIDC issuer agnt serves on every proxy
 // of the project (`dev-oidc` in .agnt.kdl). Personas are the identities it
 // can issue tokens for; clients are the apps allowed to ask. See
-// docs/superpowers/specs/2026-09-27-dev-oidc-design.md.
+// docs/design/2026-09-27-dev-oidc-design.md.
 type DevOIDCConfig struct {
 	// Issuer is the fixed `iss` of every token. Empty means the proxy's own
 	// loopback origin + /__agnt/oidc.

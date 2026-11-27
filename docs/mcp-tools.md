@@ -180,7 +180,7 @@ is NOT reachable through this tool. Every action is project-scoped: a session
 can only address shares owned by its own project (a foreign share id is reported
 not-found — no cross-project leak).
 
-Security spec: `docs/superpowers/specs/2026-07-13-public-walkthrough-publish-security.md`.
+Security spec: `docs/design/2026-07-13-public-walkthrough-publish-security.md`.
 Operator guide (lifecycle, feedback, incident response): [public-walkthroughs.md](public-walkthroughs.md).
 
 **Actions**:
@@ -251,14 +251,14 @@ CSP/SSRF caveats apply. See [public-walkthroughs.md §6](public-walkthroughs.md)
 ## demo Tool
 
 Author narrated demo videos with the in-repo demo engine
-(`docs-site/screenshots/engine/demo.mjs`). This is a **repo-checkout
+(`site/screenshots/engine/demo.mjs`). This is a **repo-checkout
 capability**, not a feature of the installed `agnt` binary: the engine ships in
-the agnt repository's `docs-site/screenshots` tree. Running `demo` from a
+the agnt repository's `site/screenshots` tree. Running `demo` from a
 project that has no engine checkout returns a loud error naming the requirement
 (`IsError`), never a silent no-op.
 
 Actions:
-- `list` — Enumerate demos under `docs-site/screenshots/demos`, each with a
+- `list` — Enumerate demos under `site/screenshots/demos`, each with a
   segment breakdown (id + type) and a narration summary (voice + segment count).
   `name` is always the directory name, the value every other action takes;
   `display_name` is added only when `demo.json`'s own `name` differs from it.
@@ -276,7 +276,7 @@ Actions:
   Read-only over the takes; needs ffmpeg but neither the daemon-side proxy nor
   edge-tts. Pass `only:"<seg>"` for one segment (a single id, not a list). A
   take that has not been recorded is reported in the process output, not a crash.
-- `publish` — Promote an already-rendered demo into the docs-site (engine
+- `publish` — Promote an already-rendered demo into the site (engine
   `--publish`): `static/video/<name>.webm`, its `.vtt` when the demo has
   captions, `static/img/<name>-poster.webp` and `static/img/<name>-demo.webp`.
   Needs ffmpeg and a prior `record`/`assemble`; when either is missing the
@@ -307,7 +307,7 @@ proc {action: "stop", process_id: "demo-incident-inbox"}
 
 **Key Files**: `internal/tools/demo.go` (tool + engine resolution + list),
 records/assembles via `internal/daemonclient` `PROC RUN`
-(`internal/daemon/hub_proc.go`). Engine: `docs-site/screenshots/engine/demo.mjs`.
+(`internal/daemon/hub_proc.go`). Engine: `site/screenshots/engine/demo.mjs`.
 Session-scoping classified in `.claude/rules/daemon-architecture.md` §
 Tool session-scoping (Client-side project-scoped).
 

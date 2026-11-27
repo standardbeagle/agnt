@@ -9,7 +9,7 @@
 // never authority*, and that registry/blob/inbox state is rebuilt-from-config or
 // evicted on session end and never persisted across sessions. This store is the
 // deliberate, documented exception the P1 security spec
-// (docs/superpowers/specs/2026-07-13-public-walkthrough-publish-security.md §8,
+// (docs/design/2026-07-13-public-walkthrough-publish-security.md §8,
 // "Deviations" #1) calls out: the FIRST daemon-side artifact whose on-disk record
 // IS the source of truth and which must outlive the session (INV-8). It is a
 // distinct persistent store, NOT one of the transient caches — the ephemeral

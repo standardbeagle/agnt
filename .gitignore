@@ -59,9 +59,9 @@ e2e/*.png
 Thumbs.db
 
 # Documentation build
-docs-site/node_modules/
-docs-site/build/
-docs-site/.docusaurus/
+site/node_modules/
+site/build/
+site/.docusaurus/
 
 # Environment
 .env

@@ -3,7 +3,7 @@
 // .agnt.kdl. It is a test fixture for relying parties, not an identity
 // provider: there are no passwords, keys live in memory only, and who may
 // assume which persona is decided by the caller classification the proxy
-// supplies (see docs/superpowers/specs/2026-09-27-dev-oidc-design.md).
+// supplies (see docs/design/2026-09-27-dev-oidc-design.md).
 package devoidc
 
 import (

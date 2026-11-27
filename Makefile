@@ -409,9 +409,9 @@ deps:
 # Regenerate a docs demo video (scripted engine: VHS for CLI + Playwright for browser)
 # Usage: make demo NAME=vhs-spiral [DEMOFLAGS=--only=attempt-1]
 demo:
-	cd docs-site/screenshots && node engine/demo.mjs demos/$(NAME) $(DEMOFLAGS)
+	cd site/screenshots && node engine/demo.mjs demos/$(NAME) $(DEMOFLAGS)
 
-# Publish a rendered demo into the docs-site as committed assets (video + poster
+# Publish a rendered demo into the site as committed assets (video + poster
 # + animated README/GitHub webp), then print the <ModeVideo/> embed snippet.
 # Fails loud if the source webm is missing (run `make demo NAME=<x>` first).
 # Usage: make demo-publish NAME=vhs-spiral
@@ -421,36 +421,36 @@ demo-publish:
 # Validate EVERY demos/*/demo.json against the demo-engine schema. Pure node —
 # no ffmpeg, no chromium, no daemon. Fails loud naming the offending file.
 demo-check:
-	cd docs-site/screenshots && node engine/check-demos.mjs
+	cd site/screenshots && node engine/check-demos.mjs
 
 # Unit tests for the demo engine's pure helpers (final-mux graph, narration gating).
 demo-engine-test:
-	cd docs-site/screenshots && node --test engine/test/
+	cd site/screenshots && node --test engine/test/
 
 # Integration check for the final-mux upgrades: runs the REAL ffmpeg invocation
 # on a synthetic fixture and asserts the brand-logo pixels land in the output and
 # the narration measures at the EBU R128 target loudness. Loud-skips without ffmpeg.
 demo-mux-check:
-	cd docs-site/screenshots && node engine/test/integration-mux.mjs
+	cd site/screenshots && node engine/test/integration-mux.mjs
 
 # Integration check for --inspect: runs REAL ffmpeg on a synthetic take+marks
 # fixture and asserts the contact-sheet PNG is produced at the predicted geometry
 # and the run stays read-only over mezzanine/output. Loud-skips without ffmpeg.
 demo-inspect-check:
-	cd docs-site/screenshots && node engine/test/integration-inspect.mjs
+	cd site/screenshots && node engine/test/integration-inspect.mjs
 
 # Integration check for --publish: runs the REAL ffmpeg renders on a synthetic
-# clip into a temp docs-site and asserts the poster/animation geometry, the
+# clip into a temp site and asserts the poster/animation geometry, the
 # verbatim clip copy, and that a failed publish writes nothing. Loud-skips
 # without ffmpeg.
 demo-publish-check:
-	cd docs-site/screenshots && node engine/test/integration-publish.mjs
+	cd site/screenshots && node engine/test/integration-publish.mjs
 
 # Assembly smoke: run the committed ci-fixture through `--assemble-only` and
 # assert a playable output of the expected duration. ffmpeg + node only — no
 # Chrome, VHS, edge-tts, or daemon. Loud-skips without ffmpeg.
 demo-assemble-check:
-	cd docs-site/screenshots && node engine/test/assemble-smoke.mjs
+	cd site/screenshots && node engine/test/assemble-smoke.mjs
 
 # Show help
 help:

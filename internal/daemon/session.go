@@ -32,7 +32,7 @@ const (
 )
 
 // SessionKind distinguishes who owns the PTY child behind a Session entry.
-// See docs/superpowers/specs/2026-07-03-remote-ssh-design.md §2.3: both
+// See docs/design/2026-07-03-remote-ssh-design.md §2.3: both
 // flavors share this same struct and SessionRegistry so project-scoping
 // consumers (hasOtherSessions, FindByDirectory, List/ListActive) keep working
 // unmodified — only cleanup dispatch and attach handling branch on Kind.

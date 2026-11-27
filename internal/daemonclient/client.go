@@ -866,7 +866,7 @@ func (c *Client) StoreGetAll(req protocol.StoreGetAllRequest) (map[string]interf
 
 // ===========================================================================
 // SESSION-HOST: daemon-owned detachable PTY sessions. See
-// docs/superpowers/specs/2026-07-03-remote-ssh-design.md §1-2 and
+// docs/design/2026-07-03-remote-ssh-design.md §1-2 and
 // internal/sessionhost. CREATE/LIST/KILL/RESIZE/STDIN/DETACH are ordinary
 // request/response calls; ATTACH is a long-lived, server-to-client-only
 // stream (client pushes stdin/resize/detach over separate connections via

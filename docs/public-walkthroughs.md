@@ -5,7 +5,7 @@ webapp. Covers `agnt publish serve`, secure defaults, live-upstream proxying, th
 publish lifecycle (create / rotate / revoke), anonymous feedback, and incident
 response.
 
-- **Security spec (normative):** [`superpowers/specs/2026-07-13-public-walkthrough-publish-security.md`](superpowers/specs/2026-07-13-public-walkthrough-publish-security.md)
+- **Security spec (normative):** [`design/2026-07-13-public-walkthrough-publish-security.md`](design/2026-07-13-public-walkthrough-publish-security.md)
   — the threat model, security invariants (INV-1..INV-15; INV-6 retired), the
   concrete limits table, and the endpoint matrix. This guide summarizes what
   **ships today** and points at the spec for the full contract; it does not

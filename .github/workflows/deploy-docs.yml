@@ -5,7 +5,7 @@ on:
     branches:
       - main
     paths:
-      - 'docs-site/**'
+      - 'site/**'
       - '.github/workflows/deploy-docs.yml'
   workflow_dispatch:
 
@@ -23,7 +23,7 @@ jobs:
     runs-on: ubuntu-latest
     defaults:
       run:
-        working-directory: docs-site
+        working-directory: site
     steps:
       - name: Checkout
         uses: actions/checkout@v6
@@ -33,7 +33,7 @@ jobs:
         with:
           node-version: '20'
           cache: 'npm'
-          cache-dependency-path: docs-site/package-lock.json
+          cache-dependency-path: site/package-lock.json
 
       - name: Install dependencies
         run: npm ci
@@ -47,7 +47,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v5
         with:
-          path: docs-site/build
+          path: site/build
 
   deploy:
     environment:

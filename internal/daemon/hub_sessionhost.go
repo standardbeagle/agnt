@@ -19,7 +19,7 @@ import (
 )
 
 // hubHandleSessionHost dispatches SESSION-HOST sub-verbs. See
-// docs/superpowers/specs/2026-07-03-remote-ssh-design.md §1-2.
+// docs/design/2026-07-03-remote-ssh-design.md §1-2.
 //
 // Transport note: the go-cli-server hub processes one command at a time per
 // connection (Connection.Handle reads, dispatches, and only reads the next

@@ -1,7 +1,7 @@
 # opencode-agnt
 
 Shows agnt incident pings in opencode, exposes the inbox as tools, and keeps unread incidents across compaction.
-Design: `docs/plans/2026-08-07-opencode-plugin-integration.md`. No fork of opencode is needed.
+Design: `docs/design/2026-08-07-opencode-plugin-integration.md`. No fork of opencode is needed.
 
 The plugin never injects text into a session. agnt sends each ping down the one connector the
 session was started with: under `agnt run opencode` the daemon types it to the agent. The plugin

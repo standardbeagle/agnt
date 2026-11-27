@@ -20,8 +20,8 @@ import (
 
 // writeFixtureEngine lays out a minimal in-repo demo engine tree under root:
 //
-//	<root>/docs-site/screenshots/engine/demo.mjs   (stub: echoes argv, then idles)
-//	<root>/docs-site/screenshots/demos/<name>/demo.json
+//	<root>/site/screenshots/engine/demo.mjs   (stub: echoes argv, then idles)
+//	<root>/site/screenshots/demos/<name>/demo.json
 //
 // The stub demo.mjs is deliberately dependency-free (no Chrome/ffmpeg/edge-tts)
 // so the managed-process path can be exercised in the default suite. It prints
@@ -29,7 +29,7 @@ import (
 // idles forever (so `proc status` reports running until the test stops it).
 func writeFixtureEngine(t *testing.T, root, demoName, demoJSON string) (engineEntry, screenshots string) {
 	t.Helper()
-	screenshots = filepath.Join(root, "docs-site", "screenshots")
+	screenshots = filepath.Join(root, "site", "screenshots")
 	engineDir := filepath.Join(screenshots, "engine")
 	require.NoError(t, os.MkdirAll(engineDir, 0o755))
 	engineEntry = filepath.Join(engineDir, "demo.mjs")
@@ -193,7 +193,7 @@ func TestDemoHandler_InspectAndPublishReachTheEngine(t *testing.T) {
 		wantHint string
 	}{
 		{DemoInput{Action: "inspect", Name: "fixture", Only: "fix"}, "demo-inspect-fixture", "STUB DEMO demos/fixture --inspect=fix", filepath.Join("out", "inspect")},
-		{DemoInput{Action: "publish", Name: "fixture"}, "demo-publish-fixture", "STUB DEMO demos/fixture --publish", filepath.Join("docs-site", "static", "video")},
+		{DemoInput{Action: "publish", Name: "fixture"}, "demo-publish-fixture", "STUB DEMO demos/fixture --publish", filepath.Join("site", "static", "video")},
 	}
 	for _, c := range cases {
 		c.in.Path = root

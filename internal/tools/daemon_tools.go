@@ -931,18 +931,18 @@ This provides a high-level view of active pages and their resources.`,
 	}, dt.makeCurrentPageHandler())
 
 	// Demo tool - narrated demo-video authoring surface. Shells to the in-repo
-	// engine (docs-site/screenshots/engine/demo.mjs) as a daemon-managed
+	// engine (site/screenshots/engine/demo.mjs) as a daemon-managed
 	// process so long recordings survive and report like any managed script.
 	addLenientTool(server, &mcp.Tool{
 		Name: "demo",
 		Description: `Author narrated demo videos with the in-repo demo engine.
 
-This is a repo-checkout capability: it drives docs-site/screenshots/engine/demo.mjs,
+This is a repo-checkout capability: it drives site/screenshots/engine/demo.mjs,
 which ships in the agnt repository, not the installed binary. Running it from a
 project without that engine tree returns a loud error naming the requirement.
 
 Actions:
-  list:     Enumerate demos under docs-site/screenshots/demos with a per-demo
+  list:     Enumerate demos under site/screenshots/demos with a per-demo
             segment and narration summary.
   record:   Start a recording as a daemon-managed process; returns a process_id
             immediately. Observe/stop it via the proc tool (output/status/stop).
@@ -953,7 +953,7 @@ Actions:
             sheet (one thumbnail/second, marks on a timeline strip) under
             demos/<name>/out/inspect. Read-only over the takes. Pass only:"seg"
             for a single segment. Managed process id: demo-inspect-<name>.
-  publish:  Promote an already-rendered demo into docs-site/static (clip,
+  publish:  Promote an already-rendered demo into site/static (clip,
             captions when present, poster, animated webp) and print the
             <ModeVideo/> embed snippet. Needs ffmpeg and a prior record or
             assemble; writes nothing otherwise. Managed process id:

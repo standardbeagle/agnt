@@ -29,9 +29,9 @@ const (
 	VerbHook          = "HOOK"          // Claude Code hook dispatcher enqueue
 	VerbIncidents     = "INCIDENTS"     // Incident inbox query + mark-read
 	VerbPorts         = "PORTS"         // Listening-port inventory + orphan pgid management
-	VerbSessionHost   = "SESSION-HOST"  // Daemon-owned detachable PTY sessions (see docs/superpowers/specs/2026-07-03-remote-ssh-design.md §1)
+	VerbSessionHost   = "SESSION-HOST"  // Daemon-owned detachable PTY sessions (see docs/design/2026-07-03-remote-ssh-design.md §1)
 	VerbScope         = "SCOPE"         // Resolve effective query scope
-	VerbPublish       = "PUBLISH"       // Public walkthrough share-token lifecycle (control plane; see docs/superpowers/specs/2026-07-13-public-walkthrough-publish-security.md)
+	VerbPublish       = "PUBLISH"       // Public walkthrough share-token lifecycle (control plane; see docs/design/2026-07-13-public-walkthrough-publish-security.md)
 	VerbShim          = "SHIM"          // Shell shim routing (EXEC) + install bookkeeping (REGISTER)
 	VerbInvestigation = "INVESTIGATION" // Per-session investigation record (GET read, MERGE replace-on-write patch)
 )
@@ -749,7 +749,7 @@ type IncidentRemediation struct {
 }
 
 // SessionHostCreateConfig is the payload for SESSION-HOST CREATE. See
-// docs/superpowers/specs/2026-07-03-remote-ssh-design.md §1.2.
+// docs/design/2026-07-03-remote-ssh-design.md §1.2.
 type SessionHostCreateConfig struct {
 	Name        string            `json:"name,omitempty"`
 	ProjectPath string            `json:"project_path"`

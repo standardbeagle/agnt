@@ -453,7 +453,7 @@ agnt uses a daemon architecture for persistent state:
 
 ```bash
 # Run docs locally
-cd docs-site
+cd site
 npm install && npm start
 ```
 

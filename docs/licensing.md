@@ -5,7 +5,7 @@ phone-home, no monthly platform cost. Built on
 [`hyperboloide/lk`](https://github.com/hyperboloide/lk) (ECDSA P-384 signatures).
 
 Code: `internal/license/`. CLI: `cmd/agnt/license.go`.
-Design: `docs/superpowers/specs/2026-06-08-self-hosted-licensing-design.md`.
+Design: `docs/design/2026-06-08-self-hosted-licensing-design.md`.
 
 ## How it works
 

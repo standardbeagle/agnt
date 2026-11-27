@@ -2,7 +2,7 @@ package config
 
 // FeedbackConfig holds the public-plane anonymous feedback ingestion limits
 // (P8 of the walkthrough-publish epic). The values encode the P1 security spec
-// (docs/superpowers/specs/2026-07-13-public-walkthrough-publish-security.md §5)
+// (docs/design/2026-07-13-public-walkthrough-publish-security.md §5)
 // so the durable feedback sink is rate-limited, size-capped, and
 // retention-bounded. Per the repo config doctrine these are KDL settings (see
 // KDLFeedback); JSON tags exist only for parity with the rest of Config and are
